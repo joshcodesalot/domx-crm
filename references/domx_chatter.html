@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chatter | DomX</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            900: '#1e3a8a',
+                        },
+                    }
+                }
+            }
+        }
+    </script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <script>
+        if (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+    </script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .dark ::-webkit-scrollbar-thumb { background: #334155; }
+    </style>
+</head>
+<body class="bg-white dark:bg-[#0a0a0a] text-gray-900 dark:text-gray-100 min-h-screen flex antialiased">
+
+    <aside class="w-16 flex flex-col items-center py-6 border-r border-gray-200 dark:border-white/10 shrink-0">
+        <div class="w-8 h-8 bg-gray-900 dark:bg-white rounded flex items-center justify-center mb-10 shadow-sm">
+            <span class="text-white dark:text-black font-bold text-xs tracking-tighter">DX</span>
+        </div>
+        <nav class="flex flex-col gap-6">
+            <button class="text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors" title="Overview"><i data-lucide="layout-grid" class="w-5 h-5"></i></button>
+            <button class="text-gray-900 dark:text-white" title="Messages"><i data-lucide="messages-square" class="w-5 h-5"></i></button>
+            <button class="text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors" title="Analytics"><i data-lucide="bar-chart-2" class="w-5 h-5"></i></button>
+            <button class="text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors" title="Creators"><i data-lucide="users" class="w-5 h-5"></i></button>
+        </nav>
+        <div class="mt-auto flex flex-col gap-4 items-center">
+            <button id="theme-toggle" class="text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors" title="Toggle theme">
+                <i data-lucide="sun" id="theme-toggle-light-icon" class="hidden w-5 h-5"></i>
+                <i data-lucide="moon" id="theme-toggle-dark-icon" class="hidden w-5 h-5"></i>
+            </button>
+            <button class="text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors" title="Log out">
+                <i data-lucide="log-out" class="w-5 h-5"></i>
+            </button>
+            <div class="w-8 h-8 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-xs font-medium">J</div>
+        </div>
+    </aside>
+
+    <main class="flex-1 flex min-w-0 overflow-hidden">
+        <aside class="w-72 border-r border-gray-200 dark:border-white/10 flex flex-col shrink-0">
+            <div class="h-16 px-4 border-b border-gray-200 dark:border-white/10 flex items-center justify-between">
+                <h1 class="text-sm font-semibold">Creators</h1>
+                <button type="button" class="p-1.5 text-gray-400 hover:text-gray-900 dark:hover:text-white rounded-md hover:bg-gray-100 dark:hover:bg-white/5" title="Refresh">
+                    <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                </button>
+            </div>
+            <div id="creators-list" class="flex-1 overflow-y-auto p-2 space-y-1">
+                <button type="button" data-creator="luna" class="creator-item w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors bg-brand-50 dark:bg-brand-900/20 border border-brand-200 dark:border-brand-800/40">
+                    <div class="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center shrink-0 text-orange-600 font-bold text-sm">L</div>
+                    <div class="min-w-0 flex-1">
+                        <p class="text-sm font-medium truncate">Luna Rose</p>
+                        <p class="text-xs text-gray-500 truncate">@lunarose</p>
+                    </div>
+                    <span class="w-2 h-2 rounded-full shrink-0 bg-green-500" title="CONNECTED"></span>
+                </button>
+                <button type="button" data-creator="mia" class="creator-item w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors hover:bg-gray-50 dark:hover:bg-white/5 border border-transparent">
+                    <div class="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center shrink-0 text-orange-600 font-bold text-sm">M</div>
+                    <div class="min-w-0 flex-1">
+                        <p class="text-sm font-medium truncate">Mia Chen</p>
+                        <p class="text-xs text-gray-500 truncate">@miachen</p>
+                    </div>
+                    <span class="w-2 h-2 rounded-full shrink-0 bg-green-500" title="CONNECTED"></span>
+                </button>
+                <button type="button" data-creator="ava" class="creator-item w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors hover:bg-gray-50 dark:hover:bg-white/5 border border-transparent">
+                    <div class="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center shrink-0 text-orange-600 font-bold text-sm">A</div>
+                    <div class="min-w-0 flex-1">
+                        <p class="text-sm font-medium truncate">Ava Brooks</p>
+                        <p class="text-xs text-gray-500 truncate">@avabrooks</p>
+                    </div>
+                    <span class="w-2 h-2 rounded-full shrink-0 bg-yellow-500" title="CONNECTING"></span>
+                </button>
+            </div>
+        </aside>
+
+        <section class="flex-1 flex flex-col min-w-0">
+            <header id="chat-header" class="h-12 border-b border-gray-200 dark:border-white/10 flex items-center justify-between px-4 shrink-0 bg-white dark:bg-[#0a0a0a]">
+                <div id="chat-header-active" class="flex items-center gap-3 min-w-0">
+                    <div id="selected-avatar" class="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center shrink-0 overflow-hidden">
+                        <span class="text-orange-600 font-bold text-xs">L</span>
+                    </div>
+                    <div class="min-w-0">
+                        <p id="selected-name" class="text-sm font-semibold truncate">Luna Rose</p>
+                        <p id="selected-username" class="text-xs text-gray-500 truncate">@lunarose · app.maloum.com/chat</p>
+                    </div>
+                </div>
+                <span id="session-badge" class="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">Session valid</span>
+            </header>
+
+            <div id="chat-panel" class="flex-1 min-h-0 flex flex-col bg-[#f8f9fa] dark:bg-[#0d0d0d]">
+                <div class="flex-1 overflow-y-auto p-4 space-y-4">
+                    <div class="flex justify-center">
+                        <span class="text-xs text-gray-400 bg-white dark:bg-white/5 px-3 py-1 rounded-full border border-gray-200 dark:border-white/10">Today</span>
+                    </div>
+                    <div class="flex gap-2 max-w-[75%]">
+                        <div class="w-7 h-7 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-[10px] font-medium shrink-0">F</div>
+                        <div class="bg-white dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm">
+                            Hey Luna! Loved your latest post 🔥
+                        </div>
+                    </div>
+                    <div class="flex gap-2 max-w-[75%] ml-auto flex-row-reverse">
+                        <div class="w-7 h-7 rounded-full bg-orange-100 flex items-center justify-center text-[10px] font-bold text-orange-600 shrink-0">L</div>
+                        <div class="bg-brand-600 text-white rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm">
+                            Thank you so much! That means a lot 💕
+                        </div>
+                    </div>
+                    <div class="flex gap-2 max-w-[75%]">
+                        <div class="w-7 h-7 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-[10px] font-medium shrink-0">F</div>
+                        <div class="bg-white dark:bg-white/5 border border-gray-200 dark:border-white/10 rounded-2xl rounded-tl-sm px-4 py-2.5 text-sm">
+                            Do you have any exclusive content coming this week?
+                        </div>
+                    </div>
+                    <div class="flex gap-2 max-w-[75%] ml-auto flex-row-reverse">
+                        <div class="w-7 h-7 rounded-full bg-orange-100 flex items-center justify-center text-[10px] font-bold text-orange-600 shrink-0">L</div>
+                        <div class="bg-brand-600 text-white rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm">
+                            Yes! New set drops Friday — I'll send you a preview 😊
+                        </div>
+                    </div>
+                </div>
+                <div class="border-t border-gray-200 dark:border-white/10 bg-white dark:bg-[#0a0a0a] p-3">
+                    <div class="flex items-center gap-2 max-w-3xl mx-auto">
+                        <button type="button" class="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-white/5">
+                            <i data-lucide="paperclip" class="w-4 h-4"></i>
+                        </button>
+                        <input type="text" placeholder="Type a message..." class="flex-1 px-4 py-2 text-sm border border-gray-200 dark:border-white/10 rounded-full bg-gray-50 dark:bg-white/5 focus:outline-none focus:ring-2 focus:ring-brand-500">
+                        <button type="button" class="p-2 text-white bg-brand-600 hover:bg-brand-500 rounded-full transition-colors">
+                            <i data-lucide="send" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                    <p class="text-center text-[10px] text-gray-400 mt-2">Mock Maloum chat preview — reference only</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        lucide.createIcons();
+
+        const creators = {
+            luna: { name: 'Luna Rose', username: '@lunarose · app.maloum.com/chat', initial: 'L' },
+            mia: { name: 'Mia Chen', username: '@miachen · app.maloum.com/chat', initial: 'M' },
+            ava: { name: 'Ava Brooks', username: '@avabrooks · app.maloum.com/chat', initial: 'A' },
+        };
+
+        document.querySelectorAll('.creator-item').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const id = btn.dataset.creator;
+                const creator = creators[id];
+                if (!creator) return;
+
+                document.querySelectorAll('.creator-item').forEach((item) => {
+                    item.classList.remove('bg-brand-50', 'dark:bg-brand-900/20', 'border-brand-200', 'dark:border-brand-800/40');
+                    item.classList.add('border-transparent', 'hover:bg-gray-50', 'dark:hover:bg-white/5');
+                });
+                btn.classList.add('bg-brand-50', 'dark:bg-brand-900/20', 'border-brand-200', 'dark:border-brand-800/40');
+                btn.classList.remove('border-transparent');
+
+                document.getElementById('selected-name').textContent = creator.name;
+                document.getElementById('selected-username').textContent = creator.username;
+                document.getElementById('selected-avatar').innerHTML = `<span class="text-orange-600 font-bold text-xs">${creator.initial}</span>`;
+
+                const badge = document.getElementById('session-badge');
+                if (id === 'ava') {
+                    badge.className = 'text-xs px-2 py-1 rounded-full bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400';
+                    badge.textContent = 'Connecting...';
+                } else {
+                    badge.className = 'text-xs px-2 py-1 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400';
+                    badge.textContent = 'Session valid';
+                }
+            });
+        });
+
+        const themeToggleDarkIcon = document.getElementById('theme-toggle-dark-icon');
+        const themeToggleLightIcon = document.getElementById('theme-toggle-light-icon');
+        const themeToggleBtn = document.getElementById('theme-toggle');
+
+        if (document.documentElement.classList.contains('dark')) {
+            themeToggleLightIcon.classList.remove('hidden');
+        } else {
+            themeToggleDarkIcon.classList.remove('hidden');
+        }
+
+        themeToggleBtn.addEventListener('click', function() {
+            themeToggleDarkIcon.classList.toggle('hidden');
+            themeToggleLightIcon.classList.toggle('hidden');
+
+            if (document.documentElement.classList.contains('dark')) {
+                document.documentElement.classList.remove('dark');
+                localStorage.setItem('color-theme', 'light');
+            } else {
+                document.documentElement.classList.add('dark');
+                localStorage.setItem('color-theme', 'dark');
+            }
+        });
+    </script>
+</body>
+</html>

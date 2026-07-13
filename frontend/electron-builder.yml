@@ -1,0 +1,47 @@
+appId: cloud.low7labs.domx.crm
+productName: DomX CRM
+copyright: Copyright © Low7 Labs
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - electron/**/*
+  - package.json
+
+asar: true
+
+publish:
+  provider: generic
+  url: https://domx.low7labs.cloud/crm-updates/
+
+icon: build/icon.png
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: DomX-CRM-Setup-${version}-x64.${ext}
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  artifactName: DomX-CRM-${version}-${arch}.${ext}
+  category: public.app-category.business
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  artifactName: DomX-CRM-Setup-${version}-x64.${ext}
+
+afterAllArtifactBuild: scripts/generate-update-manifest.js

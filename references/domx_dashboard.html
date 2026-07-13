@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard | DomX</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <script>
+        if (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+    </script>
+    
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .dark ::-webkit-scrollbar-thumb { background: #334155; }
+    </style>
+</head>
+<body class="bg-white dark:bg-[#0a0a0a] text-gray-900 dark:text-gray-100 min-h-screen flex antialiased">
+
+    <aside class="w-16 flex flex-col items-center py-6 border-r border-gray-200 dark:border-white/10 shrink-0">
+        <div class="w-8 h-8 bg-gray-900 dark:bg-white rounded flex items-center justify-center mb-10 shadow-sm">
+            <span class="text-white dark:text-black font-bold text-xs tracking-tighter">DX</span>
+        </div>
+        <nav class="flex flex-col gap-6">
+            <button class="text-gray-900 dark:text-white"><i data-lucide="layout-grid" class="w-5 h-5"></i></button>
+            <button class="text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"><i data-lucide="bar-chart-2" class="w-5 h-5"></i></button>
+            <button class="text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"><i data-lucide="users" class="w-5 h-5"></i></button>
+        </nav>
+        <div class="mt-auto flex flex-col gap-6">
+            <button id="theme-toggle" class="text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors">
+                <i data-lucide="sun" id="theme-toggle-light-icon" class="hidden w-5 h-5"></i>
+                <i data-lucide="moon" id="theme-toggle-dark-icon" class="hidden w-5 h-5"></i>
+            </button>
+            <div class="w-8 h-8 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-xs font-medium cursor-pointer">
+                J
+            </div>
+        </div>
+    </aside>
+
+    <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
+        <header class="h-16 border-b border-gray-200 dark:border-white/10 flex items-center justify-between px-8">
+            <h1 class="text-sm font-medium text-gray-500 dark:text-gray-400">Overview</h1>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-gray-400 px-3 py-1 bg-gray-100 dark:bg-white/5 rounded-full">Jul 4, 2026</span>
+            </div>
+        </header>
+
+        <div class="p-8 overflow-y-auto">
+            <div class="max-w-5xl mx-auto">
+                <div class="mb-10">
+                    <h2 class="text-2xl font-semibold mb-1">Good Night</h2>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">Transaction summary for today</p>
+                </div>
+
+                <!-- Metrics Grid -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-12">
+                    <div class="p-5 border border-gray-200 dark:border-white/5 rounded-lg bg-gray-50/50 dark:bg-transparent">
+                        <p class="text-xs text-gray-500 mb-1">Total Revenue</p>
+                        <p class="text-xl font-semibold">€0.00</p>
+                    </div>
+                    <div class="p-5 border border-gray-200 dark:border-white/5 rounded-lg bg-gray-50/50 dark:bg-transparent">
+                        <p class="text-xs text-gray-500 mb-1">Transactions</p>
+                        <p class="text-xl font-semibold">0</p>
+                    </div>
+                    <div class="p-5 border border-gray-200 dark:border-white/5 rounded-lg bg-gray-50/50 dark:bg-transparent">
+                        <p class="text-xs text-gray-500 mb-1">Subscriptions</p>
+                        <p class="text-xl font-semibold">0</p>
+                    </div>
+                    <div class="p-5 border border-gray-200 dark:border-white/5 rounded-lg bg-gray-50/50 dark:bg-transparent">
+                        <p class="text-xs text-gray-500 mb-1">Active Creators</p>
+                        <p class="text-xl font-semibold">0</p>
+                    </div>
+                </div>
+
+                <!-- Bottom Section -->
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <div class="lg:col-span-2">
+                        <h3 class="text-sm font-medium mb-4">Performance</h3>
+                        <div class="h-64 border border-gray-200 dark:border-white/10 rounded-lg flex items-center justify-center text-sm text-gray-400">
+                            No data available
+                        </div>
+                    </div>
+                    <div>
+                        <h3 class="text-sm font-medium mb-4">Top Earners</h3>
+                        <div class="space-y-4">
+                            <div class="text-sm text-gray-400 text-center py-8">No data to display</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        lucide.createIcons();
+
+        const themeToggleDarkIcon = document.getElementById('theme-toggle-dark-icon');
+        const themeToggleLightIcon = document.getElementById('theme-toggle-light-icon');
+        const themeToggleBtn = document.getElementById('theme-toggle');
+
+        if (document.documentElement.classList.contains('dark')) {
+            themeToggleLightIcon.classList.remove('hidden');
+        } else {
+            themeToggleDarkIcon.classList.remove('hidden');
+        }
+
+        themeToggleBtn.addEventListener('click', function() {
+            themeToggleDarkIcon.classList.toggle('hidden');
+            themeToggleLightIcon.classList.toggle('hidden');
+            
+            if (document.documentElement.classList.contains('dark')) {
+                document.documentElement.classList.remove('dark');
+                localStorage.setItem('color-theme', 'light');
+            } else {
+                document.documentElement.classList.add('dark');
+                localStorage.setItem('color-theme', 'dark');
+            }
+        });
+    </script>
+</body>
+</html>

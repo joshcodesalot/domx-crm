@@ -1,0 +1,1 @@
+ALTER TABLE creators ADD COLUMN IF NOT EXISTS "avatarSource" TEXT;
