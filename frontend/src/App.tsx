@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import ForcedUpdateOverlay from '@/components/ForcedUpdateOverlay';
 import PermissionRoute from '@/components/PermissionRoute';
 import ProtectedRoute from '@/components/ProtectedRoute';
@@ -16,7 +16,7 @@ import MessagingDashboard from '@/pages/MessagingDashboard';
 
 function AppRoutes() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <StaffSyncProvider>
         <Routes>
           <Route path="/login" element={<Login />} />
@@ -41,7 +41,7 @@ function AppRoutes() {
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </StaffSyncProvider>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
 
