@@ -66,3 +66,7 @@ module.exports = async function afterAllArtifactBuild() {
 
 module.exports.main = main;
 module.exports.buildManifest = buildManifest;
+
+if (require.main === module) {
+  main();
+}
