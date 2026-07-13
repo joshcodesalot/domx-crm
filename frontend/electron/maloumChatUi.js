@@ -28,7 +28,9 @@ const SEND_MESSAGE_BUTTON_SELECTOR =
 const SEND_MESSAGE_BUTTON_STRUCTURE_SELECTOR =
   '[id^="headlessui-tabs-panel"] > div.md\\:max-w-chat.sticky.bottom-0.z-\\[51\\].mx-auto.w-full.max-w-xl > div > div > div > button';
 
-const DOMX_API_BASE = process.env.DOMX_API_URL || 'http://localhost:3001';
+const { getApiUrl } = require('./apiConfig');
+
+const DOMX_API_BASE = getApiUrl();
 const DOMX_TRANSLATE_TO_GERMAN_URL = `${DOMX_API_BASE}/api/translate-to-german`;
 
 const DOMX_SENT_BY_LABEL_CSS = `

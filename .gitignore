@@ -5,6 +5,7 @@ frontend/release/
 .env
 .env.*
 !.env.example
+!.env.production
 *.log
 .DS_Store
 Thumbs.db

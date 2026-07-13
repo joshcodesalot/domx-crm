@@ -10,9 +10,10 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { clearToken, getToken } from '@/lib/api';
+import { getApiUrl } from '@/lib/apiConfig';
 import type { StaffSyncEvent } from '@/types/electron';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_URL = getApiUrl();
 const SESSION_EXPIRED_EVENT = 'domx:session-expired';
 const INITIAL_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30000;

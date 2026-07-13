@@ -1,4 +1,6 @@
-Setup
+For production hosting on Debian (nginx, systemd, `api.low7labs.cloud`), see [DEPLOY.md](./DEPLOY.md).
+
+## Setup
 Create the database (if needed):
 
 createdb domx

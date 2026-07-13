@@ -2,11 +2,12 @@ const NOTIFICATIONS_API_REGEX =
   /^https:\/\/api\.maloum\.com\/notifications(?:\?|$)/;
 
 const profileStorage = require('./profileStorage');
+const { getApiUrl } = require('./apiConfig');
 
 const NOTIFICATION_POLL_INTERVAL_MS = 20000;
 const SALE_NOTIFICATION_TYPE = 'CHAT_PRODUCT_SOLD';
 
-const DOMX_API_BASE = process.env.DOMX_API_URL || 'http://localhost:3001';
+const DOMX_API_BASE = getApiUrl();
 const DOMX_SERVICE_KEY = process.env.DOMX_ELECTRON_SERVICE_KEY || '';
 
 const notificationRequestIds = new Set();

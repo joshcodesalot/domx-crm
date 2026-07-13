@@ -37,8 +37,14 @@ function loadEnvFile(filePath) {
 
 loadEnvFile(path.join(__dirname, '../.env'));
 loadEnvFile(path.join(__dirname, '../../backend/.env'));
+loadEnvFile(path.join(__dirname, '../.env.production'));
 
 const { app, BrowserWindow, Menu, ipcMain } = require('electron');
+const { getApiUrl } = require('./apiConfig');
+
+if (!process.env.DOMX_API_URL) {
+  process.env.DOMX_API_URL = getApiUrl();
+}
 const { initializeAppPaths } = require('./app-paths');
 
 initializeAppPaths();

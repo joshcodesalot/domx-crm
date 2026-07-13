@@ -1,3 +1,5 @@
+import { getApiUrl } from '@/lib/apiConfig';
+
 export interface User {
   id: string;
   name: string;
@@ -274,7 +276,7 @@ export interface CreateMessagingDashboardEntryResponse {
   entry: MessagingDashboardEntry;
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_URL = getApiUrl();
 
 export function resolveCreatorAvatarUrl(
   avatarUrl: string | null | undefined
