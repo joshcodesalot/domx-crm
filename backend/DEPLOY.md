@@ -7,19 +7,77 @@ Deploy the DomX Express API on a Debian server at **https://api.low7labs.cloud**
 | Item | Value |
 | --- | --- |
 | Domain | `api.low7labs.cloud` |
+| App directory | `/home/debian/domx_backend` |
 | App port | `4001` (local only; nginx handles 443) |
 | Runtime | Node.js 20 LTS |
-| Process manager | systemd |
+| Process manager | `screen` |
 | Database | PostgreSQL |
 | TLS | Let's Encrypt (Certbot) |
 
-There is no build step — the server runs `node src/index.js` directly.
+There is no build step — the backend is plain JavaScript and runs `node src/index.js` directly. You do **not** run `yarn build` or copy a compiled output folder.
+
+All commands below assume you are logged in as **root** on the server.
+
+---
+
+## Quick deploy (copy from your machine)
+
+This is the simplest workflow: copy source from your dev machine, install dependencies **on the server**, migrate, and start with screen.
+
+### On your local machine — copy these files
+
+From the `backend/` folder, copy to `/home/debian/domx_backend` on the server:
+
+| Copy | Required |
+| --- | --- |
+| `package.json` | Yes |
+| `package-lock.json` or `yarn.lock` | Yes |
+| `src/` (entire folder) | Yes |
+| `.env` (production values) | Yes |
+| `data/avatars/` | Optional — can create empty on server |
+
+**Do not copy:**
+- `node_modules/` — must be installed on the server (Playwright and native deps are OS-specific)
+- Any `dist/` or build output — the backend has none
+
+Example using rsync/scp:
+
+```bash
+# From your project root on your local machine
+rsync -av --exclude node_modules backend/package.json backend/package-lock.json backend/src root@your-server:/home/debian/domx_backend/
+
+# Copy your production .env separately (do not commit secrets to git)
+scp backend/.env root@your-server:/home/debian/domx_backend/.env
+```
+
+### On the server — install, migrate, start
+
+```bash
+mkdir -p /home/debian/domx_backend/data/avatars
+cd /home/debian/domx_backend
+
+yarn install                # or: npm ci
+npx playwright install chromium
+npx playwright install-deps chromium
+
+yarn migrate                # or: npm run migrate
+yarn seed                   # first time only — or: npm run seed
+
+screen -S domx-api -dm bash -c 'node src/index.js'
+curl http://127.0.0.1:4001/api/health
+```
+
+After nginx and TLS are set up (sections 8–9), verify:
+
+```bash
+curl https://api.low7labs.cloud/api/health
+```
 
 ---
 
 ## Prerequisites
 
-- Debian server with sudo access
+- Debian server with root access
 - DNS `A` (and optionally `AAAA`) record for `api.low7labs.cloud` pointing at the server
 - Firewall allows inbound **80** and **443**
 
@@ -28,62 +86,58 @@ There is no build step — the server runs `node src/index.js` directly.
 ## 1. Install system packages
 
 ```bash
-sudo apt update
-sudo apt install -y curl gnupg ca-certificates lsb-release nginx postgresql postgresql-contrib certbot python3-certbot-nginx git
+apt update
+apt install -y curl gnupg ca-certificates lsb-release nginx postgresql postgresql-contrib certbot python3-certbot-nginx git screen
 ```
 
 ### Node.js 20 LTS
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
 node -v   # should be v20.x
 ```
 
 ---
 
-## 2. Create a service user and app directory
+## 2. App directory (alternative: git clone)
+
+If you prefer git on the server instead of copying from your machine:
 
 ```bash
-sudo useradd --system --create-home --shell /usr/sbin/nologin domx
-sudo mkdir -p /opt/domx
-sudo chown domx:domx /opt/domx
+mkdir -p /home/debian/domx_backend
+git clone <your-repo-url> /home/debian/domx_repo
+cp -r /home/debian/domx_repo/backend/* /home/debian/domx_backend/
+cp /home/debian/domx_backend/.env.example /home/debian/domx_backend/.env
+nano /home/debian/domx_backend/.env
 ```
 
-Copy or clone the backend into `/opt/domx/backend`:
-
-```bash
-# Option A: git clone (adjust repo URL)
-sudo -u domx git clone <your-repo-url> /opt/domx/repo
-sudo -u domx cp -r /opt/domx/repo/backend /opt/domx/backend
-
-# Option B: rsync/scp from your machine
-# rsync -av backend/ user@server:/opt/domx/backend/
-# sudo chown -R domx:domx /opt/domx/backend
-```
+Then continue from section 3 below.
 
 ---
 
 ## 3. Install Node dependencies and Playwright
 
 ```bash
-cd /opt/domx/backend
-sudo -u domx npm ci
-sudo -u domx npx playwright install chromium
-sudo npx playwright install-deps chromium
+cd /home/debian/domx_backend
+yarn install                # or: npm ci
+npx playwright install chromium
+npx playwright install-deps chromium
 ```
 
 Playwright Chromium is required for creator account connect (Maloum login).
 
-Ensure the avatar upload directory exists and is writable:
+Ensure the avatar upload directory exists:
 
 ```bash
-sudo -u domx mkdir -p /opt/domx/backend/data/avatars
+mkdir -p /home/debian/domx_backend/data/avatars
 ```
 
 ---
 
 ## 4. PostgreSQL setup
+
+Set a password for the default `postgres` user, then create the database:
 
 ```bash
 sudo -u postgres psql
@@ -92,8 +146,8 @@ sudo -u postgres psql
 In the `psql` shell:
 
 ```sql
-CREATE USER domx WITH PASSWORD 'STRONG_PASSWORD_HERE';
-CREATE DATABASE domx OWNER domx;
+ALTER USER postgres WITH PASSWORD 'STRONG_PASSWORD_HERE';
+CREATE DATABASE domx;
 \q
 ```
 
@@ -101,18 +155,18 @@ CREATE DATABASE domx OWNER domx;
 
 ## 5. Production environment file
 
-Create `/opt/domx/backend/.env`:
+Create `/home/debian/domx_backend/.env`:
 
 ```bash
-sudo -u domx cp /opt/domx/backend/.env.example /opt/domx/backend/.env
-sudo -u domx nano /opt/domx/backend/.env
+cp /home/debian/domx_backend/.env.example /home/debian/domx_backend/.env
+nano /home/debian/domx_backend/.env
 ```
 
 Example production values:
 
 ```env
 PORT=4001
-DATABASE_URL=postgresql://domx:STRONG_PASSWORD_HERE@127.0.0.1:5432/domx
+DATABASE_URL=postgresql://postgres:STRONG_PASSWORD_HERE@127.0.0.1:5432/domx
 JWT_SECRET=generate-a-long-random-string
 CORS_ORIGIN=https://domx.low7labs.cloud
 ENCRYPTION_KEY=base64-encoded-32-byte-key
@@ -135,8 +189,7 @@ node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 Lock down permissions:
 
 ```bash
-sudo chmod 600 /opt/domx/backend/.env
-sudo chown domx:domx /opt/domx/backend/.env
+chmod 600 /home/debian/domx_backend/.env
 ```
 
 ### Notes
@@ -150,63 +203,47 @@ sudo chown domx:domx /opt/domx/backend/.env
 ## 6. Migrate and seed the database
 
 ```bash
-cd /opt/domx/backend
-sudo -u domx npm run migrate
-sudo -u domx npm run seed
+cd /home/debian/domx_backend
+yarn migrate                # or: npm run migrate
+yarn seed                   # first time only — or: npm run seed
 ```
 
 `seed` creates roles and permissions. The owner account is created on first app launch.
 
 ---
 
-## 7. systemd service
+## 7. Run the API with screen
 
-Create `/etc/systemd/system/domx-api.service`:
-
-```ini
-[Unit]
-Description=DomX API
-After=network.target postgresql.service
-Wants=postgresql.service
-
-[Service]
-Type=simple
-User=domx
-Group=domx
-WorkingDirectory=/opt/domx/backend
-EnvironmentFile=/opt/domx/backend/.env
-ExecStart=/usr/bin/node src/index.js
-Restart=on-failure
-RestartSec=5
-
-# Hardening (optional)
-NoNewPrivileges=true
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
+Start the API in a detached screen session named `domx-api`:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable domx-api
-sudo systemctl start domx-api
-sudo systemctl status domx-api
+cd /home/debian/domx_backend
+screen -S domx-api -dm bash -c 'node src/index.js'
 ```
 
-Verify locally:
+Verify it is running:
 
 ```bash
 curl http://127.0.0.1:4001/api/health
 # {"status":"ok","database":"connected"}
 ```
 
-View logs:
+### Screen commands
+
+| Task | Command |
+| --- | --- |
+| List sessions | `screen -ls` |
+| Attach (view logs) | `screen -r domx-api` |
+| Detach (leave running) | `Ctrl+A` then `D` |
+| Stop the API | Attach, then `Ctrl+C` |
+| Start again | `screen -S domx-api -dm bash -c 'node src/index.js'` |
+
+To restart after a code or `.env` change:
 
 ```bash
-journalctl -u domx-api -f
+screen -S domx-api -X quit
+cd /home/debian/domx_backend
+screen -S domx-api -dm bash -c 'node src/index.js'
 ```
 
 ---
@@ -245,9 +282,9 @@ server {
 Enable the site and test:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/api.low7labs.cloud /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl reload nginx
+ln -s /etc/nginx/sites-available/api.low7labs.cloud /etc/nginx/sites-enabled/
+nginx -t
+nginx -s reload
 ```
 
 The app sets `trust proxy` and sends `X-Accel-Buffering: no` on SSE responses, so nginx will not buffer event streams.
@@ -257,13 +294,13 @@ The app sets `trust proxy` and sends `X-Accel-Buffering: no` on SSE responses, s
 ## 9. TLS with Let's Encrypt
 
 ```bash
-sudo certbot --nginx -d api.low7labs.cloud
+certbot --nginx -d api.low7labs.cloud
 ```
 
 Certbot updates the nginx config for HTTPS and sets up auto-renewal. Test renewal:
 
 ```bash
-sudo certbot renew --dry-run
+certbot renew --dry-run
 ```
 
 Verify over HTTPS:
@@ -279,9 +316,9 @@ curl https://api.low7labs.cloud/api/health
 If using `ufw`:
 
 ```bash
-sudo ufw allow OpenSSH
-sudo ufw allow 'Nginx Full'
-sudo ufw enable
+ufw allow OpenSSH
+ufw allow 'Nginx Full'
+ufw enable
 ```
 
 Port **4001** does not need to be exposed publicly — nginx proxies to it on localhost.
@@ -290,23 +327,24 @@ Port **4001** does not need to be exposed publicly — nginx proxies to it on lo
 
 ## Updating the deployment
 
-After pulling new backend code:
+After copying new backend files from your machine (or `git pull` if using git on the server):
 
 ```bash
-cd /opt/domx/backend
-sudo -u domx git pull          # if deployed via git
-sudo -u domx npm ci
-sudo -u domx npm run migrate   # if new migrations exist
-sudo systemctl restart domx-api
+cd /home/debian/domx_backend
+yarn install                # or: npm ci — if package.json changed
+yarn migrate                # or: npm run migrate — if new migrations exist
+screen -S domx-api -X quit
+screen -S domx-api -dm bash -c 'node src/index.js'
 ```
 
 If Playwright was upgraded, reinstall Chromium:
 
 ```bash
-cd /opt/domx/backend
-sudo -u domx npx playwright install chromium
-sudo npx playwright install-deps chromium
-sudo systemctl restart domx-api
+cd /home/debian/domx_backend
+npx playwright install chromium
+npx playwright install-deps chromium
+screen -S domx-api -X quit
+screen -S domx-api -dm bash -c 'node src/index.js'
 ```
 
 ---
@@ -315,26 +353,25 @@ sudo systemctl restart domx-api
 
 | Task | Command |
 | --- | --- |
-| Start API | `sudo systemctl start domx-api` |
-| Stop API | `sudo systemctl stop domx-api` |
-| Restart API | `sudo systemctl restart domx-api` |
-| Status | `sudo systemctl status domx-api` |
-| Logs | `journalctl -u domx-api -f` |
+| Start API | `screen -S domx-api -dm bash -c 'node src/index.js'` (from app dir) |
+| Stop API | `screen -S domx-api -X quit` |
+| View live output | `screen -r domx-api` |
+| List screen sessions | `screen -ls` |
 | Health check | `curl https://api.low7labs.cloud/api/health` |
-| Reload nginx | `sudo nginx -t && sudo systemctl reload nginx` |
+| Reload nginx | `nginx -t && nginx -s reload` |
 
 ---
 
 ## Troubleshooting
 
 **502 Bad Gateway**
-- Check the API is running: `systemctl status domx-api`
+- Check the screen session exists: `screen -ls`
 - Confirm port: `curl http://127.0.0.1:4001/api/health`
-- Check logs: `journalctl -u domx-api -n 50`
+- Attach and check for errors: `screen -r domx-api`
 
 **Database connection errors**
-- Verify PostgreSQL is running: `sudo systemctl status postgresql`
-- Test `DATABASE_URL` credentials: `psql "$DATABASE_URL" -c 'SELECT 1'`
+- Check Postgres is accepting connections: `pg_isready`
+- Test credentials: `psql "$DATABASE_URL" -c 'SELECT 1'`
 
 **Playwright / creator connect fails**
 - Re-run: `npx playwright install-deps chromium`
@@ -346,4 +383,11 @@ sudo systemctl restart domx-api
 
 **CORS errors in browser**
 - Set `CORS_ORIGIN` to the exact client origin (scheme + host, no trailing slash)
-- Restart the API after changing `.env`
+- Restart the API in screen after changing `.env`
+
+**API not running after server reboot**
+- Screen sessions do not survive reboots. Re-run:
+  ```bash
+  cd /home/debian/domx_backend
+  screen -S domx-api -dm bash -c 'node src/index.js'
+  ```
