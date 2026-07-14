@@ -152,6 +152,19 @@ export interface ElectronAPI {
       localStorage: Array<{ name: string; value: string }>;
     }>;
   }>;
+  completeLoginCaptureFromActiveLogin: (accountId: string) => Promise<{
+    accountId: string;
+    partitionId: string;
+    displayName: string;
+    username: string | null;
+    postLoginUrl: string;
+    avatarUrl: string | null;
+    cookies: PlaywrightCookie[];
+    origins: Array<{
+      origin: string;
+      localStorage: Array<{ name: string; value: string }>;
+    }>;
+  }>;
   showChatBrowser: (opts: {
     accountId: string;
     bounds: BrowserBounds;

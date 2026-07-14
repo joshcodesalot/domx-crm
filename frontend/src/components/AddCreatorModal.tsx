@@ -13,6 +13,7 @@ import {
   resolveCreatorAvatarUrl,
   saveCreatorAvatarFromMaloum,
   shouldFetchMaloumIcon,
+  type ConnectCreatorResponse,
   type CreateCreatorInput,
   type Creator,
 } from '@/lib/api';
@@ -79,12 +80,13 @@ export default function AddCreatorModal({
   );
   const [accountToken, setAccountToken] = useState<string | null>(null);
   const [connectSucceeded, setConnectSucceeded] = useState(false);
-  const [browserReady, setBrowserReady] = useState(false);
+  const [browserVisible, setBrowserVisible] = useState(false);
+  const [manualLoginMode, setManualLoginMode] = useState(false);
 
   const accountIdRef = useRef<string | null>(reconnectCreator?.accountId || null);
   const connectSucceededRef = useRef(false);
   const browserContainerRef = useRef<HTMLDivElement | null>(null);
-  const connectingRef = useRef(false);
+  const completingManualLoginRef = useRef(false);
 
   const [title, subtitle] = isReconnect && step === 2
     ? ([
@@ -100,7 +102,8 @@ export default function AddCreatorModal({
     } catch {
       // Best-effort cleanup
     }
-    setBrowserReady(false);
+    setBrowserVisible(false);
+    setManualLoginMode(false);
   }, []);
 
   const discardPendingConnect = useCallback(async () => {
@@ -147,29 +150,121 @@ export default function AddCreatorModal({
     };
   }, [hideLoginBrowser]);
 
+  const syncLoginBrowserBounds = useCallback(() => {
+    const bounds = measureBounds(browserContainerRef.current);
+    if (!bounds || !window.electronAPI) return;
+    void window.electronAPI.resizeLoginBrowser(bounds);
+  }, []);
+
   useLayoutEffect(() => {
-    if (step !== 2 || !connecting || !window.electronAPI) return;
+    if (step !== 2 || !browserVisible || !window.electronAPI) return;
 
-    const syncBounds = () => {
-      const bounds = measureBounds(browserContainerRef.current);
-      if (!bounds) return;
-      void window.electronAPI?.resizeLoginBrowser(bounds);
-    };
-
-    syncBounds();
-    const observer = new ResizeObserver(syncBounds);
+    syncLoginBrowserBounds();
+    const observer = new ResizeObserver(syncLoginBrowserBounds);
     if (browserContainerRef.current) {
       observer.observe(browserContainerRef.current);
     }
-    window.addEventListener('resize', syncBounds);
-    const unsubscribe = window.electronAPI.onWindowResized(syncBounds);
+    window.addEventListener('resize', syncLoginBrowserBounds);
+    const unsubscribe = window.electronAPI.onWindowResized(syncLoginBrowserBounds);
 
     return () => {
       observer.disconnect();
-      window.removeEventListener('resize', syncBounds);
+      window.removeEventListener('resize', syncLoginBrowserBounds);
       unsubscribe();
     };
-  }, [step, connecting]);
+  }, [step, browserVisible, syncLoginBrowserBounds]);
+
+  type CapturedMaloumSession = Omit<ConnectCreatorResponse, 'accountToken'> & {
+    accountToken?: string;
+  };
+
+  async function finalizeCapturedSession(captured: CapturedMaloumSession) {
+    if (!accountId) {
+      throw new Error('Session is not ready. Please try again.');
+    }
+
+    if (isReconnect && reconnectCreator) {
+      await reconnectCreatorSession(reconnectCreator.id, {
+        email: loginEmail.trim(),
+        cookies: captured.cookies,
+        origins: captured.origins,
+        displayName: captured.displayName,
+        username: captured.username,
+        postLoginUrl: captured.postLoginUrl,
+        avatarUrl: captured.avatarUrl,
+      });
+
+      await hideLoginBrowser();
+      setConnectSucceeded(false);
+      connectSucceededRef.current = false;
+      onSaved();
+      onClose();
+      return;
+    }
+
+    const result = await connectCreatorAccount({
+      accountId: captured.accountId,
+      platform: 'maloum',
+      email: loginEmail.trim(),
+      cookies: captured.cookies,
+      origins: captured.origins,
+      displayName: captured.displayName,
+      username: captured.username,
+      postLoginUrl: captured.postLoginUrl,
+      avatarUrl: captured.avatarUrl,
+    });
+
+    setAccountToken(result.accountToken);
+
+    const sessionData: SessionData = {
+      displayName: result.displayName,
+      username: result.username || '',
+      postLoginUrl: result.postLoginUrl,
+      avatarUrl: result.avatarUrl,
+      profileImageUrl: result.avatarUrl,
+    };
+
+    await hideLoginBrowser();
+    setSession(sessionData);
+    setDisplayNameOverride(result.displayName);
+    setConnectSucceeded(true);
+    connectSucceededRef.current = true;
+    setManualLoginMode(false);
+    setStep(3);
+  }
+
+  const completeManualLogin = useCallback(async () => {
+    if (!window.electronAPI || !accountId || completingManualLoginRef.current) {
+      return;
+    }
+
+    completingManualLoginRef.current = true;
+    setConnecting(true);
+    setLoginError(null);
+
+    try {
+      syncLoginBrowserBounds();
+      const captured = await window.electronAPI.completeLoginCaptureFromActiveLogin(
+        accountId
+      );
+      await finalizeCapturedSession(captured);
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : 'Failed to complete login');
+    } finally {
+      completingManualLoginRef.current = false;
+      setConnecting(false);
+    }
+  }, [accountId, isReconnect, loginEmail, reconnectCreator, syncLoginBrowserBounds]);
+
+  useEffect(() => {
+    if (!manualLoginMode || !window.electronAPI || !accountId) return;
+
+    const unsubscribe = window.electronAPI.onLoginDetected(() => {
+      void completeManualLogin();
+    });
+
+    return unsubscribe;
+  }, [manualLoginMode, accountId, completeManualLogin]);
 
   async function handleClose() {
     await cleanup({ discardPending: connectSucceeded && step < 3 && !isReconnect });
@@ -199,11 +294,9 @@ export default function AddCreatorModal({
 
     setLoginError(null);
     setConnecting(true);
-    connectingRef.current = true;
-    setBrowserReady(false);
+    setManualLoginMode(false);
 
     try {
-      // Allow the browser container to mount before measuring bounds
       await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -212,7 +305,7 @@ export default function AddCreatorModal({
         throw new Error('Login browser area is not ready. Please try again.');
       }
 
-      setBrowserReady(true);
+      setBrowserVisible(true);
 
       const captured = await window.electronAPI.loginAndCaptureMaloumSession({
         accountId,
@@ -221,60 +314,18 @@ export default function AddCreatorModal({
         bounds,
       });
 
-      if (isReconnect && reconnectCreator) {
-        await reconnectCreatorSession(reconnectCreator.id, {
-          email: loginEmail.trim(),
-          cookies: captured.cookies,
-          origins: captured.origins,
-          displayName: captured.displayName,
-          username: captured.username,
-          postLoginUrl: captured.postLoginUrl,
-          avatarUrl: captured.avatarUrl,
-        });
-
-        await hideLoginBrowser();
-        setConnectSucceeded(false);
-        connectSucceededRef.current = false;
-        onSaved();
-        onClose();
-        return;
-      }
-
-      const result = await connectCreatorAccount({
-        accountId: captured.accountId,
-        platform: 'maloum',
-        email: loginEmail.trim(),
-        cookies: captured.cookies,
-        origins: captured.origins,
-        displayName: captured.displayName,
-        username: captured.username,
-        postLoginUrl: captured.postLoginUrl,
-        avatarUrl: captured.avatarUrl,
-      });
-
-      setAccountToken(result.accountToken);
-
-      const sessionData: SessionData = {
-        displayName: result.displayName,
-        username: result.username || '',
-        postLoginUrl: result.postLoginUrl,
-        avatarUrl: result.avatarUrl,
-        profileImageUrl: result.avatarUrl,
-      };
-
-      await hideLoginBrowser();
-      setSession(sessionData);
-      setDisplayNameOverride(result.displayName);
-      setConnectSucceeded(true);
-      connectSucceededRef.current = true;
-      setStep(3);
+      await finalizeCapturedSession(captured);
     } catch (err) {
-      await hideLoginBrowser();
-      setLoginError(err instanceof Error ? err.message : 'Failed to connect account');
+      setBrowserVisible(true);
+      setManualLoginMode(true);
+      setLoginError(
+        err instanceof Error
+          ? `${err.message} Complete login in the browser below, then press Continue after login.`
+          : 'Failed to connect account. Complete login in the browser below, then press Continue after login.'
+      );
+      syncLoginBrowserBounds();
     } finally {
-      connectingRef.current = false;
       setConnecting(false);
-      setBrowserReady(false);
     }
   }
 
@@ -343,6 +394,8 @@ export default function AddCreatorModal({
   const sessionInitial = (session?.displayName || displayNameOverride || '?')
     .charAt(0)
     .toUpperCase();
+
+  const showBrowserPanel = browserVisible || manualLoginMode;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -497,17 +550,17 @@ export default function AddCreatorModal({
               <div
                 ref={browserContainerRef}
                 className={`relative rounded-lg border border-gray-200 dark:border-white/10 bg-[#f8f9fa] dark:bg-[#0d0d0d] overflow-hidden ${
-                  connecting ? 'min-h-[360px]' : 'min-h-[120px]'
+                  showBrowserPanel ? 'min-h-[360px]' : 'min-h-[120px]'
                 }`}
               >
-                {!connecting && (
+                {!showBrowserPanel && (
                   <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 px-4 text-center">
                     Click Connect Account to open Maloum login here.
                   </div>
                 )}
-                {connecting && !browserReady && (
-                  <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
-                    Opening Maloum login…
+                {connecting && showBrowserPanel && (
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-black/20">
+                    {manualLoginMode ? 'Waiting for Maloum login…' : 'Opening Maloum login…'}
                   </div>
                 )}
               </div>
@@ -606,6 +659,17 @@ export default function AddCreatorModal({
             >
               Cancel
             </button>
+
+            {step === 2 && manualLoginMode && (
+              <button
+                type="button"
+                onClick={() => void completeManualLogin()}
+                disabled={connecting || !window.electronAPI}
+                className="px-4 py-2 text-sm font-medium border border-brand-600 text-brand-600 rounded-lg hover:bg-brand-50 dark:hover:bg-brand-900/10 transition-colors disabled:opacity-50"
+              >
+                {connecting ? 'Continuing…' : 'Continue after login'}
+              </button>
+            )}
 
             {step === 2 && (
               <button

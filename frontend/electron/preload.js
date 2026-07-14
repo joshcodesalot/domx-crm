@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   submitLoginBrowser: (opts) => ipcRenderer.invoke('creator:submit-login', opts),
   loginAndCaptureMaloumSession: (opts) =>
     ipcRenderer.invoke('creator:login-and-capture', opts),
+  completeLoginCaptureFromActiveLogin: (accountId) =>
+    ipcRenderer.invoke('creator:complete-login-capture', { accountId }),
   showChatBrowser: (opts) => ipcRenderer.invoke('creator:show-chat-browser', opts),
   hideChatBrowser: () => ipcRenderer.invoke('creator:hide-chat-browser'),
   resizeChatBrowser: (bounds) => ipcRenderer.invoke('creator:resize-chat-browser', bounds),

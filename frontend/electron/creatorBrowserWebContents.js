@@ -1,5 +1,6 @@
 const { BrowserView, session } = require('electron');
 const profileStorage = require('./profileStorage');
+const { isLiveWebContents, isLiveBrowserView } = require('./webContentsGuards');
 const {
   isNightTheme,
   refreshMaloumPageUI,
@@ -61,7 +62,7 @@ const refreshMaloumChatUIChains = new Map();
 function getPreparedViewsForBadgePolling() {
   const views = [];
   for (const [accountId, view] of chatBrowserViews.entries()) {
-    if (!view || view.webContents.isDestroyed()) {
+    if (!isLiveBrowserView(view)) {
       continue;
     }
     if (!isChatPrepared(accountId)) {
@@ -434,7 +435,7 @@ function detachLoginBrowser() {
   }
 
   mainWindow.removeBrowserView(loginBrowserView);
-  if (!loginBrowserView.webContents.isDestroyed()) {
+  if (isLiveWebContents(loginBrowserView?.webContents)) {
     loginBrowserView.webContents.close();
   }
   loginBrowserView = null;
@@ -526,7 +527,7 @@ function destroyChatView(accountId) {
   }
 
   parkChatView(accountId);
-  if (!view.webContents.isDestroyed()) {
+  if (isLiveWebContents(view?.webContents)) {
     view.webContents.close();
   }
   chatBrowserViews.delete(accountId);
@@ -598,7 +599,7 @@ function detachVerifyBrowser() {
   }
 
   mainWindow.removeBrowserView(verifyBrowserView);
-  if (!verifyBrowserView.webContents.isDestroyed()) {
+  if (isLiveWebContents(verifyBrowserView?.webContents)) {
     verifyBrowserView.webContents.close();
   }
   verifyBrowserView = null;
@@ -1079,7 +1080,7 @@ async function verifyMaloumSessionForAccount({
   });
 
   if (ownsView && view) {
-    if (!view.webContents.isDestroyed()) {
+    if (isLiveWebContents(view?.webContents)) {
       view.webContents.close();
     }
   }
@@ -1305,7 +1306,7 @@ async function setDomXTheme(theme) {
   currentDomXTheme = theme;
 
   for (const [accountId, view] of chatBrowserViews.entries()) {
-    if (!view || view.webContents.isDestroyed()) {
+    if (!isLiveBrowserView(view)) {
       continue;
     }
 

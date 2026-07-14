@@ -240,22 +240,26 @@ function startBadgePolling(getPreparedViews) {
   }
 
   badgePollInterval = setInterval(() => {
-    const views = getPreparedViews();
-    if (!views || views.length === 0) {
-      return;
-    }
-
-    for (const { accountId, webContents } of views) {
-      if (!webContents || webContents.isDestroyed()) {
-        continue;
+    try {
+      const views = getPreparedViews();
+      if (!views || views.length === 0) {
+        return;
       }
 
-      const url = webContents.getURL();
-      if (!isMaloumChatUrl(url)) {
-        continue;
-      }
+      for (const { accountId, webContents } of views) {
+        if (!webContents || webContents.isDestroyed()) {
+          continue;
+        }
 
-      void refreshMaloumCreatorBadges(webContents, accountId);
+        const url = webContents.getURL();
+        if (!isMaloumChatUrl(url)) {
+          continue;
+        }
+
+        void refreshMaloumCreatorBadges(webContents, accountId);
+      }
+    } catch (err) {
+      console.warn('Badge polling skipped due to error:', err.message);
     }
   }, BADGE_POLL_INTERVAL_MS);
 }

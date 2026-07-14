@@ -1,6 +1,6 @@
 const { BrowserView, session } = require('electron');
 const profileStorage = require('./profileStorage');
-const { applyWebContentsGuards } = require('./webContentsGuards');
+const { applyWebContentsGuards, isLiveWebContents, isLiveBrowserView } = require('./webContentsGuards');
 const {
   isNightTheme,
   refreshMaloumPageUI,
@@ -67,7 +67,7 @@ const refreshMaloumChatUIChains = new Map();
 function getPreparedViewsForBadgePolling() {
   const views = [];
   for (const [accountId, view] of chatBrowserViews.entries()) {
-    if (!view || view.webContents.isDestroyed()) {
+    if (!isLiveBrowserView(view)) {
       continue;
     }
     if (!isChatPrepared(accountId)) {
@@ -448,7 +448,7 @@ function detachLoginBrowser() {
   }
 
   mainWindow.removeBrowserView(loginBrowserView);
-  if (!loginBrowserView.webContents.isDestroyed()) {
+  if (isLiveWebContents(loginBrowserView?.webContents)) {
     loginBrowserView.webContents.close();
   }
   loginBrowserView = null;
@@ -463,7 +463,7 @@ function hasAnyChatView() {
 
 function getChatView(accountId) {
   const view = chatBrowserViews.get(accountId);
-  if (!view || view.webContents.isDestroyed()) {
+  if (!isLiveBrowserView(view)) {
     if (view) {
       chatBrowserViews.delete(accountId);
     }
@@ -541,7 +541,7 @@ function destroyChatView(accountId) {
   }
 
   parkChatView(accountId);
-  if (!view.webContents.isDestroyed()) {
+  if (isLiveWebContents(view?.webContents)) {
     view.webContents.close();
   }
   chatBrowserViews.delete(accountId);
@@ -618,6 +618,18 @@ function applyLoginBounds(bounds) {
   });
 }
 
+function raiseLoginBrowser(bounds) {
+  if (!mainWindow || !loginBrowserView || !bounds) {
+    return;
+  }
+
+  applyLoginBounds(bounds);
+
+  if (typeof mainWindow.setTopBrowserView === 'function') {
+    mainWindow.setTopBrowserView(loginBrowserView);
+  }
+}
+
 function detachVerifyBrowser() {
   if (!mainWindow || !verifyBrowserView) {
     verifyBrowserView = null;
@@ -630,7 +642,7 @@ function detachVerifyBrowser() {
   }
 
   mainWindow.removeBrowserView(verifyBrowserView);
-  if (!verifyBrowserView.webContents.isDestroyed()) {
+  if (isLiveWebContents(verifyBrowserView?.webContents)) {
     verifyBrowserView.webContents.close();
   }
   verifyBrowserView = null;
@@ -731,14 +743,23 @@ function buildSubmitLoginScript(email, password) {
         element.dispatchEvent(new Event('change', { bubbles: true }));
       }
 
+      function findLoginSubmitButton() {
+        const buttons = Array.from(document.querySelectorAll('button[type="submit"]'));
+        const labeled = buttons.find((button) =>
+          /log\\s*in|sign\\s*in|anmelden/i.test(button.textContent || '')
+        );
+        return labeled || buttons[0] || null;
+      }
+
       const emailInput = document.querySelector('input[name="usernameOrEmail"]');
       const passwordInput = document.querySelector('input[name="password"]');
-      const loginButton = Array.from(
-        document.querySelectorAll('button[type="submit"]')
-      ).find((button) => /login/i.test(button.textContent || ''));
+      const loginButton = findLoginSubmitButton();
 
-      if (!emailInput || !passwordInput || !loginButton) {
+      if (!emailInput || !passwordInput) {
         return { ok: false, error: 'Login form not found on the page.' };
+      }
+      if (!loginButton) {
+        return { ok: false, error: 'Login button not found on the page.' };
       }
 
       setNativeValue(emailInput, ${safeEmail});
@@ -748,6 +769,28 @@ function buildSubmitLoginScript(email, password) {
     })()
   `;
 }
+
+const LOGIN_FORM_READY_SCRIPT = `
+  (function() {
+    function findLoginSubmitButton() {
+      const buttons = Array.from(document.querySelectorAll('button[type="submit"]'));
+      const labeled = buttons.find((button) =>
+        /log\\s*in|sign\\s*in|anmelden/i.test(button.textContent || '')
+      );
+      return labeled || buttons[0] || null;
+    }
+
+    const emailInput = document.querySelector('input[name="usernameOrEmail"]');
+    const passwordInput = document.querySelector('input[name="password"]');
+    const loginButton = findLoginSubmitButton();
+    return Boolean(
+      emailInput &&
+      passwordInput &&
+      loginButton &&
+      !emailInput.disabled
+    );
+  })()
+`;
 
 async function acceptCookieConsent(webContents, maxAttempts = 4) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -812,11 +855,12 @@ async function showLoginBrowser({ accountId, bounds }) {
   }
 
   applyLoginBounds(bounds);
+  raiseLoginBrowser(bounds);
   return { accountId, partitionId: `persist:creator-${accountId}` };
 }
 
 function resizeLoginBrowser(bounds) {
-  applyLoginBounds(bounds);
+  raiseLoginBrowser(bounds);
 }
 
 function hideLoginBrowser() {
@@ -845,19 +889,15 @@ async function submitLogin({ accountId, email, password }) {
 async function waitForLoginFormReady(webContents, timeoutMs = 60000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (webContents.isDestroyed()) {
+    if (!isLiveWebContents(webContents)) {
       throw new Error('Login browser closed unexpectedly');
     }
 
     await acceptCookieConsent(webContents).catch(() => {});
 
-    const ready = await webContents.executeJavaScript(`
-      (function() {
-        const emailInput = document.querySelector('input[name="usernameOrEmail"]');
-        const passwordInput = document.querySelector('input[name="password"]');
-        return Boolean(emailInput && passwordInput && !emailInput.disabled);
-      })()
-    `).catch(() => false);
+    const ready = await webContents
+      .executeJavaScript(LOGIN_FORM_READY_SCRIPT)
+      .catch(() => false);
 
     if (ready) {
       return;
@@ -893,7 +933,7 @@ async function findMaloumCredentialError(webContents) {
 async function waitForMaloumLoginOutcome(webContents, timeoutMs = 90000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (webContents.isDestroyed()) {
+    if (!isLiveWebContents(webContents)) {
       throw new Error('Login browser closed unexpectedly');
     }
 
@@ -914,6 +954,48 @@ async function waitForMaloumLoginOutcome(webContents, timeoutMs = 90000) {
     success: false,
     error:
       'Login timed out. If a security check appeared, complete it in the embedded browser and try again.',
+  };
+}
+
+async function captureMaloumSessionFromLoginView(accountId) {
+  if (!loginBrowserView || activeAccountId !== accountId) {
+    throw new Error('Login browser is not active');
+  }
+
+  const webContents = loginBrowserView.webContents;
+  if (!isLiveWebContents(webContents)) {
+    throw new Error('Login browser closed unexpectedly');
+  }
+
+  const currentUrl = webContents.getURL();
+  if (!isPostLoginUrl(currentUrl)) {
+    throw new Error(
+      'Maloum login is not complete yet. Finish signing in inside the embedded browser, then continue.'
+    );
+  }
+
+  warmSessionAccounts.add(accountId);
+
+  const profileMeta = await scrapeMaloumProfileMetadata(webContents);
+  const exported = await profileStorage.exportProfileFromPartition(accountId, webContents);
+
+  if (!exported.cookies?.length) {
+    throw new Error('Login succeeded but no Maloum cookies were captured.');
+  }
+
+  profileStorage.writeLocalProfile(accountId, exported);
+  pendingStorageByAccount.set(accountId, exported.origins || []);
+  storageInjectedForAccount.add(accountId);
+
+  return {
+    accountId,
+    partitionId: `persist:creator-${accountId}`,
+    displayName: profileMeta.displayName,
+    username: profileMeta.username,
+    postLoginUrl: profileMeta.postLoginUrl,
+    avatarUrl: profileMeta.avatarUrl,
+    cookies: exported.cookies,
+    origins: exported.origins || [],
   };
 }
 
@@ -991,34 +1073,11 @@ async function loginAndCaptureMaloumSession({
       throw new Error(outcome.error || 'Maloum login failed');
     }
 
-    warmSessionAccounts.add(accountId);
-
-    const profileMeta = await scrapeMaloumProfileMetadata(loginBrowserView.webContents);
-    const exported = await profileStorage.exportProfileFromPartition(
-      accountId,
-      loginBrowserView.webContents
-    );
-
-    if (!exported.cookies?.length) {
-      throw new Error('Login succeeded but no Maloum cookies were captured.');
-    }
-
-    profileStorage.writeLocalProfile(accountId, exported);
-    pendingStorageByAccount.set(accountId, exported.origins || []);
-    storageInjectedForAccount.add(accountId);
-
-    return {
-      accountId,
-      partitionId: `persist:creator-${accountId}`,
-      displayName: profileMeta.displayName,
-      username: profileMeta.username,
-      postLoginUrl: profileMeta.postLoginUrl,
-      avatarUrl: profileMeta.avatarUrl,
-      cookies: exported.cookies,
-      origins: exported.origins || [],
-    };
+    return captureMaloumSessionFromLoginView(accountId);
   } catch (err) {
-    hideLoginBrowser();
+    if (bounds) {
+      raiseLoginBrowser(bounds);
+    }
     throw err;
   }
 }
@@ -1294,7 +1353,7 @@ async function verifyMaloumSessionForAccount({
   });
 
   if (ownsView && view) {
-    if (!view.webContents.isDestroyed()) {
+    if (isLiveWebContents(view.webContents)) {
       view.webContents.close();
     }
   }
@@ -1537,7 +1596,7 @@ async function reloadChatBrowser(accountId) {
   }
 
   const view = getChatView(resolvedId);
-  if (!view || view.webContents.isDestroyed()) {
+  if (!isLiveBrowserView(view)) {
     throw new Error('Chat browser not available');
   }
 
@@ -1555,7 +1614,7 @@ async function setDomXTheme(theme) {
   currentDomXTheme = theme;
 
   for (const [accountId, view] of chatBrowserViews.entries()) {
-    if (!view || view.webContents.isDestroyed()) {
+    if (!isLiveBrowserView(view)) {
       continue;
     }
 
@@ -1580,7 +1639,7 @@ function getTranslationSettings() {
 
 async function applyTranslationSettingsToAllChatViews(settings) {
   for (const [, view] of chatBrowserViews.entries()) {
-    if (!view || view.webContents.isDestroyed()) {
+    if (!isLiveBrowserView(view)) {
       continue;
     }
 
@@ -1617,6 +1676,7 @@ module.exports = {
   hideLoginBrowser,
   submitLogin,
   loginAndCaptureMaloumSession,
+  completeLoginCaptureFromActiveLogin: captureMaloumSessionFromLoginView,
   importCookies,
   loadCreatorSession,
   hydrateCreatorProfile,

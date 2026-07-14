@@ -57,6 +57,13 @@ function registerCreatorIpc() {
   );
 
   ipcMain.handle(
+    'creator:complete-login-capture',
+    guardCreatorIpc(async (_event, payload) =>
+      creatorBrowser.completeLoginCaptureFromActiveLogin(payload.accountId)
+    )
+  );
+
+  ipcMain.handle(
     'creator:show-chat-browser',
     guardCreatorIpc(async (_event, payload) => creatorBrowser.showChatBrowser(payload))
   );

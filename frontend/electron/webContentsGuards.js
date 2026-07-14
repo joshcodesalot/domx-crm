@@ -1,5 +1,13 @@
+function isLiveWebContents(webContents) {
+  return Boolean(webContents && !webContents.isDestroyed());
+}
+
+function isLiveBrowserView(view) {
+  return Boolean(view && isLiveWebContents(view.webContents));
+}
+
 function applyWebContentsGuards(webContents) {
-  if (!webContents || webContents.isDestroyed()) {
+  if (!isLiveWebContents(webContents)) {
     return;
   }
 
@@ -12,4 +20,8 @@ function applyWebContentsGuards(webContents) {
   });
 }
 
-module.exports = { applyWebContentsGuards };
+module.exports = {
+  applyWebContentsGuards,
+  isLiveWebContents,
+  isLiveBrowserView,
+};
