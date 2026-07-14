@@ -133,6 +133,25 @@ export interface ElectronAPI {
     email: string;
     password: string;
   }) => Promise<{ submitted: boolean }>;
+  loginAndCaptureMaloumSession: (opts: {
+    accountId: string;
+    email: string;
+    password: string;
+    bounds: BrowserBounds;
+    timeoutMs?: number;
+  }) => Promise<{
+    accountId: string;
+    partitionId: string;
+    displayName: string;
+    username: string | null;
+    postLoginUrl: string;
+    avatarUrl: string | null;
+    cookies: PlaywrightCookie[];
+    origins: Array<{
+      origin: string;
+      localStorage: Array<{ name: string; value: string }>;
+    }>;
+  }>;
   showChatBrowser: (opts: {
     accountId: string;
     bounds: BrowserBounds;

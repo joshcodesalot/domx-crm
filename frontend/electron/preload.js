@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   importCookies: (opts) => ipcRenderer.invoke('creator:import-cookies', opts),
   clearSession: (accountId) => ipcRenderer.invoke('creator:clear-session', accountId),
   submitLoginBrowser: (opts) => ipcRenderer.invoke('creator:submit-login', opts),
+  loginAndCaptureMaloumSession: (opts) =>
+    ipcRenderer.invoke('creator:login-and-capture', opts),
   showChatBrowser: (opts) => ipcRenderer.invoke('creator:show-chat-browser', opts),
   hideChatBrowser: () => ipcRenderer.invoke('creator:hide-chat-browser'),
   resizeChatBrowser: (bounds) => ipcRenderer.invoke('creator:resize-chat-browser', bounds),

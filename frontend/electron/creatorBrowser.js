@@ -842,6 +842,187 @@ async function submitLogin({ accountId, email, password }) {
   return { submitted: true };
 }
 
+async function waitForLoginFormReady(webContents, timeoutMs = 60000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (webContents.isDestroyed()) {
+      throw new Error('Login browser closed unexpectedly');
+    }
+
+    await acceptCookieConsent(webContents).catch(() => {});
+
+    const ready = await webContents.executeJavaScript(`
+      (function() {
+        const emailInput = document.querySelector('input[name="usernameOrEmail"]');
+        const passwordInput = document.querySelector('input[name="password"]');
+        return Boolean(emailInput && passwordInput && !emailInput.disabled);
+      })()
+    `).catch(() => false);
+
+    if (ready) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  throw new Error(
+    'Maloum login form did not become ready. Complete any security checks in the embedded browser, then try again.'
+  );
+}
+
+async function findMaloumCredentialError(webContents) {
+  return webContents.executeJavaScript(`
+    (function() {
+      const pattern = /email and\\/or password are incorrect/i;
+      const selectors = ['[role="alert"]', '.error', '[class*="error"]', 'form p', 'form span'];
+      for (const selector of selectors) {
+        const nodes = document.querySelectorAll(selector);
+        for (const node of nodes) {
+          const text = (node.textContent || '').trim();
+          if (pattern.test(text)) {
+            return text;
+          }
+        }
+      }
+      return null;
+    })()
+  `).catch(() => null);
+}
+
+async function waitForMaloumLoginOutcome(webContents, timeoutMs = 90000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (webContents.isDestroyed()) {
+      throw new Error('Login browser closed unexpectedly');
+    }
+
+    const url = webContents.getURL();
+    if (isPostLoginUrl(url)) {
+      return { success: true, url };
+    }
+
+    const credentialError = await findMaloumCredentialError(webContents);
+    if (credentialError) {
+      return { success: false, error: credentialError };
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  return {
+    success: false,
+    error:
+      'Login timed out. If a security check appeared, complete it in the embedded browser and try again.',
+  };
+}
+
+async function scrapeMaloumProfileMetadata(webContents) {
+  await safeLoadURL(webContents, MALOUM_PROFILE_URL);
+  await waitUntilNavigated(
+    webContents,
+    45000,
+    (current) => Boolean(current) && current.includes('maloum.com')
+  );
+
+  const currentUrl = webContents.getURL();
+  if (currentUrl.includes('/login')) {
+    throw new Error('Session was redirected to login while loading the Maloum profile.');
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 750));
+
+  const scraped = await webContents.executeJavaScript(`
+    (function() {
+      const pathname = window.location.pathname || '';
+      const creatorMatch = pathname.match(/\\/creator\\/([^/]+)/);
+      const slug = creatorMatch ? creatorMatch[1] : null;
+      const name =
+        document.querySelector('h1.notranslate')?.textContent?.trim() ||
+        document.querySelector('div.min-w-0 h1')?.textContent?.trim() ||
+        null;
+      const avatarUrl =
+        document.querySelector('img.rounded-full.object-cover')?.src ||
+        document.querySelector('div.relative.w-fit img.rounded-full')?.src ||
+        null;
+      return {
+        displayName: name || (slug ? slug : 'Maloum Creator'),
+        username: slug ? '@' + slug : null,
+        avatarUrl,
+        postLoginUrl: window.location.href,
+      };
+    })()
+  `);
+
+  return scraped;
+}
+
+/**
+ * Runs Maloum login inside the embedded Electron BrowserView (staff machine egress),
+ * then exports cookies/localStorage for the API to encrypt and store.
+ */
+async function loginAndCaptureMaloumSession({
+  accountId,
+  email,
+  password,
+  bounds,
+  timeoutMs = 90000,
+}) {
+  if (!mainWindow) {
+    throw new Error('Main window is not available');
+  }
+
+  if (!accountId || !email || !password) {
+    throw new Error('Account ID, email, and password are required');
+  }
+
+  await clearSession(accountId);
+
+  try {
+    await showLoginBrowser({ accountId, bounds });
+    await waitForLoginFormReady(loginBrowserView.webContents, timeoutMs);
+    await submitLogin({ accountId, email: email.trim(), password });
+
+    const outcome = await waitForMaloumLoginOutcome(
+      loginBrowserView.webContents,
+      timeoutMs
+    );
+    if (!outcome.success) {
+      throw new Error(outcome.error || 'Maloum login failed');
+    }
+
+    warmSessionAccounts.add(accountId);
+
+    const profileMeta = await scrapeMaloumProfileMetadata(loginBrowserView.webContents);
+    const exported = await profileStorage.exportProfileFromPartition(
+      accountId,
+      loginBrowserView.webContents
+    );
+
+    if (!exported.cookies?.length) {
+      throw new Error('Login succeeded but no Maloum cookies were captured.');
+    }
+
+    profileStorage.writeLocalProfile(accountId, exported);
+    pendingStorageByAccount.set(accountId, exported.origins || []);
+    storageInjectedForAccount.add(accountId);
+
+    return {
+      accountId,
+      partitionId: `persist:creator-${accountId}`,
+      displayName: profileMeta.displayName,
+      username: profileMeta.username,
+      postLoginUrl: profileMeta.postLoginUrl,
+      avatarUrl: profileMeta.avatarUrl,
+      cookies: exported.cookies,
+      origins: exported.origins || [],
+    };
+  } catch (err) {
+    hideLoginBrowser();
+    throw err;
+  }
+}
+
 function playwrightCookieToElectron(cookie) {
   const domain = cookie.domain?.startsWith('.')
     ? cookie.domain.slice(1)
@@ -1435,6 +1616,7 @@ module.exports = {
   resizeLoginBrowser,
   hideLoginBrowser,
   submitLogin,
+  loginAndCaptureMaloumSession,
   importCookies,
   loadCreatorSession,
   hydrateCreatorProfile,

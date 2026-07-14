@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Eye,
   EyeOff,
@@ -9,12 +9,14 @@ import {
   connectCreatorAccount,
   createCreator,
   discardCreatorConnect,
+  reconnectCreatorSession,
   resolveCreatorAvatarUrl,
   saveCreatorAvatarFromMaloum,
   shouldFetchMaloumIcon,
   type CreateCreatorInput,
+  type Creator,
 } from '@/lib/api';
-import type { PlaywrightCookie } from '@/types/electron';
+import type { BrowserBounds } from '@/types/electron';
 
 const inputClassName =
   'w-full px-3 py-2 text-sm border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-white/5 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500';
@@ -23,7 +25,7 @@ const STEP_TITLES: Record<number, [string, string]> = {
   1: ['Select a platform', 'Choose the platform you want to connect.'],
   2: [
     'Connect Maloum account',
-    "Sign into your creator's Maloum account to establish a connection.",
+    "Sign into your creator's Maloum account in the embedded browser.",
   ],
   3: ['Review details', 'Confirm account info before saving.'],
 };
@@ -36,38 +38,74 @@ interface SessionData {
   profileImageUrl: string | null;
 }
 
-function getCurrentDomXTheme(): 'dark' | 'light' {
-  return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
-}
-
 interface AddCreatorModalProps {
   onClose: () => void;
   onSaved: () => void;
+  reconnectCreator?: Creator | null;
 }
 
-export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalProps) {
-  const [step, setStep] = useState(1);
-  const [loginEmail, setLoginEmail] = useState('');
+function measureBounds(el: HTMLElement | null): BrowserBounds | null {
+  if (!el) return null;
+  const rect = el.getBoundingClientRect();
+  if (rect.width < 40 || rect.height < 40) return null;
+  return {
+    x: Math.round(rect.x),
+    y: Math.round(rect.y),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+  };
+}
+
+export default function AddCreatorModal({
+  onClose,
+  onSaved,
+  reconnectCreator = null,
+}: AddCreatorModalProps) {
+  const isReconnect = Boolean(reconnectCreator?.accountId);
+  const [step, setStep] = useState(isReconnect ? 2 : 1);
+  const [loginEmail, setLoginEmail] = useState(reconnectCreator?.loginEmail || '');
   const [loginPassword, setLoginPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [session, setSession] = useState<SessionData | null>(null);
-  const [displayNameOverride, setDisplayNameOverride] = useState('');
+  const [displayNameOverride, setDisplayNameOverride] = useState(
+    reconnectCreator?.displayName || ''
+  );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [accountId, setAccountId] = useState<string | null>(null);
+  const [accountId, setAccountId] = useState<string | null>(
+    reconnectCreator?.accountId || null
+  );
   const [accountToken, setAccountToken] = useState<string | null>(null);
   const [connectSucceeded, setConnectSucceeded] = useState(false);
+  const [browserReady, setBrowserReady] = useState(false);
 
-  const accountIdRef = useRef<string | null>(null);
+  const accountIdRef = useRef<string | null>(reconnectCreator?.accountId || null);
   const connectSucceededRef = useRef(false);
+  const browserContainerRef = useRef<HTMLDivElement | null>(null);
+  const connectingRef = useRef(false);
 
-  const [title, subtitle] = STEP_TITLES[step];
+  const [title, subtitle] = isReconnect && step === 2
+    ? ([
+        'Reconnect Maloum account',
+        `Sign in again to refresh the session for ${reconnectCreator?.displayName || 'this creator'}.`,
+      ] as [string, string])
+    : STEP_TITLES[step];
+
+  const hideLoginBrowser = useCallback(async () => {
+    if (!window.electronAPI) return;
+    try {
+      await window.electronAPI.hideLoginBrowser();
+    } catch {
+      // Best-effort cleanup
+    }
+    setBrowserReady(false);
+  }, []);
 
   const discardPendingConnect = useCallback(async () => {
     const id = accountIdRef.current;
-    if (!id || !connectSucceededRef.current) return;
+    if (!id || !connectSucceededRef.current || isReconnect) return;
     try {
       await discardCreatorConnect(id);
     } catch {
@@ -76,15 +114,16 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
     if (window.electronAPI) {
       await window.electronAPI.clearSession(id);
     }
-  }, []);
+  }, [isReconnect]);
 
   const cleanup = useCallback(
     async (options?: { discardPending?: boolean }) => {
+      await hideLoginBrowser();
       if (options?.discardPending) {
         await discardPendingConnect();
       }
     },
-    [discardPendingConnect]
+    [discardPendingConnect, hideLoginBrowser]
   );
 
   useEffect(() => {
@@ -96,14 +135,44 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
   }, [connectSucceeded]);
 
   useEffect(() => {
-    if (step !== 2) return;
+    if (step !== 2 || isReconnect) return;
     const id = crypto.randomUUID();
     setAccountId(id);
     accountIdRef.current = id;
-  }, [step]);
+  }, [step, isReconnect]);
+
+  useEffect(() => {
+    return () => {
+      void hideLoginBrowser();
+    };
+  }, [hideLoginBrowser]);
+
+  useLayoutEffect(() => {
+    if (step !== 2 || !connecting || !window.electronAPI) return;
+
+    const syncBounds = () => {
+      const bounds = measureBounds(browserContainerRef.current);
+      if (!bounds) return;
+      void window.electronAPI?.resizeLoginBrowser(bounds);
+    };
+
+    syncBounds();
+    const observer = new ResizeObserver(syncBounds);
+    if (browserContainerRef.current) {
+      observer.observe(browserContainerRef.current);
+    }
+    window.addEventListener('resize', syncBounds);
+    const unsubscribe = window.electronAPI.onWindowResized(syncBounds);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', syncBounds);
+      unsubscribe();
+    };
+  }, [step, connecting]);
 
   async function handleClose() {
-    await cleanup({ discardPending: connectSucceeded && step < 3 });
+    await cleanup({ discardPending: connectSucceeded && step < 3 && !isReconnect });
     onClose();
   }
 
@@ -113,6 +182,11 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
   }
 
   async function handleConnectAccount() {
+    if (!window.electronAPI) {
+      setLoginError('Connecting Maloum accounts requires the DomX desktop app.');
+      return;
+    }
+
     if (!loginEmail.trim() || !loginPassword.trim()) {
       setLoginError('Email or username and password are required.');
       return;
@@ -125,59 +199,82 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
 
     setLoginError(null);
     setConnecting(true);
+    connectingRef.current = true;
+    setBrowserReady(false);
 
     try {
-      const result = await connectCreatorAccount({
+      // Allow the browser container to mount before measuring bounds
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const bounds = measureBounds(browserContainerRef.current);
+      if (!bounds) {
+        throw new Error('Login browser area is not ready. Please try again.');
+      }
+
+      setBrowserReady(true);
+
+      const captured = await window.electronAPI.loginAndCaptureMaloumSession({
         accountId,
-        platform: 'maloum',
         email: loginEmail.trim(),
         password: loginPassword,
+        bounds,
+      });
+
+      if (isReconnect && reconnectCreator) {
+        await reconnectCreatorSession(reconnectCreator.id, {
+          email: loginEmail.trim(),
+          cookies: captured.cookies,
+          origins: captured.origins,
+          displayName: captured.displayName,
+          username: captured.username,
+          postLoginUrl: captured.postLoginUrl,
+          avatarUrl: captured.avatarUrl,
+        });
+
+        await hideLoginBrowser();
+        setConnectSucceeded(false);
+        connectSucceededRef.current = false;
+        onSaved();
+        onClose();
+        return;
+      }
+
+      const result = await connectCreatorAccount({
+        accountId: captured.accountId,
+        platform: 'maloum',
+        email: loginEmail.trim(),
+        cookies: captured.cookies,
+        origins: captured.origins,
+        displayName: captured.displayName,
+        username: captured.username,
+        postLoginUrl: captured.postLoginUrl,
+        avatarUrl: captured.avatarUrl,
       });
 
       setAccountToken(result.accountToken);
-
-      let profileImageUrl = result.avatarUrl;
-
-      if (window.electronAPI) {
-        await window.electronAPI.loadCreatorSession({
-          accountId: result.accountId,
-          cookies: result.cookies as PlaywrightCookie[],
-          origins: result.origins || [],
-        });
-
-        const verification = await window.electronAPI.verifyMaloumSession({
-          accountId: result.accountId,
-          theme: getCurrentDomXTheme(),
-          reuseVisibleView: false,
-        });
-
-        if (!verification.verified) {
-          throw new Error(
-            'Maloum login failed or session could not be verified.'
-          );
-        }
-
-        profileImageUrl =
-          verification.profileImageUrl || result.avatarUrl || null;
-      }
 
       const sessionData: SessionData = {
         displayName: result.displayName,
         username: result.username || '',
         postLoginUrl: result.postLoginUrl,
-        avatarUrl: profileImageUrl || result.avatarUrl,
-        profileImageUrl,
+        avatarUrl: result.avatarUrl,
+        profileImageUrl: result.avatarUrl,
       };
 
+      await hideLoginBrowser();
       setSession(sessionData);
       setDisplayNameOverride(result.displayName);
       setConnectSucceeded(true);
       connectSucceededRef.current = true;
       setStep(3);
     } catch (err) {
+      await hideLoginBrowser();
       setLoginError(err instanceof Error ? err.message : 'Failed to connect account');
     } finally {
+      connectingRef.current = false;
       setConnecting(false);
+      setBrowserReady(false);
     }
   }
 
@@ -256,7 +353,7 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
         onClick={() => void handleClose()}
       />
 
-      <div className="relative bg-white dark:bg-[#111] rounded-xl shadow-xl w-full max-w-3xl border border-gray-200 dark:border-white/10 max-h-[90vh] flex flex-col">
+      <div className="relative bg-white dark:bg-[#111] rounded-xl shadow-xl w-full max-w-4xl border border-gray-200 dark:border-white/10 max-h-[90vh] flex flex-col">
         <div className="flex items-start justify-between p-6 pb-4 border-b border-gray-100 dark:border-white/10">
           <div className="flex items-start gap-3">
             <div className="w-10 h-10 rounded-full bg-brand-100 dark:bg-brand-900/30 flex items-center justify-center shrink-0">
@@ -278,22 +375,24 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
           </button>
         </div>
 
-        <div className="px-6 py-4 flex items-center justify-center gap-0">
-          <div className="flex items-center">
-            <div className={stepIndicatorClass(1)}>1</div>
-            <span className={stepLabelClass(1)}>Platform</span>
+        {!isReconnect && (
+          <div className="px-6 py-4 flex items-center justify-center gap-0">
+            <div className="flex items-center">
+              <div className={stepIndicatorClass(1)}>1</div>
+              <span className={stepLabelClass(1)}>Platform</span>
+            </div>
+            <div className="w-16 h-0.5 bg-gray-200 dark:bg-white/10 mx-2" />
+            <div className="flex items-center">
+              <div className={stepIndicatorClass(2)}>2</div>
+              <span className={stepLabelClass(2)}>Login</span>
+            </div>
+            <div className="w-16 h-0.5 bg-gray-200 dark:bg-white/10 mx-2" />
+            <div className="flex items-center">
+              <div className={stepIndicatorClass(3)}>3</div>
+              <span className={stepLabelClass(3)}>Details</span>
+            </div>
           </div>
-          <div className="w-16 h-0.5 bg-gray-200 dark:bg-white/10 mx-2" />
-          <div className="flex items-center">
-            <div className={stepIndicatorClass(2)}>2</div>
-            <span className={stepLabelClass(2)}>Login</span>
-          </div>
-          <div className="w-16 h-0.5 bg-gray-200 dark:bg-white/10 mx-2" />
-          <div className="flex items-center">
-            <div className={stepIndicatorClass(3)}>3</div>
-            <span className={stepLabelClass(3)}>Details</span>
-          </div>
-        </div>
+        )}
 
         <div className="flex-1 overflow-y-auto px-6 pb-4">
           {step === 1 && (
@@ -331,9 +430,16 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
           {step === 2 && (
             <div className="space-y-4">
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                Enter the creator&apos;s Maloum credentials. Login runs securely in the
-                background.
+                Login runs in DomX on this computer (not on the server), so Cloudflare
+                treats it like a normal browser. If a security check appears below,
+                complete it there.
               </p>
+
+              {!window.electronAPI && (
+                <p className="text-sm text-red-600 dark:text-red-400">
+                  The DomX desktop app is required to connect Maloum accounts.
+                </p>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -345,7 +451,7 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
                     value={loginEmail}
                     onChange={(e) => setLoginEmail(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') void handleConnectAccount();
+                      if (e.key === 'Enter' && !connecting) void handleConnectAccount();
                     }}
                     placeholder="Enter your email or username"
                     className={inputClassName}
@@ -362,7 +468,7 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
                       value={loginPassword}
                       onChange={(e) => setLoginPassword(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') void handleConnectAccount();
+                        if (e.key === 'Enter' && !connecting) void handleConnectAccount();
                       }}
                       placeholder="Enter your password"
                       className={`${inputClassName} pr-10`}
@@ -387,6 +493,24 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
               {loginError && (
                 <p className="text-sm text-red-600 dark:text-red-400">{loginError}</p>
               )}
+
+              <div
+                ref={browserContainerRef}
+                className={`relative rounded-lg border border-gray-200 dark:border-white/10 bg-[#f8f9fa] dark:bg-[#0d0d0d] overflow-hidden ${
+                  connecting ? 'min-h-[360px]' : 'min-h-[120px]'
+                }`}
+              >
+                {!connecting && (
+                  <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 px-4 text-center">
+                    Click Connect Account to open Maloum login here.
+                  </div>
+                )}
+                {connecting && !browserReady && (
+                  <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+                    Opening Maloum login…
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -458,11 +582,15 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
         </div>
 
         <div className="flex items-center justify-between p-6 pt-4 border-t border-gray-100 dark:border-white/10">
-          {step > 1 ? (
+          {step > 1 && !isReconnect ? (
             <button
               type="button"
-              onClick={() => setStep((s) => s - 1)}
-              className="px-4 py-2 text-sm font-medium border border-gray-200 dark:border-white/10 rounded-lg hover:bg-gray-50 dark:hover:bg-white/5 transition-colors"
+              onClick={() => {
+                void hideLoginBrowser();
+                setStep((s) => s - 1);
+              }}
+              disabled={connecting}
+              className="px-4 py-2 text-sm font-medium border border-gray-200 dark:border-white/10 rounded-lg hover:bg-gray-50 dark:hover:bg-white/5 transition-colors disabled:opacity-50"
             >
               Back
             </button>
@@ -483,10 +611,16 @@ export default function AddCreatorModal({ onClose, onSaved }: AddCreatorModalPro
               <button
                 type="button"
                 onClick={() => void handleConnectAccount()}
-                disabled={connecting}
+                disabled={connecting || !window.electronAPI}
                 className="px-4 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-500 rounded-lg transition-colors disabled:opacity-50"
               >
-                {connecting ? 'Verifying session...' : 'Connect Account'}
+                {connecting
+                  ? isReconnect
+                    ? 'Reconnecting...'
+                    : 'Connecting...'
+                  : isReconnect
+                    ? 'Reconnect Account'
+                    : 'Connect Account'}
               </button>
             )}
 

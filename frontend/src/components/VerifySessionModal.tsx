@@ -341,7 +341,7 @@ export default function VerifySessionModal({
               onClick={handleReconnect}
               className="px-4 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-500 rounded-lg transition-colors"
             >
-              Reconnect via Add Creator
+              Reconnect account
             </button>
           )}
           <button

@@ -60,6 +60,7 @@ export default function ManageCreators() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [reconnectCreator, setReconnectCreator] = useState<Creator | null>(null);
   const [removeTarget, setRemoveTarget] = useState<Creator | null>(null);
   const [staffTarget, setStaffTarget] = useState<Creator | null>(null);
   const [verifyTarget, setVerifyTarget] = useState<Creator | null>(null);
@@ -196,7 +197,10 @@ export default function ManageCreators() {
             {canManage && (
               <button
                 type="button"
-                onClick={() => setShowAddModal(true)}
+                onClick={() => {
+                  setReconnectCreator(null);
+                  setShowAddModal(true);
+                }}
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-500 rounded-lg transition-colors"
               >
                 <Plus className="w-4 h-4" />
@@ -311,8 +315,11 @@ export default function ManageCreators() {
                             <button
                               type="button"
                               className="p-1.5 text-gray-400 hover:text-brand-600 dark:hover:text-brand-400 rounded-md hover:bg-brand-50 dark:hover:bg-brand-900/20 transition-colors"
-                              title="Reconnect via Add Creator"
-                              onClick={() => setShowAddModal(true)}
+                              title="Reconnect Maloum account"
+                              onClick={() => {
+                                setReconnectCreator(creator);
+                                setShowAddModal(true);
+                              }}
                             >
                               <RefreshCw className="w-4 h-4" />
                             </button>
@@ -371,7 +378,11 @@ export default function ManageCreators() {
 
       {showAddModal && (
         <AddCreatorModal
-          onClose={() => setShowAddModal(false)}
+          reconnectCreator={reconnectCreator}
+          onClose={() => {
+            setShowAddModal(false);
+            setReconnectCreator(null);
+          }}
           onSaved={loadCreators}
         />
       )}
@@ -381,7 +392,11 @@ export default function ManageCreators() {
           creator={verifyTarget}
           onClose={() => setVerifyTarget(null)}
           onValidated={loadCreators}
-          onReconnect={() => setShowAddModal(true)}
+          onReconnect={() => {
+            setReconnectCreator(verifyTarget);
+            setVerifyTarget(null);
+            setShowAddModal(true);
+          }}
         />
       )}
 

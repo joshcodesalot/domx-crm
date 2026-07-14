@@ -50,6 +50,13 @@ function registerCreatorIpc() {
   );
 
   ipcMain.handle(
+    'creator:login-and-capture',
+    guardCreatorIpc(async (_event, payload) =>
+      creatorBrowser.loginAndCaptureMaloumSession(payload)
+    )
+  );
+
+  ipcMain.handle(
     'creator:show-chat-browser',
     guardCreatorIpc(async (_event, payload) => creatorBrowser.showChatBrowser(payload))
   );

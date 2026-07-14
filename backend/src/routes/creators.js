@@ -10,10 +10,6 @@ const {
   hashToken,
   generateAccountToken,
 } = require('../services/crypto');
-const {
-  validateMaloumLogin,
-  MaloumLoginError,
-} = require('../services/maloumLogin');
 const { downloadCreatorAvatar } = require('../services/creatorAvatar');
 const {
   userSeesAllCreators,
@@ -65,25 +61,47 @@ function isValidUuid(value) {
   );
 }
 
+function isClientMaloumSession(body) {
+  return Array.isArray(body?.cookies) && body.cookies.length > 0;
+}
+
+function validateClientSessionPayload(body) {
+  const { email, cookies, origins, displayName, postLoginUrl } = body;
+
+  if (!email || typeof email !== 'string' || !email.trim()) {
+    return 'Email is required';
+  }
+
+  if (!Array.isArray(cookies) || cookies.length === 0) {
+    return 'Session cookies from the DomX desktop app are required';
+  }
+
+  const hasMaloumCookie = cookies.some((cookie) =>
+    String(cookie?.domain || '').includes('maloum.com')
+  );
+  if (!hasMaloumCookie) {
+    return 'Session cookies must include Maloum domain cookies';
+  }
+
+  if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
+    return 'Display name is required';
+  }
+
+  if (!postLoginUrl || typeof postLoginUrl !== 'string') {
+    return 'Post-login URL is required';
+  }
+
+  if (origins !== undefined && !Array.isArray(origins)) {
+    return 'Origins must be an array';
+  }
+
+  return null;
+}
+
 async function cleanupExpiredPending() {
   await pool.query(
     'DELETE FROM creator_connect_pending WHERE "expiresAt" < NOW()'
   );
-}
-
-function mapMaloumError(err) {
-  if (!(err instanceof MaloumLoginError)) {
-    return { status: 503, error: 'Unable to connect to Maloum. Please try again.' };
-  }
-
-  switch (err.code) {
-    case 'InvalidCredentials':
-      return { status: 401, error: err.message };
-    case 'Timeout':
-      return { status: 408, error: err.message };
-    default:
-      return { status: 503, error: err.message };
-  }
 }
 
 const CREATOR_SELECT_COLUMNS = `
@@ -139,11 +157,21 @@ router.post(
   requirePermission('creators.manage'),
   connectLimiter,
   async (req, res) => {
-    const { accountId, platform, email, password } = req.body;
+    const {
+      accountId,
+      platform,
+      email,
+      cookies,
+      origins,
+      displayName,
+      username,
+      postLoginUrl,
+      avatarUrl,
+    } = req.body;
 
-    if (!accountId || !platform || !email || !password) {
+    if (!accountId || !platform) {
       return res.status(400).json({
-        error: 'Account ID, platform, email, and password are required',
+        error: 'Account ID and platform are required',
       });
     }
 
@@ -157,6 +185,18 @@ router.post(
 
     if (platform !== 'maloum') {
       return res.status(400).json({ error: 'Only Maloum is supported currently' });
+    }
+
+    if (!isClientMaloumSession(req.body)) {
+      return res.status(400).json({
+        error:
+          'Connect requires a Maloum session from the DomX desktop app. Server-side login is no longer supported.',
+      });
+    }
+
+    const sessionError = validateClientSessionPayload(req.body);
+    if (sessionError) {
+      return res.status(400).json({ error: sessionError });
     }
 
     try {
@@ -182,14 +222,14 @@ router.post(
         );
       }
 
-      const loginResult = await validateMaloumLogin(email.trim(), password);
       const accountToken = generateAccountToken();
       const accountTokenHash = hashToken(accountToken);
       const partitionId = partitionIdFor(accountId);
+      const loginEmail = email.trim();
       const encryptedSession = encryptJson({
-        cookies: loginResult.cookies,
-        origins: loginResult.origins || [],
-        loginEmail: email.trim(),
+        cookies,
+        origins: origins || [],
+        loginEmail,
       });
       const expiresAt = new Date(Date.now() + PENDING_TTL_MINUTES * 60 * 1000);
 
@@ -205,12 +245,12 @@ router.post(
           accountTokenHash,
           partitionId,
           platform,
-          loginResult.displayName,
-          loginResult.username,
-          loginResult.postLoginUrl,
-          loginResult.avatarUrl || null,
+          displayName.trim(),
+          username || null,
+          postLoginUrl,
+          avatarUrl || null,
           encryptedSession,
-          email.trim(),
+          loginEmail,
           req.user.id,
           expiresAt,
         ]
@@ -220,17 +260,16 @@ router.post(
         accountToken,
         accountId,
         partitionId,
-        displayName: loginResult.displayName,
-        username: loginResult.username,
-        postLoginUrl: loginResult.postLoginUrl,
-        avatarUrl: loginResult.avatarUrl || null,
-        cookies: loginResult.cookies,
-        origins: loginResult.origins || [],
+        displayName: displayName.trim(),
+        username: username || null,
+        postLoginUrl,
+        avatarUrl: avatarUrl || null,
+        cookies,
+        origins: origins || [],
       });
     } catch (err) {
       console.error('Connect creator error:', err);
-      const mapped = mapMaloumError(err);
-      res.status(mapped.status).json({ error: mapped.error });
+      res.status(500).json({ error: 'Internal server error' });
     }
   }
 );
@@ -543,6 +582,103 @@ router.delete(
       res.status(500).json({ error: 'Internal server error' });
     } finally {
       client.release();
+    }
+  }
+);
+
+router.put(
+  '/:id/session',
+  authenticate,
+  requirePermission('creators.manage'),
+  connectLimiter,
+  async (req, res) => {
+    const { id } = req.params;
+    const {
+      email,
+      cookies,
+      origins,
+      displayName,
+      username,
+      postLoginUrl,
+      avatarUrl,
+    } = req.body;
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const sessionError = validateClientSessionPayload(req.body);
+    if (sessionError) {
+      return res.status(400).json({ error: sessionError });
+    }
+
+    try {
+      const existing = await pool.query(
+        `SELECT id, "accountId", "partitionId", platform, "avatarUrl", "avatarSource"
+         FROM creators
+         WHERE id = $1`,
+        [id]
+      );
+
+      if (existing.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+
+      const creator = existing.rows[0];
+      if (!creator.accountId) {
+        return res.status(400).json({ error: 'Creator has no account partition to reconnect' });
+      }
+
+      if (creator.platform !== 'maloum') {
+        return res.status(400).json({ error: 'Only Maloum reconnection is supported currently' });
+      }
+
+      const loginEmail = email.trim();
+      const encryptedSession = encryptJson({
+        cookies,
+        origins: origins || [],
+        loginEmail,
+      });
+
+      const nextAvatarUrl =
+        avatarUrl && creator.avatarSource !== 'manual'
+          ? avatarUrl
+          : creator.avatarUrl;
+
+      const result = await pool.query(
+        `UPDATE creators
+         SET "encryptedSession" = $2,
+             "loginEmail" = $3,
+             "displayName" = COALESCE($4, "displayName"),
+             username = COALESCE($5, username),
+             "postLoginUrl" = COALESCE($6, "postLoginUrl"),
+             "avatarUrl" = COALESCE($7, "avatarUrl"),
+             "connectionStatus" = 'connected',
+             "lastValidatedAt" = NOW(),
+             "updatedAt" = NOW()
+         WHERE id = $1
+         RETURNING ${CREATOR_SELECT_COLUMNS}`,
+        [
+          id,
+          encryptedSession,
+          loginEmail,
+          displayName?.trim() || null,
+          username || null,
+          postLoginUrl || null,
+          nextAvatarUrl || null,
+        ]
+      );
+
+      res.json({
+        creator: toCreator(result.rows[0]),
+        accountId: creator.accountId,
+        partitionId: creator.partitionId,
+        cookies,
+        origins: origins || [],
+      });
+    } catch (err) {
+      console.error('Update creator session error:', err);
+      res.status(500).json({ error: 'Internal server error' });
     }
   }
 );

@@ -120,7 +120,12 @@ export interface ConnectCreatorInput {
   accountId: string;
   platform: 'maloum' | '4based';
   email: string;
-  password: string;
+  cookies: ConnectCreatorResponse['cookies'];
+  origins?: ConnectCreatorResponse['origins'];
+  displayName: string;
+  username?: string | null;
+  postLoginUrl: string;
+  avatarUrl?: string | null;
 }
 
 export interface ConnectCreatorResponse {
@@ -145,6 +150,16 @@ export interface ConnectCreatorResponse {
     origin: string;
     localStorage: Array<{ name: string; value: string }>;
   }>;
+}
+
+export interface ReconnectCreatorSessionInput {
+  email: string;
+  cookies: ConnectCreatorResponse['cookies'];
+  origins?: ConnectCreatorResponse['origins'];
+  displayName: string;
+  username?: string | null;
+  postLoginUrl: string;
+  avatarUrl?: string | null;
 }
 
 export interface DeleteCreatorResponse {
@@ -530,6 +545,22 @@ export async function connectCreatorAccount(
 ): Promise<ConnectCreatorResponse> {
   return request<ConnectCreatorResponse>('/api/creators/connect', {
     method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function reconnectCreatorSession(
+  creatorId: string,
+  input: ReconnectCreatorSessionInput
+): Promise<{
+  creator: Creator;
+  accountId: string;
+  partitionId: string;
+  cookies: ConnectCreatorResponse['cookies'];
+  origins: ConnectCreatorResponse['origins'];
+}> {
+  return request(`/api/creators/${creatorId}/session`, {
+    method: 'PUT',
     body: JSON.stringify(input),
   });
 }
