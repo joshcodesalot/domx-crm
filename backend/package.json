@@ -18,10 +18,7 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "openai": "^6.45.0",
-    "pg": "^8.13.1",
-    "playwright": "^1.49.1",
-    "playwright-extra": "^4.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"

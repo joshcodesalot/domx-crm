@@ -3,8 +3,10 @@ const profileStorage = require('./profileStorage');
 const { applyWebContentsGuards, isLiveWebContents, isLiveBrowserView } = require('./webContentsGuards');
 const {
   isNightTheme,
+  isMaloumAppUrl,
   refreshMaloumPageUI,
   applyTranslationSettings,
+  resetMaloumPageObservers,
 } = require('./maloumChatUi');
 const {
   setMainWindow: setBadgeMainWindow,
@@ -78,11 +80,32 @@ function getPreparedViewsForBadgePolling() {
   return views;
 }
 
+const preparingChatAccounts = new Set();
+const refreshMaloumChatUIChains = new Map();
+const fullBrowserAccessByAccountId = new Map();
+const preparedBrowserModeByAccountId = new Map();
+
+function isFullBrowserAccess(accountId) {
+  return fullBrowserAccessByAccountId.get(accountId) === true;
+}
+
+function browserModeKey(fullBrowserAccess) {
+  return fullBrowserAccess ? 'full' : 'restricted';
+}
+
+function shouldRefreshMaloumUI(url, fullBrowserAccess) {
+  if (fullBrowserAccess) {
+    return isMaloumAppUrl(url);
+  }
+  return isMaloumManagedMaloumUrl(url);
+}
+
 function runRefreshMaloumPageUISerialized(webContents, theme, accountId, triggerUrl) {
   if (!webContents || webContents.isDestroyed()) {
     return Promise.resolve();
   }
 
+  const fullBrowserAccess = isFullBrowserAccess(accountId);
   const wcId = webContents.id;
   const previous = refreshMaloumChatUIChains.get(wcId) || Promise.resolve();
   const next = previous
@@ -93,7 +116,8 @@ function runRefreshMaloumPageUISerialized(webContents, theme, accountId, trigger
         theme,
         triggerUrl,
         getActiveChatter(),
-        currentTranslationSettings
+        currentTranslationSettings,
+        { fullBrowserAccess }
       )
     )
     .then(() => {
@@ -311,7 +335,40 @@ async function waitForMaloumChatRoot(webContents, attempts = 25) {
   return false;
 }
 
+async function prepareMaloumFullBrowserPage(webContents, accountId) {
+  preparingChatAccounts.add(accountId);
+  try {
+    await ensureSessionStorageReady(webContents, accountId);
+
+    const currentUrl = webContents.getURL();
+    if (!isMaloumAppUrl(currentUrl)) {
+      await navigateToUrl(webContents, MALOUM_HOME_URL, accountId);
+      const urlAfterNav = webContents.getURL();
+      if (urlAfterNav.includes('/login')) {
+        throw new Error('Session expired or invalid — Maloum redirected to login.');
+      }
+    }
+
+    await acceptCookieConsent(webContents);
+    await runRefreshMaloumPageUISerialized(
+      webContents,
+      currentDomXTheme,
+      accountId,
+      webContents.getURL()
+    );
+
+    preparedBrowserModeByAccountId.set(accountId, 'full');
+    return { ready: true };
+  } finally {
+    preparingChatAccounts.delete(accountId);
+  }
+}
+
 async function prepareMaloumChatPage(webContents, accountId) {
+  if (isFullBrowserAccess(accountId)) {
+    return prepareMaloumFullBrowserPage(webContents, accountId);
+  }
+
   preparingChatAccounts.add(accountId);
   try {
     await ensureSessionStorageReady(webContents, accountId);
@@ -339,6 +396,7 @@ async function prepareMaloumChatPage(webContents, accountId) {
     await acceptCookieConsent(webContents);
     await runRefreshMaloumPageUISerialized(webContents, currentDomXTheme, accountId, webContents.getURL());
 
+    preparedBrowserModeByAccountId.set(accountId, 'restricted');
     return { ready: true };
   } finally {
     preparingChatAccounts.delete(accountId);
@@ -346,6 +404,21 @@ async function prepareMaloumChatPage(webContents, accountId) {
 }
 
 async function loadPreparedChatView(webContents, accountId) {
+  if (isFullBrowserAccess(accountId)) {
+    const currentUrl = webContents.getURL();
+    if (!isMaloumAppUrl(currentUrl)) {
+      await navigateToUrl(webContents, MALOUM_HOME_URL, accountId);
+      if (webContents.getURL().includes('/login')) {
+        throw new Error('Session expired or invalid — Maloum redirected to login.');
+      }
+    }
+
+    await runRefreshMaloumPageUISerialized(webContents, currentDomXTheme, accountId, webContents.getURL());
+    void acceptCookieConsent(webContents);
+    preparedBrowserModeByAccountId.set(accountId, 'full');
+    return;
+  }
+
   const currentUrl = webContents.getURL();
   const onChatReady =
     currentUrl.includes('/chat') && !currentUrl.includes('/login');
@@ -360,6 +433,19 @@ async function loadPreparedChatView(webContents, accountId) {
 
   await runRefreshMaloumPageUISerialized(webContents, currentDomXTheme, accountId, webContents.getURL());
   void acceptCookieConsent(webContents);
+  preparedBrowserModeByAccountId.set(accountId, 'restricted');
+}
+
+async function ensureChatViewMatchesMode(webContents, accountId) {
+  const targetMode = browserModeKey(isFullBrowserAccess(accountId));
+  const preparedMode = preparedBrowserModeByAccountId.get(accountId);
+
+  if (preparedMode === targetMode) {
+    return;
+  }
+
+  await resetMaloumPageObservers(webContents);
+  await prepareMaloumChatPage(webContents, accountId);
 }
 
 let refreshMaloumInFlight = 0;
@@ -374,7 +460,7 @@ function refreshMaloumPageIfNeeded(webContents, accountId, eventName) {
   }
 
   const url = webContents.getURL();
-  if (!isMaloumManagedMaloumUrl(url)) {
+  if (!shouldRefreshMaloumUI(url, isFullBrowserAccess(accountId))) {
     return;
   }
 
@@ -867,12 +953,11 @@ function hideLoginBrowser() {
   detachLoginBrowser();
 }
 
-async function submitLogin({ accountId, email, password }) {
-  if (!loginBrowserView || activeAccountId !== accountId) {
-    throw new Error('Login browser is not active');
+async function submitLoginOnWebContents(webContents, email, password) {
+  if (!isLiveWebContents(webContents)) {
+    throw new Error('Browser view is not available');
   }
 
-  const webContents = loginBrowserView.webContents;
   await acceptCookieConsent(webContents);
 
   const result = await webContents.executeJavaScript(
@@ -884,6 +969,14 @@ async function submitLogin({ accountId, email, password }) {
   }
 
   return { submitted: true };
+}
+
+async function submitLogin({ accountId, email, password }) {
+  if (!loginBrowserView || activeAccountId !== accountId) {
+    throw new Error('Login browser is not active');
+  }
+
+  return submitLoginOnWebContents(loginBrowserView.webContents, email, password);
 }
 
 async function waitForLoginFormReady(webContents, timeoutMs = 60000) {
@@ -957,14 +1050,9 @@ async function waitForMaloumLoginOutcome(webContents, timeoutMs = 90000) {
   };
 }
 
-async function captureMaloumSessionFromLoginView(accountId) {
-  if (!loginBrowserView || activeAccountId !== accountId) {
-    throw new Error('Login browser is not active');
-  }
-
-  const webContents = loginBrowserView.webContents;
+async function captureMaloumSessionFromWebContents(accountId, webContents) {
   if (!isLiveWebContents(webContents)) {
-    throw new Error('Login browser closed unexpectedly');
+    throw new Error('Browser view closed unexpectedly');
   }
 
   const currentUrl = webContents.getURL();
@@ -997,6 +1085,48 @@ async function captureMaloumSessionFromLoginView(accountId) {
     cookies: exported.cookies,
     origins: exported.origins || [],
   };
+}
+
+async function captureMaloumSessionFromLoginView(accountId) {
+  if (!loginBrowserView || activeAccountId !== accountId) {
+    throw new Error('Login browser is not active');
+  }
+
+  return captureMaloumSessionFromWebContents(accountId, loginBrowserView.webContents);
+}
+
+async function reloginMaloumInWebContents({ accountId, webContents, email, password }) {
+  if (!accountId || !email || !password) {
+    throw new Error('Account ID, email, and password are required');
+  }
+
+  if (!isLiveWebContents(webContents)) {
+    throw new Error('Browser view is not available');
+  }
+
+  await safeLoadURL(webContents, MALOUM_LOGIN_URL);
+  await waitForLoginFormReady(webContents);
+  await submitLoginOnWebContents(webContents, email.trim(), password);
+
+  const outcome = await waitForMaloumLoginOutcome(webContents, 90000);
+  if (!outcome.success) {
+    throw new Error(outcome.error || 'Maloum login failed');
+  }
+
+  return captureMaloumSessionFromWebContents(accountId, webContents);
+}
+
+async function reloginMaloumOnVerifyView({ accountId, email, password }) {
+  if (!verifyBrowserView || activeVerifyAccountId !== accountId) {
+    throw new Error('Verify browser is not active for this account');
+  }
+
+  return reloginMaloumInWebContents({
+    accountId,
+    webContents: verifyBrowserView.webContents,
+    email,
+    password,
+  });
 }
 
 async function scrapeMaloumProfileMetadata(webContents) {
@@ -1285,6 +1415,8 @@ async function clearSession(accountId) {
   storageInjectedForAccount.delete(accountId);
   warmSessionAccounts.delete(accountId);
   preparedChatPartitions.delete(accountId);
+  fullBrowserAccessByAccountId.delete(accountId);
+  preparedBrowserModeByAccountId.delete(accountId);
   profileStorage.deleteLocalProfile(accountId);
 
   if (loginBrowserView && activeAccountId === accountId) {
@@ -1298,6 +1430,67 @@ async function clearSession(accountId) {
   }
 
   return { accountId, partitionId: `persist:creator-${accountId}` };
+}
+
+/**
+ * Download a Maloum avatar using the creator's Electron session so Maloum
+ * sees the client IP, not the DomX backend/VPS.
+ */
+async function fetchCreatorAvatarImage({ accountId, sourceUrl }) {
+  if (!accountId || typeof accountId !== 'string') {
+    throw new Error('accountId is required');
+  }
+
+  if (!sourceUrl || typeof sourceUrl !== 'string') {
+    throw new Error('sourceUrl is required');
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    throw new Error('Invalid source URL');
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('Source URL must be http or https');
+  }
+
+  const partitionSession = getPartitionSession(accountId);
+  const response = await partitionSession.fetch(sourceUrl, {
+    method: 'GET',
+    headers: {
+      Accept: 'image/*,*/*;q=0.8',
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to download avatar (${response.status})`);
+  }
+
+  const contentTypeHeader = response.headers.get('content-type') || '';
+  const contentType = contentTypeHeader.split(';')[0].trim().toLowerCase() || 'image/jpeg';
+
+  if (contentTypeHeader && !contentType.startsWith('image/')) {
+    throw new Error('Downloaded content is not an image');
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length) {
+    throw new Error('Downloaded avatar is empty');
+  }
+
+  if (buffer.length > 4 * 1024 * 1024) {
+    throw new Error('Avatar image is too large (max 4MB)');
+  }
+
+  return {
+    contentType,
+    base64: buffer.toString('base64'),
+    byteLength: buffer.length,
+  };
 }
 
 async function createVerificationBrowserView(accountId) {
@@ -1422,12 +1615,23 @@ async function prepareChatBrowserInner(accountId) {
   }
 
   if (hasLoadedChatView(accountId)) {
-    preparedChatPartitions.add(accountId);
+    const targetMode = browserModeKey(isFullBrowserAccess(accountId));
+    if (preparedBrowserModeByAccountId.get(accountId) === targetMode) {
+      preparedChatPartitions.add(accountId);
+      const existingView = getChatView(accountId);
+      if (existingView) {
+        await refreshMaloumCreatorBadgesWithDelay(existingView.webContents, accountId);
+      }
+      return { accountId, prepared: true, skipped: true };
+    }
+
+    preparedChatPartitions.delete(accountId);
     const existingView = getChatView(accountId);
     if (existingView) {
-      await refreshMaloumCreatorBadgesWithDelay(existingView.webContents, accountId);
+      await ensureChatViewMatchesMode(existingView.webContents, accountId);
+      preparedChatPartitions.add(accountId);
+      return { accountId, prepared: true, skipped: true };
     }
-    return { accountId, prepared: true, skipped: true };
   }
 
   if (preparedChatPartitions.has(accountId)) {
@@ -1499,7 +1703,7 @@ async function prepareAllChatBrowsers(accountIds) {
   };
 }
 
-async function showChatBrowser({ accountId, bounds }) {
+async function showChatBrowser({ accountId, bounds, fullBrowserAccess = false }) {
   if (!mainWindow) {
     throw new Error('Main window is not available');
   }
@@ -1507,6 +1711,8 @@ async function showChatBrowser({ accountId, bounds }) {
   if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
     throw new Error('Chat browser bounds are not available');
   }
+
+  fullBrowserAccessByAccountId.set(accountId, Boolean(fullBrowserAccess));
 
   if (activeChatAccountId && activeChatAccountId !== accountId) {
     parkChatView(activeChatAccountId);
@@ -1521,6 +1727,10 @@ async function showChatBrowser({ accountId, bounds }) {
 
   let view = getChatView(accountId);
   const reusedWarmView = Boolean(view && hasLoadedChatView(accountId));
+
+  if (view) {
+    await ensureChatViewMatchesMode(view.webContents, accountId);
+  }
 
   if (!view) {
     view = createChatView(accountId);
@@ -1621,7 +1831,7 @@ async function setDomXTheme(theme) {
     view.setBackgroundColor(maloumChatBackgroundColor(theme));
 
     const url = view.webContents.getURL();
-    if (!isMaloumManagedMaloumUrl(url)) {
+    if (!shouldRefreshMaloumUI(url, isFullBrowserAccess(accountId))) {
       continue;
     }
 
@@ -1697,6 +1907,8 @@ module.exports = {
   resizeVerifyBrowser,
   hideVerifyBrowser,
   verifyMaloumSessionForAccount,
+  reloginMaloumOnVerifyView,
+  fetchCreatorAvatarImage,
   setDomXTheme,
   getTranslationSettings,
   setTranslationSettings,

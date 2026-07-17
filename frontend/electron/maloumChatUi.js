@@ -133,14 +133,18 @@ const DOMX_TRANSLATION_CSS = `
   }
 `;
 
-const MEMBER_NOTES_TEMPLATE = `📍 Location:
+const MEMBER_NOTES_TEMPLATE = `😈 Fetishes / Kinks:
+🎓 Experience Level:
+🚫 Hard Limits:
+🧸 Toys Owned:
+👑 VIP Status:
+📦 Ongoing Sessions / Tasks:
+✅ Progress / Completed:
+🫶 Aftercare Needs:
+📝 Last Session Notes:
 🎂 Age:
-💼 Job:
-💍 Relationship status:
-😈 Fetish:
-🎮 Hobbies:
-💸 Payday:
-📝 Notes:`;
+📍 Location:
+💍 Relationship Status:`;
 
 const MALOUM_NIGHT_MODE_CSS = `
   html.domx-night-mode,
@@ -229,6 +233,16 @@ function getMaloumPageKind(url) {
   if (url.includes(MALOUM_VAULT_PATH)) return 'vault';
   if (url.includes('/chat') && !url.includes('/login')) return 'chat';
   return null;
+}
+
+function isMaloumAppUrl(url) {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.includes('maloum.com') && !parsed.pathname.includes('/login');
+  } catch {
+    return url.includes('maloum.com') && !url.includes('/login');
+  }
 }
 
 function getAddListDomUtilsScript() {
@@ -2224,16 +2238,18 @@ async function applyMaloumTheme(webContents, theme) {
   `);
 }
 
-async function installMaloumDomObserver(webContents, theme, activeChatter) {
+async function installMaloumDomObserver(webContents, theme, activeChatter, options = {}) {
   if (!webContents || webContents.isDestroyed()) {
     return;
   }
 
+  const { fullBrowserAccess = false } = options;
   const isNightMode = isNightTheme(theme);
 
   await webContents.executeJavaScript(`
-    (function(isNightMode) {
+    (function(isNightMode, fullBrowserAccess) {
       window.__domxMaloumThemeEnabled = isNightMode;
+      window.__domxFullBrowserAccess = fullBrowserAccess;
 
       ${getSentMessageTrackingScript(activeChatter)}
 
@@ -2324,15 +2340,24 @@ async function installMaloumDomObserver(webContents, theme, activeChatter) {
       };
 
       const runApply = () => {
-        applyChatCleanup();
-        applyAddListCleanup();
-        applyVaultCleanup();
+        if (!fullBrowserAccess) {
+          applyChatCleanup();
+          applyAddListCleanup();
+          applyVaultCleanup();
+        }
         applyTheme();
-        installMemberNotesButtonListener();
-        installSendButtonClickTracking();
-        installMaloumMessageDomObserver();
-        syncActiveChatterSnapshot();
-        applyDomxSentByLabels();
+
+        const onChatPage =
+          window.location.href.includes('/chat') &&
+          !window.location.href.includes('/login');
+
+        if (!fullBrowserAccess || onChatPage) {
+          installMemberNotesButtonListener();
+          installSendButtonClickTracking();
+          installMaloumMessageDomObserver();
+          syncActiveChatterSnapshot();
+          applyDomxSentByLabels();
+        }
       };
 
       runApply();
@@ -2367,7 +2392,7 @@ async function installMaloumDomObserver(webContents, theme, activeChatter) {
       observer = new MutationObserver(scheduleApply);
       observer.observe(document.body, observerOptions);
       window.__domxMaloumObserver = observer;
-    })(${isNightMode})
+    })(${isNightMode}, ${fullBrowserAccess})
   `);
 }
 
@@ -2406,6 +2431,34 @@ async function installPreSendTranslator(webContents, options = {}) {
   `);
 }
 
+async function refreshMaloumThemeOnly(webContents, theme) {
+  await applyMaloumTheme(webContents, theme);
+}
+
+async function refreshMaloumChatUIFullAccess(
+  webContents,
+  theme,
+  activeChatter,
+  translationSettings = {}
+) {
+  const preSendEnabled =
+    typeof translationSettings.preSendEnabled === 'boolean'
+      ? translationSettings.preSendEnabled
+      : true;
+  const historyEnabled =
+    typeof translationSettings.historyEnabled === 'boolean'
+      ? translationSettings.historyEnabled
+      : true;
+
+  await applyMaloumTheme(webContents, theme);
+  await installMaloumDomObserver(webContents, theme, activeChatter, {
+    fullBrowserAccess: true,
+  });
+  await installMaloumMessageTranslationSystem(webContents, { historyEnabled });
+  await installPreSendTranslator(webContents, { preSendTranslateEnabled: preSendEnabled });
+  await installMessageObservedTimeTracker(webContents);
+}
+
 async function refreshMaloumChatUI(webContents, theme, activeChatter, translationSettings = {}) {
   const preSendEnabled =
     typeof translationSettings.preSendEnabled === 'boolean'
@@ -2441,13 +2494,39 @@ async function refreshMaloumPageUI(
   theme,
   triggerUrl,
   activeChatter,
-  translationSettings = {}
+  translationSettings = {},
+  options = {}
 ) {
   if (!webContents || webContents.isDestroyed()) {
     return;
   }
 
+  const { fullBrowserAccess = false } = options;
   const url = triggerUrl || webContents.getURL();
+
+  if (fullBrowserAccess) {
+    if (!isMaloumAppUrl(url)) {
+      return;
+    }
+
+    const kind = getMaloumPageKind(url);
+    if (kind === 'chat') {
+      await refreshMaloumChatUIFullAccess(
+        webContents,
+        theme,
+        activeChatter,
+        translationSettings
+      );
+      return;
+    }
+
+    await refreshMaloumThemeOnly(webContents, theme);
+    await installMaloumDomObserver(webContents, theme, activeChatter, {
+      fullBrowserAccess: true,
+    });
+    return;
+  }
+
   const kind = getMaloumPageKind(url);
 
   if (kind === 'addList') {
@@ -2461,6 +2540,22 @@ async function refreshMaloumPageUI(
   if (kind === 'chat') {
     await refreshMaloumChatUI(webContents, theme, activeChatter, translationSettings);
   }
+}
+
+async function resetMaloumPageObservers(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+
+  await webContents.executeJavaScript(`
+    (function() {
+      if (window.__domxMaloumObserver) {
+        window.__domxMaloumObserver.disconnect();
+        window.__domxMaloumObserver = null;
+      }
+      window.__domxMaloumObserverInstalled = false;
+    })()
+  `);
 }
 
 async function applyTranslationSettings(webContents, settings = {}) {
@@ -2500,6 +2595,7 @@ async function applyTranslationSettings(webContents, settings = {}) {
 
 module.exports = {
   isNightTheme,
+  isMaloumAppUrl,
   MALOUM_ADD_LIST_PATH,
   MALOUM_VAULT_PATH,
   getMaloumPageKind,
@@ -2511,10 +2607,13 @@ module.exports = {
   installMaloumMessageTranslationSystem,
   installPreSendTranslator,
   applyTranslationSettings,
+  refreshMaloumThemeOnly,
+  refreshMaloumChatUIFullAccess,
   refreshMaloumChatUI,
   refreshMaloumAddListUI,
   refreshMaloumVaultUI,
   refreshMaloumPageUI,
+  resetMaloumPageObservers,
   buildMarkRenderedMessageScript,
   installMessageObservedTimeTracker,
   getResponseTimeSnapshot,

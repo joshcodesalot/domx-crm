@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertCircle, Bell, MessageSquare, RefreshCw, type LucideIcon } from 'lucide-react';
+import { AlertCircle, Bell, Globe, MessageSquare, RefreshCw, type LucideIcon } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import { useAuth } from '@/context/AuthContext';
@@ -118,10 +118,12 @@ export default function Chatter() {
   const [autoTranslateHistory, setAutoTranslateHistory] = useState(() =>
     readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true)
   );
+  const [fullBrowserMode, setFullBrowserMode] = useState(false);
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const isElectron = Boolean(window.electronAPI?.isElectron);
+  const canManageFullBrowser = hasPermission('creators.manage');
 
   const selectedCreator = creators.find((c) => c.id === selectedId) || null;
 
@@ -137,6 +139,7 @@ export default function Chatter() {
     if (window.electronAPI) {
       await window.electronAPI.hideChatBrowser();
     }
+    setFullBrowserMode(false);
   }, []);
 
   const loadCreatorsList = useCallback(async () => {
@@ -274,9 +277,11 @@ export default function Chatter() {
   }, [isElectron]);
 
   const openCreatorChat = useCallback(
-    async (creator: Creator) => {
+    async (creator: Creator, options: { fullBrowserAccess?: boolean } = {}) => {
+      const fullBrowserAccess = options.fullBrowserAccess ?? false;
       setSelectedId(creator.id);
       setSessionError(null);
+      setFullBrowserMode(fullBrowserAccess);
 
       if (!isElectron) {
         setSessionStatus('error');
@@ -303,6 +308,7 @@ export default function Chatter() {
           await window.electronAPI.setActiveChatter({
             userId: user.id,
             userName: user.name,
+            fullBrowserAccess,
           });
         }
 
@@ -320,6 +326,7 @@ export default function Chatter() {
         await window.electronAPI!.showChatBrowser({
           accountId: creator.accountId,
           bounds,
+          fullBrowserAccess,
         });
 
         try {
@@ -342,6 +349,7 @@ export default function Chatter() {
       } catch (err) {
         setSessionStatus('error');
         setSessionError(err instanceof Error ? err.message : 'Failed to load session');
+        setFullBrowserMode(false);
         await hideChatBrowser();
       }
     },
@@ -377,11 +385,19 @@ export default function Chatter() {
   }, [hideChatBrowser]);
 
   async function handleSelectCreator(creator: Creator) {
-    if (creator.id === selectedId && sessionStatus === 'valid') {
+    if (creator.id === selectedId && sessionStatus === 'valid' && !fullBrowserMode) {
       return;
     }
     setSessionStatus('loading');
-    await openCreatorChat(creator);
+    await openCreatorChat(creator, { fullBrowserAccess: false });
+  }
+
+  async function handleOpenFullBrowser(creator: Creator) {
+    if (creator.id !== selectedId) {
+      setSelectedId(creator.id);
+    }
+    setSessionStatus('loading');
+    await openCreatorChat(creator, { fullBrowserAccess: true });
   }
 
   async function handleRefresh() {
@@ -468,6 +484,11 @@ export default function Chatter() {
               const unread = getCreatorUnreadCounts(creator, badgeCountsByAccountId);
               const showReload =
                 isSelected && isElectron && sessionStatus === 'valid' && Boolean(creator.accountId);
+              const showFullBrowser =
+                canManageFullBrowser &&
+                isElectron &&
+                Boolean(creator.accountId) &&
+                creator.connectionStatus === 'connected';
               return (
                 <div
                   key={creator.id}
@@ -509,6 +530,21 @@ export default function Chatter() {
                       </div>
                     </div>
                   </button>
+                  {showFullBrowser ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleOpenFullBrowser(creator)}
+                      disabled={sessionStatus === 'loading'}
+                      className={`p-1.5 rounded-md shrink-0 transition-colors disabled:opacity-50 ${
+                        fullBrowserMode && isSelected
+                          ? 'text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900/20'
+                          : 'text-gray-400 hover:text-brand-600 dark:hover:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/20'
+                      }`}
+                      title="Open full browser"
+                    >
+                      <Globe className="w-4 h-4" />
+                    </button>
+                  ) : null}
                   {showReload ? (
                     <button
                       type="button"
@@ -570,6 +606,15 @@ export default function Chatter() {
         </aside>
 
         <section className="flex-1 flex flex-col min-w-0 min-h-0">
+          {fullBrowserMode && sessionStatus === 'valid' && (
+            <div className="shrink-0 px-4 py-2 border-b border-gray-200 dark:border-white/10 bg-brand-50/60 dark:bg-brand-900/10">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-brand-100 text-brand-700 dark:bg-brand-900/30 dark:text-brand-300">
+                <Globe className="w-3.5 h-3.5" />
+                Full browser
+              </span>
+            </div>
+          )}
+
           {!isElectron && (
             <div className="m-4 flex items-start gap-2 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/30 rounded-lg text-sm text-amber-800 dark:text-amber-200">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -604,7 +649,9 @@ export default function Chatter() {
             )}
             {!selectedCreator && sessionStatus !== 'loading' && (
               <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 p-4 text-center">
-                Choose a creator from the list to open their Maloum chat session.
+                {canManageFullBrowser
+                  ? 'Choose a creator for Chatter, or use the globe button for unrestricted Maloum access.'
+                  : 'Choose a creator from the list to open their Maloum chat session.'}
               </div>
             )}
           </div>

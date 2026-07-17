@@ -85,6 +85,7 @@ export interface Creator {
   accountId: string | null;
   partitionId: string | null;
   loginEmail: string | null;
+  hasSavedCredentials?: boolean;
   lastValidatedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -126,6 +127,7 @@ export interface ConnectCreatorInput {
   username?: string | null;
   postLoginUrl: string;
   avatarUrl?: string | null;
+  password?: string;
 }
 
 export interface ConnectCreatorResponse {
@@ -160,6 +162,13 @@ export interface ReconnectCreatorSessionInput {
   username?: string | null;
   postLoginUrl: string;
   avatarUrl?: string | null;
+  password?: string;
+  savePassword?: boolean;
+}
+
+export interface CreatorCredentialsResponse {
+  loginEmail: string | null;
+  loginPassword: string;
 }
 
 export interface DeleteCreatorResponse {
@@ -588,10 +597,26 @@ export async function deleteCreator(id: string): Promise<DeleteCreatorResponse> 
   });
 }
 
+export async function renameCreator(
+  creatorId: string,
+  displayName: string
+): Promise<{ creator: Creator }> {
+  return request<{ creator: Creator }>(`/api/creators/${creatorId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ displayName }),
+  });
+}
+
 export async function getCreatorSession(
   creatorId: string
 ): Promise<CreatorSessionResponse> {
   return request<CreatorSessionResponse>(`/api/creators/${creatorId}/session`);
+}
+
+export async function getCreatorCredentials(
+  creatorId: string
+): Promise<CreatorCredentialsResponse> {
+  return request<CreatorCredentialsResponse>(`/api/creators/${creatorId}/credentials`);
 }
 
 export async function updateCreatorSessionValidation(
@@ -607,14 +632,28 @@ export async function updateCreatorSessionValidation(
 export async function saveCreatorAvatarFromMaloum(
   creatorId: string,
   sourceUrl: string,
-  options: { overwrite?: boolean } = {}
+  options: { overwrite?: boolean; accountId: string }
 ): Promise<{ creator: Creator; skipped?: boolean; reason?: string }> {
+  if (!window.electronAPI?.isElectron) {
+    throw new Error('Saving Maloum avatars requires the DomX desktop app');
+  }
+
+  if (!options?.accountId) {
+    throw new Error('accountId is required to download avatar from Maloum');
+  }
+
+  const image = await window.electronAPI.fetchCreatorAvatarImage({
+    accountId: options.accountId,
+    sourceUrl,
+  });
+
   return request<{ creator: Creator; skipped?: boolean; reason?: string }>(
     `/api/creators/${creatorId}/avatar`,
     {
       method: 'POST',
       body: JSON.stringify({
-        sourceUrl,
+        imageBase64: image.base64,
+        contentType: image.contentType,
         overwrite: options.overwrite ?? false,
       }),
     }

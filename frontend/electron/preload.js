@@ -39,6 +39,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   hideVerifyBrowser: () => ipcRenderer.invoke('creator:hide-verify-browser'),
   resizeVerifyBrowser: (bounds) => ipcRenderer.invoke('creator:resize-verify-browser', bounds),
   verifyMaloumSession: (opts) => ipcRenderer.invoke('creator:verify-maloum-session', opts),
+  reloginMaloumOnVerifyView: (opts) =>
+    ipcRenderer.invoke('creator:relogin-maloum-verify', opts),
+  fetchCreatorAvatarImage: (opts) =>
+    ipcRenderer.invoke('creator:fetch-avatar-image', opts),
   setDomXTheme: (theme) => ipcRenderer.invoke('creator:set-domx-theme', theme),
   getTranslationSettings: () => ipcRenderer.invoke('creator:get-translation-settings'),
   setTranslationSettings: (settings) =>

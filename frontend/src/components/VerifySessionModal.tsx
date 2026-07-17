@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, ExternalLink, ShieldCheck, X } from 'lucide-react';
 import {
+  getCreatorCredentials,
   getCreatorSession,
+  reconnectCreatorSession,
   saveCreatorAvatarFromMaloum,
   shouldFetchMaloumIcon,
   updateCreatorSessionValidation,
@@ -36,9 +38,14 @@ function getCurrentDomXTheme(): 'dark' | 'light' {
   return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
 }
 
+function isLoginRedirectReason(reason: string): boolean {
+  return reason === 'Redirected to login' || reason === 'Redirected to login after profile check';
+}
+
 type VerifyPhase =
   | 'loading'
   | 'checking'
+  | 'relogging'
   | 'returning'
   | 'success'
   | 'invalid'
@@ -148,20 +155,83 @@ export default function VerifySessionModal({
 
         if (cancelled) return;
 
-        if (!verification.verified) {
+        let finalVerification = verification;
+
+        if (
+          !verification.verified &&
+          isLoginRedirectReason(verification.reason)
+        ) {
+          try {
+            const credentials = await getCreatorCredentials(creator.id);
+
+            if (cancelled) return;
+
+            setPhase('relogging');
+            setMessage('Session expired — logging in again…');
+
+            const captured = await window.electronAPI!.reloginMaloumOnVerifyView({
+              accountId: session.accountId,
+              email: credentials.loginEmail || creator.loginEmail || '',
+              password: credentials.loginPassword,
+            });
+
+            if (cancelled) return;
+
+            await reconnectCreatorSession(creator.id, {
+              email: credentials.loginEmail || creator.loginEmail || '',
+              cookies: captured.cookies,
+              origins: captured.origins,
+              displayName: captured.displayName,
+              username: captured.username,
+              postLoginUrl: captured.postLoginUrl,
+              avatarUrl: captured.avatarUrl,
+              password: credentials.loginPassword,
+            });
+
+            await window.electronAPI!.loadCreatorSession({
+              accountId: session.accountId,
+              cookies: captured.cookies as PlaywrightCookie[],
+              origins: captured.origins,
+              force: true,
+            });
+
+            if (cancelled) return;
+
+            setPhase('checking');
+            setMessage('Re-checking Maloum profile…');
+
+            finalVerification = await window.electronAPI!.verifyMaloumSession({
+              accountId: session.accountId,
+              theme: getCurrentDomXTheme(),
+              reuseVisibleView: true,
+            });
+          } catch (credErr) {
+            const isMissingCredentials =
+              credErr instanceof Error &&
+              credErr.message.includes('No saved credentials');
+
+            if (!isMissingCredentials) {
+              throw credErr;
+            }
+          }
+        }
+
+        if (cancelled) return;
+
+        if (!finalVerification.verified) {
           await updateCreatorSessionValidation(creator.id, false);
           setPhase('invalid');
           setMessage(
-            verification.reason === 'Redirected to login'
-              ? 'Session expired — Maloum redirected to the login page. Use Add Creator to reconnect this account.'
-              : verification.reason || 'Session could not be verified.'
+            isLoginRedirectReason(finalVerification.reason)
+              ? 'Session expired — Maloum redirected to the login page. Reconnect this account to sign in again.'
+              : finalVerification.reason || 'Session could not be verified.'
           );
           return;
         }
 
         if (
           shouldFetchMaloumIcon({
-            profileImageUrl: verification.profileImageUrl,
+            profileImageUrl: finalVerification.profileImageUrl,
             overwriteIcon: false,
             currentAvatarUrl: creator.avatarUrl,
             avatarSource: creator.avatarSource,
@@ -171,8 +241,11 @@ export default function VerifySessionModal({
           setMessage('Saving profile icon…');
           await saveCreatorAvatarFromMaloum(
             creator.id,
-            verification.profileImageUrl!,
-            { overwrite: false }
+            finalVerification.profileImageUrl!,
+            {
+              overwrite: false,
+              accountId: session.accountId,
+            }
           );
         }
 
@@ -242,7 +315,11 @@ export default function VerifySessionModal({
   }
 
   const lastValidated = formatValidatedAt(creator.lastValidatedAt);
-  const isRunning = phase === 'loading' || phase === 'checking' || phase === 'returning';
+  const isRunning =
+    phase === 'loading' ||
+    phase === 'checking' ||
+    phase === 'relogging' ||
+    phase === 'returning';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -328,6 +405,7 @@ export default function VerifySessionModal({
               <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-black/20">
                 {phase === 'loading' && 'Loading saved session…'}
                 {phase === 'checking' && 'Checking profile…'}
+                {phase === 'relogging' && 'Logging in again…'}
                 {phase === 'returning' && 'Returning to chat…'}
               </div>
             )}

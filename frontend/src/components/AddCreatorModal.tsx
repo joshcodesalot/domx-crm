@@ -192,6 +192,7 @@ export default function AddCreatorModal({
         username: captured.username,
         postLoginUrl: captured.postLoginUrl,
         avatarUrl: captured.avatarUrl,
+        ...(loginPassword.trim() ? { password: loginPassword } : {}),
       });
 
       await hideLoginBrowser();
@@ -212,6 +213,7 @@ export default function AddCreatorModal({
       username: captured.username,
       postLoginUrl: captured.postLoginUrl,
       avatarUrl: captured.avatarUrl,
+      ...(loginPassword.trim() ? { password: loginPassword } : {}),
     });
 
     setAccountToken(result.accountToken);
@@ -358,6 +360,7 @@ export default function AddCreatorModal({
       ) {
         await saveCreatorAvatarFromMaloum(creator.id, session.profileImageUrl, {
           overwrite: false,
+          accountId,
         });
       }
 

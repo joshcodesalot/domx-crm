@@ -37,7 +37,7 @@ From the `backend/` folder, copy to `/home/debian/domx_backend` on the server:
 | `data/avatars/` | Optional — can create empty on server |
 
 **Do not copy:**
-- `node_modules/` — must be installed on the server (Playwright and native deps are OS-specific)
+- `node_modules/` — must be installed on the server (native deps are OS-specific)
 - Any `dist/` or build output — the backend has none
 
 Example using rsync/scp:
@@ -57,8 +57,6 @@ mkdir -p /home/debian/domx_backend/data/avatars
 cd /home/debian/domx_backend
 
 yarn install                # or: npm ci
-npx playwright install chromium
-npx playwright install-deps chromium
 
 yarn migrate                # or: npm run migrate
 yarn seed                   # first time only — or: npm run seed
@@ -116,16 +114,12 @@ Then continue from section 3 below.
 
 ---
 
-## 3. Install Node dependencies and Playwright
+## 3. Install Node dependencies
 
 ```bash
 cd /home/debian/domx_backend
 yarn install                # or: npm ci
-npx playwright install chromium
-npx playwright install-deps chromium
 ```
-
-Playwright Chromium is required for creator account connect (Maloum login).
 
 Ensure the avatar upload directory exists:
 
@@ -170,7 +164,6 @@ DATABASE_URL=postgresql://postgres:STRONG_PASSWORD_HERE@127.0.0.1:5432/domx
 JWT_SECRET=generate-a-long-random-string
 CORS_ORIGIN=https://domx.low7labs.cloud
 ENCRYPTION_KEY=base64-encoded-32-byte-key
-PLAYWRIGHT_HEADLESS=true
 XAI_API_KEY=your-xai-api-key
 XAI_MODEL=grok-4.20-non-reasoning
 DOMX_ELECTRON_SERVICE_KEY=generate-a-long-random-string
@@ -337,16 +330,6 @@ screen -S domx-api -X quit
 screen -S domx-api -dm bash -c 'node src/index.js'
 ```
 
-If Playwright was upgraded, reinstall Chromium:
-
-```bash
-cd /home/debian/domx_backend
-npx playwright install chromium
-npx playwright install-deps chromium
-screen -S domx-api -X quit
-screen -S domx-api -dm bash -c 'node src/index.js'
-```
-
 ---
 
 ## Operations cheatsheet
@@ -372,10 +355,6 @@ screen -S domx-api -dm bash -c 'node src/index.js'
 **Database connection errors**
 - Check Postgres is accepting connections: `pg_isready`
 - Test credentials: `psql "$DATABASE_URL" -c 'SELECT 1'`
-
-**Playwright / creator connect fails**
-- Re-run: `npx playwright install-deps chromium`
-- Ensure `PLAYWRIGHT_HEADLESS=true` in `.env`
 
 **SSE / live events disconnect**
 - Confirm nginx has `proxy_buffering off` and long `proxy_read_timeout`

@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const AVATARS_DIR = path.join(__dirname, '../../data/avatars');
+const MAX_AVATAR_BYTES = 4 * 1024 * 1024;
 
 const EXT_BY_MIME = {
   'image/jpeg': 'jpg',
@@ -17,23 +18,10 @@ function ensureAvatarsDir() {
 
 function extensionFromContentType(contentType) {
   if (!contentType) {
-    return 'jpg';
+    return null;
   }
   const normalized = contentType.split(';')[0].trim().toLowerCase();
-  return EXT_BY_MIME[normalized] || 'jpg';
-}
-
-function extensionFromUrl(sourceUrl) {
-  try {
-    const pathname = new URL(sourceUrl).pathname;
-    const match = pathname.match(/\.(jpe?g|png|webp|gif)(?:$|\?)/i);
-    if (match) {
-      return match[1].toLowerCase().replace('jpeg', 'jpg');
-    }
-  } catch {
-    // ignore invalid URLs
-  }
-  return null;
+  return EXT_BY_MIME[normalized] || null;
 }
 
 function removeExistingAvatars(creatorId) {
@@ -47,53 +35,35 @@ function removeExistingAvatars(creatorId) {
 }
 
 /**
- * Download a Maloum profile image and save it locally for a creator.
+ * Persist a client-provided avatar image for a creator.
  * Returns the served avatar path (e.g. /uploads/avatars/{id}.jpg).
+ *
+ * Images must be fetched on the client (Electron) so the backend never
+ * contacts Maloum or other remote hosts.
  */
-async function downloadCreatorAvatar(creatorId, sourceUrl) {
-  if (!creatorId || !sourceUrl) {
-    throw new Error('Creator ID and source URL are required');
+function saveCreatorAvatarFromBuffer(creatorId, buffer, contentType) {
+  if (!creatorId) {
+    throw new Error('Creator ID is required');
   }
 
-  let parsed;
-  try {
-    parsed = new URL(sourceUrl);
-  } catch {
-    throw new Error('Invalid source URL');
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new Error('Avatar image data is required');
   }
 
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('Source URL must be http or https');
+  if (buffer.length > MAX_AVATAR_BYTES) {
+    throw new Error('Avatar image is too large (max 4MB)');
   }
 
-  const response = await fetch(sourceUrl, {
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    },
-    signal: AbortSignal.timeout(30000),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to download avatar (${response.status})`);
+  const ext = extensionFromContentType(contentType);
+  if (!ext) {
+    throw new Error('Unsupported avatar image type');
   }
-
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType && !contentType.startsWith('image/')) {
-    throw new Error('Downloaded content is not an image');
-  }
-
-  const ext =
-    extensionFromContentType(contentType) ||
-    extensionFromUrl(sourceUrl) ||
-    'jpg';
 
   ensureAvatarsDir();
   removeExistingAvatars(creatorId);
 
   const fileName = `${creatorId}.${ext}`;
   const filePath = path.join(AVATARS_DIR, fileName);
-  const buffer = Buffer.from(await response.arrayBuffer());
   fs.writeFileSync(filePath, buffer);
 
   return `/uploads/avatars/${fileName}`;
@@ -101,5 +71,6 @@ async function downloadCreatorAvatar(creatorId, sourceUrl) {
 
 module.exports = {
   AVATARS_DIR,
-  downloadCreatorAvatar,
+  MAX_AVATAR_BYTES,
+  saveCreatorAvatarFromBuffer,
 };

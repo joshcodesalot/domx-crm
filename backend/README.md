@@ -9,13 +9,9 @@ Configure backend .env — update backend/.env with your PostgreSQL credentials:
 DATABASE_URL=postgresql://YOUR_USER:YOUR_PASSWORD@localhost:5432/domx
 JWT_SECRET=your-secret-here
 ENCRYPTION_KEY=base64-encoded-32-byte-key
-PLAYWRIGHT_HEADLESS=true
 Generate an encryption key:
 
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
-Install Playwright Chromium (required once for creator account connect):
-
-npx playwright install chromium
 Migrate and seed roles/permissions:
 
 cd backend

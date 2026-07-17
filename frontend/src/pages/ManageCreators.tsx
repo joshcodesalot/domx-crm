@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Plus,
   ImageIcon,
+  Pencil,
   RefreshCw,
   ShieldCheck,
   Trash2,
@@ -11,6 +12,7 @@ import AppLayout from '@/components/AppLayout';
 import AddCreatorModal from '@/components/AddCreatorModal';
 import AssignCreatorStaffModal from '@/components/AssignCreatorStaffModal';
 import RemoveCreatorModal from '@/components/RemoveCreatorModal';
+import RenameCreatorModal from '@/components/RenameCreatorModal';
 import VerifySessionModal from '@/components/VerifySessionModal';
 import { useAuth } from '@/context/AuthContext';
 import { deleteCreator, getCreatorSession, getCreators, resolveCreatorAvatarUrl, saveCreatorAvatarFromMaloum, type Creator } from '@/lib/api';
@@ -64,6 +66,7 @@ export default function ManageCreators() {
   const [removeTarget, setRemoveTarget] = useState<Creator | null>(null);
   const [staffTarget, setStaffTarget] = useState<Creator | null>(null);
   const [verifyTarget, setVerifyTarget] = useState<Creator | null>(null);
+  const [renameTarget, setRenameTarget] = useState<Creator | null>(null);
   const [refreshingIconId, setRefreshingIconId] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
 
@@ -143,7 +146,7 @@ export default function ManageCreators() {
       await saveCreatorAvatarFromMaloum(
         creator.id,
         verification.profileImageUrl,
-        { overwrite: true }
+        { overwrite: true, accountId: session.accountId }
       );
 
       await loadCreators();
@@ -350,6 +353,14 @@ export default function ManageCreators() {
                           </button>
                           <button
                             type="button"
+                            className="p-1.5 text-gray-400 hover:text-brand-600 dark:hover:text-brand-400 rounded-md hover:bg-brand-50 dark:hover:bg-brand-900/20 transition-colors"
+                            title="Rename creator"
+                            onClick={() => setRenameTarget(creator)}
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
                             className="p-1.5 text-gray-400 hover:text-emerald-500 dark:hover:text-emerald-400 rounded-md hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors"
                             title="Manage staff"
                             onClick={() => setStaffTarget(creator)}
@@ -404,6 +415,15 @@ export default function ManageCreators() {
         <AssignCreatorStaffModal
           creator={staffTarget}
           onClose={() => setStaffTarget(null)}
+          onSaved={loadCreators}
+        />
+      )}
+
+      {renameTarget && (
+        <RenameCreatorModal
+          creatorId={renameTarget.id}
+          currentDisplayName={renameTarget.displayName}
+          onClose={() => setRenameTarget(null)}
           onSaved={loadCreators}
         />
       )}

@@ -60,9 +60,30 @@ function generateAccountToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
+function encryptSecret(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const normalized = String(value);
+  if (!normalized) {
+    return null;
+  }
+  return encryptJson({ v: normalized });
+}
+
+function decryptSecret(buffer) {
+  if (!buffer) {
+    return null;
+  }
+  const payload = decryptJson(buffer);
+  return typeof payload?.v === 'string' ? payload.v : null;
+}
+
 module.exports = {
   encryptJson,
   decryptJson,
+  encryptSecret,
+  decryptSecret,
   hashToken,
   generateAccountToken,
 };

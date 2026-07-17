@@ -157,6 +157,16 @@ function registerCreatorIpc() {
   );
 
   ipcMain.handle(
+    'creator:relogin-maloum-verify',
+    guardCreatorIpc(async (_event, payload) => creatorBrowser.reloginMaloumOnVerifyView(payload))
+  );
+
+  ipcMain.handle(
+    'creator:fetch-avatar-image',
+    guardCreatorIpc(async (_event, payload) => creatorBrowser.fetchCreatorAvatarImage(payload))
+  );
+
+  ipcMain.handle(
     'creator:set-domx-theme',
     guardCreatorIpc(async (_event, theme) => creatorBrowser.setDomXTheme(theme))
   );

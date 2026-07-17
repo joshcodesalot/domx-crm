@@ -168,6 +168,7 @@ export interface ElectronAPI {
   showChatBrowser: (opts: {
     accountId: string;
     bounds: BrowserBounds;
+    fullBrowserAccess?: boolean;
   }) => Promise<{ accountId: string; partitionId: string }>;
   hideChatBrowser: () => Promise<void>;
   resizeChatBrowser: (bounds: BrowserBounds) => Promise<void>;
@@ -243,6 +244,31 @@ export interface ElectronAPI {
     reason: string;
     profileImageUrl: string | null;
   }>;
+  reloginMaloumOnVerifyView: (opts: {
+    accountId: string;
+    email: string;
+    password: string;
+  }) => Promise<{
+    accountId: string;
+    partitionId: string;
+    displayName: string;
+    username: string | null;
+    postLoginUrl: string;
+    avatarUrl: string | null;
+    cookies: PlaywrightCookie[];
+    origins: Array<{
+      origin: string;
+      localStorage: Array<{ name: string; value: string }>;
+    }>;
+  }>;
+  fetchCreatorAvatarImage: (opts: {
+    accountId: string;
+    sourceUrl: string;
+  }) => Promise<{
+    contentType: string;
+    base64: string;
+    byteLength: number;
+  }>;
   setDomXTheme: (theme: 'dark' | 'light' | 'night' | 'day') => Promise<void>;
   getTranslationSettings: () => Promise<TranslationSettings>;
   setTranslationSettings: (
@@ -250,7 +276,11 @@ export interface ElectronAPI {
   ) => Promise<TranslationSettings>;
   getCreatorBadgeCounts: () => Promise<Record<string, CreatorBadgeCounts>>;
   getCreatorBadgeCountsForAccount: (accountId: string) => Promise<CreatorBadgeCounts>;
-  setActiveChatter: (payload: { userId: string; userName: string }) => Promise<{ ok: boolean }>;
+  setActiveChatter: (payload: {
+    userId: string;
+    userName: string;
+    fullBrowserAccess?: boolean;
+  }) => Promise<{ ok: boolean }>;
   registerCreatorMapping: (payload: {
     accountId: string;
     creatorId: string;

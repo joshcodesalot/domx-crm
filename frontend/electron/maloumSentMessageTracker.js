@@ -197,7 +197,7 @@ function rememberFanInfo(chatId, fanInfo) {
   });
 }
 
-let activeChatter = { userId: null, userName: null };
+let activeChatter = { userId: null, userName: null, fullBrowserAccess: false };
 
 function isMaloumSendMessageUrl(url) {
   return SEND_MESSAGE_API_REGEX.test(url);
@@ -667,10 +667,11 @@ function setMainWindow(win) {
   mainWindowRef = win;
 }
 
-function setActiveChatter({ userId, userName }) {
+function setActiveChatter({ userId, userName, fullBrowserAccess = false }) {
   activeChatter = {
     userId: userId || null,
     userName: userName || null,
+    fullBrowserAccess: Boolean(fullBrowserAccess),
   };
 }
 

@@ -6,11 +6,13 @@ const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/authorize');
 const {
   decryptJson,
+  decryptSecret,
   encryptJson,
+  encryptSecret,
   hashToken,
   generateAccountToken,
 } = require('../services/crypto');
-const { downloadCreatorAvatar } = require('../services/creatorAvatar');
+const { saveCreatorAvatarFromBuffer } = require('../services/creatorAvatar');
 const {
   userSeesAllCreators,
   userCanAccessCreator,
@@ -45,6 +47,7 @@ function toCreator(row) {
     accountId: row.accountId || null,
     partitionId: row.partitionId || null,
     loginEmail: row.loginEmail || null,
+    hasSavedCredentials: Boolean(row.encryptedLoginPassword),
     lastValidatedAt: row.lastValidatedAt || null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -107,8 +110,18 @@ async function cleanupExpiredPending() {
 const CREATOR_SELECT_COLUMNS = `
   id, "displayName", username, platform, "connectionStatus",
   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
-  "loginEmail", "lastValidatedAt", "createdAt", "updatedAt"
+  "loginEmail", "encryptedLoginPassword", "lastValidatedAt", "createdAt", "updatedAt"
 `;
+
+function encryptOptionalLoginPassword(password) {
+  if (password === undefined || password === null) {
+    return undefined;
+  }
+  if (typeof password !== 'string' || !password.length) {
+    return null;
+  }
+  return encryptSecret(password);
+}
 
 function toCreatorStaff(row) {
   return {
@@ -135,7 +148,8 @@ router.get('/', authenticate, requirePermission('creators.view'), async (req, re
       result = await pool.query(
         `SELECT c.id, c."displayName", c.username, c.platform, c."connectionStatus",
                 c."postLoginUrl", c."avatarUrl", c."avatarSource", c."staffCount", c."accountId",
-                c."partitionId", c."loginEmail", c."lastValidatedAt", c."createdAt", c."updatedAt"
+                c."partitionId", c."loginEmail", c."encryptedLoginPassword", c."lastValidatedAt",
+                c."createdAt", c."updatedAt"
          FROM creators c
          INNER JOIN creator_staff_assignments a
            ON a."creatorId" = c.id AND a."userId" = $1
@@ -167,6 +181,7 @@ router.post(
       username,
       postLoginUrl,
       avatarUrl,
+      password,
     } = req.body;
 
     if (!accountId || !platform) {
@@ -231,15 +246,16 @@ router.post(
         origins: origins || [],
         loginEmail,
       });
+      const encryptedLoginPassword = encryptOptionalLoginPassword(password);
       const expiresAt = new Date(Date.now() + PENDING_TTL_MINUTES * 60 * 1000);
 
       await pool.query(
         `INSERT INTO creator_connect_pending (
            "accountId", "accountTokenHash", "partitionId", platform,
            "displayName", username, "postLoginUrl", "avatarUrl", "encryptedSession",
-           "loginEmail", "createdBy", "expiresAt"
+           "loginEmail", "encryptedLoginPassword", "createdBy", "expiresAt"
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
           accountId,
           accountTokenHash,
@@ -251,6 +267,7 @@ router.post(
           avatarUrl || null,
           encryptedSession,
           loginEmail,
+          encryptedLoginPassword ?? null,
           req.user.id,
           expiresAt,
         ]
@@ -356,9 +373,9 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
       `INSERT INTO creators (
          "displayName", username, platform, "postLoginUrl", "avatarUrl", "connectionStatus",
          "accountId", "accountTokenHash", "partitionId", "encryptedSession",
-         "loginEmail", "lastValidatedAt"
+         "loginEmail", "encryptedLoginPassword", "lastValidatedAt"
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING id, "displayName", username, platform, "connectionStatus",
                  "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
                  "loginEmail", "lastValidatedAt", "createdAt", "updatedAt"`,
@@ -374,6 +391,7 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
         pending?.partitionId || null,
         pending?.encryptedSession || null,
         pending?.loginEmail || null,
+        pending?.encryptedLoginPassword || null,
         pending ? new Date() : null,
       ]
     );
@@ -601,6 +619,8 @@ router.put(
       username,
       postLoginUrl,
       avatarUrl,
+      password,
+      savePassword,
     } = req.body;
 
     if (!isValidUuid(id)) {
@@ -645,6 +665,24 @@ router.put(
           ? avatarUrl
           : creator.avatarUrl;
 
+      const params = [
+        id,
+        encryptedSession,
+        loginEmail,
+        displayName?.trim() || null,
+        username || null,
+        postLoginUrl || null,
+        nextAvatarUrl || null,
+      ];
+
+      let passwordSetClause = '';
+      if (password !== undefined) {
+        passwordSetClause = `"encryptedLoginPassword" = $8,`;
+        params.push(encryptOptionalLoginPassword(password));
+      } else if (savePassword === false) {
+        passwordSetClause = `"encryptedLoginPassword" = NULL,`;
+      }
+
       const result = await pool.query(
         `UPDATE creators
          SET "encryptedSession" = $2,
@@ -653,20 +691,13 @@ router.put(
              username = COALESCE($5, username),
              "postLoginUrl" = COALESCE($6, "postLoginUrl"),
              "avatarUrl" = COALESCE($7, "avatarUrl"),
+             ${passwordSetClause}
              "connectionStatus" = 'connected',
              "lastValidatedAt" = NOW(),
              "updatedAt" = NOW()
          WHERE id = $1
          RETURNING ${CREATOR_SELECT_COLUMNS}`,
-        [
-          id,
-          encryptedSession,
-          loginEmail,
-          displayName?.trim() || null,
-          username || null,
-          postLoginUrl || null,
-          nextAvatarUrl || null,
-        ]
+        params
       );
 
       res.json({
@@ -678,6 +709,50 @@ router.put(
       });
     } catch (err) {
       console.error('Update creator session error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/:id/credentials',
+  authenticate,
+  requirePermission('creators.manage'),
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const result = await pool.query(
+        `SELECT id, "loginEmail", "encryptedLoginPassword"
+         FROM creators
+         WHERE id = $1`,
+        [id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+
+      const creator = result.rows[0];
+      if (!creator.encryptedLoginPassword) {
+        return res.status(404).json({ error: 'No saved credentials for this creator' });
+      }
+
+      const loginPassword = decryptSecret(creator.encryptedLoginPassword);
+      if (!loginPassword) {
+        return res.status(404).json({ error: 'No saved credentials for this creator' });
+      }
+
+      res.json({
+        loginEmail: creator.loginEmail || null,
+        loginPassword,
+      });
+    } catch (err) {
+      console.error('Get creator credentials error:', err);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -744,14 +819,18 @@ router.post(
   requirePermission('creators.manage'),
   async (req, res) => {
     const { id } = req.params;
-    const { sourceUrl, overwrite = false } = req.body;
+    const { imageBase64, contentType, overwrite = false } = req.body;
 
     if (!isValidUuid(id)) {
       return res.status(400).json({ error: 'Invalid creator ID' });
     }
 
-    if (!sourceUrl || typeof sourceUrl !== 'string') {
-      return res.status(400).json({ error: 'sourceUrl is required' });
+    if (!imageBase64 || typeof imageBase64 !== 'string') {
+      return res.status(400).json({ error: 'imageBase64 is required' });
+    }
+
+    if (!contentType || typeof contentType !== 'string') {
+      return res.status(400).json({ error: 'contentType is required' });
     }
 
     try {
@@ -787,7 +866,16 @@ router.post(
         });
       }
 
-      const avatarPath = await downloadCreatorAvatar(id, sourceUrl.trim());
+      const buffer = Buffer.from(imageBase64, 'base64');
+      if (!buffer.length) {
+        return res.status(400).json({ error: 'imageBase64 is invalid' });
+      }
+
+      const avatarPath = saveCreatorAvatarFromBuffer(
+        id,
+        buffer,
+        contentType.trim()
+      );
 
       const result = await pool.query(
         `UPDATE creators
@@ -804,9 +892,48 @@ router.post(
       res.json({ creator: toCreator(result.rows[0]) });
     } catch (err) {
       console.error('Save creator avatar error:', err);
-      res.status(500).json({
-        error: err.message || 'Failed to save creator avatar',
-      });
+      const message = err.message || 'Failed to save creator avatar';
+      const status =
+        /required|invalid|unsupported|too large/i.test(message) ? 400 : 500;
+      res.status(status).json({ error: message });
+    }
+  }
+);
+
+router.patch(
+  '/:id',
+  authenticate,
+  requirePermission('creators.manage'),
+  async (req, res) => {
+    const { id } = req.params;
+    const { displayName } = req.body;
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    if (!displayName || typeof displayName !== 'string' || !displayName.trim()) {
+      return res.status(400).json({ error: 'displayName is required' });
+    }
+
+    try {
+      const result = await pool.query(
+        `UPDATE creators
+         SET "displayName" = $2,
+             "updatedAt" = NOW()
+         WHERE id = $1
+         RETURNING ${CREATOR_SELECT_COLUMNS}`,
+        [id, displayName.trim()]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+
+      res.json({ creator: toCreator(result.rows[0]) });
+    } catch (err) {
+      console.error('Rename creator error:', err);
+      res.status(500).json({ error: 'Internal server error' });
     }
   }
 );
