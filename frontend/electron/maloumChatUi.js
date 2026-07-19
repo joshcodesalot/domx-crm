@@ -2096,9 +2096,10 @@ function getChatLayoutCleanupScript() {
   return `
       const mainWrapper = document.querySelector('#root > div > div > div');
       if (mainWrapper) {
-        mainWrapper.classList.remove('ml-0', 'flex-col', 'sm:ml-20', 'sm:flex-row', 'lg:ml-60');
-        mainWrapper.classList.add('ml-60', 'min-w-[1200px]', 'flex-row');
+        mainWrapper.classList.remove('ml-0', 'ml-60', 'flex-col', 'sm:ml-20', 'sm:flex-row', 'lg:ml-60');
+        mainWrapper.classList.add('ml-0', 'min-w-[1200px]', 'flex-row');
         mainWrapper.style.minWidth = '1200px';
+        mainWrapper.style.marginLeft = '0';
 
         const chatColumn = mainWrapper.querySelector('.full-height.scrollbar-hide.w-80');
         if (chatColumn) {
