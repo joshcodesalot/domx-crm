@@ -235,6 +235,7 @@ async function runUpdateCheck() {
         });
       } else if (!state.blocked) {
         setIdleState();
+        sendToRenderer('updater:not-available', getUpdaterState());
       }
       return result;
     }
@@ -248,6 +249,7 @@ async function runUpdateCheck() {
     }
 
     setIdleState();
+    sendToRenderer('updater:not-available', getUpdaterState());
     return { available: false };
   } catch (error) {
     console.error('[updater] update check failed:', error);

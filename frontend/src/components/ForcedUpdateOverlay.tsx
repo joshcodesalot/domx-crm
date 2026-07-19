@@ -76,7 +76,7 @@ export default function ForcedUpdateOverlay() {
         ) : null}
 
         <div className="mt-6">
-          {isMac ? (
+          {isMac && state.blocked ? (
             <button
               type="button"
               onClick={() => void openMacDownload()}
