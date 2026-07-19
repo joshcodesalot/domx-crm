@@ -80,8 +80,6 @@ function getPreparedViewsForBadgePolling() {
   return views;
 }
 
-const preparingChatAccounts = new Set();
-const refreshMaloumChatUIChains = new Map();
 const fullBrowserAccessByAccountId = new Map();
 const preparedBrowserModeByAccountId = new Map();
 
