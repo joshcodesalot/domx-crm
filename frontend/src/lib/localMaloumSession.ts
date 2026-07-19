@@ -113,18 +113,26 @@ export async function ensureLocalMaloumSessionForChat(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
 
-    if (isPageLoadTimeoutError(message)) {
-      throw new LocalMaloumSessionError(
-        'Maloum chat is taking too long to load. Check your network and try again.',
-        'page_load_timeout'
-      );
-    }
+    const shouldRetryWithLogin =
+      isLoginRedirectError(message) || isPageLoadTimeoutError(message);
 
-    if (!isLoginRedirectError(message)) {
+    if (!shouldRetryWithLogin) {
       throw err;
     }
 
-    await loginCreatorLocallyWithSavedCredentials(creatorId, accountId, loginEmail);
-    await tryPrepare();
+    try {
+      await loginCreatorLocallyWithSavedCredentials(creatorId, accountId, loginEmail);
+      await tryPrepare();
+    } catch (retryErr) {
+      const retryMessage =
+        retryErr instanceof Error ? retryErr.message : String(retryErr);
+      if (isPageLoadTimeoutError(retryMessage)) {
+        throw new LocalMaloumSessionError(
+          'Maloum chat is taking too long to load. Check your network and try again.',
+          'page_load_timeout'
+        );
+      }
+      throw retryErr;
+    }
   }
 }

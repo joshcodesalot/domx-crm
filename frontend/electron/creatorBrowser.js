@@ -35,6 +35,7 @@ const {
 const {
   MALOUM_PROFILE_URL,
   verifyMaloumSession: runVerifyMaloumSession,
+  waitForNetworkIdle,
 } = require('./maloumSessionVerify');
 
 const MALOUM_LOGIN_URL = 'https://app.maloum.com/login';
@@ -356,7 +357,7 @@ async function handleEmbeddedPageLoad(webContents, accountId, { withConsent = fa
   await injectSessionStorageIfNeeded(webContents, accountId);
 }
 
-async function waitForMaloumChatRoot(webContents, attempts = 25) {
+async function waitForMaloumChatRoot(webContents, attempts = 100) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (webContents.isDestroyed()) {
       return false;
@@ -374,7 +375,7 @@ async function waitForMaloumChatRoot(webContents, attempts = 25) {
       return true;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
   return false;
@@ -430,12 +431,15 @@ async function prepareMaloumChatPage(webContents, accountId) {
       if (urlAfterNav.includes('/login')) {
         throw new Error('Session expired or invalid — Maloum redirected to login.');
       }
+      await waitForNetworkIdle(webContents, 15000).catch(() => {});
     }
 
     const ready = await waitForMaloumChatRoot(webContents);
     if (!ready) {
       const stalledUrl = webContents.isDestroyed() ? null : webContents.getURL();
-      throw new Error('Maloum chat page did not finish loading.');
+      throw new Error(
+        `Maloum chat page did not finish loading${stalledUrl ? ` (url=${stalledUrl})` : ''}.`
+      );
     }
 
     await acceptCookieConsent(webContents);
@@ -473,7 +477,7 @@ async function loadPreparedChatView(webContents, accountId) {
     if (webContents.getURL().includes('/login')) {
       throw new Error('Session expired or invalid — Maloum redirected to login.');
     }
-    await waitForMaloumChatRoot(webContents, 20);
+    await waitForMaloumChatRoot(webContents);
   }
 
   await runRefreshMaloumPageUISerialized(webContents, currentDomXTheme, accountId, webContents.getURL());
@@ -625,6 +629,7 @@ function createChatView(accountId) {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
+      backgroundThrottling: false,
     },
   });
   view.setBackgroundColor(maloumChatBackgroundColor());
@@ -1414,7 +1419,6 @@ async function hydrateCreatorProfile(accountId) {
   if (maloumCookies.length > 0) {
     const localProfile = profileStorage.readLocalProfile(accountId);
     pendingStorageByAccount.set(accountId, localProfile?.origins || []);
-    storageInjectedForAccount.add(accountId);
     warmSessionAccounts.add(accountId);
 
     return { hydrated: true, source: 'partition', accountId };

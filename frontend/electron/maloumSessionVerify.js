@@ -236,4 +236,5 @@ module.exports = {
   MALOUM_CHAT_URL,
   PROFILE_IMAGE_SELECTOR,
   verifyMaloumSession,
+  waitForNetworkIdle,
 };
