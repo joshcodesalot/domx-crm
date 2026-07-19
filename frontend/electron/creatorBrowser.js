@@ -139,6 +139,53 @@ function withPrepareLock(task) {
   return next;
 }
 
+const localLoginChains = new Map();
+
+function withAccountLoginLock(accountId, task) {
+  const previous = localLoginChains.get(accountId) || Promise.resolve();
+  const next = previous.then(task, task);
+  localLoginChains.set(accountId, next.catch(() => {}));
+  return next;
+}
+
+function classifyMaloumLoginError(message) {
+  const normalized = String(message || '').toLowerCase();
+
+  if (
+    normalized.includes('email and/or password') ||
+    normalized.includes('incorrect') ||
+    normalized.includes('invalid credentials')
+  ) {
+    return {
+      ok: false,
+      reason: 'invalid_credentials',
+      message: message || 'Maloum rejected the saved email or password.',
+    };
+  }
+
+  if (
+    normalized.includes('security check') ||
+    normalized.includes('login form did not become ready') ||
+    normalized.includes('login timed out') ||
+    normalized.includes('finish signing in') ||
+    normalized.includes('login is not complete')
+  ) {
+    return {
+      ok: false,
+      reason: 'interaction_required',
+      message:
+        message ||
+        'Maloum requires additional verification. Complete it in the embedded browser, then try again.',
+    };
+  }
+
+  return {
+    ok: false,
+    reason: 'transient_failure',
+    message: message || 'Maloum login failed.',
+  };
+}
+
 function maloumChatBackgroundColor(theme = currentDomXTheme) {
   return isNightTheme(theme) ? '#0f1115' : '#ffffff';
 }
@@ -668,12 +715,30 @@ function releaseCreatorChat(accountId) {
   return { released: true, accountId };
 }
 
-function releaseAllCreatorChats() {
-  const accountIds = [...chatBrowserViews.keys()];
-  for (const accountId of accountIds) {
-    destroyChatView(accountId);
+async function releaseAllCreatorChats() {
+  const accountIds = new Set([
+    ...chatBrowserViews.keys(),
+    ...warmSessionAccounts,
+    ...preparedChatPartitions,
+  ]);
+
+  try {
+    const fs = require('fs');
+    const { getProfilesRoot } = require('./app-paths');
+    for (const entry of fs.readdirSync(getProfilesRoot(), { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        accountIds.add(entry.name);
+      }
+    }
+  } catch {
+    // Ignore missing profiles root during cleanup.
   }
-  return { released: accountIds.length, accountIds };
+
+  for (const accountId of accountIds) {
+    await clearSession(accountId);
+  }
+
+  return { released: accountIds.size, accountIds: [...accountIds] };
 }
 
 function isChatBrowserAttached() {
@@ -1127,6 +1192,61 @@ async function reloginMaloumOnVerifyView({ accountId, email, password }) {
   });
 }
 
+async function loginCreatorLocallyInner({ accountId, email, password, clearExisting = true }) {
+  if (!mainWindow) {
+    return {
+      ok: false,
+      reason: 'transient_failure',
+      message: 'Main window is not available',
+    };
+  }
+
+  if (!accountId || !email || !password) {
+    return {
+      ok: false,
+      reason: 'missing_credentials',
+      message: 'Account ID, email, and password are required',
+    };
+  }
+
+  if (clearExisting) {
+    await clearSession(accountId);
+  }
+
+  parkActiveChatView();
+
+  const view = createChatView(accountId);
+  setActiveChatView(accountId, view);
+  attachOffScreenChatView(view);
+
+  try {
+    await reloginMaloumInWebContents({
+      accountId,
+      webContents: view.webContents,
+      email: email.trim(),
+      password,
+    });
+
+    preparedChatPartitions.delete(accountId);
+    return { ok: true, accountId };
+  } catch (err) {
+    warmSessionAccounts.delete(accountId);
+    preparedChatPartitions.delete(accountId);
+    return classifyMaloumLoginError(err instanceof Error ? err.message : String(err));
+  } finally {
+    destroyChatView(accountId);
+    if (activeChatAccountId === accountId) {
+      chatBrowserView = null;
+      activeChatAccountId = null;
+    }
+  }
+}
+
+async function loginCreatorLocally(payload) {
+  const accountId = payload?.accountId;
+  return withAccountLoginLock(accountId, () => loginCreatorLocallyInner(payload));
+}
+
 async function scrapeMaloumProfileMetadata(webContents) {
   await safeLoadURL(webContents, MALOUM_PROFILE_URL);
   await waitUntilNavigated(
@@ -1362,6 +1482,11 @@ async function loadCreatorSession({ accountId, cookies, origins, force = false, 
     (c.domain || '').includes('maloum.com')
   );
 
+  if (maloumCookies.length === 0) {
+    warmSessionAccounts.delete(accountId);
+    throw new Error('Failed to import Maloum session cookies.');
+  }
+
   warmSessionAccounts.add(accountId);
 
   profileStorage.writeLocalProfile(accountId, {
@@ -1370,7 +1495,13 @@ async function loadCreatorSession({ accountId, cookies, origins, force = false, 
     savedAt: savedAt || undefined,
   });
 
-  return { imported: cookies.length, accountId, partitionId: `persist:creator-${accountId}` };
+  return {
+    imported: cookies.length,
+    cookiesSet,
+    cookiesFailed,
+    accountId,
+    partitionId: `persist:creator-${accountId}`,
+  };
 }
 
 async function preloadCreatorSessions(sessions) {
@@ -1919,6 +2050,7 @@ module.exports = {
   hideVerifyBrowser,
   verifyMaloumSessionForAccount,
   reloginMaloumOnVerifyView,
+  loginCreatorLocally,
   fetchCreatorAvatarImage,
   setDomXTheme,
   getTranslationSettings,

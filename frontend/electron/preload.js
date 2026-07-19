@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   verifyMaloumSession: (opts) => ipcRenderer.invoke('creator:verify-maloum-session', opts),
   reloginMaloumOnVerifyView: (opts) =>
     ipcRenderer.invoke('creator:relogin-maloum-verify', opts),
+  loginCreatorLocally: (opts) => ipcRenderer.invoke('creator:login-locally', opts),
   fetchCreatorAvatarImage: (opts) =>
     ipcRenderer.invoke('creator:fetch-avatar-image', opts),
   setDomXTheme: (theme) => ipcRenderer.invoke('creator:set-domx-theme', theme),

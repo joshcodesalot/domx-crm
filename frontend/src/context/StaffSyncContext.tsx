@@ -100,7 +100,9 @@ export function StaffSyncProvider({ children }: { children: ReactNode }) {
       }
 
       if (event.type === 'creator:access-revoked' && event.accountId) {
-        if (window.electronAPI?.releaseCreatorChat) {
+        if (window.electronAPI?.clearSession) {
+          await window.electronAPI.clearSession(event.accountId);
+        } else if (window.electronAPI?.releaseCreatorChat) {
           await window.electronAPI.releaseCreatorChat(event.accountId);
         }
       }

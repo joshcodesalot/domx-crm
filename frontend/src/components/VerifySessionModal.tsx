@@ -2,14 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, ExternalLink, ShieldCheck, X } from 'lucide-react';
 import {
   getCreatorCredentials,
-  getCreatorSession,
-  reconnectCreatorSession,
   saveCreatorAvatarFromMaloum,
   shouldFetchMaloumIcon,
   updateCreatorSessionValidation,
   type Creator,
 } from '@/lib/api';
-import type { BrowserBounds, PlaywrightCookie } from '@/types/electron';
+import type { BrowserBounds } from '@/types/electron';
 
 const MALOUM_VERIFY_URL = 'https://app.maloum.com/profile';
 
@@ -114,21 +112,13 @@ export default function VerifySessionModal({
       }
 
       try {
-        const session = await getCreatorSession(creator.id);
+        accountIdRef.current = creator.accountId;
 
-        if (!session.accountId || session.cookies.length === 0) {
-          throw new Error('No saved session for this creator.');
-        }
-
-        accountIdRef.current = session.accountId;
-
-        await window.electronAPI!.loadCreatorSession({
-          accountId: session.accountId,
-          cookies: session.cookies as PlaywrightCookie[],
-          origins: session.origins,
-          force: true,
-          savedAt: session.sessionUpdatedAt,
+        await window.electronAPI!.registerCreatorMapping({
+          accountId: creator.accountId,
+          creatorId: creator.id,
         });
+        await window.electronAPI!.hydrateCreatorProfile(creator.accountId);
 
         const url = MALOUM_VERIFY_URL;
         setVerifyUrl(url);
@@ -138,7 +128,7 @@ export default function VerifySessionModal({
           ({ x: 0, y: 0, width: 800, height: 500 } as BrowserBounds);
 
         await window.electronAPI!.showVerifyBrowser({
-          accountId: session.accountId,
+          accountId: creator.accountId,
           bounds,
           url,
         });
@@ -150,7 +140,7 @@ export default function VerifySessionModal({
         setMessage('Checking Maloum profile…');
 
         const verification = await window.electronAPI!.verifyMaloumSession({
-          accountId: session.accountId,
+          accountId: creator.accountId,
           theme: getCurrentDomXTheme(),
           reuseVisibleView: true,
         });
@@ -164,82 +154,31 @@ export default function VerifySessionModal({
           isLoginRedirectReason(verification.reason)
         ) {
           try {
-            setPhase('loading');
-            setMessage('Pulling latest session from DomX…');
+            setPhase('relogging');
+            setMessage('Session expired on this device — logging in again…');
 
-            const latestSession = await getCreatorSession(creator.id);
-            if (latestSession.accountId && latestSession.cookies.length > 0) {
-              await window.electronAPI!.loadCreatorSession({
-                accountId: latestSession.accountId,
-                cookies: latestSession.cookies as PlaywrightCookie[],
-                origins: latestSession.origins,
-                force: true,
-                savedAt: latestSession.sessionUpdatedAt,
-              });
+            const credentials = await getCreatorCredentials(creator.id);
 
-              if (cancelled) return;
+            if (cancelled) return;
 
-              setPhase('checking');
-              setMessage('Re-checking with latest session…');
+            await window.electronAPI!.reloginMaloumOnVerifyView({
+              accountId: creator.accountId,
+              email: credentials.loginEmail || creator.loginEmail || '',
+              password: credentials.loginPassword,
+            });
 
-              finalVerification = await window.electronAPI!.verifyMaloumSession({
-                accountId: latestSession.accountId,
-                theme: getCurrentDomXTheme(),
-                reuseVisibleView: true,
-              });
+            if (cancelled) return;
 
-              if (cancelled) return;
-            }
+            setPhase('checking');
+            setMessage('Re-checking Maloum profile…');
 
-            if (
-              !finalVerification.verified &&
-              isLoginRedirectReason(finalVerification.reason)
-            ) {
-              const credentials = await getCreatorCredentials(creator.id);
+            finalVerification = await window.electronAPI!.verifyMaloumSession({
+              accountId: creator.accountId,
+              theme: getCurrentDomXTheme(),
+              reuseVisibleView: true,
+            });
 
-              if (cancelled) return;
-
-              setPhase('relogging');
-              setMessage('Session expired — logging in again…');
-
-              const captured = await window.electronAPI!.reloginMaloumOnVerifyView({
-                accountId: session.accountId,
-                email: credentials.loginEmail || creator.loginEmail || '',
-                password: credentials.loginPassword,
-              });
-
-              if (cancelled) return;
-
-              const reconnectResult = await reconnectCreatorSession(creator.id, {
-                email: credentials.loginEmail || creator.loginEmail || '',
-                cookies: captured.cookies,
-                origins: captured.origins,
-                displayName: captured.displayName,
-                username: captured.username,
-                postLoginUrl: captured.postLoginUrl,
-                avatarUrl: captured.avatarUrl,
-                password: credentials.loginPassword,
-              });
-
-              await window.electronAPI!.loadCreatorSession({
-                accountId: session.accountId,
-                cookies: captured.cookies as PlaywrightCookie[],
-                origins: captured.origins,
-                force: true,
-                savedAt: reconnectResult.sessionUpdatedAt,
-              });
-
-              if (cancelled) return;
-
-              setPhase('checking');
-              setMessage('Re-checking Maloum profile…');
-
-              finalVerification = await window.electronAPI!.verifyMaloumSession({
-                accountId: session.accountId,
-                theme: getCurrentDomXTheme(),
-                reuseVisibleView: true,
-              });
-            }
+            if (cancelled) return;
           } catch (credErr) {
             const isMissingCredentials =
               credErr instanceof Error &&
@@ -279,7 +218,7 @@ export default function VerifySessionModal({
             finalVerification.profileImageUrl!,
             {
               overwrite: false,
-              accountId: session.accountId,
+              accountId: creator.accountId,
             }
           );
         }

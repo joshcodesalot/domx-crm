@@ -273,6 +273,23 @@ export interface ElectronAPI {
       localStorage: Array<{ name: string; value: string }>;
     }>;
   }>;
+  loginCreatorLocally: (opts: {
+    accountId: string;
+    email: string;
+    password: string;
+    clearExisting?: boolean;
+  }) => Promise<
+    | { ok: true; accountId: string }
+    | {
+        ok: false;
+        reason:
+          | 'invalid_credentials'
+          | 'interaction_required'
+          | 'missing_credentials'
+          | 'transient_failure';
+        message: string;
+      }
+  >;
   fetchCreatorAvatarImage: (opts: {
     accountId: string;
     sourceUrl: string;

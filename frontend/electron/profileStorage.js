@@ -52,7 +52,10 @@ function writeLocalProfile(accountId, profile) {
     cookies: profile.cookies || [],
     origins: profile.origins || [],
   };
-  fs.writeFileSync(getProfileFilePath(accountId), JSON.stringify(payload, null, 2), 'utf8');
+  const filePath = getProfileFilePath(accountId);
+  const tempPath = `${filePath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), 'utf8');
+  fs.renameSync(tempPath, filePath);
   return payload;
 }
 

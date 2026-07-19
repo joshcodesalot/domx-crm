@@ -6,6 +6,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useCreatorBoot } from '@/context/CreatorBootContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import { getCreators, getMaloumSentMessages, resolveCreatorAvatarUrl, type Creator } from '@/lib/api';
+import { LocalMaloumSessionError } from '@/lib/localMaloumSession';
 import type { BrowserBounds } from '@/types/electron';
 
 type SessionStatus = 'idle' | 'loading' | 'valid' | 'error';
@@ -295,12 +296,6 @@ export default function Chatter() {
         return;
       }
 
-      if (creator.connectionStatus !== 'connected') {
-        setSessionStatus('error');
-        setSessionError('Creator is not connected.');
-        return;
-      }
-
       try {
         setSessionStatus('loading');
 
@@ -312,11 +307,7 @@ export default function Chatter() {
           });
         }
 
-        const alreadyPrepared = await window.electronAPI!.isChatPrepared(creator.accountId);
-
-        if (!alreadyPrepared) {
-          await prepareCreatorChat(creator.id, creator.accountId);
-        }
+        await prepareCreatorChat(creator.id, creator.accountId, creator.loginEmail);
 
         const bounds = await waitForChatBounds(chatContainerRef.current);
         if (!bounds) {
@@ -348,7 +339,11 @@ export default function Chatter() {
         setSessionStatus('valid');
       } catch (err) {
         setSessionStatus('error');
-        setSessionError(err instanceof Error ? err.message : 'Failed to load session');
+        if (err instanceof LocalMaloumSessionError) {
+          setSessionError(err.message);
+        } else {
+          setSessionError(err instanceof Error ? err.message : 'Failed to load session');
+        }
         setFullBrowserMode(false);
         await hideChatBrowser();
       }

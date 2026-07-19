@@ -33,6 +33,14 @@ const connectLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const credentialsLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: 'Too many credential requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 function toCreator(row) {
   return {
     id: row.id,
@@ -791,7 +799,8 @@ router.put(
 router.get(
   '/:id/credentials',
   authenticate,
-  requirePermission('creators.manage'),
+  requirePermission('creators.view'),
+  credentialsLimiter,
   async (req, res) => {
     const { id } = req.params;
 
@@ -800,6 +809,11 @@ router.get(
     }
 
     try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
       const result = await pool.query(
         `SELECT id, "loginEmail", "encryptedLoginPassword"
          FROM creators

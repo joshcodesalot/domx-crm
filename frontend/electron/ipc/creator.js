@@ -169,6 +169,11 @@ function registerCreatorIpc() {
   );
 
   ipcMain.handle(
+    'creator:login-locally',
+    guardCreatorIpc(async (_event, payload) => creatorBrowser.loginCreatorLocally(payload))
+  );
+
+  ipcMain.handle(
     'creator:fetch-avatar-image',
     guardCreatorIpc(async (_event, payload) => creatorBrowser.fetchCreatorAvatarImage(payload))
   );

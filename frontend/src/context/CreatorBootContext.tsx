@@ -10,8 +10,9 @@ import {
 import { Outlet } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
-import { getCreatorSession, getCreators, getHealth, getMe } from '@/lib/api';
-import type { PlaywrightCookie, StaffSyncEvent } from '@/types/electron';
+import { getCreators, getHealth, getMe } from '@/lib/api';
+import { ensureLocalMaloumSessionForChat } from '@/lib/localMaloumSession';
+import type { StaffSyncEvent } from '@/types/electron';
 import BootLoadingScreen from '@/components/BootLoadingScreen';
 import { useMessagingTrackerPersistence } from '@/hooks/useMessagingTrackerPersistence';
 
@@ -19,102 +20,14 @@ type BootStatus = 'idle' | 'loading' | 'ready';
 
 interface CreatorBootContextValue {
   bootStatus: BootStatus;
-  prepareCreatorChat: (creatorId: string, accountId: string) => Promise<void>;
+  prepareCreatorChat: (
+    creatorId: string,
+    accountId: string,
+    loginEmail?: string | null
+  ) => Promise<void>;
 }
 
 const CreatorBootContext = createContext<CreatorBootContextValue | null>(null);
-
-function isBackendSessionNewer(
-  backendSavedAt: string | null | undefined,
-  localSavedAt: string | null | undefined
-): boolean {
-  if (!backendSavedAt) {
-    return false;
-  }
-  if (!localSavedAt) {
-    return true;
-  }
-
-  const backendMs = Date.parse(backendSavedAt);
-  const localMs = Date.parse(localSavedAt);
-  if (Number.isNaN(backendMs)) {
-    return false;
-  }
-  if (Number.isNaN(localMs)) {
-    return true;
-  }
-  return backendMs > localMs;
-}
-
-async function resolveCreatorSessionEntry(creatorId: string, accountId: string) {
-  const localMeta = await window.electronAPI!.getLocalCreatorProfileMeta(accountId);
-  const session = await getCreatorSession(creatorId);
-
-  if (!session.accountId || session.cookies.length === 0) {
-    const hydrated = await window.electronAPI!.hydrateCreatorProfile(accountId);
-    if (hydrated.hydrated) {
-      return {
-        creatorId,
-        accountId,
-        hydrated: true as const,
-        source: hydrated.source,
-      };
-    }
-    return null;
-  }
-
-  if (
-    !localMeta.exists ||
-    isBackendSessionNewer(session.sessionUpdatedAt, localMeta.savedAt)
-  ) {
-    return {
-      creatorId,
-      accountId: session.accountId,
-      cookies: session.cookies as PlaywrightCookie[],
-      origins: session.origins,
-      savedAt: session.sessionUpdatedAt,
-      force: true,
-      source: 'backend' as const,
-    };
-  }
-
-  const hydrated = await window.electronAPI!.hydrateCreatorProfile(accountId);
-  if (hydrated.hydrated) {
-    return {
-      creatorId,
-      accountId,
-      hydrated: true as const,
-      source: hydrated.source,
-    };
-  }
-
-  return {
-    creatorId,
-    accountId: session.accountId,
-    cookies: session.cookies as PlaywrightCookie[],
-    origins: session.origins,
-    savedAt: session.sessionUpdatedAt,
-    force: true,
-    source: 'backend' as const,
-  };
-}
-
-async function applyBackendSession(creatorId: string, accountId: string) {
-  const session = await getCreatorSession(creatorId);
-  if (!session.accountId || session.cookies.length === 0) {
-    throw new Error('No saved session for this creator.');
-  }
-
-  await window.electronAPI!.loadCreatorSession({
-    accountId: session.accountId || accountId,
-    cookies: session.cookies as PlaywrightCookie[],
-    origins: session.origins,
-    force: true,
-    savedAt: session.sessionUpdatedAt,
-  });
-
-  return session;
-}
 
 export function CreatorBootProvider() {
   const { isAuthenticated, isLoading, hasPermission } = useAuth();
@@ -125,32 +38,12 @@ export function CreatorBootProvider() {
   const bootRunIdRef = useRef(0);
 
   const prepareCreatorChat = useCallback(
-    async (creatorId: string, accountId: string) => {
+    async (creatorId: string, accountId: string, loginEmail?: string | null) => {
       if (!window.electronAPI?.isElectron) {
         return;
       }
 
-      await window.electronAPI.registerCreatorMapping({ accountId, creatorId });
-
-      const entry = await resolveCreatorSessionEntry(creatorId, accountId);
-      if (!entry) {
-        throw new Error('No saved session for this creator.');
-      }
-
-      if (!entry.hydrated) {
-        await window.electronAPI.loadCreatorSession({
-          accountId: entry.accountId,
-          cookies: entry.cookies!,
-          origins: entry.origins,
-          force: Boolean(entry.force),
-          savedAt: entry.savedAt,
-        });
-      }
-
-      const prepared = await window.electronAPI.isChatPrepared(accountId);
-      if (!prepared) {
-        await window.electronAPI.prepareChatBrowser(accountId);
-      }
+      await ensureLocalMaloumSessionForChat(creatorId, accountId, loginEmail);
     },
     []
   );
@@ -192,11 +85,9 @@ export function CreatorBootProvider() {
 
         const { creators } = await getCreators();
         if (!isActiveBoot()) return;
+
         const targets = creators.filter(
-          (creator) =>
-            creator.platform === 'maloum' &&
-            creator.connectionStatus === 'connected' &&
-            creator.accountId
+          (creator) => creator.platform === 'maloum' && creator.accountId
         );
 
         if (!isActiveBoot()) return;
@@ -207,38 +98,43 @@ export function CreatorBootProvider() {
           return;
         }
 
-        const sessions = (
-          await Promise.all(
-            targets.map(async (creator) => {
-              try {
-                return await resolveCreatorSessionEntry(
-                  creator.id,
-                  creator.accountId!
-                );
-              } catch {
-                return null;
-              }
-            })
-          )
-        ).filter((session): session is NonNullable<typeof session> => session !== null);
-
-        if (!isActiveBoot()) return;
-
-        if (sessions.length > 0) {
-          await window.electronAPI!.preloadCreatorSessions(sessions);
+        for (const creator of targets) {
+          if (!isActiveBoot()) return;
+          try {
+            await window.electronAPI!.registerCreatorMapping({
+              accountId: creator.accountId!,
+              creatorId: creator.id,
+            });
+            await window.electronAPI!.hydrateCreatorProfile(creator.accountId!);
+          } catch {
+            // Best-effort local hydration only; recovery happens when chat opens.
+          }
         }
 
         if (!isActiveBoot()) return;
 
-        const accountIds = sessions.map((s) => s.accountId);
+        const warmAccountIds: string[] = [];
+        for (const creator of targets) {
+          if (!isActiveBoot()) return;
+          try {
+            const warm = await window.electronAPI!.isCreatorSessionWarm(creator.accountId!);
+            if (warm) {
+              warmAccountIds.push(creator.accountId!);
+            }
+          } catch {
+            // Ignore per-account warm checks during boot.
+          }
+        }
 
-        await window.electronAPI!.prepareAllChatBrowsers(accountIds);
+        if (warmAccountIds.length > 0) {
+          await window.electronAPI!.prepareAllChatBrowsers(warmAccountIds);
+        }
 
         if (isActiveBoot()) {
           bootCompleteRef.current = true;
           setBootStatus('ready');
         }
-      } catch (err) {
+      } catch {
         if (isActiveBoot()) {
           bootCompleteRef.current = true;
           setBootStatus('ready');
@@ -258,35 +154,8 @@ export function CreatorBootProvider() {
       return;
     }
 
-    return onSyncEvent((event: StaffSyncEvent) => {
-      if (event.type !== 'creator:session-updated' || !event.accountId) {
-        return;
-      }
-
-      void (async () => {
-        try {
-          const localMeta = await window.electronAPI!.getLocalCreatorProfileMeta(
-            event.accountId!
-          );
-          if (
-            localMeta.exists &&
-            !isBackendSessionNewer(event.sessionUpdatedAt, localMeta.savedAt)
-          ) {
-            return;
-          }
-
-          await applyBackendSession(event.creatorId, event.accountId!);
-
-          const prepared = await window.electronAPI!.isChatPrepared(event.accountId!);
-          if (prepared) {
-            await window.electronAPI!.reloadChatBrowser(event.accountId!);
-          } else {
-            await window.electronAPI!.prepareChatBrowser(event.accountId!);
-          }
-        } catch {
-          // Best-effort live sync; next boot/verify will recover.
-        }
-      })();
+    return onSyncEvent((_event: StaffSyncEvent) => {
+      // Local Maloum sessions stay on-device; session-updated is metadata-only now.
     });
   }, [isAuthenticated, onSyncEvent]);
 
