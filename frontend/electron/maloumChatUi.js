@@ -2092,6 +2092,33 @@ function getMemberNotesPrefillScript() {
   `;
 }
 
+function getChatLayoutCleanupScript() {
+  return `
+      const mainWrapper = document.querySelector('#root > div > div > div');
+      if (mainWrapper) {
+        mainWrapper.classList.remove('ml-0', 'flex-col', 'sm:ml-20', 'sm:flex-row', 'lg:ml-60');
+        mainWrapper.classList.add('ml-60', 'min-w-[1200px]', 'flex-row');
+        mainWrapper.style.minWidth = '1200px';
+
+        const chatColumn = mainWrapper.querySelector('.full-height.scrollbar-hide.w-80');
+        if (chatColumn) {
+          chatColumn.classList.remove('hidden', 'md:block');
+          chatColumn.classList.add('block', 'min-w-80', 'overflow-y-auto');
+          chatColumn.style.minWidth = '20rem';
+          chatColumn.style.overflowY = 'auto';
+        }
+      }
+
+      const chatMinWidthStyleId = 'domx-chat-min-width';
+      if (!document.getElementById(chatMinWidthStyleId)) {
+        const style = document.createElement('style');
+        style.id = chatMinWidthStyleId;
+        style.textContent = 'html, body, #root { min-width: 1200px; overflow-x: auto; }';
+        document.head.appendChild(style);
+      }
+  `;
+}
+
 function buildAddListPageCleanupScript() {
   const addListDomUtils = getAddListDomUtilsScript();
 
@@ -2150,10 +2177,7 @@ async function cleanMaloumChatUI(webContents) {
         topMenu.style.display = 'none';
       }
 
-      const mainWrapper = document.querySelector('#root > div > div > div');
-      if (mainWrapper) {
-        mainWrapper.classList.remove('sm:ml-20', 'lg:ml-60');
-      }
+      ${getChatLayoutCleanupScript()}
     })()
   `);
 }
@@ -2254,7 +2278,9 @@ async function installMaloumDomObserver(webContents, theme, activeChatter, optio
       ${getSentMessageTrackingScript(activeChatter)}
 
       const applyChatCleanup = () => {
+        const chatMinWidthStyle = document.getElementById('domx-chat-min-width');
         if (!window.location.href.includes('/chat') || window.location.href.includes('/login')) {
+          if (chatMinWidthStyle) chatMinWidthStyle.remove();
           return;
         }
 
@@ -2266,10 +2292,7 @@ async function installMaloumDomObserver(webContents, theme, activeChatter, optio
         );
         if (topMenu) topMenu.style.display = 'none';
 
-        const mainWrapper = document.querySelector('#root > div > div > div');
-        if (mainWrapper) {
-          mainWrapper.classList.remove('sm:ml-20', 'lg:ml-60');
-        }
+        ${getChatLayoutCleanupScript()}
       };
 
       ${getAddListDomUtilsScript()}
