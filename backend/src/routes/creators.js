@@ -58,6 +58,64 @@ function partitionIdFor(accountId) {
   return `persist:creator-${accountId}`;
 }
 
+function buildEncryptedSessionPayload({ cookies, origins, loginEmail, savedAt }) {
+  const stampedAt = savedAt || new Date().toISOString();
+  return {
+    encryptedSession: encryptJson({
+      cookies,
+      origins: origins || [],
+      loginEmail,
+      savedAt: stampedAt,
+    }),
+    savedAt: stampedAt,
+  };
+}
+
+function sessionUpdatedAtFrom(session, fallbackDate) {
+  if (session?.savedAt && typeof session.savedAt === 'string') {
+    return session.savedAt;
+  }
+  if (fallbackDate instanceof Date) {
+    return fallbackDate.toISOString();
+  }
+  if (typeof fallbackDate === 'string' && fallbackDate) {
+    return fallbackDate;
+  }
+  return null;
+}
+
+async function getUserIdsWithCreatorAccess(creatorId) {
+  const [assigned, managers] = await Promise.all([
+    pool.query(
+      `SELECT "userId" FROM creator_staff_assignments WHERE "creatorId" = $1`,
+      [creatorId]
+    ),
+    pool.query(
+      `SELECT id FROM users WHERE status = 'active' AND role <> 'chatter'`
+    ),
+  ]);
+
+  return [
+    ...new Set([
+      ...assigned.rows.map((row) => row.userId),
+      ...managers.rows.map((row) => row.id),
+    ]),
+  ];
+}
+
+function emitCreatorSessionUpdated(userIds, { creatorId, accountId, sessionUpdatedAt }) {
+  if (!userIds.length) {
+    return;
+  }
+
+  emitToUsers(userIds, {
+    type: 'creator:session-updated',
+    creatorId,
+    accountId: accountId || null,
+    sessionUpdatedAt: sessionUpdatedAt || null,
+  });
+}
+
 function isValidUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value
@@ -241,9 +299,9 @@ router.post(
       const accountTokenHash = hashToken(accountToken);
       const partitionId = partitionIdFor(accountId);
       const loginEmail = email.trim();
-      const encryptedSession = encryptJson({
+      const { encryptedSession } = buildEncryptedSessionPayload({
         cookies,
-        origins: origins || [],
+        origins,
         loginEmail,
       });
       const encryptedLoginPassword = encryptOptionalLoginPassword(password);
@@ -404,13 +462,21 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
     }
 
     const saved = result.rows[0];
-    let savedSession = null;
-    if (pending?.encryptedSession) {
+    if (pending?.encryptedSession && saved.accountId) {
+      let sessionSavedAt = null;
       try {
-        savedSession = decryptJson(pending.encryptedSession);
+        const savedSession = decryptJson(pending.encryptedSession);
+        sessionSavedAt = sessionUpdatedAtFrom(savedSession, saved.updatedAt);
       } catch {
-        savedSession = null;
+        sessionSavedAt = sessionUpdatedAtFrom(null, saved.updatedAt);
       }
+
+      const accessUserIds = await getUserIdsWithCreatorAccess(saved.id);
+      emitCreatorSessionUpdated(accessUserIds, {
+        creatorId: saved.id,
+        accountId: saved.accountId,
+        sessionUpdatedAt: sessionSavedAt,
+      });
     }
 
     res.status(201).json({ creator: toCreator(saved) });
@@ -654,9 +720,9 @@ router.put(
       }
 
       const loginEmail = email.trim();
-      const encryptedSession = encryptJson({
+      const { encryptedSession, savedAt: sessionSavedAt } = buildEncryptedSessionPayload({
         cookies,
-        origins: origins || [],
+        origins,
         loginEmail,
       });
 
@@ -700,12 +766,20 @@ router.put(
         params
       );
 
+      const accessUserIds = await getUserIdsWithCreatorAccess(id);
+      emitCreatorSessionUpdated(accessUserIds, {
+        creatorId: id,
+        accountId: creator.accountId,
+        sessionUpdatedAt: sessionSavedAt,
+      });
+
       res.json({
         creator: toCreator(result.rows[0]),
         accountId: creator.accountId,
         partitionId: creator.partitionId,
         cookies,
         origins: origins || [],
+        sessionUpdatedAt: sessionSavedAt,
       });
     } catch (err) {
       console.error('Update creator session error:', err);
@@ -777,7 +851,7 @@ router.get(
 
       const result = await pool.query(
         `SELECT id, "displayName", username, "avatarUrl", "accountId", "partitionId",
-                "encryptedSession", "connectionStatus"
+                "encryptedSession", "connectionStatus", "updatedAt"
          FROM creators
          WHERE id = $1`,
         [id]
@@ -805,6 +879,7 @@ router.get(
         avatarUrl: creator.avatarUrl || null,
         cookies,
         origins,
+        sessionUpdatedAt: sessionUpdatedAtFrom(session, creator.updatedAt),
       });
     } catch (err) {
       console.error('Get creator session error:', err);

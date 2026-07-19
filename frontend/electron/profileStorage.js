@@ -45,12 +45,32 @@ function writeLocalProfile(accountId, profile) {
   fs.mkdirSync(profileDir, { recursive: true });
   const payload = {
     accountId,
-    savedAt: new Date().toISOString(),
+    savedAt:
+      typeof profile.savedAt === 'string' && profile.savedAt
+        ? profile.savedAt
+        : new Date().toISOString(),
     cookies: profile.cookies || [],
     origins: profile.origins || [],
   };
   fs.writeFileSync(getProfileFilePath(accountId), JSON.stringify(payload, null, 2), 'utf8');
   return payload;
+}
+
+function getLocalProfileMeta(accountId) {
+  try {
+    const filePath = getProfileFilePath(accountId);
+    if (!fs.existsSync(filePath)) {
+      return { exists: false, savedAt: null };
+    }
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      exists: Boolean(parsed?.cookies?.length),
+      savedAt: typeof parsed?.savedAt === 'string' ? parsed.savedAt : null,
+    };
+  } catch {
+    return { exists: false, savedAt: null };
+  }
 }
 
 function deleteLocalProfile(accountId) {
@@ -136,6 +156,7 @@ module.exports = {
   hasLocalProfile,
   readLocalProfile,
   writeLocalProfile,
+  getLocalProfileMeta,
   deleteLocalProfile,
   exportProfileFromPartition,
 };

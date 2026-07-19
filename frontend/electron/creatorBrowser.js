@@ -1321,7 +1321,11 @@ function hasLocalCreatorProfile(accountId) {
   return profileStorage.hasLocalProfile(accountId);
 }
 
-async function loadCreatorSession({ accountId, cookies, origins, force = false }) {
+function getLocalCreatorProfileMeta(accountId) {
+  return profileStorage.getLocalProfileMeta(accountId);
+}
+
+async function loadCreatorSession({ accountId, cookies, origins, force = false, savedAt = null }) {
   if (!force && warmSessionAccounts.has(accountId)) {
     pendingStorageByAccount.set(accountId, origins || []);
     storageInjectedForAccount.delete(accountId);
@@ -1362,6 +1366,12 @@ async function loadCreatorSession({ accountId, cookies, origins, force = false }
 
   warmSessionAccounts.add(accountId);
 
+  profileStorage.writeLocalProfile(accountId, {
+    cookies,
+    origins: origins || [],
+    savedAt: savedAt || undefined,
+  });
+
   return { imported: cookies.length, accountId, partitionId: `persist:creator-${accountId}` };
 }
 
@@ -1392,6 +1402,8 @@ async function preloadCreatorSessions(sessions) {
       accountId: entry.accountId,
       cookies: entry.cookies,
       origins: entry.origins || [],
+      force: Boolean(entry.force),
+      savedAt: entry.savedAt || null,
     });
     results.push(result);
   }
@@ -1891,6 +1903,7 @@ module.exports = {
   loadCreatorSession,
   hydrateCreatorProfile,
   hasLocalCreatorProfile,
+  getLocalCreatorProfileMeta,
   preloadCreatorSessions,
   isCreatorSessionWarm,
   getActiveChatAccountId,

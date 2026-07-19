@@ -126,6 +126,8 @@ export default function VerifySessionModal({
           accountId: session.accountId,
           cookies: session.cookies as PlaywrightCookie[],
           origins: session.origins,
+          force: true,
+          savedAt: session.sessionUpdatedAt,
         });
 
         const url = MALOUM_VERIFY_URL;
@@ -162,49 +164,82 @@ export default function VerifySessionModal({
           isLoginRedirectReason(verification.reason)
         ) {
           try {
-            const credentials = await getCreatorCredentials(creator.id);
+            setPhase('loading');
+            setMessage('Pulling latest session from DomX…');
 
-            if (cancelled) return;
+            const latestSession = await getCreatorSession(creator.id);
+            if (latestSession.accountId && latestSession.cookies.length > 0) {
+              await window.electronAPI!.loadCreatorSession({
+                accountId: latestSession.accountId,
+                cookies: latestSession.cookies as PlaywrightCookie[],
+                origins: latestSession.origins,
+                force: true,
+                savedAt: latestSession.sessionUpdatedAt,
+              });
 
-            setPhase('relogging');
-            setMessage('Session expired — logging in again…');
+              if (cancelled) return;
 
-            const captured = await window.electronAPI!.reloginMaloumOnVerifyView({
-              accountId: session.accountId,
-              email: credentials.loginEmail || creator.loginEmail || '',
-              password: credentials.loginPassword,
-            });
+              setPhase('checking');
+              setMessage('Re-checking with latest session…');
 
-            if (cancelled) return;
+              finalVerification = await window.electronAPI!.verifyMaloumSession({
+                accountId: latestSession.accountId,
+                theme: getCurrentDomXTheme(),
+                reuseVisibleView: true,
+              });
 
-            await reconnectCreatorSession(creator.id, {
-              email: credentials.loginEmail || creator.loginEmail || '',
-              cookies: captured.cookies,
-              origins: captured.origins,
-              displayName: captured.displayName,
-              username: captured.username,
-              postLoginUrl: captured.postLoginUrl,
-              avatarUrl: captured.avatarUrl,
-              password: credentials.loginPassword,
-            });
+              if (cancelled) return;
+            }
 
-            await window.electronAPI!.loadCreatorSession({
-              accountId: session.accountId,
-              cookies: captured.cookies as PlaywrightCookie[],
-              origins: captured.origins,
-              force: true,
-            });
+            if (
+              !finalVerification.verified &&
+              isLoginRedirectReason(finalVerification.reason)
+            ) {
+              const credentials = await getCreatorCredentials(creator.id);
 
-            if (cancelled) return;
+              if (cancelled) return;
 
-            setPhase('checking');
-            setMessage('Re-checking Maloum profile…');
+              setPhase('relogging');
+              setMessage('Session expired — logging in again…');
 
-            finalVerification = await window.electronAPI!.verifyMaloumSession({
-              accountId: session.accountId,
-              theme: getCurrentDomXTheme(),
-              reuseVisibleView: true,
-            });
+              const captured = await window.electronAPI!.reloginMaloumOnVerifyView({
+                accountId: session.accountId,
+                email: credentials.loginEmail || creator.loginEmail || '',
+                password: credentials.loginPassword,
+              });
+
+              if (cancelled) return;
+
+              const reconnectResult = await reconnectCreatorSession(creator.id, {
+                email: credentials.loginEmail || creator.loginEmail || '',
+                cookies: captured.cookies,
+                origins: captured.origins,
+                displayName: captured.displayName,
+                username: captured.username,
+                postLoginUrl: captured.postLoginUrl,
+                avatarUrl: captured.avatarUrl,
+                password: credentials.loginPassword,
+              });
+
+              await window.electronAPI!.loadCreatorSession({
+                accountId: session.accountId,
+                cookies: captured.cookies as PlaywrightCookie[],
+                origins: captured.origins,
+                force: true,
+                savedAt: reconnectResult.sessionUpdatedAt,
+              });
+
+              if (cancelled) return;
+
+              setPhase('checking');
+              setMessage('Re-checking Maloum profile…');
+
+              finalVerification = await window.electronAPI!.verifyMaloumSession({
+                accountId: session.accountId,
+                theme: getCurrentDomXTheme(),
+                reuseVisibleView: true,
+              });
+            }
           } catch (credErr) {
             const isMissingCredentials =
               credErr instanceof Error &&

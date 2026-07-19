@@ -92,6 +92,12 @@ export type StaffSyncEvent =
       creatorId: string;
       accountId: string | null;
       displayName: string;
+    }
+  | {
+      type: 'creator:session-updated';
+      creatorId: string;
+      accountId: string | null;
+      sessionUpdatedAt: string | null;
     };
 
 export type UpdaterStatus =
@@ -181,6 +187,7 @@ export interface ElectronAPI {
       localStorage: Array<{ name: string; value: string }>;
     }>;
     force?: boolean;
+    savedAt?: string | null;
   }) => Promise<{
     imported: number;
     accountId: string;
@@ -196,17 +203,22 @@ export interface ElectronAPI {
     accountId: string;
   }>;
   hasLocalCreatorProfile: (accountId: string) => Promise<boolean>;
+  getLocalCreatorProfileMeta: (
+    accountId: string
+  ) => Promise<{ exists: boolean; savedAt: string | null }>;
   preloadCreatorSessions: (
     sessions: Array<{
       accountId: string;
       creatorId?: string;
       hydrated?: boolean;
       source?: string;
+      force?: boolean;
       cookies?: PlaywrightCookie[];
       origins?: Array<{
         origin: string;
         localStorage: Array<{ name: string; value: string }>;
       }>;
+      savedAt?: string | null;
     }>
   ) => Promise<{ preloaded: number }>;
   isCreatorSessionWarm: (accountId: string) => Promise<boolean>;

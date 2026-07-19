@@ -185,6 +185,7 @@ export interface CreatorSessionResponse {
   avatarUrl: string | null;
   cookies: ConnectCreatorResponse['cookies'];
   origins: ConnectCreatorResponse['origins'];
+  sessionUpdatedAt: string | null;
 }
 
 export interface MaloumSentMessageRecord {
@@ -567,6 +568,7 @@ export async function reconnectCreatorSession(
   partitionId: string;
   cookies: ConnectCreatorResponse['cookies'];
   origins: ConnectCreatorResponse['origins'];
+  sessionUpdatedAt: string | null;
 }> {
   return request(`/api/creators/${creatorId}/session`, {
     method: 'PUT',

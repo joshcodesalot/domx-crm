@@ -103,6 +103,13 @@ function registerCreatorIpc() {
   );
 
   ipcMain.handle(
+    'creator:local-profile-meta',
+    guardCreatorIpc(async (_event, accountId) =>
+      creatorBrowser.getLocalCreatorProfileMeta(accountId)
+    )
+  );
+
+  ipcMain.handle(
     'creator:preload-sessions',
     guardCreatorIpc(async (_event, sessions) => creatorBrowser.preloadCreatorSessions(sessions))
   );

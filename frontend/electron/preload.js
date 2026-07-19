@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('creator:hydrate-profile', accountId),
   hasLocalCreatorProfile: (accountId) =>
     ipcRenderer.invoke('creator:has-local-profile', accountId),
+  getLocalCreatorProfileMeta: (accountId) =>
+    ipcRenderer.invoke('creator:local-profile-meta', accountId),
   preloadCreatorSessions: (sessions) =>
     ipcRenderer.invoke('creator:preload-sessions', sessions),
   isCreatorSessionWarm: (accountId) =>
