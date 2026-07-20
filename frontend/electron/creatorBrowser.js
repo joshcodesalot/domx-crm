@@ -1827,18 +1827,38 @@ function isChatPrepared(accountId) {
 }
 
 async function prepareAllChatBrowsers(accountIds) {
-
+  const total = accountIds.length;
+  let preparedCount = 0;
   const results = [];
+
   for (const accountId of accountIds) {
     try {
       const result = await prepareChatBrowser(accountId);
+      preparedCount += 1;
       results.push({ accountId, ok: true, ...result });
+      if (mainWindow) {
+        mainWindow.webContents.send('creator:chat-prepare-progress', {
+          accountId,
+          ok: true,
+          prepared: preparedCount,
+          total,
+        });
+      }
     } catch (err) {
+      preparedCount += 1;
       results.push({
         accountId,
         ok: false,
         error: err instanceof Error ? err.message : String(err),
       });
+      if (mainWindow) {
+        mainWindow.webContents.send('creator:chat-prepare-progress', {
+          accountId,
+          ok: false,
+          prepared: preparedCount,
+          total,
+        });
+      }
     }
   }
 

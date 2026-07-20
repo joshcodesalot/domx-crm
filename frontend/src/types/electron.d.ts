@@ -27,6 +27,13 @@ export interface CreatorBadgeCountsUpdatedPayload {
   messages: number;
 }
 
+export interface ChatPrepareProgressPayload {
+  accountId: string;
+  ok: boolean;
+  prepared: number;
+  total: number;
+}
+
 export interface TranslationSettings {
   preSendEnabled: boolean;
   historyEnabled: boolean;
@@ -324,6 +331,9 @@ export interface ElectronAPI {
   releaseAllCreatorChats: () => Promise<{ released: number; accountIds: string[] }>;
   onCreatorBadgeCountsUpdated: (
     callback: (payload: CreatorBadgeCountsUpdatedPayload) => void
+  ) => () => void;
+  onChatPrepareProgress: (
+    callback: (payload: ChatPrepareProgressPayload) => void
   ) => () => void;
   onSentMessageTracked: (
     callback: (payload: SentMessageTrackedPayload) => void

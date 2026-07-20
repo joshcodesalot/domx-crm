@@ -4,7 +4,10 @@ import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import { useAuth } from '@/context/AuthContext';
-import { useCreatorBoot } from '@/context/CreatorBootContext';
+import {
+  LAST_CHATTER_ACCOUNT_ID_KEY,
+  useCreatorBoot,
+} from '@/context/CreatorBootContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import { getCreators, getMaloumSentMessages, type Creator } from '@/lib/api';
 import { LocalMaloumSessionError } from '@/lib/localMaloumSession';
@@ -96,7 +99,12 @@ function connectionDotClass(status: Creator['connectionStatus']): string {
 
 export default function Chatter() {
   const { user, hasPermission } = useAuth();
-  const { prepareCreatorChat } = useCreatorBoot();
+  const {
+    prepareCreatorChat,
+    waitForChatReady,
+    chatWarmupStatus,
+    chatWarmupProgress,
+  } = useCreatorBoot();
   const { onSyncEvent } = useStaffSync();
   const [creators, setCreators] = useState<Creator[]>([]);
   const [loading, setLoading] = useState(true);
@@ -294,8 +302,6 @@ export default function Chatter() {
       }
 
       try {
-        setSessionStatus('loading');
-
         if (window.electronAPI?.setActiveChatter && user) {
           await window.electronAPI.setActiveChatter({
             userId: user.id,
@@ -304,7 +310,13 @@ export default function Chatter() {
           });
         }
 
-        await prepareCreatorChat(creator.id, creator.accountId, creator.loginEmail);
+        await waitForChatReady(creator.accountId);
+        const isPrepared = await window.electronAPI!.isChatPrepared(creator.accountId);
+
+        if (!isPrepared) {
+          setSessionStatus('loading');
+          await prepareCreatorChat(creator.id, creator.accountId, creator.loginEmail);
+        }
 
         const bounds = await waitForChatBounds(chatContainerRef.current);
         if (!bounds) {
@@ -317,23 +329,26 @@ export default function Chatter() {
           fullBrowserAccess,
         });
 
-        try {
-          const { records } = await getMaloumSentMessages({
-            creatorId: creator.id,
-            limit: 200,
-          });
-
-          if (records.length > 0) {
-            await window.electronAPI!.hydrateSentMessages({
-              accountId: creator.accountId,
-              records,
-            });
-          }
-        } catch {
-          // Badge hydration is best-effort
-        }
-
+        localStorage.setItem(LAST_CHATTER_ACCOUNT_ID_KEY, creator.accountId);
         setSessionStatus('valid');
+
+        void (async () => {
+          try {
+            const { records } = await getMaloumSentMessages({
+              creatorId: creator.id,
+              limit: 200,
+            });
+
+            if (records.length > 0) {
+              await window.electronAPI!.hydrateSentMessages({
+                accountId: creator.accountId!,
+                records,
+              });
+            }
+          } catch {
+            // Badge hydration is best-effort
+          }
+        })();
       } catch (err) {
         setSessionStatus('error');
         if (err instanceof LocalMaloumSessionError) {
@@ -345,7 +360,7 @@ export default function Chatter() {
         await hideChatBrowser();
       }
     },
-    [isElectron, prepareCreatorChat, hideChatBrowser, user]
+    [isElectron, prepareCreatorChat, waitForChatReady, hideChatBrowser, user]
   );
 
   useEffect(() => {
@@ -380,15 +395,10 @@ export default function Chatter() {
     if (creator.id === selectedId && sessionStatus === 'valid' && !fullBrowserMode) {
       return;
     }
-    setSessionStatus('loading');
     await openCreatorChat(creator, { fullBrowserAccess: false });
   }
 
   async function handleOpenFullBrowser(creator: Creator) {
-    if (creator.id !== selectedId) {
-      setSelectedId(creator.id);
-    }
-    setSessionStatus('loading');
     await openCreatorChat(creator, { fullBrowserAccess: true });
   }
 
@@ -454,6 +464,12 @@ export default function Chatter() {
               <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
           </div>
+
+          {chatWarmupStatus === 'warming' && (
+            <p className="px-4 py-1.5 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-white/5">
+              Preparing chats ({chatWarmupProgress.prepared}/{chatWarmupProgress.total})…
+            </p>
+          )}
 
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
             {loading && (

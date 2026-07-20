@@ -66,6 +66,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('creator:badge-counts-updated', listener);
     return () => ipcRenderer.removeListener('creator:badge-counts-updated', listener);
   },
+  onChatPrepareProgress: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('creator:chat-prepare-progress', listener);
+    return () => ipcRenderer.removeListener('creator:chat-prepare-progress', listener);
+  },
   onSentMessageTracked: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('creator:sent-message-tracked', listener);
