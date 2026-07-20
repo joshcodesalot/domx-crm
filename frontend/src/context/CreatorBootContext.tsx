@@ -18,6 +18,31 @@ import { useMessagingTrackerPersistence } from '@/hooks/useMessagingTrackerPersi
 
 type BootStatus = 'idle' | 'loading' | 'ready';
 
+const BOOT_HYDRATE_CONCURRENCY = 4;
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  shouldContinue: () => boolean,
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  for (let i = 0; i < items.length; i += concurrency) {
+    if (!shouldContinue()) {
+      return;
+    }
+
+    const batch = items.slice(i, i + concurrency);
+    await Promise.all(
+      batch.map(async (item) => {
+        if (!shouldContinue()) {
+          return;
+        }
+        await fn(item);
+      })
+    );
+  }
+}
+
 interface CreatorBootContextValue {
   bootStatus: BootStatus;
   prepareCreatorChat: (
@@ -98,41 +123,46 @@ export function CreatorBootProvider() {
           return;
         }
 
-        for (const creator of targets) {
-          if (!isActiveBoot()) return;
-          try {
-            await window.electronAPI!.registerCreatorMapping({
-              accountId: creator.accountId!,
-              creatorId: creator.id,
-            });
-            await window.electronAPI!.hydrateCreatorProfile(creator.accountId!);
-          } catch {
-            // Best-effort local hydration only; recovery happens when chat opens.
+        await runWithConcurrency(
+          targets,
+          BOOT_HYDRATE_CONCURRENCY,
+          isActiveBoot,
+          async (creator) => {
+            try {
+              await window.electronAPI!.registerCreatorMapping({
+                accountId: creator.accountId!,
+                creatorId: creator.id,
+              });
+              await window.electronAPI!.hydrateCreatorProfile(creator.accountId!);
+            } catch {
+              // Best-effort local hydration only; recovery happens when chat opens.
+            }
           }
-        }
+        );
 
         if (!isActiveBoot()) return;
 
-        const warmAccountIds: string[] = [];
-        for (const creator of targets) {
-          if (!isActiveBoot()) return;
-          try {
-            const warm = await window.electronAPI!.isCreatorSessionWarm(creator.accountId!);
-            if (warm) {
-              warmAccountIds.push(creator.accountId!);
+        const warmResults = await Promise.all(
+          targets.map(async (creator) => {
+            try {
+              const warm = await window.electronAPI!.isCreatorSessionWarm(creator.accountId!);
+              return warm ? creator.accountId! : null;
+            } catch {
+              return null;
             }
-          } catch {
-            // Ignore per-account warm checks during boot.
-          }
-        }
-
-        if (warmAccountIds.length > 0) {
-          await window.electronAPI!.prepareAllChatBrowsers(warmAccountIds);
-        }
+          })
+        );
+        const warmAccountIds = warmResults.filter((accountId): accountId is string => accountId !== null);
 
         if (isActiveBoot()) {
           bootCompleteRef.current = true;
           setBootStatus('ready');
+        }
+
+        if (warmAccountIds.length > 0 && isActiveBoot()) {
+          void window.electronAPI!.prepareAllChatBrowsers(warmAccountIds).catch(() => {
+            // Best-effort background warmup; chat open will retry prepare.
+          });
         }
       } catch {
         if (isActiveBoot()) {

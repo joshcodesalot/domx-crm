@@ -5,12 +5,12 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
+import CreatorAvatar from '@/components/CreatorAvatar';
 import {
   connectCreatorAccount,
   createCreator,
   discardCreatorConnect,
   reconnectCreatorSession,
-  resolveCreatorAvatarUrl,
   saveCreatorAvatarFromMaloum,
   shouldFetchMaloumIcon,
   type ConnectCreatorResponse,
@@ -194,6 +194,21 @@ export default function AddCreatorModal({
         avatarUrl: captured.avatarUrl,
         ...(loginPassword.trim() ? { password: loginPassword } : {}),
       });
+
+      if (
+        captured.avatarUrl &&
+        shouldFetchMaloumIcon({
+          profileImageUrl: captured.avatarUrl,
+          overwriteIcon: false,
+          currentAvatarUrl: reconnectCreator.avatarUrl,
+          avatarSource: reconnectCreator.avatarSource,
+        })
+      ) {
+        await saveCreatorAvatarFromMaloum(reconnectCreator.id, captured.avatarUrl, {
+          overwrite: false,
+          accountId,
+        });
+      }
 
       await hideLoginBrowser();
       setConnectSucceeded(false);
@@ -394,10 +409,6 @@ export default function AddCreatorModal({
     return 'ml-2 text-xs text-gray-400 hidden sm:inline';
   }
 
-  const sessionInitial = (session?.displayName || displayNameOverride || '?')
-    .charAt(0)
-    .toUpperCase();
-
   const showBrowserPanel = browserVisible || manualLoginMode;
 
   return (
@@ -577,19 +588,12 @@ export default function AddCreatorModal({
               </p>
               <div className="border border-gray-200 dark:border-white/10 rounded-lg p-4 space-y-3">
                 <div className="flex items-center gap-3">
-                  {resolveCreatorAvatarUrl(session.avatarUrl) ? (
-                    <img
-                      src={resolveCreatorAvatarUrl(session.avatarUrl)!}
-                      alt={session.displayName}
-                      className="w-12 h-12 rounded-full object-cover shrink-0"
-                    />
-                  ) : (
-                    <div className="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center shrink-0">
-                      <span className="text-orange-600 font-bold text-lg">
-                        {sessionInitial}
-                      </span>
-                    </div>
-                  )}
+                  <CreatorAvatar
+                    avatarUrl={session.avatarUrl}
+                    displayName={session.displayName}
+                    className="w-12 h-12 rounded-full object-cover shrink-0"
+                    initialsClassName="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center shrink-0 text-orange-600 font-bold text-lg"
+                  />
                   <div>
                     <p className="font-medium">{session.displayName}</p>
                     <p className="text-sm text-gray-500">{session.username}</p>

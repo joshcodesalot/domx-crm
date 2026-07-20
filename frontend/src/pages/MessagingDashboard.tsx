@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ImageIcon, RefreshCw, VideoIcon } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
+import CreatorAvatar from '@/components/CreatorAvatar';
 import {
   getCreators,
   getMessagingDashboard,
   getStaff,
-  resolveCreatorAvatarUrl,
   type Creator,
   type MessagingDashboardEntry,
   type User,
@@ -43,14 +43,9 @@ function purchasedBadgeClass(purchased: boolean): string {
     : 'bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400';
 }
 
-function creatorInitial(name: string): string {
-  return name.charAt(0).toUpperCase();
-}
-
 function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
   const sentTime = formatSentTime(entry.sentAt);
   const mediaLabel = formatMediaLabel(entry);
-  const avatarUrl = resolveCreatorAvatarUrl(entry.creatorAvatarUrl);
 
   return (
     <tr className="border-b border-gray-100 dark:border-white/5 hover:bg-gray-50/60 dark:hover:bg-white/[0.02]">
@@ -60,17 +55,12 @@ function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
       </td>
       <td className="px-4 py-3 align-top">
         <div className="flex items-center gap-2 min-w-[160px]">
-          {avatarUrl ? (
-            <img
-              src={avatarUrl}
-              alt={entry.creatorName}
-              className="w-8 h-8 rounded-full object-cover shrink-0"
-            />
-          ) : (
-            <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-xs font-medium shrink-0">
-              {creatorInitial(entry.creatorName)}
-            </div>
-          )}
+          <CreatorAvatar
+            avatarUrl={entry.creatorAvatarUrl}
+            displayName={entry.creatorName}
+            className="w-8 h-8 rounded-full object-cover shrink-0"
+            initialsClassName="w-8 h-8 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-xs font-medium shrink-0"
+          />
           <div className="min-w-0">
             <div className="font-medium truncate">{entry.creatorName}</div>
             {entry.creatorUsername ? (

@@ -316,6 +316,12 @@ export function resolveCreatorAvatarUrl(
   return avatarUrl;
 }
 
+export function isBackendStoredAvatarUrl(
+  avatarUrl: string | null | undefined
+): boolean {
+  return Boolean(avatarUrl?.startsWith('/uploads/avatars/'));
+}
+
 export function shouldFetchMaloumIcon(options: {
   profileImageUrl: string | null;
   overwriteIcon?: boolean;
@@ -341,7 +347,7 @@ export function shouldFetchMaloumIcon(options: {
     return false;
   }
 
-  return !currentAvatarUrl || avatarSource === 'maloum';
+  return !currentAvatarUrl || !isBackendStoredAvatarUrl(currentAvatarUrl);
 }
 
 export function getToken(): string | null {

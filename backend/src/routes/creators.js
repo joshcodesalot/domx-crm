@@ -62,6 +62,10 @@ function toCreator(row) {
   };
 }
 
+function isBackendStoredAvatarUrl(avatarUrl) {
+  return typeof avatarUrl === 'string' && avatarUrl.startsWith('/uploads/avatars/');
+}
+
 function partitionIdFor(accountId) {
   return `persist:creator-${accountId}`;
 }
@@ -735,9 +739,10 @@ router.put(
       });
 
       const nextAvatarUrl =
-        avatarUrl && creator.avatarSource !== 'manual'
-          ? avatarUrl
-          : creator.avatarUrl;
+        creator.avatarSource === 'manual' ||
+        isBackendStoredAvatarUrl(creator.avatarUrl)
+          ? creator.avatarUrl
+          : avatarUrl || creator.avatarUrl;
 
       const params = [
         id,

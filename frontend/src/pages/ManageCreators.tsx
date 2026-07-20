@@ -11,19 +11,16 @@ import {
 import AppLayout from '@/components/AppLayout';
 import AddCreatorModal from '@/components/AddCreatorModal';
 import AssignCreatorStaffModal from '@/components/AssignCreatorStaffModal';
+import CreatorAvatar from '@/components/CreatorAvatar';
 import RemoveCreatorModal from '@/components/RemoveCreatorModal';
 import RenameCreatorModal from '@/components/RenameCreatorModal';
 import VerifySessionModal from '@/components/VerifySessionModal';
 import { useAuth } from '@/context/AuthContext';
-import { deleteCreator, getCreatorSession, getCreators, resolveCreatorAvatarUrl, saveCreatorAvatarFromMaloum, type Creator } from '@/lib/api';
+import { deleteCreator, getCreatorSession, getCreators, saveCreatorAvatarFromMaloum, type Creator } from '@/lib/api';
 import type { PlaywrightCookie } from '@/types/electron';
 
 function platformLabel(platform: Creator['platform']): string {
   return platform === 'maloum' ? 'Maloum' : '4based';
-}
-
-function platformInitial(displayName: string): string {
-  return displayName.charAt(0).toUpperCase();
 }
 
 function connectionBadgeClass(status: Creator['connectionStatus']): string {
@@ -251,27 +248,19 @@ export default function ManageCreators() {
                   </td>
                 </tr>
               ) : (
-                creators.map((creator) => {
-                  const avatarSrc = resolveCreatorAvatarUrl(creator.avatarUrl);
-
-                  return (
+                creators.map((creator) => (
                   <tr
                     key={creator.id}
                     className="border-t border-gray-100 dark:border-white/5 hover:bg-gray-50/50 dark:hover:bg-white/[0.02]"
                   >
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
-                        {avatarSrc ? (
-                          <img
-                            src={avatarSrc}
-                            alt={creator.displayName}
-                            className="w-8 h-8 rounded-full object-cover shrink-0"
-                          />
-                        ) : (
-                          <div className="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-600 text-xs font-bold">
-                            {platformInitial(creator.displayName)}
-                          </div>
-                        )}
+                        <CreatorAvatar
+                          avatarUrl={creator.avatarUrl}
+                          displayName={creator.displayName}
+                          className="w-8 h-8 rounded-full object-cover shrink-0"
+                          initialsClassName="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-600 text-xs font-bold shrink-0"
+                        />
                         <div>
                           <p className="font-medium">{creator.displayName}</p>
                           <p className="text-xs text-gray-400">
@@ -379,8 +368,7 @@ export default function ManageCreators() {
                       </td>
                     )}
                   </tr>
-                  );
-                })
+                ))
               )}
             </tbody>
           </table>

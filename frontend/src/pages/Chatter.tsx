@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, Bell, Globe, MessageSquare, RefreshCw, type LucideIcon } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
+import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import { useAuth } from '@/context/AuthContext';
 import { useCreatorBoot } from '@/context/CreatorBootContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
-import { getCreators, getMaloumSentMessages, resolveCreatorAvatarUrl, type Creator } from '@/lib/api';
+import { getCreators, getMaloumSentMessages, type Creator } from '@/lib/api';
 import { LocalMaloumSessionError } from '@/lib/localMaloumSession';
 import type { BrowserBounds } from '@/types/electron';
 
@@ -91,10 +92,6 @@ function connectionDotClass(status: Creator['connectionStatus']): string {
   if (status === 'connected') return 'bg-green-500';
   if (status === 'error') return 'bg-red-500';
   return 'bg-yellow-500';
-}
-
-function creatorInitial(displayName: string): string {
-  return displayName.charAt(0).toUpperCase();
 }
 
 export default function Chatter() {
@@ -498,17 +495,10 @@ export default function Chatter() {
                     onClick={() => void handleSelectCreator(creator)}
                     className="flex items-center gap-3 flex-1 min-w-0 text-left"
                   >
-                    {resolveCreatorAvatarUrl(creator.avatarUrl) ? (
-                      <img
-                        src={resolveCreatorAvatarUrl(creator.avatarUrl)!}
-                        alt={creator.displayName}
-                        className="w-10 h-10 rounded-full object-cover shrink-0"
-                      />
-                    ) : (
-                      <div className="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center shrink-0 text-orange-600 font-bold text-sm">
-                        {creatorInitial(creator.displayName)}
-                      </div>
-                    )}
+                    <CreatorAvatar
+                      avatarUrl={creator.avatarUrl}
+                      displayName={creator.displayName}
+                    />
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-medium truncate">{creator.displayName}</p>
                       <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
