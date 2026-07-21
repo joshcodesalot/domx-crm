@@ -86,6 +86,26 @@ export async function loginCreatorLocallyWithSavedCredentials(
   }
 }
 
+export async function ensureCreatorSessionReady(
+  creatorId: string,
+  accountId: string,
+  loginEmail?: string | null
+): Promise<boolean> {
+  await window.electronAPI!.registerCreatorMapping({ accountId, creatorId });
+
+  const hasLocalSession = await hydrateLocalCreatorSession(accountId);
+  if (hasLocalSession) {
+    return true;
+  }
+
+  try {
+    await loginCreatorLocallyWithSavedCredentials(creatorId, accountId, loginEmail);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureLocalMaloumSessionForChat(
   creatorId: string,
   accountId: string,

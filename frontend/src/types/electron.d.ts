@@ -245,6 +245,19 @@ export interface ElectronAPI {
       skipped?: boolean;
     }>;
   }>;
+  prepareAllChatBrowsersParallel: (
+    accountIds: string[],
+    concurrency?: number
+  ) => Promise<{
+    prepared: number;
+    results: Array<{
+      accountId: string;
+      ok: boolean;
+      error?: string;
+      prepared?: boolean;
+      skipped?: boolean;
+    }>;
+  }>;
   isChatPrepared: (accountId: string) => Promise<boolean>;
   showVerifyBrowser: (opts: {
     accountId: string;

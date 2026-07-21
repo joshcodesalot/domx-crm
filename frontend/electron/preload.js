@@ -35,6 +35,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('creator:prepare-chat-browser', accountId),
   prepareAllChatBrowsers: (accountIds) =>
     ipcRenderer.invoke('creator:prepare-all-chat-browsers', accountIds),
+  prepareAllChatBrowsersParallel: (accountIds, concurrency) =>
+    ipcRenderer.invoke('creator:prepare-all-chat-browsers-parallel', {
+      accountIds,
+      concurrency,
+    }),
   isChatPrepared: (accountId) =>
     ipcRenderer.invoke('creator:is-chat-prepared', accountId),
   showVerifyBrowser: (opts) => ipcRenderer.invoke('creator:show-verify-browser', opts),

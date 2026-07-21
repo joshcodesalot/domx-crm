@@ -63,6 +63,65 @@ function UnreadBadge({
   );
 }
 
+function CreatorsListSkeleton() {
+  return (
+    <div className="p-2 space-y-2" aria-hidden>
+      {Array.from({ length: 5 }).map((_, index) => (
+        <div
+          key={index}
+          className="flex items-center gap-3 p-3 rounded-lg border border-transparent"
+        >
+          <div className="w-10 h-10 rounded-full bg-gray-200 dark:bg-white/10 shrink-0" />
+          <div className="flex-1 min-w-0 space-y-2">
+            <div className="h-3.5 w-24 rounded bg-gray-200 dark:bg-white/10" />
+            <div className="flex gap-1.5">
+              <div className="h-5 w-10 rounded-full bg-gray-100 dark:bg-white/5" />
+              <div className="h-5 w-10 rounded-full bg-gray-100 dark:bg-white/5" />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ChatPanelSkeleton() {
+  return (
+    <div
+      className="absolute inset-0 flex bg-[#f8f9fa] dark:bg-[#0d0d0d] z-10"
+      aria-hidden
+    >
+      <div className="w-72 border-r border-gray-200 dark:border-white/10 p-3 space-y-3 shrink-0">
+        <div className="h-8 w-32 rounded bg-gray-200 dark:bg-white/10" />
+        {Array.from({ length: 8 }).map((_, index) => (
+          <div key={index} className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full bg-gray-200 dark:bg-white/10 shrink-0" />
+            <div className="flex-1 space-y-1.5">
+              <div className="h-3 w-24 rounded bg-gray-200 dark:bg-white/10" />
+              <div className="h-2.5 w-36 rounded bg-gray-100 dark:bg-white/5" />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex-1 flex flex-col p-6 space-y-4">
+        <div className="flex justify-start">
+          <div className="h-10 w-48 rounded-2xl bg-gray-200 dark:bg-white/10" />
+        </div>
+        <div className="flex justify-end">
+          <div className="h-10 w-56 rounded-2xl bg-gray-200 dark:bg-white/10" />
+        </div>
+        <div className="flex justify-start">
+          <div className="h-16 w-64 rounded-2xl bg-gray-100 dark:bg-white/5" />
+        </div>
+        <div className="flex justify-end">
+          <div className="h-10 w-40 rounded-2xl bg-gray-200 dark:bg-white/10" />
+        </div>
+        <div className="mt-auto h-12 w-full rounded-xl bg-gray-100 dark:bg-white/5" />
+      </div>
+    </div>
+  );
+}
+
 function getBrowserBounds(element: HTMLElement | null): BrowserBounds | null {
   if (!element) return null;
   const rect = element.getBoundingClientRect();
@@ -99,12 +158,7 @@ function connectionDotClass(status: Creator['connectionStatus']): string {
 
 export default function Chatter() {
   const { user, hasPermission } = useAuth();
-  const {
-    prepareCreatorChat,
-    waitForChatReady,
-    chatWarmupStatus,
-    chatWarmupProgress,
-  } = useCreatorBoot();
+  const { bootCreators, prepareCreatorChat, waitForChatReady } = useCreatorBoot();
   const { onSyncEvent } = useStaffSync();
   const [creators, setCreators] = useState<Creator[]>([]);
   const [loading, setLoading] = useState(true);
@@ -155,6 +209,12 @@ export default function Chatter() {
   }, []);
 
   useEffect(() => {
+    if (bootCreators) {
+      setCreators(bootCreators);
+      setLoading(false);
+      return;
+    }
+
     async function load() {
       setLoading(true);
       setError(null);
@@ -167,7 +227,7 @@ export default function Chatter() {
       }
     }
     load();
-  }, [loadCreatorsList]);
+  }, [bootCreators, loadCreatorsList]);
 
   useEffect(() => {
     const unsubscribe = onSyncEvent((event) => {
@@ -465,18 +525,8 @@ export default function Chatter() {
             </button>
           </div>
 
-          {chatWarmupStatus === 'warming' && (
-            <p className="px-4 py-1.5 text-xs text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-white/5">
-              Preparing chats ({chatWarmupProgress.prepared}/{chatWarmupProgress.total})…
-            </p>
-          )}
-
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
-            {loading && (
-              <div className="flex justify-center p-6">
-                <div className="w-5 h-5 rounded-full border-2 border-brand-600 border-t-transparent animate-spin" />
-              </div>
-            )}
+            {loading && <CreatorsListSkeleton />}
             {error && (
               <p className="text-sm text-red-600 dark:text-red-400 p-3">{error}</p>
             )}
@@ -643,11 +693,7 @@ export default function Chatter() {
               sessionStatus === 'valid' ? 'bg-white' : 'bg-[#f8f9fa] dark:bg-[#0d0d0d]'
             }`}
           >
-            {sessionStatus === 'loading' && (
-              <div className="absolute inset-0 flex items-center justify-center z-10">
-                <div className="w-8 h-8 rounded-full border-2 border-brand-600 border-t-transparent animate-spin" />
-              </div>
-            )}
+            {sessionStatus === 'loading' && <ChatPanelSkeleton />}
             {!selectedCreator && sessionStatus !== 'loading' && (
               <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 p-4 text-center">
                 {canManageFullBrowser

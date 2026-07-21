@@ -59,6 +59,8 @@ const storageInjectedForAccount = new Set();
 const warmSessionAccounts = new Set();
 const preparedChatPartitions = new Set();
 let prepareChatChain = Promise.resolve();
+let lastVisibleChatBounds = null;
+let lastVisibleChatAccountId = null;
 let currentDomXTheme = 'light';
 const currentTranslationSettings = {
   preSendEnabled: true,
@@ -834,12 +836,37 @@ function applyChatBounds(bounds) {
     return;
   }
 
+  lastVisibleChatBounds = bounds;
+  if (activeChatAccountId) {
+    lastVisibleChatAccountId = activeChatAccountId;
+  }
+
   chatBrowserView.setBounds({
     x: Math.round(x),
     y: Math.round(y),
     width: Math.round(width),
     height: Math.round(height),
   });
+}
+
+function restoreVisibleChatIfNeeded(excludeAccountId) {
+  const accountId = lastVisibleChatAccountId;
+  if (!accountId || accountId === excludeAccountId || !mainWindow || !lastVisibleChatBounds) {
+    return;
+  }
+
+  const view = getChatView(accountId);
+  if (!view) {
+    return;
+  }
+
+  if (!mainWindow.getBrowserViews().includes(view)) {
+    mainWindow.addBrowserView(view);
+  }
+
+  setActiveChatView(accountId, view);
+  view.setBackgroundColor(maloumChatBackgroundColor());
+  applyChatBounds(lastVisibleChatBounds);
 }
 
 function attachOffScreenChatView(view) {
@@ -1754,9 +1781,21 @@ async function prepareChatBrowser(accountId) {
   return withPrepareLock(() => prepareChatBrowserInner(accountId));
 }
 
-async function prepareChatBrowserInner(accountId) {
+async function prepareChatBrowserInner(accountId, options = {}) {
+  const boot = options.boot === true;
+
   if (!mainWindow) {
     throw new Error('Main window is not available');
+  }
+
+  if (isChatPrepared(accountId)) {
+    if (!boot) {
+      const existingView = getChatView(accountId);
+      if (existingView) {
+        await refreshMaloumCreatorBadgesWithDelay(existingView.webContents, accountId);
+      }
+    }
+    return { accountId, prepared: true, skipped: true };
   }
 
   if (hasLoadedChatView(accountId)) {
@@ -1764,7 +1803,7 @@ async function prepareChatBrowserInner(accountId) {
     if (preparedBrowserModeByAccountId.get(accountId) === targetMode) {
       preparedChatPartitions.add(accountId);
       const existingView = getChatView(accountId);
-      if (existingView) {
+      if (existingView && !boot) {
         await refreshMaloumCreatorBadgesWithDelay(existingView.webContents, accountId);
       }
       return { accountId, prepared: true, skipped: true };
@@ -1787,10 +1826,19 @@ async function prepareChatBrowserInner(accountId) {
     throw new Error('Session partition is not warm. Load session before preparing chat.');
   }
 
-  parkActiveChatView();
+  const previouslyVisible =
+    !boot && activeChatAccountId && activeChatAccountId !== accountId
+      ? activeChatAccountId
+      : null;
+
+  if (!boot) {
+    parkActiveChatView();
+  }
 
   const view = createChatView(accountId);
-  setActiveChatView(accountId, view);
+  if (!boot) {
+    setActiveChatView(accountId, view);
+  }
 
   attachOffScreenChatView(view);
 
@@ -1801,9 +1849,14 @@ async function prepareChatBrowserInner(accountId) {
     throw err;
   } finally {
     parkChatView(accountId);
-    if (activeChatAccountId === accountId) {
-      chatBrowserView = null;
-      activeChatAccountId = null;
+    if (!boot) {
+      if (activeChatAccountId === accountId) {
+        chatBrowserView = null;
+        activeChatAccountId = null;
+      }
+      if (previouslyVisible) {
+        restoreVisibleChatIfNeeded(accountId);
+      }
     }
   }
 
@@ -1815,9 +1868,12 @@ async function prepareChatBrowserInner(accountId) {
 
   preparedChatPartitions.add(accountId);
 
-  await saveCreatorProfile(accountId, view.webContents);
-
-  await refreshMaloumCreatorBadgesWithDelay(view.webContents, accountId);
+  if (boot) {
+    void saveCreatorProfile(accountId, view.webContents);
+  } else {
+    await saveCreatorProfile(accountId, view.webContents);
+    await refreshMaloumCreatorBadgesWithDelay(view.webContents, accountId);
+  }
 
   return { accountId, prepared: true };
 }
@@ -1868,7 +1924,50 @@ async function prepareAllChatBrowsers(accountIds) {
   };
 }
 
+async function prepareAllChatBrowsersParallel(accountIds, concurrency = 3) {
+  const uniqueIds = [...new Set(accountIds)];
+  const toPrepare = uniqueIds.filter(
+    (accountId) => !isChatPrepared(accountId) && warmSessionAccounts.has(accountId)
+  );
+
+  const results = [];
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < toPrepare.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      const accountId = toPrepare[currentIndex];
+
+      try {
+        const result = await prepareChatBrowserInner(accountId, { boot: true });
+        results.push({ accountId, ok: true, ...result });
+      } catch (err) {
+        results.push({
+          accountId,
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  const workerCount = Math.min(Math.max(concurrency, 1), toPrepare.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return {
+    prepared: results.filter((entry) => entry.ok).length,
+    results,
+  };
+}
+
 async function showChatBrowser({ accountId, bounds, fullBrowserAccess = false }) {
+  return withPrepareLock(() =>
+    showChatBrowserInner({ accountId, bounds, fullBrowserAccess })
+  );
+}
+
+async function showChatBrowserInner({ accountId, bounds, fullBrowserAccess = false }) {
   if (!mainWindow) {
     throw new Error('Main window is not available');
   }
@@ -1887,7 +1986,7 @@ async function showChatBrowser({ accountId, bounds, fullBrowserAccess = false })
     if (!warmSessionAccounts.has(accountId)) {
       throw new Error('Session partition is not warm. Load session before showing chat.');
     }
-    await prepareChatBrowser(accountId);
+    await prepareChatBrowserInner(accountId);
   }
 
   let view = getChatView(accountId);
@@ -1944,6 +2043,8 @@ function hideChatBrowser() {
   parkActiveChatView();
   chatBrowserView = null;
   activeChatAccountId = null;
+  lastVisibleChatAccountId = null;
+  lastVisibleChatBounds = null;
   if (!loginBrowserView && !verifyBrowserView) {
     activeAccountId = null;
   }
@@ -2062,6 +2163,7 @@ module.exports = {
   getActiveChatAccountId,
   prepareChatBrowser,
   prepareAllChatBrowsers,
+  prepareAllChatBrowsersParallel,
   isChatPrepared,
   clearSession,
   showChatBrowser,

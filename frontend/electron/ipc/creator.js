@@ -135,6 +135,13 @@ function registerCreatorIpc() {
   );
 
   ipcMain.handle(
+    'creator:prepare-all-chat-browsers-parallel',
+    guardCreatorIpc(async (_event, payload) =>
+      creatorBrowser.prepareAllChatBrowsersParallel(payload.accountIds, payload.concurrency)
+    )
+  );
+
+  ipcMain.handle(
     'creator:is-chat-prepared',
     guardCreatorIpc(async (_event, accountId) => creatorBrowser.isChatPrepared(accountId))
   );

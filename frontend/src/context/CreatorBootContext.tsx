@@ -10,18 +10,33 @@ import {
 import { Outlet } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
-import { getCreators, getHealth, getMe } from '@/lib/api';
-import { ensureLocalMaloumSessionForChat } from '@/lib/localMaloumSession';
+import { getCreators, getHealth, type Creator } from '@/lib/api';
+import {
+  ensureCreatorSessionReady,
+  ensureLocalMaloumSessionForChat,
+} from '@/lib/localMaloumSession';
 import type { StaffSyncEvent } from '@/types/electron';
 import BootLoadingScreen from '@/components/BootLoadingScreen';
 import { useMessagingTrackerPersistence } from '@/hooks/useMessagingTrackerPersistence';
 
 type BootStatus = 'idle' | 'loading' | 'ready';
-type ChatWarmupStatus = 'idle' | 'warming' | 'done';
 
 export const LAST_CHATTER_ACCOUNT_ID_KEY = 'domx_last_chatter_account_id';
 
-const BOOT_HYDRATE_CONCURRENCY = 4;
+const BOOT_SESSION_CONCURRENCY = 4;
+const BOOT_PREPARE_CONCURRENCY = 3;
+
+function sortCreatorsForBoot(creators: Creator[]): Creator[] {
+  const lastUsed = localStorage.getItem(LAST_CHATTER_ACCOUNT_ID_KEY);
+  if (!lastUsed) {
+    return creators;
+  }
+  const lastUsedCreator = creators.find((creator) => creator.accountId === lastUsed);
+  if (!lastUsedCreator) {
+    return creators;
+  }
+  return [lastUsedCreator, ...creators.filter((creator) => creator.accountId !== lastUsed)];
+}
 
 async function runWithConcurrency<T>(
   items: T[],
@@ -29,12 +44,12 @@ async function runWithConcurrency<T>(
   shouldContinue: () => boolean,
   fn: (item: T) => Promise<void>
 ): Promise<void> {
-  for (let i = 0; i < items.length; i += concurrency) {
+  for (let index = 0; index < items.length; index += concurrency) {
     if (!shouldContinue()) {
       return;
     }
 
-    const batch = items.slice(i, i + concurrency);
+    const batch = items.slice(index, index + concurrency);
     await Promise.all(
       batch.map(async (item) => {
         if (!shouldContinue()) {
@@ -46,19 +61,9 @@ async function runWithConcurrency<T>(
   }
 }
 
-function sortWarmAccountIdsForBoot(accountIds: string[]): string[] {
-  const lastUsed = localStorage.getItem(LAST_CHATTER_ACCOUNT_ID_KEY);
-  if (!lastUsed || !accountIds.includes(lastUsed)) {
-    return accountIds;
-  }
-  return [lastUsed, ...accountIds.filter((id) => id !== lastUsed)];
-}
-
 interface CreatorBootContextValue {
   bootStatus: BootStatus;
-  chatWarmupStatus: ChatWarmupStatus;
-  chatWarmupProgress: { prepared: number; total: number };
-  preparedAccountIds: string[];
+  bootCreators: Creator[] | null;
   prepareCreatorChat: (
     creatorId: string,
     accountId: string,
@@ -74,9 +79,7 @@ export function CreatorBootProvider() {
   const { onSyncEvent } = useStaffSync();
   useMessagingTrackerPersistence();
   const [bootStatus, setBootStatus] = useState<BootStatus>('idle');
-  const [chatWarmupStatus, setChatWarmupStatus] = useState<ChatWarmupStatus>('idle');
-  const [chatWarmupProgress, setChatWarmupProgress] = useState({ prepared: 0, total: 0 });
-  const [preparedAccountIds, setPreparedAccountIds] = useState<string[]>([]);
+  const [bootCreators, setBootCreators] = useState<Creator[] | null>(null);
   const bootCompleteRef = useRef(false);
   const bootRunIdRef = useRef(0);
   const chatWarmupPromiseRef = useRef<Promise<void> | null>(null);
@@ -101,24 +104,25 @@ export function CreatorBootProvider() {
       return;
     }
 
-    if (chatWarmupPromiseRef.current) {
-      await chatWarmupPromiseRef.current.catch(() => {});
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!window.electronAPI?.isElectron) {
-      return;
-    }
-
-    return window.electronAPI.onChatPrepareProgress((payload) => {
-      if (payload.ok) {
-        setPreparedAccountIds((prev) =>
-          prev.includes(payload.accountId) ? prev : [...prev, payload.accountId]
-        );
+    const deadline = Date.now() + 120_000;
+    while (Date.now() < deadline) {
+      if (await window.electronAPI.isChatPrepared(accountId)) {
+        return;
       }
-      setChatWarmupProgress({ prepared: payload.prepared, total: payload.total });
-    });
+
+      if (chatWarmupPromiseRef.current) {
+        await Promise.race([
+          chatWarmupPromiseRef.current.catch(() => {}),
+          new Promise<void>((resolve) => {
+            setTimeout(resolve, 200);
+          }),
+        ]);
+      } else {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 200);
+        });
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -146,90 +150,64 @@ export function CreatorBootProvider() {
     let cancelled = false;
     const isActiveBoot = () => !cancelled && runId === bootRunIdRef.current;
 
+    async function warmAllCreators(creators: Creator[]): Promise<void> {
+      await runWithConcurrency(creators, BOOT_SESSION_CONCURRENCY, isActiveBoot, async (creator) => {
+        try {
+          await ensureCreatorSessionReady(
+            creator.id,
+            creator.accountId!,
+            creator.loginEmail
+          );
+        } catch {
+          // Best-effort session warm-up; recovery happens when chat opens.
+        }
+      });
+
+      if (!isActiveBoot()) {
+        return;
+      }
+
+      const accountIds = creators
+        .map((creator) => creator.accountId!)
+        .filter((accountId) => Boolean(accountId));
+
+      if (accountIds.length === 0) {
+        return;
+      }
+
+      await window.electronAPI!.prepareAllChatBrowsersParallel(
+        accountIds,
+        BOOT_PREPARE_CONCURRENCY
+      );
+    }
+
     async function runBoot() {
       setBootStatus('loading');
 
       try {
-        await getHealth();
-        if (!isActiveBoot()) return;
-
-        await getMe();
-        if (!isActiveBoot()) return;
-
-        const { creators } = await getCreators();
+        const [, { creators }] = await Promise.all([getHealth(), getCreators()]);
         if (!isActiveBoot()) return;
 
         const targets = creators.filter(
           (creator) => creator.platform === 'maloum' && creator.accountId
         );
+        const sortedTargets = sortCreatorsForBoot(targets);
 
-        if (!isActiveBoot()) return;
-
-        if (targets.length === 0) {
-          bootCompleteRef.current = true;
-          setBootStatus('ready');
-          return;
+        if (isActiveBoot()) {
+          setBootCreators(sortedTargets);
         }
 
-        await runWithConcurrency(
-          targets,
-          BOOT_HYDRATE_CONCURRENCY,
-          isActiveBoot,
-          async (creator) => {
-            try {
-              await window.electronAPI!.registerCreatorMapping({
-                accountId: creator.accountId!,
-                creatorId: creator.id,
-              });
-              await window.electronAPI!.hydrateCreatorProfile(creator.accountId!);
-            } catch {
-              // Best-effort local hydration only; recovery happens when chat opens.
-            }
-          }
-        );
-
         if (!isActiveBoot()) return;
 
-        const warmResults = await Promise.all(
-          targets.map(async (creator) => {
-            try {
-              const warm = await window.electronAPI!.isCreatorSessionWarm(creator.accountId!);
-              return warm ? creator.accountId! : null;
-            } catch {
-              return null;
-            }
-          })
-        );
-        const warmAccountIds = warmResults.filter((accountId): accountId is string => accountId !== null);
+        if (sortedTargets.length > 0) {
+          const warmupPromise = warmAllCreators(sortedTargets).then(() => {});
+          chatWarmupPromiseRef.current = warmupPromise;
+          await warmupPromise;
+        }
 
         if (isActiveBoot()) {
           bootCompleteRef.current = true;
           setBootStatus('ready');
-        }
-
-        if (warmAccountIds.length > 0 && isActiveBoot()) {
-          const sortedIds = sortWarmAccountIdsForBoot(warmAccountIds);
-          setChatWarmupStatus('warming');
-          setChatWarmupProgress({ prepared: 0, total: sortedIds.length });
-          setPreparedAccountIds([]);
-
-          const warmupPromise = window
-            .electronAPI!.prepareAllChatBrowsers(sortedIds)
-            .then((result) => {
-              const succeeded = result.results
-                .filter((entry) => entry.ok)
-                .map((entry) => entry.accountId);
-              setPreparedAccountIds(succeeded);
-              setChatWarmupProgress({ prepared: sortedIds.length, total: sortedIds.length });
-              setChatWarmupStatus('done');
-            })
-            .catch(() => {
-              setChatWarmupStatus('done');
-            })
-            .then(() => {});
-
-          chatWarmupPromiseRef.current = warmupPromise;
-          void warmupPromise;
         }
       } catch {
         if (isActiveBoot()) {
@@ -259,20 +237,11 @@ export function CreatorBootProvider() {
   const value = useMemo(
     () => ({
       bootStatus,
-      chatWarmupStatus,
-      chatWarmupProgress,
-      preparedAccountIds,
+      bootCreators,
       prepareCreatorChat,
       waitForChatReady,
     }),
-    [
-      bootStatus,
-      chatWarmupStatus,
-      chatWarmupProgress,
-      preparedAccountIds,
-      prepareCreatorChat,
-      waitForChatReady,
-    ]
+    [bootStatus, bootCreators, prepareCreatorChat, waitForChatReady]
   );
 
   if (isAuthenticated && !isLoading && bootStatus === 'loading') {
