@@ -151,7 +151,29 @@ export function CreatorBootProvider() {
     const isActiveBoot = () => !cancelled && runId === bootRunIdRef.current;
 
     async function warmAllCreators(creators: Creator[]): Promise<void> {
-      await runWithConcurrency(creators, BOOT_SESSION_CONCURRENCY, isActiveBoot, async (creator) => {
+      const [priorityCreator, ...otherCreators] = creators;
+
+      if (priorityCreator && isActiveBoot()) {
+        try {
+          await ensureCreatorSessionReady(
+            priorityCreator.id,
+            priorityCreator.accountId!,
+            priorityCreator.loginEmail
+          );
+
+          if (isActiveBoot() && priorityCreator.accountId) {
+            await window.electronAPI!.prepareChatBrowser(priorityCreator.accountId);
+          }
+        } catch {
+          // Best-effort warm-up for the most likely first click; recovery on chat open.
+        }
+      }
+
+      if (!isActiveBoot()) {
+        return;
+      }
+
+      await runWithConcurrency(otherCreators, BOOT_SESSION_CONCURRENCY, isActiveBoot, async (creator) => {
         try {
           await ensureCreatorSessionReady(
             creator.id,
@@ -167,7 +189,7 @@ export function CreatorBootProvider() {
         return;
       }
 
-      const accountIds = creators
+      const accountIds = otherCreators
         .map((creator) => creator.accountId!)
         .filter((accountId) => Boolean(accountId));
 

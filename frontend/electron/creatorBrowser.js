@@ -37,7 +37,6 @@ const {
 const {
   MALOUM_PROFILE_URL,
   verifyMaloumSession: runVerifyMaloumSession,
-  waitForNetworkIdle,
 } = require('./maloumSessionVerify');
 
 const MALOUM_LOGIN_URL = 'https://app.maloum.com/login';
@@ -70,6 +69,38 @@ const currentTranslationSettings = {
 };
 const preparingChatAccounts = new Set();
 const refreshMaloumChatUIChains = new Map();
+let userInitiatedPrepareCount = 0;
+
+function createPhaseTimer(label, accountId) {
+  const start = Date.now();
+  const phases = [];
+  return {
+    mark(phase) {
+      const elapsed = Date.now() - start;
+      phases.push({ phase, elapsed });
+      console.log(`[creatorBrowser] ${label} account=${accountId} phase=${phase} +${elapsed}ms`);
+    },
+    finish() {
+      const total = Date.now() - start;
+      console.log(`[creatorBrowser] ${label} account=${accountId} done total=${total}ms`, phases);
+    },
+  };
+}
+
+async function withUserInitiatedPriority(task) {
+  userInitiatedPrepareCount += 1;
+  try {
+    return await task();
+  } finally {
+    userInitiatedPrepareCount -= 1;
+  }
+}
+
+async function waitForBackgroundPrepareSlot() {
+  while (userInitiatedPrepareCount > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
 
 function getPreparedViewsForBadgePolling() {
   const views = [];
@@ -230,7 +261,6 @@ async function safeLoadURL(webContents, url) {
 }
 
 function waitUntilNavigated(webContents, timeoutMs = 45000, urlMatcher) {
-  const start = Date.now();
   const matches =
     typeof urlMatcher === 'function'
       ? urlMatcher
@@ -240,31 +270,65 @@ function waitUntilNavigated(webContents, timeoutMs = 45000, urlMatcher) {
           current.includes(urlMatcher);
 
   return new Promise((resolve, reject) => {
-    async function poll() {
-      if (webContents.isDestroyed()) {
-        reject(new Error('WebContents destroyed'));
+    if (webContents.isDestroyed()) {
+      reject(new Error('WebContents destroyed'));
+      return;
+    }
+
+    const start = Date.now();
+    let settled = false;
+
+    function tryResolve() {
+      if (settled || webContents.isDestroyed()) {
         return;
       }
 
       const current = webContents.getURL();
       if (!webContents.isLoading() && matches(current)) {
+        settled = true;
+        cleanup();
         resolve(current);
-        return;
       }
-
-      if (Date.now() - start >= timeoutMs) {
-        reject(
-          new Error(
-            `Navigation timed out after ${timeoutMs}ms (url=${current || 'empty'})`
-          )
-        );
-        return;
-      }
-
-      setTimeout(poll, 100);
     }
 
-    poll();
+    function failWithTimeout() {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      const current = webContents.isDestroyed() ? 'destroyed' : webContents.getURL();
+      reject(new Error(`Navigation timed out after ${timeoutMs}ms (url=${current || 'empty'})`));
+    }
+
+    function cleanup() {
+      clearInterval(pollTimer);
+      clearTimeout(timeoutTimer);
+      webContents.removeListener('did-finish-load', onLoadEvent);
+      webContents.removeListener('did-navigate', onLoadEvent);
+      webContents.removeListener('did-navigate-in-page', onLoadEvent);
+      webContents.removeListener('did-stop-loading', onLoadEvent);
+    }
+
+    function onLoadEvent() {
+      tryResolve();
+    }
+
+    webContents.on('did-finish-load', onLoadEvent);
+    webContents.on('did-navigate', onLoadEvent);
+    webContents.on('did-navigate-in-page', onLoadEvent);
+    webContents.on('did-stop-loading', onLoadEvent);
+
+    const pollTimer = setInterval(() => {
+      tryResolve();
+      if (!settled && Date.now() - start >= timeoutMs) {
+        failWithTimeout();
+      }
+    }, 50);
+
+    const timeoutTimer = setTimeout(failWithTimeout, timeoutMs);
+
+    tryResolve();
   });
 }
 
@@ -323,19 +387,16 @@ async function injectStorageForAccount(webContents, accountId) {
   return injectedCount > 0;
 }
 
-async function injectSessionStorageIfNeeded(webContents, accountId) {
+async function injectSessionStorageIfNeeded(webContents, accountId, postInjectUrl = null) {
   const injected = await injectStorageForAccount(webContents, accountId);
   if (injected) {
-    const reloadUrl = webContents.getURL();
-    await safeLoadURL(webContents, reloadUrl);
-    await waitUntilNavigated(webContents, 30000, (current) =>
-      current.includes('maloum.com')
-    );
+    const targetUrl = postInjectUrl || webContents.getURL();
+    await navigateToUrl(webContents, targetUrl, accountId, 30000);
   }
   return injected;
 }
 
-async function ensureSessionStorageReady(webContents, accountId) {
+async function ensureSessionStorageReady(webContents, accountId, postInjectUrl = null) {
   if (storageInjectedForAccount.has(accountId)) {
     return;
   }
@@ -354,7 +415,7 @@ async function ensureSessionStorageReady(webContents, accountId) {
     await navigateToUrl(webContents, seedUrl, accountId);
   }
 
-  await injectSessionStorageIfNeeded(webContents, accountId);
+  await injectSessionStorageIfNeeded(webContents, accountId, postInjectUrl);
 }
 
 async function handleEmbeddedPageLoad(webContents, accountId, { withConsent = false } = {}) {
@@ -387,7 +448,7 @@ async function waitForMaloumChatRoot(webContents, attempts = 100) {
       return true;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 
   return false;
@@ -396,7 +457,7 @@ async function waitForMaloumChatRoot(webContents, attempts = 100) {
 async function prepareMaloumFullBrowserPage(webContents, accountId) {
   preparingChatAccounts.add(accountId);
   try {
-    await ensureSessionStorageReady(webContents, accountId);
+    await ensureSessionStorageReady(webContents, accountId, MALOUM_HOME_URL);
 
     const currentUrl = webContents.getURL();
     if (!isMaloumAppUrl(currentUrl)) {
@@ -407,7 +468,7 @@ async function prepareMaloumFullBrowserPage(webContents, accountId) {
       }
     }
 
-    await acceptCookieConsent(webContents);
+    void acceptCookieConsent(webContents);
     await runRefreshMaloumPageUISerialized(
       webContents,
       currentDomXTheme,
@@ -429,7 +490,7 @@ async function prepareMaloumChatPage(webContents, accountId) {
 
   preparingChatAccounts.add(accountId);
   try {
-    await ensureSessionStorageReady(webContents, accountId);
+    await ensureSessionStorageReady(webContents, accountId, MALOUM_CHAT_URL);
 
     const currentUrl = webContents.getURL();
     const onChatPage =
@@ -443,7 +504,6 @@ async function prepareMaloumChatPage(webContents, accountId) {
       if (urlAfterNav.includes('/login')) {
         throw new Error('Session expired or invalid — Maloum redirected to login.');
       }
-      await waitForNetworkIdle(webContents, 15000).catch(() => {});
     }
 
     const ready = await waitForMaloumChatRoot(webContents);
@@ -454,7 +514,7 @@ async function prepareMaloumChatPage(webContents, accountId) {
       );
     }
 
-    await acceptCookieConsent(webContents);
+    void acceptCookieConsent(webContents);
     await runRefreshMaloumPageUISerialized(webContents, currentDomXTheme, accountId, webContents.getURL());
 
     preparedBrowserModeByAccountId.set(accountId, 'restricted');
@@ -1432,11 +1492,14 @@ function playwrightCookieToElectron(cookie) {
 async function importCookies({ accountId, cookies }) {
   const partitionSession = getPartitionSession(accountId);
 
-  for (const cookie of cookies) {
-    try {
-      await partitionSession.cookies.set(playwrightCookieToElectron(cookie));
-    } catch (err) {
-      console.warn('Failed to import cookie:', cookie.name, err.message);
+  const results = await Promise.allSettled(
+    cookies.map((cookie) => partitionSession.cookies.set(playwrightCookieToElectron(cookie)))
+  );
+
+  for (let index = 0; index < results.length; index += 1) {
+    if (results[index].status === 'rejected') {
+      const cookie = cookies[index];
+      console.warn('Failed to import cookie:', cookie.name, results[index].reason?.message);
     }
   }
 
@@ -1519,23 +1582,29 @@ async function loadCreatorSession({ accountId, cookies, origins, force = false, 
   }
 
   const partitionSession = getPartitionSession(accountId);
-  await partitionSession.clearStorageData();
-  await partitionSession.clearCache();
+  await partitionSession.clearStorageData({ storages: ['cookies', 'localstorage'] });
 
   pendingStorageByAccount.set(accountId, origins || []);
   storageInjectedForAccount.delete(accountId);
 
+  const cookieResults = await Promise.allSettled(
+    cookies.map((cookie) => partitionSession.cookies.set(playwrightCookieToElectron(cookie)))
+  );
+
   let cookiesSet = 0;
   let cookiesFailed = 0;
   const failedNames = [];
-  for (const cookie of cookies) {
-    try {
-      await partitionSession.cookies.set(playwrightCookieToElectron(cookie));
+  for (let index = 0; index < cookieResults.length; index += 1) {
+    if (cookieResults[index].status === 'fulfilled') {
       cookiesSet += 1;
-    } catch (err) {
+    } else {
       cookiesFailed += 1;
-      failedNames.push(cookie.name);
-      console.warn('Failed to import cookie:', cookie.name, err.message);
+      failedNames.push(cookies[index].name);
+      console.warn(
+        'Failed to import cookie:',
+        cookies[index].name,
+        cookieResults[index].reason?.message
+      );
     }
   }
 
@@ -1809,23 +1878,29 @@ function hideVerifyBrowser() {
 }
 
 async function prepareChatBrowser(accountId) {
-  return withAccountPrepareLock(accountId, () => prepareChatBrowserInner(accountId));
+  return withUserInitiatedPriority(() =>
+    withAccountPrepareLock(accountId, () => prepareChatBrowserInner(accountId))
+  );
 }
 
 async function prepareChatBrowserInner(accountId, options = {}) {
   const boot = options.boot === true;
+  const timer = createPhaseTimer(boot ? 'prepare-boot' : 'prepare', accountId);
+  timer.mark('start');
 
   if (!mainWindow) {
     throw new Error('Main window is not available');
   }
 
   if (isChatPrepared(accountId)) {
+    timer.mark('already-prepared');
     if (!boot) {
       const existingView = getChatView(accountId);
       if (existingView) {
-        await refreshMaloumCreatorBadgesWithDelay(existingView.webContents, accountId);
+        void refreshMaloumCreatorBadgesWithDelay(existingView.webContents, accountId);
       }
     }
+    timer.finish();
     return { accountId, prepared: true, skipped: true };
   }
 
@@ -1835,8 +1910,10 @@ async function prepareChatBrowserInner(accountId, options = {}) {
       preparedChatPartitions.add(accountId);
       const existingView = getChatView(accountId);
       if (existingView && !boot) {
-        await refreshMaloumCreatorBadgesWithDelay(existingView.webContents, accountId);
+        void refreshMaloumCreatorBadgesWithDelay(existingView.webContents, accountId);
       }
+      timer.mark('reused-loaded-view');
+      timer.finish();
       return { accountId, prepared: true, skipped: true };
     }
 
@@ -1845,6 +1922,8 @@ async function prepareChatBrowserInner(accountId, options = {}) {
     if (existingView) {
       await ensureChatViewMatchesMode(existingView.webContents, accountId);
       preparedChatPartitions.add(accountId);
+      timer.mark('mode-switch');
+      timer.finish();
       return { accountId, prepared: true, skipped: true };
     }
   }
@@ -1856,6 +1935,8 @@ async function prepareChatBrowserInner(accountId, options = {}) {
   if (!warmSessionAccounts.has(accountId)) {
     throw new Error('Session partition is not warm. Load session before preparing chat.');
   }
+
+  timer.mark('session-warm');
 
   const previouslyVisible =
     !boot && activeChatAccountId && activeChatAccountId !== accountId
@@ -1872,9 +1953,11 @@ async function prepareChatBrowserInner(accountId, options = {}) {
   }
 
   attachOffScreenChatView(view);
+  timer.mark('view-created');
 
   try {
     await prepareMaloumChatPage(view.webContents, accountId);
+    timer.mark('page-prepared');
   } catch (err) {
     destroyChatView(accountId);
     throw err;
@@ -1902,10 +1985,12 @@ async function prepareChatBrowserInner(accountId, options = {}) {
   if (boot) {
     void saveCreatorProfile(accountId, view.webContents);
   } else {
-    await saveCreatorProfile(accountId, view.webContents);
-    await refreshMaloumCreatorBadgesWithDelay(view.webContents, accountId);
+    void saveCreatorProfile(accountId, view.webContents);
+    void refreshMaloumCreatorBadgesWithDelay(view.webContents, accountId);
   }
 
+  timer.mark('complete');
+  timer.finish();
   return { accountId, prepared: true };
 }
 
@@ -1966,6 +2051,8 @@ async function prepareAllChatBrowsersParallel(accountIds, concurrency = 3) {
 
   async function worker() {
     while (nextIndex < toPrepare.length) {
+      await waitForBackgroundPrepareSlot();
+
       const currentIndex = nextIndex;
       nextIndex += 1;
       const accountId = toPrepare[currentIndex];
@@ -1995,12 +2082,17 @@ async function prepareAllChatBrowsersParallel(accountIds, concurrency = 3) {
 }
 
 async function showChatBrowser({ accountId, bounds, fullBrowserAccess = false }) {
-  return withAccountPrepareLock(accountId, () =>
-    showChatBrowserInner({ accountId, bounds, fullBrowserAccess })
+  return withUserInitiatedPriority(() =>
+    withAccountPrepareLock(accountId, () =>
+      showChatBrowserInner({ accountId, bounds, fullBrowserAccess })
+    )
   );
 }
 
 async function showChatBrowserInner({ accountId, bounds, fullBrowserAccess = false }) {
+  const timer = createPhaseTimer('show', accountId);
+  timer.mark('start');
+
   if (!mainWindow) {
     throw new Error('Main window is not available');
   }
@@ -2020,6 +2112,9 @@ async function showChatBrowserInner({ accountId, bounds, fullBrowserAccess = fal
       throw new Error('Session partition is not warm. Load session before showing chat.');
     }
     await prepareChatBrowserInner(accountId);
+    timer.mark('prepared-on-show');
+  } else {
+    timer.mark('already-prepared');
   }
 
   let view = getChatView(accountId);
@@ -2046,8 +2141,10 @@ async function showChatBrowserInner({ accountId, bounds, fullBrowserAccess = fal
     }
 
     preparedChatPartitions.add(accountId);
+    timer.mark('cold-view-prepared');
   } else {
     setActiveChatView(accountId, view);
+    timer.mark('view-reused');
   }
 
   if (!mainWindow.getBrowserViews().includes(view)) {
@@ -2056,15 +2153,16 @@ async function showChatBrowserInner({ accountId, bounds, fullBrowserAccess = fal
 
   view.setBackgroundColor(maloumChatBackgroundColor());
   applyChatBounds(bounds);
+  timer.mark('attached');
 
   if (!reusedWarmView) {
     void saveCreatorProfile(accountId, view.webContents);
   }
 
-  const currentUrl = view.webContents.getURL() || null;
+  void refreshMaloumCreatorBadgesWithDelay(view.webContents, accountId);
 
-  await refreshMaloumCreatorBadgesWithDelay(view.webContents, accountId);
-
+  timer.mark('complete');
+  timer.finish();
   return { accountId, partitionId: `persist:creator-${accountId}` };
 }
 
