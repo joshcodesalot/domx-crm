@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AlertCircle, ShieldCheck, X } from 'lucide-react';
-import type { Creator } from '@/lib/api';
+import { getCreatorCredentials, type Creator } from '@/lib/api';
 import {
   uploadRefreshedCreatorSession,
   type CapturedCreatorSession,
@@ -126,9 +126,10 @@ export default function ChatterRevalidateLoginModal({
 
     let cancelled = false;
 
-    async function openLoginBrowser() {
+    async function attemptLogin() {
       setConnecting(true);
       setLoginError(null);
+      setManualLoginMode(false);
 
       try {
         await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
@@ -139,10 +140,50 @@ export default function ChatterRevalidateLoginModal({
           throw new Error('Login browser area is not ready. Please try again.');
         }
 
-        setBrowserVisible(true);
-        setManualLoginMode(true);
+        let email = creator.loginEmail || '';
+        let password = '';
 
-        await window.electronAPI!.showLoginBrowser({ accountId: accountId!, bounds });
+        try {
+          const credentials = await getCreatorCredentials(creator.id);
+          email = credentials.loginEmail || email;
+          password = credentials.loginPassword || '';
+        } catch {
+          // Fall back to manual login when credentials are unavailable.
+        }
+
+        setBrowserVisible(true);
+
+        if (email.trim() && password) {
+          try {
+            const captured = await window.electronAPI!.loginAndCaptureMaloumSession({
+              accountId,
+              email: email.trim(),
+              password,
+              bounds,
+            });
+            await finalizeCapturedSession(captured);
+            return;
+          } catch (err) {
+            if (cancelled) {
+              return;
+            }
+
+            setManualLoginMode(true);
+            setLoginError(
+              err instanceof Error
+                ? `${err.message} Complete login in the browser below, then press Continue after login.`
+                : 'Automatic login failed. Complete login in the browser below, then press Continue after login.'
+            );
+            syncLoginBrowserBounds();
+            return;
+          }
+        }
+
+        setManualLoginMode(true);
+        await window.electronAPI!.showLoginBrowser({ accountId, bounds });
+        setLoginError(
+          'No saved credentials for automatic login. Sign in manually below, then press Continue after login.'
+        );
       } catch (err) {
         if (!cancelled) {
           setLoginError(
@@ -156,13 +197,20 @@ export default function ChatterRevalidateLoginModal({
       }
     }
 
-    void openLoginBrowser();
+    void attemptLogin();
 
     return () => {
       cancelled = true;
       void hideLoginBrowser();
     };
-  }, [accountId, hideLoginBrowser]);
+  }, [
+    accountId,
+    creator.id,
+    creator.loginEmail,
+    finalizeCapturedSession,
+    hideLoginBrowser,
+    syncLoginBrowserBounds,
+  ]);
 
   async function handleClose() {
     await hideLoginBrowser();
@@ -216,7 +264,7 @@ export default function ChatterRevalidateLoginModal({
           >
             {!browserVisible && !manualLoginMode && (
               <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
-                {connecting ? 'Opening Maloum login…' : 'Preparing login browser…'}
+                {connecting ? 'Signing in to Maloum…' : 'Preparing login browser…'}
               </div>
             )}
           </div>
