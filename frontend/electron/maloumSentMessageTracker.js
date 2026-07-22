@@ -26,6 +26,8 @@ const REAPPLY_BADGE_DELAYS_MS = [0, 400, 1000, 2000, 4000, 8000];
 
 let mainWindowRef = null;
 let retryMarkInterval = null;
+let getPreparedViewsFn = null;
+let getActiveAccountIdFn = null;
 
 const accountIdToCreatorId = new Map();
 const recordsById = new Map();
@@ -1486,15 +1488,44 @@ function uninstallMaloumSentMessageTracker(accountId) {
   translationSnapshotsByAccount.delete(accountId);
 }
 
-function startRetryMarkInterval(getPreparedViews) {
+function shouldSkipRetryMarkPolling() {
+  if (!mainWindowRef || mainWindowRef.isDestroyed()) {
+    return true;
+  }
+
+  if (mainWindowRef.isMinimized() || !mainWindowRef.isVisible()) {
+    return true;
+  }
+
+  return false;
+}
+
+function startRetryMarkInterval(getPreparedViews, getActiveAccountId) {
   if (retryMarkInterval) {
     return;
   }
 
+  getPreparedViewsFn = getPreparedViews;
+  getActiveAccountIdFn = getActiveAccountId;
+
   retryMarkInterval = setInterval(() => {
-    const views = typeof getPreparedViews === 'function' ? getPreparedViews() : [];
+    if (shouldSkipRetryMarkPolling()) {
+      return;
+    }
+
+    const views = typeof getPreparedViewsFn === 'function' ? getPreparedViewsFn() : [];
+    const activeAccountId =
+      typeof getActiveAccountIdFn === 'function' ? getActiveAccountIdFn() : null;
+
+    if (!activeAccountId) {
+      return;
+    }
 
     for (const { accountId, webContents } of views) {
+      if (accountId !== activeAccountId) {
+        continue;
+      }
+
       if (!webContents || webContents.isDestroyed()) {
         continue;
       }
@@ -1509,6 +1540,9 @@ function stopRetryMarkInterval() {
     clearInterval(retryMarkInterval);
     retryMarkInterval = null;
   }
+
+  getPreparedViewsFn = null;
+  getActiveAccountIdFn = null;
 }
 
 module.exports = {

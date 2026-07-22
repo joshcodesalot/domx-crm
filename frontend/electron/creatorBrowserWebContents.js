@@ -417,8 +417,8 @@ function setMainWindow(win) {
   setBadgeMainWindow(win);
   setSentMessageTrackerMainWindow(win);
   setNotificationTrackerMainWindow(win);
-  startBadgePolling(getPreparedViewsForBadgePolling);
-  startRetryMarkInterval(getPreparedViewsForBadgePolling);
+  startBadgePolling(getPreparedViewsForBadgePolling, getActiveChatAccountId);
+  startRetryMarkInterval(getPreparedViewsForBadgePolling, getActiveChatAccountId);
 }
 
 function getPartitionSession(accountId) {

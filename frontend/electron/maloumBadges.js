@@ -5,10 +5,14 @@ const NOTIFICATION_BADGE_SELECTOR =
   '#root > div > div > section > div > nav > ul > li:nth-child(9) > button > div > div';
 
 const BADGE_POLL_INTERVAL_MS = 5000;
+const BACKGROUND_BADGE_POLL_INTERVAL_MS = 30000;
 const POST_RENDER_DELAY_MS = 500;
 
 let mainWindowRef = null;
 let badgePollInterval = null;
+let backgroundBadgePollInterval = null;
+let getPreparedViewsFn = null;
+let getActiveAccountIdFn = null;
 const creatorBadgeState = new Map();
 const postRenderDelayTimers = new Map();
 
@@ -234,34 +238,80 @@ async function refreshMaloumCreatorBadgesWithDelay(webContents, accountId) {
   schedulePostRenderBadgeRefresh(webContents, accountId);
 }
 
-function startBadgePolling(getPreparedViews) {
+function shouldSkipBadgePolling() {
+  if (!mainWindowRef || mainWindowRef.isDestroyed()) {
+    return true;
+  }
+
+  if (mainWindowRef.isMinimized() || !mainWindowRef.isVisible()) {
+    return true;
+  }
+
+  return false;
+}
+
+function pollPreparedViewBadges({ accountId, webContents }, activeAccountId, scope) {
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+
+  const isActive = accountId === activeAccountId;
+  if (scope === 'active' && !isActive) {
+    return;
+  }
+  if (scope === 'background' && isActive) {
+    return;
+  }
+
+  const url = webContents.getURL();
+  if (!isMaloumChatUrl(url)) {
+    return;
+  }
+
+  void refreshMaloumCreatorBadges(webContents, accountId);
+}
+
+function runBadgePoll(scope) {
+  if (shouldSkipBadgePolling()) {
+    return;
+  }
+
+  const views = typeof getPreparedViewsFn === 'function' ? getPreparedViewsFn() : [];
+  if (!views || views.length === 0) {
+    return;
+  }
+
+  const activeAccountId =
+    typeof getActiveAccountIdFn === 'function' ? getActiveAccountIdFn() : null;
+
+  for (const view of views) {
+    pollPreparedViewBadges(view, activeAccountId, scope);
+  }
+}
+
+function startBadgePolling(getPreparedViews, getActiveAccountId) {
   if (badgePollInterval) {
     return;
   }
 
+  getPreparedViewsFn = getPreparedViews;
+  getActiveAccountIdFn = getActiveAccountId;
+
   badgePollInterval = setInterval(() => {
     try {
-      const views = getPreparedViews();
-      if (!views || views.length === 0) {
-        return;
-      }
-
-      for (const { accountId, webContents } of views) {
-        if (!webContents || webContents.isDestroyed()) {
-          continue;
-        }
-
-        const url = webContents.getURL();
-        if (!isMaloumChatUrl(url)) {
-          continue;
-        }
-
-        void refreshMaloumCreatorBadges(webContents, accountId);
-      }
+      runBadgePoll('active');
     } catch (err) {
       console.warn('Badge polling skipped due to error:', err.message);
     }
   }, BADGE_POLL_INTERVAL_MS);
+
+  backgroundBadgePollInterval = setInterval(() => {
+    try {
+      runBadgePoll('background');
+    } catch (err) {
+      console.warn('Background badge polling skipped due to error:', err.message);
+    }
+  }, BACKGROUND_BADGE_POLL_INTERVAL_MS);
 }
 
 function stopBadgePolling() {
@@ -269,6 +319,14 @@ function stopBadgePolling() {
     clearInterval(badgePollInterval);
     badgePollInterval = null;
   }
+
+  if (backgroundBadgePollInterval) {
+    clearInterval(backgroundBadgePollInterval);
+    backgroundBadgePollInterval = null;
+  }
+
+  getPreparedViewsFn = null;
+  getActiveAccountIdFn = null;
 
   for (const timer of postRenderDelayTimers.values()) {
     clearTimeout(timer);

@@ -12,6 +12,7 @@ const {
   setMainWindow: setBadgeMainWindow,
   refreshMaloumCreatorBadgesWithDelay,
   startBadgePolling,
+  stopBadgePolling,
   getAllCreatorBadgeStates,
   getCreatorBadgeState,
 } = require('./maloumBadges');
@@ -25,6 +26,7 @@ const {
   scheduleReapplySentBadgesForOpenChat,
   hydrateSentMessageRecords,
   startRetryMarkInterval,
+  stopRetryMarkInterval,
   getActiveChatter,
 } = require('./maloumSentMessageTracker');
 const {
@@ -143,11 +145,19 @@ function withPrepareLock(task) {
 }
 
 const localLoginChains = new Map();
+const accountPrepareChains = new Map();
 
 function withAccountLoginLock(accountId, task) {
   const previous = localLoginChains.get(accountId) || Promise.resolve();
   const next = previous.then(task, task);
   localLoginChains.set(accountId, next.catch(() => {}));
+  return next;
+}
+
+function withAccountPrepareLock(accountId, task) {
+  const previous = accountPrepareChains.get(accountId) || Promise.resolve();
+  const next = previous.then(task, task);
+  accountPrepareChains.set(accountId, next.catch(() => {}));
   return next;
 }
 
@@ -567,8 +577,29 @@ function setMainWindow(win) {
   setBadgeMainWindow(win);
   setSentMessageTrackerMainWindow(win);
   setNotificationTrackerMainWindow(win);
-  startBadgePolling(getPreparedViewsForBadgePolling);
-  startRetryMarkInterval(getPreparedViewsForBadgePolling);
+  startBadgePolling(getPreparedViewsForBadgePolling, getActiveChatAccountId);
+  startRetryMarkInterval(getPreparedViewsForBadgePolling, getActiveChatAccountId);
+
+  if (win && !win.isDestroyed()) {
+    win.on('hide', pauseBackgroundPolling);
+    win.on('minimize', pauseBackgroundPolling);
+    win.on('show', resumeBackgroundPolling);
+    win.on('restore', resumeBackgroundPolling);
+  }
+}
+
+function pauseBackgroundPolling() {
+  stopBadgePolling();
+  stopRetryMarkInterval();
+}
+
+function resumeBackgroundPolling() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  startBadgePolling(getPreparedViewsForBadgePolling, getActiveChatAccountId);
+  startRetryMarkInterval(getPreparedViewsForBadgePolling, getActiveChatAccountId);
 }
 
 function getPartitionSession(accountId) {
@@ -1778,7 +1809,7 @@ function hideVerifyBrowser() {
 }
 
 async function prepareChatBrowser(accountId) {
-  return withPrepareLock(() => prepareChatBrowserInner(accountId));
+  return withAccountPrepareLock(accountId, () => prepareChatBrowserInner(accountId));
 }
 
 async function prepareChatBrowserInner(accountId, options = {}) {
@@ -1940,7 +1971,9 @@ async function prepareAllChatBrowsersParallel(accountIds, concurrency = 3) {
       const accountId = toPrepare[currentIndex];
 
       try {
-        const result = await prepareChatBrowserInner(accountId, { boot: true });
+        const result = await withAccountPrepareLock(accountId, () =>
+          prepareChatBrowserInner(accountId, { boot: true })
+        );
         results.push({ accountId, ok: true, ...result });
       } catch (err) {
         results.push({
@@ -1962,7 +1995,7 @@ async function prepareAllChatBrowsersParallel(accountIds, concurrency = 3) {
 }
 
 async function showChatBrowser({ accountId, bounds, fullBrowserAccess = false }) {
-  return withPrepareLock(() =>
+  return withAccountPrepareLock(accountId, () =>
     showChatBrowserInner({ accountId, bounds, fullBrowserAccess })
   );
 }

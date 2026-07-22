@@ -195,6 +195,8 @@ export function CreatorBootProvider() {
 
         if (isActiveBoot()) {
           setBootCreators(sortedTargets);
+          bootCompleteRef.current = true;
+          setBootStatus('ready');
         }
 
         if (!isActiveBoot()) return;
@@ -202,12 +204,9 @@ export function CreatorBootProvider() {
         if (sortedTargets.length > 0) {
           const warmupPromise = warmAllCreators(sortedTargets).then(() => {});
           chatWarmupPromiseRef.current = warmupPromise;
-          await warmupPromise;
-        }
-
-        if (isActiveBoot()) {
-          bootCompleteRef.current = true;
-          setBootStatus('ready');
+          void warmupPromise.finally(() => {
+            chatWarmupPromiseRef.current = null;
+          });
         }
       } catch {
         if (isActiveBoot()) {

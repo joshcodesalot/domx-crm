@@ -19,6 +19,7 @@ type CreatorUnreadCounts = { messages: number; notifications: number };
 
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
+const SENT_MESSAGE_HYDRATION_TTL_MS = 5 * 60 * 1000;
 
 function readStoredBoolean(key: string, defaultValue: boolean): boolean {
   const stored = localStorage.getItem(key);
@@ -158,7 +159,7 @@ function connectionDotClass(status: Creator['connectionStatus']): string {
 
 export default function Chatter() {
   const { user, hasPermission } = useAuth();
-  const { bootCreators, prepareCreatorChat, waitForChatReady } = useCreatorBoot();
+  const { bootCreators, prepareCreatorChat } = useCreatorBoot();
   const { onSyncEvent } = useStaffSync();
   const [creators, setCreators] = useState<Creator[]>([]);
   const [loading, setLoading] = useState(true);
@@ -182,6 +183,8 @@ export default function Chatter() {
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
+  const resizeFrameRef = useRef<number | null>(null);
+  const sentMessageHydrationAtRef = useRef<Record<string, number>>({});
   const isElectron = Boolean(window.electronAPI?.isElectron);
   const canManageFullBrowser = hasPermission('creators.manage');
 
@@ -192,6 +195,49 @@ export default function Chatter() {
     const bounds = getBrowserBounds(chatContainerRef.current);
     if (bounds) {
       window.electronAPI.resizeChatBrowser(bounds);
+    }
+  }, []);
+
+  const scheduleSyncChatBounds = useCallback(() => {
+    if (resizeFrameRef.current !== null) {
+      return;
+    }
+
+    resizeFrameRef.current = requestAnimationFrame(() => {
+      resizeFrameRef.current = null;
+      syncChatBounds();
+    });
+  }, [syncChatBounds]);
+
+  const hydrateSentMessagesIfNeeded = useCallback(async (creator: Creator) => {
+    if (!creator.accountId) {
+      return;
+    }
+
+    const lastHydratedAt = sentMessageHydrationAtRef.current[creator.id];
+    if (
+      lastHydratedAt &&
+      Date.now() - lastHydratedAt < SENT_MESSAGE_HYDRATION_TTL_MS
+    ) {
+      return;
+    }
+
+    try {
+      const { records } = await getMaloumSentMessages({
+        creatorId: creator.id,
+        limit: 200,
+      });
+
+      if (records.length > 0) {
+        await window.electronAPI!.hydrateSentMessages({
+          accountId: creator.accountId,
+          records,
+        });
+      }
+
+      sentMessageHydrationAtRef.current[creator.id] = Date.now();
+    } catch {
+      // Badge hydration is best-effort
     }
   }, []);
 
@@ -370,7 +416,6 @@ export default function Chatter() {
           });
         }
 
-        await waitForChatReady(creator.accountId);
         const isPrepared = await window.electronAPI!.isChatPrepared(creator.accountId);
 
         if (!isPrepared) {
@@ -392,23 +437,7 @@ export default function Chatter() {
         localStorage.setItem(LAST_CHATTER_ACCOUNT_ID_KEY, creator.accountId);
         setSessionStatus('valid');
 
-        void (async () => {
-          try {
-            const { records } = await getMaloumSentMessages({
-              creatorId: creator.id,
-              limit: 200,
-            });
-
-            if (records.length > 0) {
-              await window.electronAPI!.hydrateSentMessages({
-                accountId: creator.accountId!,
-                records,
-              });
-            }
-          } catch {
-            // Badge hydration is best-effort
-          }
-        })();
+        void hydrateSentMessagesIfNeeded(creator);
       } catch (err) {
         setSessionStatus('error');
         if (err instanceof LocalMaloumSessionError) {
@@ -420,30 +449,34 @@ export default function Chatter() {
         await hideChatBrowser();
       }
     },
-    [isElectron, prepareCreatorChat, waitForChatReady, hideChatBrowser, user]
+    [isElectron, prepareCreatorChat, hideChatBrowser, user, hydrateSentMessagesIfNeeded]
   );
 
   useEffect(() => {
     if (!selectedId || !isElectron || sessionStatus !== 'valid') return;
 
-    const resizeObserver = new ResizeObserver(() => syncChatBounds());
+    const resizeObserver = new ResizeObserver(() => scheduleSyncChatBounds());
     if (chatContainerRef.current) {
       resizeObserver.observe(chatContainerRef.current);
     }
 
-    window.addEventListener('resize', syncChatBounds);
+    window.addEventListener('resize', scheduleSyncChatBounds);
     const unsubscribeResize = window.electronAPI?.onWindowResized(() => {
-      syncChatBounds();
+      scheduleSyncChatBounds();
     });
 
     syncChatBounds();
 
     return () => {
       resizeObserver.disconnect();
-      window.removeEventListener('resize', syncChatBounds);
+      window.removeEventListener('resize', scheduleSyncChatBounds);
       unsubscribeResize?.();
+      if (resizeFrameRef.current !== null) {
+        cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
     };
-  }, [selectedId, isElectron, sessionStatus, syncChatBounds]);
+  }, [selectedId, isElectron, sessionStatus, syncChatBounds, scheduleSyncChatBounds]);
 
   useEffect(() => {
     return () => {
@@ -484,21 +517,8 @@ export default function Chatter() {
     try {
       await window.electronAPI!.reloadChatBrowser(selectedCreator.accountId);
 
-      try {
-        const { records } = await getMaloumSentMessages({
-          creatorId: selectedCreator.id,
-          limit: 200,
-        });
-
-        if (records.length > 0) {
-          await window.electronAPI!.hydrateSentMessages({
-            accountId: selectedCreator.accountId,
-            records,
-          });
-        }
-      } catch {
-        // Badge hydration is best-effort
-      }
+      delete sentMessageHydrationAtRef.current[selectedCreator.id];
+      await hydrateSentMessagesIfNeeded(selectedCreator);
     } catch (err) {
       setSessionError(err instanceof Error ? err.message : 'Failed to reload chat');
     } finally {
