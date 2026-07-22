@@ -277,6 +277,11 @@ export default function Chatter() {
 
   useEffect(() => {
     const unsubscribe = onSyncEvent((event) => {
+      if (event.type === 'creator:access-granted') {
+        void loadCreatorsList();
+        return;
+      }
+
       if (event.type !== 'creator:access-revoked') {
         return;
       }

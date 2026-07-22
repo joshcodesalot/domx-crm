@@ -554,11 +554,16 @@ router.post(
     try {
       await client.query('BEGIN');
 
-      const creatorCheck = await client.query('SELECT id FROM creators WHERE id = $1', [id]);
+      const creatorCheck = await client.query(
+        'SELECT id, "displayName", "accountId" FROM creators WHERE id = $1',
+        [id]
+      );
       if (creatorCheck.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Creator not found' });
       }
+
+      const creator = creatorCheck.rows[0];
 
       const userCheck = await client.query(
         'SELECT id, status FROM users WHERE id = $1',
@@ -598,6 +603,14 @@ router.post(
       );
 
       await client.query('COMMIT');
+
+      emitToUser(userId, {
+        type: 'creator:access-granted',
+        creatorId: creator.id,
+        accountId: creator.accountId || null,
+        displayName: creator.displayName,
+      });
+
       res.status(201).json({ message: 'Staff assigned' });
     } catch (err) {
       await client.query('ROLLBACK');

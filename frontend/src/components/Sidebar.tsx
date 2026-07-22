@@ -2,13 +2,13 @@ import {
   BarChart2,
   LayoutGrid,
   LogOut,
-  MessagesSquare,
   UserCog,
   Users,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import ThemeToggle from '@/components/ThemeToggle';
+import maloumIcon from '@/assets/maloum_icon.png';
 
 interface SidebarProps {
   activePage?: 'dashboard' | 'analytics' | 'chatter' | 'creators' | 'staff';
@@ -64,10 +64,18 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             <button
               type="button"
               onClick={() => navigate('/chatter')}
-              className={navClass('chatter')}
-              title="Messages"
+              className={`${navClass('chatter')} group`}
+              title="Maloum"
             >
-              <MessagesSquare className="w-5 h-5" />
+              <img
+                src={maloumIcon}
+                alt=""
+                className={`w-5 h-5 rounded object-cover transition-opacity ${
+                  activePage === 'chatter'
+                    ? 'opacity-100'
+                    : 'opacity-50 group-hover:opacity-100'
+                }`}
+              />
             </button>
             <button
               type="button"

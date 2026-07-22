@@ -101,6 +101,12 @@ export type StaffSyncEvent =
       displayName: string;
     }
   | {
+      type: 'creator:access-granted';
+      creatorId: string;
+      accountId: string | null;
+      displayName: string;
+    }
+  | {
       type: 'creator:session-updated';
       creatorId: string;
       accountId: string | null;

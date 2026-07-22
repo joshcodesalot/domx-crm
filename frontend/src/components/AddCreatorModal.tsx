@@ -17,6 +17,7 @@ import {
   type CreateCreatorInput,
   type Creator,
 } from '@/lib/api';
+import { warmCreatorInBackground } from '@/lib/localMaloumSession';
 import type { BrowserBounds } from '@/types/electron';
 
 const inputClassName =
@@ -213,6 +214,7 @@ export default function AddCreatorModal({
       await hideLoginBrowser();
       setConnectSucceeded(false);
       connectSucceededRef.current = false;
+      void warmCreatorInBackground(reconnectCreator.id, accountId, loginEmail.trim() || null);
       onSaved();
       onClose();
       return;
@@ -381,6 +383,7 @@ export default function AddCreatorModal({
 
       setConnectSucceeded(false);
       connectSucceededRef.current = false;
+      void warmCreatorInBackground(creator.id, accountId, loginEmail.trim() || null);
       onSaved();
       onClose();
     } catch (err) {

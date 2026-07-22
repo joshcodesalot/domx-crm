@@ -14,6 +14,7 @@ import { getCreators, getHealth, type Creator } from '@/lib/api';
 import {
   ensureCreatorSessionReady,
   ensureLocalMaloumSessionForChat,
+  warmCreatorInBackground,
 } from '@/lib/localMaloumSession';
 import type { StaffSyncEvent } from '@/types/electron';
 import BootLoadingScreen from '@/components/BootLoadingScreen';
@@ -250,10 +251,18 @@ export function CreatorBootProvider() {
       return;
     }
 
-    return onSyncEvent((_event: StaffSyncEvent) => {
-      // Local Maloum sessions stay on-device; session-updated is metadata-only now.
+    return onSyncEvent((event: StaffSyncEvent) => {
+      if (event.type !== 'creator:access-granted' || !event.accountId) {
+        return;
+      }
+
+      if (!hasPermission('creators.view')) {
+        return;
+      }
+
+      void warmCreatorInBackground(event.creatorId, event.accountId);
     });
-  }, [isAuthenticated, onSyncEvent]);
+  }, [isAuthenticated, hasPermission, onSyncEvent]);
 
   const value = useMemo(
     () => ({

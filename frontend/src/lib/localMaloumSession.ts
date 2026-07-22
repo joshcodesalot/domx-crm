@@ -106,6 +106,30 @@ export async function ensureCreatorSessionReady(
   }
 }
 
+export async function warmCreatorInBackground(
+  creatorId: string,
+  accountId: string,
+  loginEmail?: string | null
+): Promise<void> {
+  if (!window.electronAPI?.isElectron) {
+    return;
+  }
+
+  try {
+    const sessionReady = await ensureCreatorSessionReady(creatorId, accountId, loginEmail);
+    if (!sessionReady) {
+      return;
+    }
+
+    const prepared = await window.electronAPI.isChatPrepared(accountId);
+    if (!prepared) {
+      await window.electronAPI.prepareChatBrowser(accountId);
+    }
+  } catch {
+    // Best-effort warm-up; recovery happens when chat opens.
+  }
+}
+
 export async function ensureLocalMaloumSessionForChat(
   creatorId: string,
   accountId: string,
