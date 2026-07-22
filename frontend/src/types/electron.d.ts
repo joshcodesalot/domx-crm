@@ -184,6 +184,19 @@ export interface ElectronAPI {
       localStorage: Array<{ name: string; value: string }>;
     }>;
   }>;
+  captureCreatorSessionForRefresh: (accountId: string) => Promise<{
+    accountId: string;
+    partitionId?: string;
+    displayName?: string;
+    username?: string | null;
+    postLoginUrl?: string;
+    avatarUrl?: string | null;
+    cookies: PlaywrightCookie[];
+    origins: Array<{
+      origin: string;
+      localStorage: Array<{ name: string; value: string }>;
+    }>;
+  }>;
   showChatBrowser: (opts: {
     accountId: string;
     bounds: BrowserBounds;
@@ -361,6 +374,7 @@ export interface ElectronAPI {
     callback: (payload: DashboardEntryUpdatedPayload) => void
   ) => () => void;
   onLoginDetected: (callback: (payload: { url: string }) => void) => () => void;
+  onChatSessionExpired: (callback: (payload: { accountId: string }) => void) => () => void;
   onWindowResized: (callback: () => void) => () => void;
   getUpdaterState: () => Promise<UpdaterState>;
   installUpdateNow: () => Promise<{ ok: boolean }>;

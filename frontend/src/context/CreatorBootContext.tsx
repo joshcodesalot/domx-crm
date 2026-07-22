@@ -14,6 +14,7 @@ import { getCreators, getHealth, type Creator } from '@/lib/api';
 import {
   ensureCreatorSessionReady,
   ensureLocalMaloumSessionForChat,
+  loadBackendCreatorSession,
   warmCreatorInBackground,
 } from '@/lib/localMaloumSession';
 import type { StaffSyncEvent } from '@/types/electron';
@@ -252,6 +253,11 @@ export function CreatorBootProvider() {
     }
 
     return onSyncEvent((event: StaffSyncEvent) => {
+      if (event.type === 'creator:session-updated' && event.accountId) {
+        void loadBackendCreatorSession(event.creatorId, event.accountId).catch(() => {});
+        return;
+      }
+
       if (event.type !== 'creator:access-granted' || !event.accountId) {
         return;
       }

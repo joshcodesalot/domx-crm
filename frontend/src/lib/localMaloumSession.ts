@@ -1,4 +1,5 @@
-import { getCreatorCredentials } from '@/lib/api';
+import { getCreatorCredentials, getCreatorSession, refreshCreatorSession } from '@/lib/api';
+import type { PlaywrightCookie } from '@/types/electron';
 
 export type LocalMaloumLoginReason =
   | 'invalid_credentials'
@@ -36,6 +37,19 @@ export function isMissingCredentialsError(message: string): boolean {
   return message.includes('No saved credentials');
 }
 
+export function needsInteractiveSessionRecovery(error: unknown): boolean {
+  if (!(error instanceof LocalMaloumSessionError)) {
+    return false;
+  }
+
+  return (
+    error.reason === 'missing_credentials' ||
+    error.reason === 'interaction_required' ||
+    error.reason === 'invalid_credentials' ||
+    error.reason === 'login_required'
+  );
+}
+
 function mapLocalLoginFailure(result: {
   ok: false;
   reason: LocalMaloumLoginReason;
@@ -44,9 +58,52 @@ function mapLocalLoginFailure(result: {
   throw new LocalMaloumSessionError(result.message, result.reason);
 }
 
+function getErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function shouldRetrySessionRecovery(message: string): boolean {
+  return isLoginRedirectError(message) || isPageLoadTimeoutError(message);
+}
+
+function mapRecoveryFailure(err: unknown): never {
+  const message = getErrorMessage(err);
+  if (isPageLoadTimeoutError(message)) {
+    throw new LocalMaloumSessionError(
+      'Maloum chat is taking too long to load. Check your network and try again.',
+      'page_load_timeout'
+    );
+  }
+  throw err;
+}
+
 export async function hydrateLocalCreatorSession(accountId: string): Promise<boolean> {
   const hydrated = await window.electronAPI!.hydrateCreatorProfile(accountId);
   return hydrated.hydrated;
+}
+
+export async function loadBackendCreatorSession(
+  creatorId: string,
+  accountId: string
+): Promise<boolean> {
+  try {
+    const session = await getCreatorSession(creatorId);
+    if (session.accountId !== accountId) {
+      return false;
+    }
+
+    await window.electronAPI!.loadCreatorSession({
+      accountId: session.accountId,
+      cookies: session.cookies as PlaywrightCookie[],
+      origins: session.origins,
+      force: true,
+      savedAt: session.sessionUpdatedAt,
+    });
+
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function loginCreatorLocallyWithSavedCredentials(
@@ -60,7 +117,7 @@ export async function loginCreatorLocallyWithSavedCredentials(
   } catch (err) {
     if (err instanceof Error && isMissingCredentialsError(err.message)) {
       throw new LocalMaloumSessionError(
-        'No saved credentials for this creator. Ask a manager to reconnect the account.',
+        'No saved credentials for this creator. Sign in to Maloum or ask a manager to reconnect the account.',
         'missing_credentials'
       );
     }
@@ -70,7 +127,7 @@ export async function loginCreatorLocallyWithSavedCredentials(
   const email = credentials.loginEmail || loginEmail || '';
   if (!email || !credentials.loginPassword) {
     throw new LocalMaloumSessionError(
-      'No saved credentials for this creator. Ask a manager to reconnect the account.',
+      'No saved credentials for this creator. Sign in to Maloum or ask a manager to reconnect the account.',
       'missing_credentials'
     );
   }
@@ -86,6 +143,59 @@ export async function loginCreatorLocallyWithSavedCredentials(
   }
 }
 
+async function prepareChatSession(accountId: string, force = false): Promise<void> {
+  if (force) {
+    await window.electronAPI!.releaseCreatorChat(accountId);
+    await window.electronAPI!.prepareChatBrowser(accountId);
+    return;
+  }
+
+  const prepared = await window.electronAPI!.isChatPrepared(accountId);
+  if (!prepared) {
+    await window.electronAPI!.prepareChatBrowser(accountId);
+  }
+}
+
+async function runSessionRecoveryLadder(
+  creatorId: string,
+  accountId: string,
+  loginEmail?: string | null,
+  options: { forcePrepare?: boolean } = {}
+): Promise<void> {
+  await window.electronAPI!.registerCreatorMapping({ accountId, creatorId });
+  await hydrateLocalCreatorSession(accountId);
+
+  const tryPrepare = () => prepareChatSession(accountId, options.forcePrepare ?? false);
+
+  try {
+    await tryPrepare();
+    return;
+  } catch (err) {
+    if (!shouldRetrySessionRecovery(getErrorMessage(err))) {
+      throw err;
+    }
+  }
+
+  const loadedBackend = await loadBackendCreatorSession(creatorId, accountId);
+  if (loadedBackend) {
+    try {
+      await prepareChatSession(accountId, true);
+      return;
+    } catch (err) {
+      if (!shouldRetrySessionRecovery(getErrorMessage(err))) {
+        throw err;
+      }
+    }
+  }
+
+  try {
+    await loginCreatorLocallyWithSavedCredentials(creatorId, accountId, loginEmail);
+    await prepareChatSession(accountId, true);
+  } catch (err) {
+    mapRecoveryFailure(err);
+  }
+}
+
 export async function ensureCreatorSessionReady(
   creatorId: string,
   accountId: string,
@@ -95,6 +205,11 @@ export async function ensureCreatorSessionReady(
 
   const hasLocalSession = await hydrateLocalCreatorSession(accountId);
   if (hasLocalSession) {
+    return true;
+  }
+
+  const loadedBackend = await loadBackendCreatorSession(creatorId, accountId);
+  if (loadedBackend) {
     return true;
   }
 
@@ -135,48 +250,39 @@ export async function ensureLocalMaloumSessionForChat(
   accountId: string,
   loginEmail?: string | null
 ): Promise<void> {
-  await window.electronAPI!.registerCreatorMapping({ accountId, creatorId });
+  await runSessionRecoveryLadder(creatorId, accountId, loginEmail);
+}
 
-  const hasLocalSession = await hydrateLocalCreatorSession(accountId);
+export async function revalidateLocalMaloumSessionForChat(
+  creatorId: string,
+  accountId: string,
+  loginEmail?: string | null
+): Promise<void> {
+  await window.electronAPI!.releaseCreatorChat(accountId);
+  await runSessionRecoveryLadder(creatorId, accountId, loginEmail, { forcePrepare: true });
+}
 
-  const tryPrepare = async () => {
-    const prepared = await window.electronAPI!.isChatPrepared(accountId);
-    if (!prepared) {
-      await window.electronAPI!.prepareChatBrowser(accountId);
-    }
-  };
+export type CapturedCreatorSession = {
+  cookies: PlaywrightCookie[];
+  origins: Array<{
+    origin: string;
+    localStorage: Array<{ name: string; value: string }>;
+  }>;
+  displayName?: string;
+  username?: string | null;
+  postLoginUrl?: string;
+};
 
-  if (!hasLocalSession) {
-    await loginCreatorLocallyWithSavedCredentials(creatorId, accountId, loginEmail);
-    await tryPrepare();
-    return;
-  }
+export async function uploadRefreshedCreatorSession(
+  creatorId: string,
+  accountId: string,
+  captured?: CapturedCreatorSession
+): Promise<void> {
+  const payload =
+    captured ?? (await window.electronAPI!.captureCreatorSessionForRefresh(accountId));
 
-  try {
-    await tryPrepare();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-
-    const shouldRetryWithLogin =
-      isLoginRedirectError(message) || isPageLoadTimeoutError(message);
-
-    if (!shouldRetryWithLogin) {
-      throw err;
-    }
-
-    try {
-      await loginCreatorLocallyWithSavedCredentials(creatorId, accountId, loginEmail);
-      await tryPrepare();
-    } catch (retryErr) {
-      const retryMessage =
-        retryErr instanceof Error ? retryErr.message : String(retryErr);
-      if (isPageLoadTimeoutError(retryMessage)) {
-        throw new LocalMaloumSessionError(
-          'Maloum chat is taking too long to load. Check your network and try again.',
-          'page_load_timeout'
-        );
-      }
-      throw retryErr;
-    }
-  }
+  await refreshCreatorSession(creatorId, {
+    cookies: payload.cookies,
+    origins: payload.origins,
+  });
 }

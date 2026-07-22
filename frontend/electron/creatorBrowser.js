@@ -571,6 +571,27 @@ async function ensureChatViewMatchesMode(webContents, accountId) {
 
 let refreshMaloumInFlight = 0;
 
+function notifyChatSessionExpiredIfNeeded(webContents, accountId) {
+  if (!mainWindow || !isLiveWebContents(webContents)) {
+    return;
+  }
+
+  if (preparingChatAccounts.has(accountId)) {
+    return;
+  }
+
+  if (activeChatAccountId !== accountId) {
+    return;
+  }
+
+  const url = webContents.getURL();
+  if (!url.includes('/login')) {
+    return;
+  }
+
+  mainWindow.webContents.send('creator:chat-session-expired', { accountId });
+}
+
 function refreshMaloumPageIfNeeded(webContents, accountId, eventName) {
   if (!webContents || webContents.isDestroyed()) {
     return;
@@ -599,16 +620,19 @@ function attachChatPageListener(view, accountId) {
   const webContents = view.webContents;
 
   webContents.on('did-finish-load', () => {
+    notifyChatSessionExpiredIfNeeded(webContents, accountId);
     refreshMaloumPageIfNeeded(webContents, accountId, 'did-finish-load');
     scheduleReapplySentBadgesForOpenChat(webContents, accountId);
   });
 
   webContents.on('did-navigate', () => {
+    notifyChatSessionExpiredIfNeeded(webContents, accountId);
     refreshMaloumPageIfNeeded(webContents, accountId, 'did-navigate');
     scheduleReapplySentBadgesForOpenChat(webContents, accountId);
   });
 
   webContents.on('did-navigate-in-page', () => {
+    notifyChatSessionExpiredIfNeeded(webContents, accountId);
     refreshMaloumPageIfNeeded(webContents, accountId, 'did-navigate-in-page');
     scheduleReapplySentBadgesForOpenChat(webContents, accountId);
   });
@@ -1279,6 +1303,29 @@ async function captureMaloumSessionFromLoginView(accountId) {
   }
 
   return captureMaloumSessionFromWebContents(accountId, loginBrowserView.webContents);
+}
+
+async function captureCreatorSessionForRefresh(accountId) {
+  const view = getChatView(accountId);
+  if (isLiveBrowserView(view) && isPostLoginUrl(view.webContents.getURL())) {
+    return captureMaloumSessionFromWebContents(accountId, view.webContents);
+  }
+
+  if (loginBrowserView && activeAccountId === accountId && isPostLoginUrl(loginBrowserView.webContents.getURL())) {
+    return captureMaloumSessionFromWebContents(accountId, loginBrowserView.webContents);
+  }
+
+  const localProfile = profileStorage.readLocalProfile(accountId);
+  if (localProfile?.cookies?.length) {
+    return {
+      accountId,
+      partitionId: `persist:creator-${accountId}`,
+      cookies: localProfile.cookies,
+      origins: localProfile.origins || [],
+    };
+  }
+
+  throw new Error('No session available to upload');
 }
 
 async function reloginMaloumInWebContents({ accountId, webContents, email, password }) {
@@ -2284,6 +2331,7 @@ module.exports = {
   submitLogin,
   loginAndCaptureMaloumSession,
   completeLoginCaptureFromActiveLogin: captureMaloumSessionFromLoginView,
+  captureCreatorSessionForRefresh,
   importCookies,
   loadCreatorSession,
   hydrateCreatorProfile,

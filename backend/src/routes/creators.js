@@ -171,6 +171,27 @@ function validateClientSessionPayload(body) {
   return null;
 }
 
+function validateRefreshSessionPayload(body) {
+  const { cookies, origins } = body;
+
+  if (!Array.isArray(cookies) || cookies.length === 0) {
+    return 'Session cookies from the DomX desktop app are required';
+  }
+
+  const hasMaloumCookie = cookies.some((cookie) =>
+    String(cookie?.domain || '').includes('maloum.com')
+  );
+  if (!hasMaloumCookie) {
+    return 'Session cookies must include Maloum domain cookies';
+  }
+
+  if (origins !== undefined && !Array.isArray(origins)) {
+    return 'Origins must be an array';
+  }
+
+  return null;
+}
+
 async function cleanupExpiredPending() {
   await pool.query(
     'DELETE FROM creator_connect_pending WHERE "expiresAt" < NOW()'
@@ -859,6 +880,87 @@ router.get(
       });
     } catch (err) {
       console.error('Get creator credentials error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.put(
+  '/:id/session/refresh',
+  authenticate,
+  requirePermission('creators.view'),
+  connectLimiter,
+  async (req, res) => {
+    const { id } = req.params;
+    const { cookies, origins } = req.body;
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const sessionError = validateRefreshSessionPayload(req.body);
+    if (sessionError) {
+      return res.status(400).json({ error: sessionError });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const existing = await pool.query(
+        `SELECT id, "accountId", "loginEmail", platform
+         FROM creators
+         WHERE id = $1`,
+        [id]
+      );
+
+      if (existing.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+
+      const creator = existing.rows[0];
+      if (!creator.accountId) {
+        return res.status(400).json({ error: 'Creator has no account partition to refresh' });
+      }
+
+      if (creator.platform !== 'maloum') {
+        return res.status(400).json({ error: 'Only Maloum session refresh is supported currently' });
+      }
+
+      const loginEmail = creator.loginEmail || '';
+      const { encryptedSession, savedAt: sessionSavedAt } = buildEncryptedSessionPayload({
+        cookies,
+        origins,
+        loginEmail,
+      });
+
+      const result = await pool.query(
+        `UPDATE creators
+         SET "encryptedSession" = $2,
+             "connectionStatus" = 'connected',
+             "lastValidatedAt" = NOW(),
+             "updatedAt" = NOW()
+         WHERE id = $1
+         RETURNING ${CREATOR_SELECT_COLUMNS}`,
+        [id, encryptedSession]
+      );
+
+      const accessUserIds = await getUserIdsWithCreatorAccess(id);
+      emitCreatorSessionUpdated(accessUserIds, {
+        creatorId: id,
+        accountId: creator.accountId,
+        sessionUpdatedAt: sessionSavedAt,
+      });
+
+      res.json({
+        creator: toCreator(result.rows[0]),
+        accountId: creator.accountId,
+        sessionUpdatedAt: sessionSavedAt,
+      });
+    } catch (err) {
+      console.error('Refresh creator session error:', err);
       res.status(500).json({ error: 'Internal server error' });
     }
   }

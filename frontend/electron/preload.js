@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('creator:login-and-capture', opts),
   completeLoginCaptureFromActiveLogin: (accountId) =>
     ipcRenderer.invoke('creator:complete-login-capture', { accountId }),
+  captureCreatorSessionForRefresh: (accountId) =>
+    ipcRenderer.invoke('creator:capture-session-for-refresh', accountId),
   showChatBrowser: (opts) => ipcRenderer.invoke('creator:show-chat-browser', opts),
   hideChatBrowser: () => ipcRenderer.invoke('creator:hide-chat-browser'),
   resizeChatBrowser: (bounds) => ipcRenderer.invoke('creator:resize-chat-browser', bounds),
@@ -90,6 +92,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('creator:login-detected', listener);
     return () => ipcRenderer.removeListener('creator:login-detected', listener);
+  },
+  onChatSessionExpired: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('creator:chat-session-expired', listener);
+    return () => ipcRenderer.removeListener('creator:chat-session-expired', listener);
   },
   onWindowResized: (callback) => {
     const listener = () => callback();

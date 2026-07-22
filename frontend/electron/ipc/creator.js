@@ -64,6 +64,13 @@ function registerCreatorIpc() {
   );
 
   ipcMain.handle(
+    'creator:capture-session-for-refresh',
+    guardCreatorIpc(async (_event, accountId) =>
+      creatorBrowser.captureCreatorSessionForRefresh(accountId)
+    )
+  );
+
+  ipcMain.handle(
     'creator:show-chat-browser',
     guardCreatorIpc(async (_event, payload) => creatorBrowser.showChatBrowser(payload))
   );

@@ -621,6 +621,23 @@ export async function getCreatorSession(
   return request<CreatorSessionResponse>(`/api/creators/${creatorId}/session`);
 }
 
+export async function refreshCreatorSession(
+  creatorId: string,
+  input: {
+    cookies: ConnectCreatorResponse['cookies'];
+    origins?: ConnectCreatorResponse['origins'];
+  }
+): Promise<{
+  creator: Creator;
+  accountId: string;
+  sessionUpdatedAt: string | null;
+}> {
+  return request(`/api/creators/${creatorId}/session/refresh`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+}
+
 export async function getCreatorCredentials(
   creatorId: string
 ): Promise<CreatorCredentialsResponse> {
