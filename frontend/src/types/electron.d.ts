@@ -139,6 +139,7 @@ export interface ElectronAPI {
   showLoginBrowser: (opts: {
     accountId: string;
     bounds: BrowserBounds;
+    maskEmailField?: boolean;
   }) => Promise<{ accountId: string; partitionId: string }>;
   hideLoginBrowser: () => Promise<void>;
   resizeLoginBrowser: (bounds: BrowserBounds) => Promise<void>;
@@ -158,6 +159,7 @@ export interface ElectronAPI {
     password: string;
     bounds: BrowserBounds;
     timeoutMs?: number;
+    maskEmailField?: boolean;
   }) => Promise<{
     accountId: string;
     partitionId: string;

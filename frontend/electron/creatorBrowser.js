@@ -48,6 +48,7 @@ const MALOUM_VERIFY_DEFAULT_URL = MALOUM_PROFILE_URL;
 
 let mainWindow = null;
 let loginBrowserView = null;
+let loginEmailMaskEnabled = false;
 let chatBrowserView = null;
 const chatBrowserViews = new Map();
 let verifyBrowserView = null;
@@ -691,6 +692,8 @@ function getPartitionSession(accountId) {
 }
 
 function detachLoginBrowser() {
+  loginEmailMaskEnabled = false;
+
   if (!mainWindow || !loginBrowserView) {
     loginBrowserView = null;
     if (!hasAnyChatView()) {
@@ -1023,6 +1026,43 @@ function attachNavigationListener(view) {
   view.webContents.on('did-navigate-in-page', notifyIfLoggedIn);
 }
 
+const LOGIN_EMAIL_MASK_STYLE =
+  'input[name="usernameOrEmail"] { -webkit-text-security: disc !important; }';
+
+async function injectLoginEmailMask(webContents) {
+  if (!loginEmailMaskEnabled || !isLiveWebContents(webContents)) {
+    return;
+  }
+
+  await webContents
+    .executeJavaScript(
+      `(function() {
+        const styleId = 'domx-login-email-mask';
+        if (document.getElementById(styleId)) return;
+        const style = document.createElement('style');
+        style.id = styleId;
+        style.textContent = ${JSON.stringify(LOGIN_EMAIL_MASK_STYLE)};
+        (document.head || document.documentElement).appendChild(style);
+      })()`
+    )
+    .catch(() => {});
+}
+
+function attachLoginEmailMaskHooks(view) {
+  if (!view?.webContents) {
+    return;
+  }
+
+  const webContents = view.webContents;
+  const handler = () => {
+    void injectLoginEmailMask(webContents);
+  };
+
+  webContents.on('did-finish-load', handler);
+  webContents.on('did-navigate', handler);
+  webContents.on('did-navigate-in-page', handler);
+}
+
 function buildSubmitLoginScript(email, password) {
   const safeEmail = JSON.stringify(email);
   const safePassword = JSON.stringify(password);
@@ -1115,13 +1155,16 @@ async function acceptCookieConsent(webContents, maxAttempts = 4) {
   return false;
 }
 
-async function showLoginBrowser({ accountId, bounds }) {
+async function showLoginBrowser({ accountId, bounds, maskEmailField = false }) {
   if (!mainWindow) {
     throw new Error('Main window is not available');
   }
 
+  loginEmailMaskEnabled = Boolean(maskEmailField);
+
   if (loginBrowserView && activeAccountId !== accountId) {
     detachLoginBrowser();
+    loginEmailMaskEnabled = Boolean(maskEmailField);
   }
 
   if (!loginBrowserView) {
@@ -1139,6 +1182,7 @@ async function showLoginBrowser({ accountId, bounds }) {
     mainWindow.addBrowserView(loginBrowserView);
     applyWebContentsGuards(loginBrowserView.webContents);
     attachNavigationListener(loginBrowserView);
+    attachLoginEmailMaskHooks(loginBrowserView);
 
     loginBrowserView.webContents.on('did-finish-load', () => {
       if (loginBrowserView?.webContents && !loginBrowserView.webContents.isDestroyed()) {
@@ -1148,6 +1192,9 @@ async function showLoginBrowser({ accountId, bounds }) {
 
     await loginBrowserView.webContents.loadURL(MALOUM_LOGIN_URL);
     await acceptCookieConsent(loginBrowserView.webContents);
+    await injectLoginEmailMask(loginBrowserView.webContents);
+  } else if (loginEmailMaskEnabled) {
+    await injectLoginEmailMask(loginBrowserView.webContents);
   }
 
   applyLoginBounds(bounds);
@@ -1467,6 +1514,7 @@ async function loginAndCaptureMaloumSession({
   password,
   bounds,
   timeoutMs = 90000,
+  maskEmailField = false,
 }) {
   if (!mainWindow) {
     throw new Error('Main window is not available');
@@ -1479,7 +1527,7 @@ async function loginAndCaptureMaloumSession({
   await clearSession(accountId);
 
   try {
-    await showLoginBrowser({ accountId, bounds });
+    await showLoginBrowser({ accountId, bounds, maskEmailField });
     await waitForLoginFormReady(loginBrowserView.webContents, timeoutMs);
     await submitLogin({ accountId, email: email.trim(), password });
 
