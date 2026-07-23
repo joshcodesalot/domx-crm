@@ -32,8 +32,10 @@ function AppRoutes() {
                 <Route path="/staff/manage" element={<ManageStaff />} />
               </Route>
               <Route element={<PermissionRoute permission="creators.view" />}>
-                <Route path="/creators/manage" element={<ManageCreators />} />
                 <Route path="/chatter" element={<Chatter />} />
+              </Route>
+              <Route element={<PermissionRoute permission="creators.manage" />}>
+                <Route path="/creators/manage" element={<ManageCreators />} />
               </Route>
             </Route>
           </Route>

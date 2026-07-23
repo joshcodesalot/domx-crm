@@ -94,6 +94,7 @@ export interface DashboardEntryUpdatedPayload {
 
 export type StaffSyncEvent =
   | { type: 'account:deactivated' }
+  | { type: 'account:deleted' }
   | {
       type: 'creator:access-revoked';
       creatorId: string;
@@ -226,6 +227,22 @@ export interface ElectronAPI {
     partitionId: string;
     skipped?: boolean;
     warm?: boolean;
+  }>;
+  patchCreatorMaloumSession: (opts: {
+    accountId: string;
+    cookies?: PlaywrightCookie[];
+    origins?: Array<{
+      origin: string;
+      localStorage: Array<{ name: string; value: string }>;
+    }>;
+    savedAt?: string | null;
+  }) => Promise<{
+    accountId: string;
+    patched: boolean;
+    patchedViews?: number;
+    hasAuthToken?: boolean;
+    imported?: number;
+    partitionId?: string;
   }>;
   hydrateCreatorProfile: (
     accountId: string

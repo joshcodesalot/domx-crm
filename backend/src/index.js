@@ -13,6 +13,9 @@ const maloumSentMessagesRoutes = require('./routes/maloumSentMessages');
 const messagingDashboardRoutes = require('./routes/messagingDashboard');
 const translateRoutes = require('./routes/translate');
 const eventsRoutes = require('./routes/events');
+const {
+  startMaloumTokenRefreshScheduler,
+} = require('./services/maloumTokenRefresh');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -66,4 +69,5 @@ app.use((err, _req, res, _next) => {
 
 app.listen(PORT, () => {
   console.log(`DomX API running on http://localhost:${PORT}`);
+  startMaloumTokenRefreshScheduler();
 });

@@ -14,6 +14,7 @@ import { getCreators, getHealth, type Creator } from '@/lib/api';
 import {
   ensureCreatorSessionReady,
   ensureLocalMaloumSessionForChat,
+  applyBackendCreatorSessionUpdate,
   loadBackendCreatorSession,
   warmCreatorInBackground,
 } from '@/lib/localMaloumSession';
@@ -66,11 +67,7 @@ async function runWithConcurrency<T>(
 interface CreatorBootContextValue {
   bootStatus: BootStatus;
   bootCreators: Creator[] | null;
-  prepareCreatorChat: (
-    creatorId: string,
-    accountId: string,
-    loginEmail?: string | null
-  ) => Promise<void>;
+  prepareCreatorChat: (creatorId: string, accountId: string) => Promise<void>;
   waitForChatReady: (accountId: string) => Promise<void>;
 }
 
@@ -87,12 +84,12 @@ export function CreatorBootProvider() {
   const chatWarmupPromiseRef = useRef<Promise<void> | null>(null);
 
   const prepareCreatorChat = useCallback(
-    async (creatorId: string, accountId: string, loginEmail?: string | null) => {
+    async (creatorId: string, accountId: string) => {
       if (!window.electronAPI?.isElectron) {
         return;
       }
 
-      await ensureLocalMaloumSessionForChat(creatorId, accountId, loginEmail);
+      await ensureLocalMaloumSessionForChat(creatorId, accountId);
     },
     []
   );
@@ -159,8 +156,7 @@ export function CreatorBootProvider() {
         try {
           await ensureCreatorSessionReady(
             priorityCreator.id,
-            priorityCreator.accountId!,
-            priorityCreator.loginEmail
+            priorityCreator.accountId!
           );
 
           if (isActiveBoot() && priorityCreator.accountId) {
@@ -179,8 +175,7 @@ export function CreatorBootProvider() {
         try {
           await ensureCreatorSessionReady(
             creator.id,
-            creator.accountId!,
-            creator.loginEmail
+            creator.accountId!
           );
         } catch {
           // Best-effort session warm-up; recovery happens when chat opens.
@@ -254,7 +249,9 @@ export function CreatorBootProvider() {
 
     return onSyncEvent((event: StaffSyncEvent) => {
       if (event.type === 'creator:session-updated' && event.accountId) {
-        void loadBackendCreatorSession(event.creatorId, event.accountId).catch(() => {});
+        void applyBackendCreatorSessionUpdate(event.creatorId, event.accountId).catch(() => {
+          void loadBackendCreatorSession(event.creatorId, event.accountId).catch(() => {});
+        });
         return;
       }
 

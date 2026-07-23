@@ -3,7 +3,6 @@ import { useSearchParams } from 'react-router-dom';
 import { AlertCircle, Bell, Globe, MessageSquare, RefreshCw, type LucideIcon } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
-import ChatterRevalidateLoginModal from '@/components/ChatterRevalidateLoginModal';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import { useAuth } from '@/context/AuthContext';
 import {
@@ -14,10 +13,10 @@ import { useStaffSync } from '@/context/StaffSyncContext';
 import { getCreators, getMaloumSentMessages, type Creator } from '@/lib/api';
 import {
   LocalMaloumSessionError,
+  ensureLocalMaloumSessionForChat,
+  isLoginRedirectError,
+  isPageLoadTimeoutError,
   loadBackendCreatorSession,
-  needsInteractiveSessionRecovery,
-  revalidateLocalMaloumSessionForChat,
-  uploadRefreshedCreatorSession,
 } from '@/lib/localMaloumSession';
 import type { BrowserBounds } from '@/types/electron';
 
@@ -169,7 +168,7 @@ export default function Chatter() {
   const { user, hasPermission } = useAuth();
   const [searchParams] = useSearchParams();
   const maloumView = searchParams.get('view') === 'notifications' ? 'notifications' : 'chat';
-  const { bootCreators, prepareCreatorChat } = useCreatorBoot();
+  const { bootCreators } = useCreatorBoot();
   const { onSyncEvent } = useStaffSync();
   const [creators, setCreators] = useState<Creator[]>([]);
   const [loading, setLoading] = useState(true);
@@ -180,8 +179,6 @@ export default function Chatter() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>('idle');
   const [sessionError, setSessionError] = useState<string | null>(null);
-  const [revalidating, setRevalidating] = useState(false);
-  const [showRevalidateLoginModal, setShowRevalidateLoginModal] = useState(false);
   const [badgeCountsByAccountId, setBadgeCountsByAccountId] = useState<
     Record<string, CreatorUnreadCounts>
   >({});
@@ -386,32 +383,6 @@ export default function Chatter() {
     fullBrowserModeRef.current = fullBrowserMode;
   }, [fullBrowserMode]);
 
-  const showChatForSelectedCreator = useCallback(
-    async (fullBrowserAccess: boolean) => {
-      const creator = selectedCreatorRef.current;
-      if (!creator?.accountId || !window.electronAPI) {
-        throw new Error('Chat panel is not ready. Try again.');
-      }
-
-      const bounds = await waitForChatBounds(chatContainerRef.current);
-      if (!bounds) {
-        throw new Error('Chat panel is not ready. Try again.');
-      }
-
-      await window.electronAPI.showChatBrowser({
-        accountId: creator.accountId,
-        bounds,
-        fullBrowserAccess,
-      });
-
-      localStorage.setItem(LAST_CHATTER_ACCOUNT_ID_KEY, creator.accountId);
-      setSessionStatus('valid');
-      setSessionError(null);
-      void hydrateSentMessagesIfNeeded(creator);
-    },
-    [hydrateSentMessagesIfNeeded]
-  );
-
   const handleSessionRecoveryFailure = useCallback(
     async (err: unknown) => {
       setSessionStatus('error');
@@ -425,55 +396,6 @@ export default function Chatter() {
     },
     [hideChatBrowser]
   );
-
-  const handleRevalidateSession = useCallback(
-    async (options: { openInteractiveOnFailure?: boolean } = {}) => {
-      const creator = selectedCreatorRef.current;
-      if (!isElectron || !creator?.accountId) {
-        return;
-      }
-
-      setRevalidating(true);
-      setSessionError(null);
-      setSessionStatus('loading');
-      setShowRevalidateLoginModal(false);
-
-      try {
-        if (window.electronAPI?.setActiveChatter && user) {
-          await window.electronAPI.setActiveChatter({
-            userId: user.id,
-            userName: user.name,
-            fullBrowserAccess: fullBrowserModeRef.current,
-          });
-        }
-
-        await revalidateLocalMaloumSessionForChat(
-          creator.id,
-          creator.accountId,
-          creator.loginEmail
-        );
-
-        await showChatForSelectedCreator(fullBrowserModeRef.current);
-
-        void uploadRefreshedCreatorSession(creator.id, creator.accountId).catch(() => {
-          // Best-effort sync for other machines.
-        });
-      } catch (err) {
-        await handleSessionRecoveryFailure(err);
-        if (options.openInteractiveOnFailure !== false && needsInteractiveSessionRecovery(err)) {
-          setShowRevalidateLoginModal(true);
-        }
-      } finally {
-        setRevalidating(false);
-      }
-    },
-    [isElectron, user, showChatForSelectedCreator, handleSessionRecoveryFailure]
-  );
-
-  const handleInteractiveRevalidateSuccess = useCallback(async () => {
-    setShowRevalidateLoginModal(false);
-    await handleRevalidateSession({ openInteractiveOnFailure: false });
-  }, [handleRevalidateSession]);
 
   useEffect(() => {
     if (!isElectron || !window.electronAPI?.setActiveChatter || !user) {
@@ -557,23 +479,34 @@ export default function Chatter() {
           });
         }
 
-        const isPrepared = await window.electronAPI!.isChatPrepared(creator.accountId);
-
-        if (!isPrepared) {
-          setSessionStatus('loading');
-          await prepareCreatorChat(creator.id, creator.accountId, creator.loginEmail);
-        }
+        setSessionStatus('loading');
 
         const bounds = await waitForChatBounds(chatContainerRef.current);
         if (!bounds) {
           throw new Error('Chat panel is not ready. Try again.');
         }
 
-        await window.electronAPI!.showChatBrowser({
-          accountId: creator.accountId,
-          bounds,
-          fullBrowserAccess,
-        });
+        const showBrowser = () =>
+          window.electronAPI!.showChatBrowser({
+            accountId: creator.accountId!,
+            bounds,
+            fullBrowserAccess,
+          });
+
+        try {
+          await showBrowser();
+        } catch (firstErr) {
+          const message = firstErr instanceof Error ? firstErr.message : String(firstErr);
+          const shouldRecover =
+            isLoginRedirectError(message) || isPageLoadTimeoutError(message);
+
+          if (!shouldRecover) {
+            throw firstErr;
+          }
+
+          await ensureLocalMaloumSessionForChat(creator.id, creator.accountId!);
+          await showBrowser();
+        }
 
         localStorage.setItem(LAST_CHATTER_ACCOUNT_ID_KEY, creator.accountId);
         setSessionStatus('valid');
@@ -581,12 +514,9 @@ export default function Chatter() {
         void hydrateSentMessagesIfNeeded(creator);
       } catch (err) {
         await handleSessionRecoveryFailure(err);
-        if (needsInteractiveSessionRecovery(err)) {
-          setShowRevalidateLoginModal(true);
-        }
       }
     },
-    [isElectron, prepareCreatorChat, handleSessionRecoveryFailure, user, hydrateSentMessagesIfNeeded]
+    [isElectron, handleSessionRecoveryFailure, user, hydrateSentMessagesIfNeeded]
   );
 
   useEffect(() => {
@@ -622,7 +552,7 @@ export default function Chatter() {
 
       void hideChatBrowser();
       setSessionStatus('error');
-      setSessionError('Session expired — revalidate to continue.');
+      setSessionError('Session unavailable — ask a manager to reconnect this creator.');
       setFullBrowserMode(false);
     });
 
@@ -873,31 +803,7 @@ export default function Chatter() {
           {sessionError && (
             <div className="mx-4 mt-4 flex items-start gap-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/30 rounded-lg text-sm text-red-800 dark:text-red-200">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <div className="flex-1 min-w-0">
-                <span>{sessionError}</span>
-                {selectedCreator?.accountId && isElectron && (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void handleRevalidateSession()}
-                      disabled={revalidating || sessionStatus === 'loading'}
-                      className="px-3 py-1.5 text-xs font-medium rounded-md bg-red-100 text-red-800 hover:bg-red-200 dark:bg-red-900/40 dark:text-red-100 dark:hover:bg-red-900/60 disabled:opacity-50"
-                    >
-                      {revalidating ? 'Revalidating…' : 'Revalidate session'}
-                    </button>
-                    {sessionStatus === 'error' && (
-                      <button
-                        type="button"
-                        onClick={() => setShowRevalidateLoginModal(true)}
-                        disabled={revalidating || sessionStatus === 'loading'}
-                        className="px-3 py-1.5 text-xs font-medium rounded-md border border-red-200 text-red-800 hover:bg-red-100/60 dark:border-red-800/40 dark:text-red-100 dark:hover:bg-red-900/30 disabled:opacity-50"
-                      >
-                        Sign in to Maloum
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
+              <span>{sessionError}</span>
             </div>
           )}
 
@@ -926,13 +832,6 @@ export default function Chatter() {
         </section>
       </main>
 
-      {showRevalidateLoginModal && selectedCreator?.accountId && (
-        <ChatterRevalidateLoginModal
-          creator={selectedCreator}
-          onClose={() => setShowRevalidateLoginModal(false)}
-          onSuccess={() => void handleInteractiveRevalidateSuccess()}
-        />
-      )}
     </div>
   );
 }

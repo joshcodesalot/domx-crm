@@ -1,4 +1,4 @@
-import { getCreatorCredentials, getCreatorSession, refreshCreatorSession } from '@/lib/api';
+import { getCreatorSession } from '@/lib/api';
 import type { PlaywrightCookie } from '@/types/electron';
 
 export type LocalMaloumLoginReason =
@@ -33,31 +33,6 @@ export function isPageLoadTimeoutError(message: string): boolean {
   return message.includes('Maloum chat page did not finish loading');
 }
 
-export function isMissingCredentialsError(message: string): boolean {
-  return message.includes('No saved credentials');
-}
-
-export function needsInteractiveSessionRecovery(error: unknown): boolean {
-  if (!(error instanceof LocalMaloumSessionError)) {
-    return false;
-  }
-
-  return (
-    error.reason === 'missing_credentials' ||
-    error.reason === 'interaction_required' ||
-    error.reason === 'invalid_credentials' ||
-    error.reason === 'login_required'
-  );
-}
-
-function mapLocalLoginFailure(result: {
-  ok: false;
-  reason: LocalMaloumLoginReason;
-  message: string;
-}): never {
-  throw new LocalMaloumSessionError(result.message, result.reason);
-}
-
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -74,6 +49,14 @@ function mapRecoveryFailure(err: unknown): never {
       'page_load_timeout'
     );
   }
+
+  if (isLoginRedirectError(message)) {
+    throw new LocalMaloumSessionError(
+      'Session unavailable for this creator. Ask a manager to reconnect the account.',
+      'login_required'
+    );
+  }
+
   throw err;
 }
 
@@ -106,40 +89,25 @@ export async function loadBackendCreatorSession(
   }
 }
 
-export async function loginCreatorLocallyWithSavedCredentials(
+export async function applyBackendCreatorSessionUpdate(
   creatorId: string,
-  accountId: string,
-  loginEmail?: string | null
-): Promise<void> {
-  let credentials;
+  accountId: string
+): Promise<boolean> {
   try {
-    credentials = await getCreatorCredentials(creatorId);
-  } catch (err) {
-    if (err instanceof Error && isMissingCredentialsError(err.message)) {
-      throw new LocalMaloumSessionError(
-        'No saved credentials for this creator. Sign in to Maloum or ask a manager to reconnect the account.',
-        'missing_credentials'
-      );
+    const session = await getCreatorSession(creatorId);
+    if (session.accountId !== accountId) {
+      return false;
     }
-    throw err;
-  }
 
-  const email = credentials.loginEmail || loginEmail || '';
-  if (!email || !credentials.loginPassword) {
-    throw new LocalMaloumSessionError(
-      'No saved credentials for this creator. Sign in to Maloum or ask a manager to reconnect the account.',
-      'missing_credentials'
-    );
-  }
+    await window.electronAPI!.patchCreatorMaloumSession({
+      accountId: session.accountId,
+      origins: session.origins,
+      savedAt: session.sessionUpdatedAt,
+    });
 
-  const result = await window.electronAPI!.loginCreatorLocally({
-    accountId,
-    email,
-    password: credentials.loginPassword,
-  });
-
-  if (!result.ok) {
-    mapLocalLoginFailure(result);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -159,7 +127,6 @@ async function prepareChatSession(accountId: string, force = false): Promise<voi
 async function runSessionRecoveryLadder(
   creatorId: string,
   accountId: string,
-  loginEmail?: string | null,
   options: { forcePrepare?: boolean } = {}
 ): Promise<void> {
   await window.electronAPI!.registerCreatorMapping({ accountId, creatorId });
@@ -182,24 +149,19 @@ async function runSessionRecoveryLadder(
       await prepareChatSession(accountId, true);
       return;
     } catch (err) {
-      if (!shouldRetrySessionRecovery(getErrorMessage(err))) {
-        throw err;
-      }
+      mapRecoveryFailure(err);
     }
   }
 
-  try {
-    await loginCreatorLocallyWithSavedCredentials(creatorId, accountId, loginEmail);
-    await prepareChatSession(accountId, true);
-  } catch (err) {
-    mapRecoveryFailure(err);
-  }
+  throw new LocalMaloumSessionError(
+    'Session unavailable for this creator. Ask a manager to reconnect the account.',
+    'login_required'
+  );
 }
 
 export async function ensureCreatorSessionReady(
   creatorId: string,
-  accountId: string,
-  loginEmail?: string | null
+  accountId: string
 ): Promise<boolean> {
   await window.electronAPI!.registerCreatorMapping({ accountId, creatorId });
 
@@ -208,30 +170,19 @@ export async function ensureCreatorSessionReady(
     return true;
   }
 
-  const loadedBackend = await loadBackendCreatorSession(creatorId, accountId);
-  if (loadedBackend) {
-    return true;
-  }
-
-  try {
-    await loginCreatorLocallyWithSavedCredentials(creatorId, accountId, loginEmail);
-    return true;
-  } catch {
-    return false;
-  }
+  return loadBackendCreatorSession(creatorId, accountId);
 }
 
 export async function warmCreatorInBackground(
   creatorId: string,
-  accountId: string,
-  loginEmail?: string | null
+  accountId: string
 ): Promise<void> {
   if (!window.electronAPI?.isElectron) {
     return;
   }
 
   try {
-    const sessionReady = await ensureCreatorSessionReady(creatorId, accountId, loginEmail);
+    const sessionReady = await ensureCreatorSessionReady(creatorId, accountId);
     if (!sessionReady) {
       return;
     }
@@ -247,42 +198,7 @@ export async function warmCreatorInBackground(
 
 export async function ensureLocalMaloumSessionForChat(
   creatorId: string,
-  accountId: string,
-  loginEmail?: string | null
+  accountId: string
 ): Promise<void> {
-  await runSessionRecoveryLadder(creatorId, accountId, loginEmail);
-}
-
-export async function revalidateLocalMaloumSessionForChat(
-  creatorId: string,
-  accountId: string,
-  loginEmail?: string | null
-): Promise<void> {
-  await window.electronAPI!.releaseCreatorChat(accountId);
-  await runSessionRecoveryLadder(creatorId, accountId, loginEmail, { forcePrepare: true });
-}
-
-export type CapturedCreatorSession = {
-  cookies: PlaywrightCookie[];
-  origins: Array<{
-    origin: string;
-    localStorage: Array<{ name: string; value: string }>;
-  }>;
-  displayName?: string;
-  username?: string | null;
-  postLoginUrl?: string;
-};
-
-export async function uploadRefreshedCreatorSession(
-  creatorId: string,
-  accountId: string,
-  captured?: CapturedCreatorSession
-): Promise<void> {
-  const payload =
-    captured ?? (await window.electronAPI!.captureCreatorSessionForRefresh(accountId));
-
-  await refreshCreatorSession(creatorId, {
-    cookies: payload.cookies,
-    origins: payload.origins,
-  });
+  await runSessionRecoveryLadder(creatorId, accountId);
 }

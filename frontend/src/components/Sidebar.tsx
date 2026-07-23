@@ -100,62 +100,62 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
           </button>
         )}
         {hasPermission('creators.view') && (
-          <>
-            <div ref={maloumMenuRef} className="relative">
-              <button
-                type="button"
-                onClick={() => setMaloumMenuOpen((open) => !open)}
-                className={`${navClass('chatter')} group`}
-                title="Maloum"
-                aria-haspopup="menu"
-                aria-expanded={maloumMenuOpen}
-              >
-                <img
-                  src={maloumIcon}
-                  alt=""
-                  className={`w-5 h-5 rounded object-cover transition-opacity ${
-                    activePage === 'chatter'
-                      ? 'opacity-100'
-                      : 'opacity-50 group-hover:opacity-100'
-                  }`}
-                />
-              </button>
-
-              {maloumMenuOpen && (
-                <div
-                  role="menu"
-                  className="absolute left-full top-1/2 -translate-y-1/2 ml-3 z-50 min-w-[160px] rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1"
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => handleMaloumNavigate('chat')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <MessageSquare className="w-4 h-4 shrink-0" />
-                    Chat
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => handleMaloumNavigate('notifications')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <Bell className="w-4 h-4 shrink-0" />
-                    Notifications
-                  </button>
-                </div>
-              )}
-            </div>
+          <div ref={maloumMenuRef} className="relative">
             <button
               type="button"
-              onClick={() => navigate('/creators/manage')}
-              className={navClass('creators')}
-              title="Creators"
+              onClick={() => setMaloumMenuOpen((open) => !open)}
+              className={`${navClass('chatter')} group`}
+              title="Maloum"
+              aria-haspopup="menu"
+              aria-expanded={maloumMenuOpen}
             >
-              <Users className="w-5 h-5" />
+              <img
+                src={maloumIcon}
+                alt=""
+                className={`w-5 h-5 rounded object-cover transition-opacity ${
+                  activePage === 'chatter'
+                    ? 'opacity-100'
+                    : 'opacity-50 group-hover:opacity-100'
+                }`}
+              />
             </button>
-          </>
+
+            {maloumMenuOpen && (
+              <div
+                role="menu"
+                className="absolute left-full top-1/2 -translate-y-1/2 ml-3 z-50 min-w-[160px] rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => handleMaloumNavigate('chat')}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                >
+                  <MessageSquare className="w-4 h-4 shrink-0" />
+                  Chat
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => handleMaloumNavigate('notifications')}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                >
+                  <Bell className="w-4 h-4 shrink-0" />
+                  Notifications
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        {hasPermission('creators.manage') && (
+          <button
+            type="button"
+            onClick={() => navigate('/creators/manage')}
+            className={navClass('creators')}
+            title="Creators"
+          >
+            <Users className="w-5 h-5" />
+          </button>
         )}
         {hasPermission('staff.view') && (
           <button

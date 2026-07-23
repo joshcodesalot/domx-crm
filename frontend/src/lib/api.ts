@@ -87,6 +87,8 @@ export interface Creator {
   loginEmail: string | null;
   hasSavedCredentials?: boolean;
   lastValidatedAt: string | null;
+  authRefreshState?: 'active' | 'needs_reauth' | 'disabled';
+  accessTokenExpiresAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }

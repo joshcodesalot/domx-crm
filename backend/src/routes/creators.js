@@ -17,6 +17,10 @@ const {
   userSeesAllCreators,
   userCanAccessCreator,
 } = require('../services/creatorAccess');
+const {
+  buildTokenWriteFromOrigins,
+  decryptAccessToken,
+} = require('../services/maloumAuthTokens');
 const { emitToUser, emitToUsers } = require('../services/userEventBus');
 
 const router = express.Router();
@@ -57,6 +61,8 @@ function toCreator(row) {
     loginEmail: row.loginEmail || null,
     hasSavedCredentials: Boolean(row.encryptedLoginPassword),
     lastValidatedAt: row.lastValidatedAt || null,
+    authRefreshState: row.authRefreshState || 'active',
+    accessTokenExpiresAt: row.accessTokenExpiresAt || null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -80,6 +86,21 @@ function buildEncryptedSessionPayload({ cookies, origins, loginEmail, savedAt })
       savedAt: stampedAt,
     }),
     savedAt: stampedAt,
+  };
+}
+
+function buildTokenPersistenceFromOrigins(origins) {
+  const tokenWrite = buildTokenWriteFromOrigins(origins);
+  if (!tokenWrite) {
+    return null;
+  }
+
+  return {
+    encryptedAccessToken: tokenWrite.encryptedAccessToken,
+    encryptedRefreshToken: tokenWrite.encryptedRefreshToken,
+    accessTokenExpiresAt: tokenWrite.accessTokenExpiresAt,
+    authRefreshState: tokenWrite.authRefreshState,
+    tokenRefreshFailureCount: tokenWrite.tokenRefreshFailureCount,
   };
 }
 
@@ -201,7 +222,8 @@ async function cleanupExpiredPending() {
 const CREATOR_SELECT_COLUMNS = `
   id, "displayName", username, platform, "connectionStatus",
   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
-  "loginEmail", "encryptedLoginPassword", "lastValidatedAt", "createdAt", "updatedAt"
+  "loginEmail", "encryptedLoginPassword", "lastValidatedAt", "authRefreshState",
+  "accessTokenExpiresAt", "createdAt", "updatedAt"
 `;
 
 function encryptOptionalLoginPassword(password) {
@@ -240,7 +262,7 @@ router.get('/', authenticate, requirePermission('creators.view'), async (req, re
         `SELECT c.id, c."displayName", c.username, c.platform, c."connectionStatus",
                 c."postLoginUrl", c."avatarUrl", c."avatarSource", c."staffCount", c."accountId",
                 c."partitionId", c."loginEmail", c."encryptedLoginPassword", c."lastValidatedAt",
-                c."createdAt", c."updatedAt"
+                c."authRefreshState", c."accessTokenExpiresAt", c."createdAt", c."updatedAt"
          FROM creators c
          INNER JOIN creator_staff_assignments a
            ON a."creatorId" = c.id AND a."userId" = $1
@@ -337,6 +359,7 @@ router.post(
         origins,
         loginEmail,
       });
+      const tokenPersistence = buildTokenPersistenceFromOrigins(origins);
       const encryptedLoginPassword = encryptOptionalLoginPassword(password);
       const expiresAt = new Date(Date.now() + PENDING_TTL_MINUTES * 60 * 1000);
 
@@ -344,9 +367,10 @@ router.post(
         `INSERT INTO creator_connect_pending (
            "accountId", "accountTokenHash", "partitionId", platform,
            "displayName", username, "postLoginUrl", "avatarUrl", "encryptedSession",
-           "loginEmail", "encryptedLoginPassword", "createdBy", "expiresAt"
+           "loginEmail", "encryptedLoginPassword", "encryptedAccessToken",
+           "encryptedRefreshToken", "accessTokenExpiresAt", "createdBy", "expiresAt"
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         [
           accountId,
           accountTokenHash,
@@ -359,6 +383,9 @@ router.post(
           encryptedSession,
           loginEmail,
           encryptedLoginPassword ?? null,
+          tokenPersistence?.encryptedAccessToken ?? null,
+          tokenPersistence?.encryptedRefreshToken ?? null,
+          tokenPersistence?.accessTokenExpiresAt ?? null,
           req.user.id,
           expiresAt,
         ]
@@ -464,12 +491,15 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
       `INSERT INTO creators (
          "displayName", username, platform, "postLoginUrl", "avatarUrl", "connectionStatus",
          "accountId", "accountTokenHash", "partitionId", "encryptedSession",
-         "loginEmail", "encryptedLoginPassword", "lastValidatedAt"
+         "loginEmail", "encryptedLoginPassword", "encryptedAccessToken",
+         "encryptedRefreshToken", "accessTokenExpiresAt", "authRefreshState",
+         "tokenRefreshFailureCount", "lastValidatedAt"
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        RETURNING id, "displayName", username, platform, "connectionStatus",
                  "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
-                 "loginEmail", "lastValidatedAt", "createdAt", "updatedAt"`,
+                 "loginEmail", "lastValidatedAt", "authRefreshState", "accessTokenExpiresAt",
+                 "createdAt", "updatedAt"`,
       [
         displayName.trim(),
         username?.trim() || pending?.username || null,
@@ -483,6 +513,11 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
         pending?.encryptedSession || null,
         pending?.loginEmail || null,
         pending?.encryptedLoginPassword || null,
+        pending?.encryptedAccessToken || null,
+        pending?.encryptedRefreshToken || null,
+        pending?.accessTokenExpiresAt || null,
+        pending?.encryptedRefreshToken ? 'active' : 'active',
+        0,
         pending ? new Date() : null,
       ]
     );
@@ -771,6 +806,7 @@ router.put(
         origins,
         loginEmail,
       });
+      const tokenPersistence = buildTokenPersistenceFromOrigins(origins);
 
       const nextAvatarUrl =
         creator.avatarSource === 'manual' ||
@@ -796,6 +832,13 @@ router.put(
         passwordSetClause = `"encryptedLoginPassword" = NULL,`;
       }
 
+      const tokenStartIndex = params.length + 1;
+      params.push(
+        tokenPersistence?.encryptedAccessToken ?? null,
+        tokenPersistence?.encryptedRefreshToken ?? null,
+        tokenPersistence?.accessTokenExpiresAt ?? null
+      );
+
       const result = await pool.query(
         `UPDATE creators
          SET "encryptedSession" = $2,
@@ -805,6 +848,11 @@ router.put(
              "postLoginUrl" = COALESCE($6, "postLoginUrl"),
              "avatarUrl" = COALESCE($7, "avatarUrl"),
              ${passwordSetClause}
+             "encryptedAccessToken" = COALESCE($${tokenStartIndex}, "encryptedAccessToken"),
+             "encryptedRefreshToken" = COALESCE($${tokenStartIndex + 1}, "encryptedRefreshToken"),
+             "accessTokenExpiresAt" = COALESCE($${tokenStartIndex + 2}, "accessTokenExpiresAt"),
+             "authRefreshState" = 'active',
+             "tokenRefreshFailureCount" = 0,
              "connectionStatus" = 'connected',
              "lastValidatedAt" = NOW(),
              "updatedAt" = NOW()
@@ -935,16 +983,34 @@ router.put(
         origins,
         loginEmail,
       });
+      const tokenPersistence = buildTokenPersistenceFromOrigins(origins);
 
       const result = await pool.query(
         `UPDATE creators
          SET "encryptedSession" = $2,
+             "encryptedAccessToken" = COALESCE($3, "encryptedAccessToken"),
+             "encryptedRefreshToken" = COALESCE($4, "encryptedRefreshToken"),
+             "accessTokenExpiresAt" = COALESCE($5, "accessTokenExpiresAt"),
+             "authRefreshState" = CASE
+               WHEN $4 IS NOT NULL THEN 'active'
+               ELSE "authRefreshState"
+             END,
+             "tokenRefreshFailureCount" = CASE
+               WHEN $4 IS NOT NULL THEN 0
+               ELSE "tokenRefreshFailureCount"
+             END,
              "connectionStatus" = 'connected',
              "lastValidatedAt" = NOW(),
              "updatedAt" = NOW()
          WHERE id = $1
          RETURNING ${CREATOR_SELECT_COLUMNS}`,
-        [id, encryptedSession]
+        [
+          id,
+          encryptedSession,
+          tokenPersistence?.encryptedAccessToken ?? null,
+          tokenPersistence?.encryptedRefreshToken ?? null,
+          tokenPersistence?.accessTokenExpiresAt ?? null,
+        ]
       );
 
       const accessUserIds = await getUserIdsWithCreatorAccess(id);
@@ -961,6 +1027,54 @@ router.put(
       });
     } catch (err) {
       console.error('Refresh creator session error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/:id/auth-tokens',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const result = await pool.query(
+        `SELECT id, "accountId", "encryptedAccessToken", "accessTokenExpiresAt", "authRefreshState"
+         FROM creators
+         WHERE id = $1`,
+        [id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+
+      const creator = result.rows[0];
+      const accessToken = decryptAccessToken(creator.encryptedAccessToken);
+
+      if (!accessToken) {
+        return res.status(404).json({ error: 'No saved auth token for this creator' });
+      }
+
+      res.json({
+        accountId: creator.accountId,
+        accessToken,
+        expiresAt: creator.accessTokenExpiresAt || null,
+        authRefreshState: creator.authRefreshState || 'active',
+      });
+    } catch (err) {
+      console.error('Get creator auth tokens error:', err);
       res.status(500).json({ error: 'Internal server error' });
     }
   }

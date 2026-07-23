@@ -322,6 +322,8 @@ router.delete('/:id', authenticate, requirePermission('staff.delete'), async (re
       return res.status(404).json({ error: 'User not found' });
     }
 
+    emitToUser(id, { type: 'account:deleted' });
+
     res.json({ message: 'Staff member deleted successfully' });
   } catch (err) {
     console.error('Delete staff error:', err);

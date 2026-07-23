@@ -105,6 +105,11 @@ function registerCreatorIpc() {
   );
 
   ipcMain.handle(
+    'creator:patch-maloum-session',
+    guardCreatorIpc(async (_event, payload) => creatorBrowser.patchCreatorMaloumSession(payload))
+  );
+
+  ipcMain.handle(
     'creator:hydrate-profile',
     guardCreatorIpc(async (_event, accountId) => creatorBrowser.hydrateCreatorProfile(accountId))
   );

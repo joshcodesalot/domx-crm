@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('creator:reload-chat-browser', accountId),
   navigateChatPage: (opts) => ipcRenderer.invoke('creator:navigate-chat-page', opts),
   loadCreatorSession: (opts) => ipcRenderer.invoke('creator:load-session', opts),
+  patchCreatorMaloumSession: (opts) =>
+    ipcRenderer.invoke('creator:patch-maloum-session', opts),
   hydrateCreatorProfile: (accountId) =>
     ipcRenderer.invoke('creator:hydrate-profile', accountId),
   hasLocalCreatorProfile: (accountId) =>

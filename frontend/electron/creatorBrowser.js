@@ -1,5 +1,6 @@
 const { BrowserView, session } = require('electron');
 const profileStorage = require('./profileStorage');
+const { findAuthStorageEntry } = require('./maloumAuthTokens');
 const { applyWebContentsGuards, isLiveWebContents, isLiveBrowserView } = require('./webContentsGuards');
 const {
   isNightTheme,
@@ -265,6 +266,111 @@ function isMaloumManagedMaloumUrl(url) {
     isMaloumVaultUrl(url) ||
     isMaloumNotificationsUrl(url)
   );
+}
+
+function isMaloumHostUrl(url) {
+  try {
+    return new URL(url).hostname.includes('maloum.com');
+  } catch {
+    return Boolean(url) && url.includes('maloum.com');
+  }
+}
+
+function isRestrictedAllowedUrl(url) {
+  if (!url || url.includes('/login')) {
+    return true;
+  }
+
+  return isMaloumManagedMaloumUrl(url);
+}
+
+const restrictedNavGuardInFlight = new WeakMap();
+
+async function redirectRestrictedToChat(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+
+  if (restrictedNavGuardInFlight.get(webContents)) {
+    return;
+  }
+
+  restrictedNavGuardInFlight.set(webContents, true);
+  try {
+    const spaRedirect = await webContents.executeJavaScript(`
+      (function() {
+        try {
+          const target = '/chat';
+          if (window.location.pathname === target) {
+            return true;
+          }
+          window.history.replaceState({}, '', target);
+          window.dispatchEvent(new PopStateEvent('popstate', { state: {} }));
+          return true;
+        } catch (error) {
+          return false;
+        }
+      })()
+    `);
+
+    if (!spaRedirect) {
+      await safeLoadURL(webContents, MALOUM_CHAT_URL);
+    }
+  } catch {
+    try {
+      await safeLoadURL(webContents, MALOUM_CHAT_URL);
+    } catch {
+      // Best-effort redirect only.
+    }
+  } finally {
+    restrictedNavGuardInFlight.set(webContents, false);
+  }
+}
+
+async function enforceRestrictedNavigation(webContents, accountId) {
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+
+  if (isFullBrowserAccess(accountId) || preparingChatAccounts.has(accountId)) {
+    return;
+  }
+
+  const url = webContents.getURL();
+  if (!url || url.startsWith('about:') || url.startsWith('devtools:')) {
+    return;
+  }
+
+  if (!isMaloumHostUrl(url) || !isRestrictedAllowedUrl(url)) {
+    await redirectRestrictedToChat(webContents);
+  }
+}
+
+function shouldBlockRestrictedNavigation(accountId, url) {
+  if (isFullBrowserAccess(accountId) || preparingChatAccounts.has(accountId)) {
+    return false;
+  }
+
+  if (!url || url.startsWith('about:') || url.startsWith('devtools:')) {
+    return false;
+  }
+
+  if (!isMaloumHostUrl(url)) {
+    return true;
+  }
+
+  return !isRestrictedAllowedUrl(url);
+}
+
+async function ensureWarmCreatorSession(accountId) {
+  if (warmSessionAccounts.has(accountId)) {
+    return;
+  }
+
+  const hydrated = await hydrateCreatorProfile(accountId);
+  if (!hydrated.hydrated) {
+    throw new Error('Session partition is not warm. Load session before preparing chat.');
+  }
 }
 
 async function safeLoadURL(webContents, url) {
@@ -634,20 +740,32 @@ function refreshMaloumPageIfNeeded(webContents, accountId, eventName) {
 function attachChatPageListener(view, accountId) {
   const webContents = view.webContents;
 
+  webContents.on('will-navigate', (event, url) => {
+    if (!shouldBlockRestrictedNavigation(accountId, url)) {
+      return;
+    }
+
+    event.preventDefault();
+    void redirectRestrictedToChat(webContents);
+  });
+
   webContents.on('did-finish-load', () => {
     notifyChatSessionExpiredIfNeeded(webContents, accountId);
+    void enforceRestrictedNavigation(webContents, accountId);
     refreshMaloumPageIfNeeded(webContents, accountId, 'did-finish-load');
     scheduleReapplySentBadgesForOpenChat(webContents, accountId);
   });
 
   webContents.on('did-navigate', () => {
     notifyChatSessionExpiredIfNeeded(webContents, accountId);
+    void enforceRestrictedNavigation(webContents, accountId);
     refreshMaloumPageIfNeeded(webContents, accountId, 'did-navigate');
     scheduleReapplySentBadgesForOpenChat(webContents, accountId);
   });
 
   webContents.on('did-navigate-in-page', () => {
     notifyChatSessionExpiredIfNeeded(webContents, accountId);
+    void enforceRestrictedNavigation(webContents, accountId);
     refreshMaloumPageIfNeeded(webContents, accountId, 'did-navigate-in-page');
     scheduleReapplySentBadgesForOpenChat(webContents, accountId);
   });
@@ -1765,6 +1883,100 @@ async function loadCreatorSession({ accountId, cookies, origins, force = false, 
   };
 }
 
+function collectWebContentsForAccount(accountId) {
+  const targets = [];
+
+  const chatView = chatBrowserViews.get(accountId);
+  if (chatView && isLiveBrowserView(chatView)) {
+    targets.push(chatView.webContents);
+  }
+
+  if (
+    preparedChatPartitions.has(accountId) &&
+    activeChatAccountId !== accountId &&
+    chatView &&
+    isLiveBrowserView(chatView)
+  ) {
+    return targets;
+  }
+
+  return targets;
+}
+
+async function patchAuthStorageInWebContents(webContents, authEntry) {
+  if (!webContents || webContents.isDestroyed() || !authEntry?.storageKey) {
+    return false;
+  }
+
+  try {
+    await webContents.executeJavaScript(`
+      (function() {
+        try {
+          localStorage.setItem(${JSON.stringify(authEntry.storageKey)}, ${JSON.stringify(authEntry.storageValue)});
+          return true;
+        } catch (error) {
+          return false;
+        }
+      })()
+    `);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function patchCreatorMaloumSession({
+  accountId,
+  cookies = null,
+  origins = null,
+  savedAt = null,
+}) {
+  if (!accountId) {
+    throw new Error('accountId is required');
+  }
+
+  if (Array.isArray(cookies) && cookies.length > 0) {
+    return loadCreatorSession({
+      accountId,
+      cookies,
+      origins: origins || [],
+      force: true,
+      savedAt,
+    });
+  }
+
+  const existing = profileStorage.readLocalProfile(accountId);
+  const nextOrigins = Array.isArray(origins) && origins.length ? origins : existing?.origins || [];
+  const nextCookies = existing?.cookies || [];
+
+  profileStorage.writeLocalProfile(accountId, {
+    cookies: nextCookies,
+    origins: nextOrigins,
+    savedAt: savedAt || undefined,
+  });
+
+  pendingStorageByAccount.set(accountId, nextOrigins);
+  warmSessionAccounts.add(accountId);
+
+  const authEntry = findAuthStorageEntry(nextOrigins);
+  const webContentsTargets = collectWebContentsForAccount(accountId);
+  let patchedViews = 0;
+
+  for (const webContents of webContentsTargets) {
+    const patched = await patchAuthStorageInWebContents(webContents, authEntry);
+    if (patched) {
+      patchedViews += 1;
+    }
+  }
+
+  return {
+    accountId,
+    patched: true,
+    patchedViews,
+    hasAuthToken: Boolean(authEntry),
+  };
+}
+
 async function preloadCreatorSessions(sessions) {
   registerCreatorIdMappings(sessions);
 
@@ -2063,7 +2275,7 @@ async function prepareChatBrowserInner(accountId, options = {}) {
   }
 
   if (!warmSessionAccounts.has(accountId)) {
-    throw new Error('Session partition is not warm. Load session before preparing chat.');
+    await ensureWarmCreatorSession(accountId);
   }
 
   timer.mark('session-warm');
@@ -2172,6 +2384,13 @@ async function prepareAllChatBrowsers(accountIds) {
 
 async function prepareAllChatBrowsersParallel(accountIds, concurrency = 3) {
   const uniqueIds = [...new Set(accountIds)];
+
+  await Promise.all(
+    uniqueIds
+      .filter((accountId) => !warmSessionAccounts.has(accountId))
+      .map((accountId) => hydrateCreatorProfile(accountId).catch(() => {}))
+  );
+
   const toPrepare = uniqueIds.filter(
     (accountId) => !isChatPrepared(accountId) && warmSessionAccounts.has(accountId)
   );
@@ -2239,7 +2458,7 @@ async function showChatBrowserInner({ accountId, bounds, fullBrowserAccess = fal
 
   if (!isChatPrepared(accountId)) {
     if (!warmSessionAccounts.has(accountId)) {
-      throw new Error('Session partition is not warm. Load session before showing chat.');
+      await ensureWarmCreatorSession(accountId);
     }
     await prepareChatBrowserInner(accountId);
     timer.mark('prepared-on-show');
@@ -2461,6 +2680,7 @@ module.exports = {
   captureCreatorSessionForRefresh,
   importCookies,
   loadCreatorSession,
+  patchCreatorMaloumSession,
   hydrateCreatorProfile,
   hasLocalCreatorProfile,
   getLocalCreatorProfileMeta,

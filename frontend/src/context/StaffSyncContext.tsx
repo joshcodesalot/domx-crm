@@ -99,6 +99,11 @@ export function StaffSyncProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      if (event.type === 'account:deleted') {
+        await handleAccountDeactivated('Your account has been removed.');
+        return;
+      }
+
       if (event.type === 'creator:access-revoked' && event.accountId) {
         if (window.electronAPI?.clearSession) {
           await window.electronAPI.clearSession(event.accountId);
