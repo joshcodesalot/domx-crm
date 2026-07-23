@@ -590,12 +590,24 @@ export default function Chatter() {
   );
 
   useEffect(() => {
-    if (!isElectron || sessionStatus !== 'valid' || !selectedCreator?.accountId) {
+    if (
+      !isElectron ||
+      sessionStatus !== 'valid' ||
+      !selectedCreator?.accountId ||
+      fullBrowserMode
+    ) {
       return;
     }
 
     void navigateEmbeddedMaloumPage(maloumView);
-  }, [isElectron, maloumView, sessionStatus, selectedCreator?.accountId, navigateEmbeddedMaloumPage]);
+  }, [
+    isElectron,
+    maloumView,
+    sessionStatus,
+    selectedCreator?.accountId,
+    navigateEmbeddedMaloumPage,
+    fullBrowserMode,
+  ]);
 
   useEffect(() => {
     if (!isElectron || !window.electronAPI?.onChatSessionExpired) {

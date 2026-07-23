@@ -510,12 +510,10 @@ async function prepareMaloumChatPage(webContents, accountId) {
     await ensureSessionStorageReady(webContents, accountId, MALOUM_CHAT_URL);
 
     const currentUrl = webContents.getURL();
-    const onChatPage =
-      currentUrl.includes('maloum.com') &&
-      currentUrl.includes('/chat') &&
-      !currentUrl.includes('/login');
+    const onManagedPage =
+      isMaloumChatUrl(currentUrl) || isMaloumNotificationsUrl(currentUrl);
 
-    if (!onChatPage) {
+    if (!onManagedPage) {
       await navigateToUrl(webContents, MALOUM_CHAT_URL, accountId);
       const urlAfterNav = webContents.getURL();
       if (urlAfterNav.includes('/login')) {
@@ -558,10 +556,10 @@ async function loadPreparedChatView(webContents, accountId) {
   }
 
   const currentUrl = webContents.getURL();
-  const onChatReady =
-    currentUrl.includes('/chat') && !currentUrl.includes('/login');
+  const onManagedPageReady =
+    isMaloumChatUrl(currentUrl) || isMaloumNotificationsUrl(currentUrl);
 
-  if (!onChatReady) {
+  if (!onManagedPageReady) {
     await navigateToUrl(webContents, MALOUM_CHAT_URL, accountId);
     if (webContents.getURL().includes('/login')) {
       throw new Error('Session expired or invalid — Maloum redirected to login.');
@@ -2362,6 +2360,15 @@ async function navigateChatBrowser({ accountId, page = 'chat' }) {
 
   const targetUrl = page === 'notifications' ? MALOUM_NOTIFICATIONS_URL : MALOUM_CHAT_URL;
   const webContents = view.webContents;
+  const currentUrl = webContents.getURL();
+  const alreadyOnTarget =
+    page === 'notifications'
+      ? isMaloumNotificationsUrl(currentUrl)
+      : isMaloumChatUrl(currentUrl);
+
+  if (alreadyOnTarget) {
+    return { accountId: resolvedId, url: currentUrl };
+  }
 
   await navigateToUrl(webContents, targetUrl, resolvedId);
 
