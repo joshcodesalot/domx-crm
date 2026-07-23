@@ -1,7 +1,10 @@
+import { useEffect, useRef, useState } from 'react';
 import {
   BarChart2,
+  Bell,
   LayoutGrid,
   LogOut,
+  MessageSquare,
   UserCog,
   Users,
 } from 'lucide-react';
@@ -17,11 +20,39 @@ interface SidebarProps {
 export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   const { user, logout, hasPermission } = useAuth();
   const navigate = useNavigate();
+  const [maloumMenuOpen, setMaloumMenuOpen] = useState(false);
+  const maloumMenuRef = useRef<HTMLDivElement>(null);
 
   async function handleLogout() {
     await logout();
     navigate('/login');
   }
+
+  useEffect(() => {
+    if (!maloumMenuOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!maloumMenuRef.current?.contains(event.target as Node)) {
+        setMaloumMenuOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setMaloumMenuOpen(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [maloumMenuOpen]);
 
   const initial = user?.name?.charAt(0).toUpperCase() || 'U';
 
@@ -29,6 +60,15 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     page === activePage
       ? 'text-gray-900 dark:text-white'
       : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors';
+
+  function handleMaloumNavigate(view: 'chat' | 'notifications') {
+    setMaloumMenuOpen(false);
+    if (view === 'notifications') {
+      navigate('/chatter?view=notifications');
+      return;
+    }
+    navigate('/chatter');
+  }
 
   return (
     <aside className="w-16 flex flex-col items-center py-6 border-r border-gray-200 dark:border-white/10 shrink-0">
@@ -61,22 +101,52 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
         )}
         {hasPermission('creators.view') && (
           <>
-            <button
-              type="button"
-              onClick={() => navigate('/chatter')}
-              className={`${navClass('chatter')} group`}
-              title="Maloum"
-            >
-              <img
-                src={maloumIcon}
-                alt=""
-                className={`w-5 h-5 rounded object-cover transition-opacity ${
-                  activePage === 'chatter'
-                    ? 'opacity-100'
-                    : 'opacity-50 group-hover:opacity-100'
-                }`}
-              />
-            </button>
+            <div ref={maloumMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setMaloumMenuOpen((open) => !open)}
+                className={`${navClass('chatter')} group`}
+                title="Maloum"
+                aria-haspopup="menu"
+                aria-expanded={maloumMenuOpen}
+              >
+                <img
+                  src={maloumIcon}
+                  alt=""
+                  className={`w-5 h-5 rounded object-cover transition-opacity ${
+                    activePage === 'chatter'
+                      ? 'opacity-100'
+                      : 'opacity-50 group-hover:opacity-100'
+                  }`}
+                />
+              </button>
+
+              {maloumMenuOpen && (
+                <div
+                  role="menu"
+                  className="absolute left-full top-1/2 -translate-y-1/2 ml-3 z-50 min-w-[160px] rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => handleMaloumNavigate('chat')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                  >
+                    <MessageSquare className="w-4 h-4 shrink-0" />
+                    Chat
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => handleMaloumNavigate('notifications')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                  >
+                    <Bell className="w-4 h-4 shrink-0" />
+                    Notifications
+                  </button>
+                </div>
+              )}
+            </div>
             <button
               type="button"
               onClick={() => navigate('/creators/manage')}

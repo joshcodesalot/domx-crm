@@ -207,6 +207,10 @@ export interface ElectronAPI {
   hideChatBrowser: () => Promise<void>;
   resizeChatBrowser: (bounds: BrowserBounds) => Promise<void>;
   reloadChatBrowser: (accountId?: string) => Promise<{ accountId: string; url: string }>;
+  navigateChatPage: (opts: {
+    accountId: string;
+    page: 'chat' | 'notifications';
+  }) => Promise<{ accountId: string; url: string }>;
   loadCreatorSession: (opts: {
     accountId: string;
     cookies: PlaywrightCookie[];

@@ -4,6 +4,7 @@ function isNightTheme(theme) {
 
 const MALOUM_ADD_LIST_PATH = '/lists/add/member';
 const MALOUM_VAULT_PATH = '/vault';
+const MALOUM_NOTIFICATIONS_PATH = '/notifications';
 
 const ADD_LIST_SIDEBAR_SELECTOR = '#root > div > section';
 const ADD_LIST_MAIN_DIV_SELECTOR = '#root > div > div';
@@ -231,6 +232,7 @@ function getMaloumPageKind(url) {
   if (!url) return null;
   if (url.includes(MALOUM_ADD_LIST_PATH)) return 'addList';
   if (url.includes(MALOUM_VAULT_PATH)) return 'vault';
+  if (url.includes(MALOUM_NOTIFICATIONS_PATH)) return 'notifications';
   if (url.includes('/chat') && !url.includes('/login')) return 'chat';
   return null;
 }
@@ -2158,6 +2160,36 @@ async function cleanMaloumChatUI(webContents) {
   `);
 }
 
+async function cleanMaloumNotificationsUI(webContents) {
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+
+  await webContents.executeJavaScript(`
+    (function() {
+      if (!window.location.href.includes('/notifications')) return;
+
+      const root = document.querySelector('#root');
+      if (!root) return;
+
+      const sidebar =
+        document.querySelector('#root > div > div > section') ||
+        document.querySelector('#root > div > section');
+      if (sidebar) {
+        sidebar.style.display = 'none';
+      }
+
+      const mainWrapper =
+        document.querySelector('#root > div > div > div') ||
+        document.querySelector('#root > div > div');
+      if (mainWrapper) {
+        mainWrapper.classList.remove('sm:ml-20', 'lg:ml-60');
+        mainWrapper.style.marginLeft = '0';
+      }
+    })()
+  `);
+}
+
 async function cleanMaloumAddListUI(webContents) {
   if (!webContents || webContents.isDestroyed()) {
     return;
@@ -2324,6 +2356,23 @@ async function installMaloumDomObserver(webContents, theme, activeChatter, optio
         if (addContentButton) addContentButton.style.display = 'none';
       };
 
+      const applyNotificationsCleanup = () => {
+        if (!window.location.href.includes('/notifications')) return;
+
+        const sidebar =
+          document.querySelector('#root > div > div > section') ||
+          document.querySelector('#root > div > section');
+        if (sidebar) sidebar.style.display = 'none';
+
+        const mainWrapper =
+          document.querySelector('#root > div > div > div') ||
+          document.querySelector('#root > div > div');
+        if (mainWrapper) {
+          mainWrapper.classList.remove('sm:ml-20', 'lg:ml-60');
+          mainWrapper.style.marginLeft = '0';
+        }
+      };
+
       const applyTheme = () => {
         const styleId = 'domx-maloum-night-mode';
         const existingStyle = document.getElementById(styleId);
@@ -2344,6 +2393,7 @@ async function installMaloumDomObserver(webContents, theme, activeChatter, optio
           applyChatCleanup();
           applyAddListCleanup();
           applyVaultCleanup();
+          applyNotificationsCleanup();
         }
         applyTheme();
 
@@ -2489,6 +2539,12 @@ async function refreshMaloumVaultUI(webContents, theme, activeChatter) {
   await installMaloumDomObserver(webContents, theme, activeChatter);
 }
 
+async function refreshMaloumNotificationsUI(webContents, theme, activeChatter) {
+  await cleanMaloumNotificationsUI(webContents);
+  await applyMaloumTheme(webContents, theme);
+  await installMaloumDomObserver(webContents, theme, activeChatter);
+}
+
 async function refreshMaloumPageUI(
   webContents,
   theme,
@@ -2535,6 +2591,10 @@ async function refreshMaloumPageUI(
   }
   if (kind === 'vault') {
     await refreshMaloumVaultUI(webContents, theme, activeChatter);
+    return;
+  }
+  if (kind === 'notifications') {
+    await refreshMaloumNotificationsUI(webContents, theme, activeChatter);
     return;
   }
   if (kind === 'chat') {
@@ -2598,10 +2658,12 @@ module.exports = {
   isMaloumAppUrl,
   MALOUM_ADD_LIST_PATH,
   MALOUM_VAULT_PATH,
+  MALOUM_NOTIFICATIONS_PATH,
   getMaloumPageKind,
   cleanMaloumChatUI,
   cleanMaloumAddListUI,
   cleanMaloumVaultUI,
+  cleanMaloumNotificationsUI,
   applyMaloumTheme,
   installMaloumDomObserver,
   installMaloumMessageTranslationSystem,
@@ -2612,6 +2674,7 @@ module.exports = {
   refreshMaloumChatUI,
   refreshMaloumAddListUI,
   refreshMaloumVaultUI,
+  refreshMaloumNotificationsUI,
   refreshMaloumPageUI,
   resetMaloumPageObservers,
   buildMarkRenderedMessageScript,

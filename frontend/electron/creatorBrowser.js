@@ -7,6 +7,7 @@ const {
   refreshMaloumPageUI,
   applyTranslationSettings,
   resetMaloumPageObservers,
+  cleanMaloumChatUI,
 } = require('./maloumChatUi');
 const {
   setMainWindow: setBadgeMainWindow,
@@ -41,6 +42,7 @@ const {
 
 const MALOUM_LOGIN_URL = 'https://app.maloum.com/login';
 const MALOUM_CHAT_URL = 'https://app.maloum.com/chat';
+const MALOUM_NOTIFICATIONS_URL = 'https://app.maloum.com/notifications';
 const MALOUM_ADD_LIST_URL = 'https://app.maloum.com/lists/add/member';
 const MALOUM_VAULT_URL = 'https://app.maloum.com/vault';
 const MALOUM_HOME_URL = 'https://app.maloum.com';
@@ -247,8 +249,22 @@ function isMaloumVaultUrl(url) {
   return Boolean(url) && url.includes('maloum.com') && url.includes('/vault');
 }
 
+function isMaloumNotificationsUrl(url) {
+  return (
+    Boolean(url) &&
+    url.includes('maloum.com') &&
+    url.includes('/notifications') &&
+    !url.includes('/login')
+  );
+}
+
 function isMaloumManagedMaloumUrl(url) {
-  return isMaloumChatUrl(url) || isMaloumAddListUrl(url) || isMaloumVaultUrl(url);
+  return (
+    isMaloumChatUrl(url) ||
+    isMaloumAddListUrl(url) ||
+    isMaloumVaultUrl(url) ||
+    isMaloumNotificationsUrl(url)
+  );
 }
 
 async function safeLoadURL(webContents, url) {
@@ -1307,6 +1323,20 @@ async function waitForMaloumLoginOutcome(webContents, timeoutMs = 90000) {
   };
 }
 
+async function redirectViewToMaloumChat(webContents, accountId) {
+  if (!isLiveWebContents(webContents)) {
+    return;
+  }
+
+  await navigateToUrl(webContents, MALOUM_CHAT_URL, accountId);
+  if (webContents.getURL().includes('/login')) {
+    return;
+  }
+
+  await waitForMaloumChatRoot(webContents);
+  await cleanMaloumChatUI(webContents);
+}
+
 async function captureMaloumSessionFromWebContents(accountId, webContents) {
   if (!isLiveWebContents(webContents)) {
     throw new Error('Browser view closed unexpectedly');
@@ -1349,7 +1379,12 @@ async function captureMaloumSessionFromLoginView(accountId) {
     throw new Error('Login browser is not active');
   }
 
-  return captureMaloumSessionFromWebContents(accountId, loginBrowserView.webContents);
+  const result = await captureMaloumSessionFromWebContents(
+    accountId,
+    loginBrowserView.webContents
+  );
+  await redirectViewToMaloumChat(loginBrowserView.webContents, accountId);
+  return result;
 }
 
 async function captureCreatorSessionForRefresh(accountId) {
@@ -1401,12 +1436,14 @@ async function reloginMaloumOnVerifyView({ accountId, email, password }) {
     throw new Error('Verify browser is not active for this account');
   }
 
-  return reloginMaloumInWebContents({
+  const result = await reloginMaloumInWebContents({
     accountId,
     webContents: verifyBrowserView.webContents,
     email,
     password,
   });
+  await redirectViewToMaloumChat(verifyBrowserView.webContents, accountId);
+  return result;
 }
 
 async function loginCreatorLocallyInner({ accountId, email, password, clearExisting = true }) {
@@ -2312,6 +2349,41 @@ async function reloadChatBrowser(accountId) {
   return { accountId: resolvedId, url: currentUrl };
 }
 
+async function navigateChatBrowser({ accountId, page = 'chat' }) {
+  const resolvedId = accountId || activeChatAccountId;
+  if (!resolvedId) {
+    throw new Error('No active chat browser to navigate');
+  }
+
+  const view = getChatView(resolvedId);
+  if (!isLiveBrowserView(view)) {
+    throw new Error('Chat browser not available');
+  }
+
+  const targetUrl = page === 'notifications' ? MALOUM_NOTIFICATIONS_URL : MALOUM_CHAT_URL;
+  const webContents = view.webContents;
+
+  await navigateToUrl(webContents, targetUrl, resolvedId);
+
+  if (webContents.getURL().includes('/login')) {
+    throw new Error('Session expired or invalid — Maloum redirected to login.');
+  }
+
+  const ready = await waitForMaloumChatRoot(webContents);
+  if (!ready) {
+    throw new Error('Maloum page did not finish loading.');
+  }
+
+  await runRefreshMaloumPageUISerialized(
+    webContents,
+    currentDomXTheme,
+    resolvedId,
+    webContents.getURL()
+  );
+
+  return { accountId: resolvedId, url: webContents.getURL() };
+}
+
 async function setDomXTheme(theme) {
   currentDomXTheme = theme;
 
@@ -2398,6 +2470,7 @@ module.exports = {
   hideChatBrowser,
   hideAllBrowserViewsForUpdate,
   reloadChatBrowser,
+  navigateChatBrowser,
   showVerifyBrowser,
   resizeVerifyBrowser,
   hideVerifyBrowser,

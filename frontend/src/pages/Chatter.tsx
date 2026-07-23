@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { AlertCircle, Bell, Globe, MessageSquare, RefreshCw, type LucideIcon } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
@@ -166,6 +167,8 @@ function connectionDotClass(status: Creator['connectionStatus']): string {
 
 export default function Chatter() {
   const { user, hasPermission } = useAuth();
+  const [searchParams] = useSearchParams();
+  const maloumView = searchParams.get('view') === 'notifications' ? 'notifications' : 'chat';
   const { bootCreators, prepareCreatorChat } = useCreatorBoot();
   const { onSyncEvent } = useStaffSync();
   const [creators, setCreators] = useState<Creator[]>([]);
@@ -200,6 +203,25 @@ export default function Chatter() {
   const canManageFullBrowser = hasPermission('creators.manage');
 
   const selectedCreator = creators.find((c) => c.id === selectedId) || null;
+
+  const navigateEmbeddedMaloumPage = useCallback(
+    async (page: 'chat' | 'notifications') => {
+      const creator = selectedCreatorRef.current;
+      if (!isElectron || !creator?.accountId || !window.electronAPI?.navigateChatPage) {
+        return;
+      }
+
+      try {
+        await window.electronAPI.navigateChatPage({
+          accountId: creator.accountId,
+          page,
+        });
+      } catch (err) {
+        setSessionError(err instanceof Error ? err.message : 'Failed to switch Maloum page');
+      }
+    },
+    [isElectron]
+  );
 
   const syncChatBounds = useCallback(() => {
     if (!window.electronAPI || !selectedIdRef.current) return;
@@ -566,6 +588,14 @@ export default function Chatter() {
     },
     [isElectron, prepareCreatorChat, handleSessionRecoveryFailure, user, hydrateSentMessagesIfNeeded]
   );
+
+  useEffect(() => {
+    if (!isElectron || sessionStatus !== 'valid' || !selectedCreator?.accountId) {
+      return;
+    }
+
+    void navigateEmbeddedMaloumPage(maloumView);
+  }, [isElectron, maloumView, sessionStatus, selectedCreator?.accountId, navigateEmbeddedMaloumPage]);
 
   useEffect(() => {
     if (!isElectron || !window.electronAPI?.onChatSessionExpired) {

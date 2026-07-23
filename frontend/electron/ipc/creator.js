@@ -95,6 +95,11 @@ function registerCreatorIpc() {
   );
 
   ipcMain.handle(
+    'creator:navigate-chat-page',
+    guardCreatorIpc(async (_event, payload) => creatorBrowser.navigateChatBrowser(payload))
+  );
+
+  ipcMain.handle(
     'creator:load-session',
     guardCreatorIpc(async (_event, payload) => creatorBrowser.loadCreatorSession(payload))
   );
