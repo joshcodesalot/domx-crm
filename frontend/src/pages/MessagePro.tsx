@@ -576,96 +576,34 @@ export default function MessagePro() {
         </div>
       )}
 
-      <div className="relative flex-1 min-h-0 flex">
-        <aside className="w-64 shrink-0 border-r border-gray-200 dark:border-white/10 flex flex-col bg-gray-50/60 dark:bg-white/[0.02] z-10">
-          <div className="h-10 px-3 border-b border-gray-200 dark:border-white/10 flex items-center justify-between shrink-0">
-            <span className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Creators
-            </span>
-            <span className="text-[11px] text-gray-400">{openableCreators.length}</span>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
-            {loading && (
-              <p className="text-sm text-gray-500 dark:text-gray-400 p-2">Loading...</p>
-            )}
-            {!loading && openableCreators.length === 0 && (
-              <p className="text-sm text-gray-500 dark:text-gray-400 p-2">
-                No Maloum creators found. Connect creators in DomX first.
+      <div className="relative flex-1 min-h-0">
+        <div ref={hostRef} className="absolute inset-0" />
+        {!activeWorkspace && !loading && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center p-6 pointer-events-none">
+            <div className="w-14 h-14 rounded-2xl bg-blue-500/10 text-blue-500 flex items-center justify-center">
+              <Plus className="w-7 h-7" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-200">
+                Add a creator with +
               </p>
-            )}
-            {openableCreators.map((creator) => {
-              const accountId = creator.accountId!;
-              const isOpen = workspaces.some(
-                (workspace) => workspace.creator.accountId === accountId
-              );
-              const isActive = accountId === activeAccountId;
-              return (
-                <button
-                  key={creator.id}
-                  type="button"
-                  onClick={() => {
-                    if (isOpen) {
-                      selectCreator(accountId);
-                    } else {
-                      openCreator(creator);
-                    }
-                  }}
-                  className={`w-full flex items-center gap-3 p-2.5 rounded-lg text-left transition-colors border ${
-                    isActive
-                      ? 'bg-brand-50 dark:bg-brand-900/20 border-brand-200 dark:border-brand-800/40'
-                      : 'border-transparent hover:bg-white dark:hover:bg-white/5'
-                  }`}
-                >
-                  <CreatorAvatar
-                    avatarUrl={creator.avatarUrl}
-                    displayName={creator.displayName}
-                    className="w-9 h-9 rounded-full object-cover shrink-0"
-                    initialsClassName="w-9 h-9 rounded-full bg-orange-100 flex items-center justify-center shrink-0 text-orange-600 font-bold text-sm"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">{creator.displayName}</p>
-                    <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
-                      {isOpen ? (isActive ? 'Active' : 'Open') : 'Click to open'}
-                      {creator.connectionStatus !== 'connected'
-                        ? ` · ${creator.connectionStatus}`
-                        : ''}
-                    </p>
-                  </div>
-                </button>
-              );
-            })}
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-sm">
+                Home shows the inbox. Use the open-in-tab button next to each fan chat
+                timestamp to pin it under this creator.
+              </p>
+            </div>
           </div>
-        </aside>
-
-        <div className="relative flex-1 min-w-0 min-h-0">
-          <div ref={hostRef} className="absolute inset-0" />
-          {!activeWorkspace && !loading && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center p-6 pointer-events-none">
-              <div className="w-14 h-14 rounded-2xl bg-blue-500/10 text-blue-500 flex items-center justify-center">
-                <Plus className="w-7 h-7" />
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-700 dark:text-gray-200">
-                  Select a creator from the list
-                </p>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-sm">
-                  Home shows the inbox. Use the open-in-tab button on a fan chat to pin it
-                  under this creator.
-                </p>
-              </div>
-            </div>
-          )}
-          {viewLoading && activeWorkspace && (
-            <div className="absolute inset-0 flex items-center justify-center bg-white/70 dark:bg-black/40 text-sm text-gray-500 dark:text-gray-300 pointer-events-none">
-              Loading Maloum...
-            </div>
-          )}
-          {!isElectron && (
-            <div className="absolute inset-0 flex items-center justify-center text-sm text-amber-700 dark:text-amber-300 p-6 text-center">
-              Message Pro requires the DomX desktop app.
-            </div>
-          )}
-        </div>
+        )}
+        {viewLoading && activeWorkspace && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white/70 dark:bg-black/40 text-sm text-gray-500 dark:text-gray-300 pointer-events-none">
+            Loading Maloum...
+          </div>
+        )}
+        {!isElectron && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-amber-700 dark:text-amber-300 p-6 text-center">
+            Message Pro requires the DomX desktop app.
+          </div>
+        )}
       </div>
     </div>
   );

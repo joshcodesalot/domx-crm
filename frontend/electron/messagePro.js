@@ -150,7 +150,10 @@ function buildOpenInTabInjectionScript() {
 
       const STYLE_ID = 'domx-mp-open-tab-style';
       const BUTTON_CLASS = 'domx-mp-open-tab';
+      const MARK_ATTR = 'data-domx-mp-tab-btn';
       const SENTINEL = ${JSON.stringify(OPEN_FAN_TAB_SENTINEL)};
+      let scanQueued = false;
+      let scanning = false;
 
       function ensureStyle() {
         if (document.getElementById(STYLE_ID)) {
@@ -165,10 +168,10 @@ function buildOpenInTabInjectionScript() {
             justify-content: center;
             width: 22px;
             height: 22px;
-            margin-left: 6px;
+            margin-top: 4px;
             border-radius: 6px;
             border: 1px solid rgba(148, 163, 184, 0.45);
-            background: rgba(59, 130, 246, 0.15);
+            background: rgba(59, 130, 246, 0.18);
             color: #60a5fa;
             cursor: pointer;
             flex-shrink: 0;
@@ -177,7 +180,7 @@ function buildOpenInTabInjectionScript() {
             z-index: 20;
           }
           .\${BUTTON_CLASS}:hover {
-            background: rgba(59, 130, 246, 0.3);
+            background: rgba(59, 130, 246, 0.35);
             color: #93c5fd;
           }
           .\${BUTTON_CLASS} svg {
@@ -203,43 +206,14 @@ function buildOpenInTabInjectionScript() {
         }
       }
 
-      function findConversationAnchor(node) {
-        if (!(node instanceof Element)) {
-          return null;
-        }
-        if (node.matches('a[href*="/chat/"]')) {
-          const chatId = extractChatId(node.getAttribute('href'));
-          if (chatId) {
-            return node;
-          }
-        }
-        return node.querySelector('a[href*="/chat/"]');
-      }
-
-      function findRowContainer(anchor) {
-        let node = anchor;
-        for (let i = 0; i < 8 && node; i += 1) {
-          if (
-            node.parentElement &&
-            (node.parentElement.id === 'leftColumn' ||
-              node.parentElement.getAttribute('role') === 'list' ||
-              node.parentElement.classList.contains('overflow-y-auto'))
-          ) {
-            return node;
-          }
-          node = node.parentElement;
-        }
-        return anchor.closest('a[href*="/chat/"]') || anchor;
-      }
-
-      function readFanMeta(row, chatId) {
-        const text = (row.innerText || '').trim();
+      function readFanMeta(anchor, chatId) {
+        const text = (anchor.innerText || '').trim();
         const lines = text
           .split('\\n')
           .map((line) => line.trim())
           .filter(Boolean);
         const displayName = lines[0] || chatId;
-        const img = row.querySelector('img');
+        const img = anchor.querySelector('img');
         const avatarUrl = img ? img.src || null : null;
         return { displayName, avatarUrl };
       }
@@ -250,6 +224,7 @@ function buildOpenInTabInjectionScript() {
         button.className = BUTTON_CLASS;
         button.title = 'Open in Message Pro tab';
         button.setAttribute('data-domx-chat-id', chatId);
+        button.setAttribute(MARK_ATTR, chatId);
         button.innerHTML =
           '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M14 8h5"/><path d="M14 12h5"/><path d="M14 16h5"/></svg>';
         button.addEventListener(
@@ -277,27 +252,36 @@ function buildOpenInTabInjectionScript() {
           return;
         }
 
-        const row = findRowContainer(anchor);
-        if (!row || row.querySelector('.' + BUTTON_CLASS + '[data-domx-chat-id="' + chatId + '"]')) {
+        // One button per conversation row (Maloum uses #dateAndIndicator).
+        const dateCol =
+          anchor.querySelector('#dateAndIndicator') ||
+          anchor.querySelector('[id="dateAndIndicator"]');
+        if (!dateCol) {
           return;
         }
 
-        const { displayName, avatarUrl } = readFanMeta(row, chatId);
-        const button = createButton(chatId, displayName, avatarUrl);
-
-        const tipOrMeta =
-          row.querySelector('[class*="tip"]') ||
-          row.querySelector('span') ||
-          null;
-
-        if (tipOrMeta && tipOrMeta.parentElement) {
-          tipOrMeta.parentElement.insertBefore(button, tipOrMeta.nextSibling);
-        } else {
-          row.appendChild(button);
+        if (
+          anchor.getAttribute(MARK_ATTR) === chatId ||
+          dateCol.querySelector('.' + BUTTON_CLASS) ||
+          dateCol.querySelector('[' + MARK_ATTR + '="' + chatId + '"]')
+        ) {
+          anchor.setAttribute(MARK_ATTR, chatId);
+          return;
         }
+
+        // Remove any accidental duplicates from earlier injects.
+        dateCol.querySelectorAll('.' + BUTTON_CLASS).forEach((node) => node.remove());
+
+        const { displayName, avatarUrl } = readFanMeta(anchor, chatId);
+        const button = createButton(chatId, displayName, avatarUrl);
+        dateCol.appendChild(button);
+        anchor.setAttribute(MARK_ATTR, chatId);
       }
 
       function scan() {
+        if (scanning) {
+          return;
+        }
         if (!window.location.pathname.includes('/chat')) {
           return;
         }
@@ -306,14 +290,30 @@ function buildOpenInTabInjectionScript() {
           return;
         }
 
-        ensureStyle();
-        const root = document.querySelector('#leftColumn') || document.body;
-        const anchors = root.querySelectorAll('a[href*="/chat/"]');
-        anchors.forEach((anchor) => injectForAnchor(anchor));
+        scanning = true;
+        try {
+          ensureStyle();
+          const root = document.querySelector('#leftColumn') || document.body;
+          const anchors = root.querySelectorAll('a[href*="/chat/"]');
+          anchors.forEach((anchor) => injectForAnchor(anchor));
+        } finally {
+          scanning = false;
+        }
+      }
+
+      function queueScan() {
+        if (scanQueued) {
+          return;
+        }
+        scanQueued = true;
+        setTimeout(() => {
+          scanQueued = false;
+          scan();
+        }, 120);
       }
 
       const observer = new MutationObserver(() => {
-        scan();
+        queueScan();
       });
       observer.observe(document.documentElement, {
         childList: true,
@@ -321,7 +321,7 @@ function buildOpenInTabInjectionScript() {
       });
 
       scan();
-      setInterval(scan, 1500);
+      setInterval(scan, 2500);
       return true;
     })()
   `;
