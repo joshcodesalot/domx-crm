@@ -73,7 +73,7 @@ export default function ChatterMaloum() {
   }, [onSyncEvent, loadCreators]);
 
   return (
-    <div className="h-screen flex bg-white dark:bg-[#0a0a0a] text-gray-900 dark:text-gray-100">
+    <div className="h-screen flex bg-zinc-950 text-zinc-300 antialiased overflow-hidden">
       <Sidebar activePage="chatter" />
       <MaloumSingleCreatorChat
         creators={creators}

@@ -1,17 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
+  Box,
   Check,
+  Folder,
+  FolderOpen,
   Image as ImageIcon,
+  Languages,
   Loader2,
+  Lock,
   MessageSquare,
   Play,
   RefreshCw,
   Send,
+  Video,
   X,
   type LucideIcon,
 } from 'lucide-react';
 import ToggleSwitch from '@/components/ToggleSwitch';
+import maloumIcon from '@/assets/maloum_icon.png';
 import {
   createMessagingDashboardEntry,
   getMaloumChat,
@@ -54,23 +61,26 @@ function UnreadBadge({
   icon: Icon,
   count,
   label,
+  accentClass = 'text-maloum-500',
 }: {
   icon: LucideIcon;
   count: number;
   label: string;
+  accentClass?: string;
 }) {
   const hasUnread = count > 0;
-  const badgeClass = hasUnread
-    ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-    : 'bg-gray-100 text-gray-600 dark:bg-white/5 dark:text-gray-400';
 
   return (
     <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ${badgeClass}`}
+      className={`inline-flex items-center gap-1 text-[10px] font-medium ${
+        hasUnread ? accentClass : 'text-zinc-500'
+      }`}
       title={label}
     >
       <Icon className="w-3 h-3 shrink-0" aria-hidden />
-      <span>{count > 99 ? '99+' : count}</span>
+      <span>
+        {count > 99 ? '99+' : count} {hasUnread ? 'new' : ''}
+      </span>
     </span>
   );
 }
@@ -114,38 +124,28 @@ function TranslationToggles({
 }) {
   return (
     <div className="space-y-3">
-      <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-        Translation
+      <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+        Assist Settings
       </p>
-      <label className="flex items-start gap-3 cursor-pointer">
+      <label className="flex items-center justify-between cursor-pointer group gap-3">
+        <span className="text-xs font-medium text-zinc-300 group-hover:text-white transition-colors">
+          Auto-translate Out
+        </span>
         <ToggleSwitch
           checked={autoTranslateOutgoing}
           onChange={onOutgoingChange}
           aria-label="Auto-translate outgoing messages"
         />
-        <span className="min-w-0">
-          <span className="block text-sm font-medium text-gray-900 dark:text-gray-100">
-            Auto-translate outgoing
-          </span>
-          <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-            Translate messages to German before sending
-          </span>
-        </span>
       </label>
-      <label className="flex items-start gap-3 cursor-pointer">
+      <label className="flex items-center justify-between cursor-pointer group gap-3">
+        <span className="text-xs font-medium text-zinc-300 group-hover:text-white transition-colors">
+          Show Translation UI
+        </span>
         <ToggleSwitch
           checked={autoTranslateHistory}
           onChange={onHistoryChange}
           aria-label="Auto-translate chat history"
         />
-        <span className="min-w-0">
-          <span className="block text-sm font-medium text-gray-900 dark:text-gray-100">
-            Auto-translate chat history
-          </span>
-          <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-            Show English translations under messages
-          </span>
-        </span>
       </label>
     </div>
   );
@@ -280,6 +280,7 @@ export function messageMediaAssets(msg: MaloumMessage): Array<{
 
 type MaloumChatListProps = {
   creatorId: string;
+  creatorName?: string;
   selectedChatId?: string | null;
   onSelectChat: (chat: MaloumChat) => void;
   className?: string;
@@ -289,6 +290,7 @@ type MaloumChatListProps = {
 
 export function MaloumChatList({
   creatorId,
+  creatorName,
   selectedChatId,
   onSelectChat,
   className = '',
@@ -335,15 +337,22 @@ export function MaloumChatList({
   }, [loadChats]);
 
   return (
-    <div className={`flex flex-col h-full min-h-0 ${className}`}>
+    <div className={`flex flex-col h-full min-h-0 bg-[#0a0a0c] ${className}`}>
       {showHeader && (
-        <div className="h-14 px-4 border-b border-gray-200 dark:border-white/10 flex items-center justify-between gap-2 shrink-0">
-          <span className="text-sm font-medium">Chats</span>
+        <div className="h-16 px-5 border-b border-zinc-800/60 flex items-center justify-between gap-2 shrink-0 bg-zinc-900/20">
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2 min-w-0">
+            <span className="truncate">{creatorName || 'Creator'}</span>
+            {creatorName && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700 shrink-0">
+                Active
+              </span>
+            )}
+          </h2>
           <button
             type="button"
             onClick={() => void loadChats()}
             disabled={loading}
-            className="p-1.5 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 disabled:opacity-40"
+            className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all disabled:opacity-40"
             title="Refresh chats"
           >
             {loading ? (
@@ -354,17 +363,17 @@ export function MaloumChatList({
           </button>
         </div>
       )}
-      <div className="flex-1 overflow-y-auto min-h-0">
+      <div className="flex-1 overflow-y-auto min-h-0 animate-fade-in">
         {error && (
-          <p className="text-xs text-red-600 dark:text-red-400 p-3">{error}</p>
+          <p className="text-xs text-red-400 p-3">{error}</p>
         )}
         {!loading && !error && chats.length === 0 && (
-          <p className="text-xs text-gray-500 p-3">No conversations yet.</p>
+          <p className="text-xs text-zinc-500 p-3">No chats yet.</p>
         )}
         {chats.map((chat) => {
           const active = chat._id === selectedChatId;
           const name = partnerName(chat);
-          const spend = formatSpend(chat.chatPartner?.totalSpendForCreator);
+          const spend = formatSpend(chat.chatPartner?.totalSpendForCreator, 'EUR');
           const relative = formatRelativeTime(chat.lastRelevantMessage?.sentAt);
           const preview =
             chat.lastRelevantMessage?.text ||
@@ -378,45 +387,49 @@ export function MaloumChatList({
               key={chat._id}
               type="button"
               onClick={() => onSelectChat(chat)}
-              className={`w-full text-left px-3 py-2.5 border-b border-gray-100 dark:border-white/5 transition-colors ${
+              className={`w-full text-left p-3 border-l-2 transition-colors relative ${
                 active
-                  ? 'bg-brand-50 dark:bg-brand-900/20'
-                  : 'hover:bg-gray-50 dark:hover:bg-white/5'
+                  ? 'border-maloum-500 bg-zinc-900/60 hover:bg-zinc-900/80'
+                  : 'border-transparent hover:bg-zinc-900/40 border-b border-b-zinc-800/30'
               }`}
             >
-              <div className="flex items-start gap-2.5">
-                <div className="w-9 h-9 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-xs font-medium shrink-0">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-sm font-medium border border-zinc-700 shrink-0 text-zinc-300">
                   {name.charAt(0).toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="text-sm font-medium truncate">{name}</span>
+                  <div className="flex items-center justify-between min-w-0 mb-0.5">
+                    <span
+                      className={`text-sm truncate ${
+                        active
+                          ? 'font-semibold text-white'
+                          : 'font-medium text-zinc-200'
+                      }`}
+                    >
+                      {name}
+                    </span>
+                    <span className="text-[10px] text-zinc-500 shrink-0 ml-2">
+                      {relative || ''}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs text-zinc-400 truncate flex-1">{preview}</p>
                     {spend && (
-                      <span className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                      <span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                         {spend}
                       </span>
                     )}
-                    <div className="ml-auto flex items-center gap-1 shrink-0">
-                      {chat.unreadMessages && (
-                        <span className="w-2 h-2 rounded-full bg-red-500" />
-                      )}
-                      {openActionLabel && (
-                        <span className="text-[10px] text-brand-600 dark:text-brand-400">
-                          {openActionLabel}
-                        </span>
-                      )}
-                    </div>
+                    {openActionLabel && (
+                      <span className="text-[10px] text-maloum-500 shrink-0">
+                        {openActionLabel}
+                      </span>
+                    )}
                   </div>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
-                    {preview}
-                  </p>
-                  {relative && (
-                    <p className="text-[10px] uppercase tracking-wide text-gray-400 mt-0.5">
-                      {relative}
-                    </p>
-                  )}
                 </div>
               </div>
+              {chat.unreadMessages && (
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-maloum-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]" />
+              )}
             </button>
           );
         })}
@@ -425,7 +438,7 @@ export function MaloumChatList({
             type="button"
             onClick={() => void loadChats({ append: true, next: nextCursor })}
             disabled={loadingMore}
-            className="w-full py-2 text-xs text-brand-600 dark:text-brand-400 hover:underline disabled:opacity-50"
+            className="w-full py-2 text-xs text-maloum-500 hover:underline disabled:opacity-50"
           >
             {loadingMore ? 'Loading…' : 'Load more'}
           </button>
@@ -490,6 +503,9 @@ export function MaloumChatThread({
   const [selectedVaultItems, setSelectedVaultItems] = useState<MaloumVaultMediaItem[]>(
     []
   );
+  const [vaultTypeFilter, setVaultTypeFilter] = useState<'all' | 'image' | 'video'>(
+    'all'
+  );
   const [ppvPrice, setPpvPrice] = useState('5');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>(
@@ -497,10 +513,8 @@ export function MaloumChatThread({
   );
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
-  const currency =
-    (typeof chat?.lastRelevantMessage?.priceCurrency === 'string' &&
-      chat.lastRelevantMessage.priceCurrency) ||
-    'EUR';
+  /** Maloum is EUR-only in the chatter UI. */
+  const currency = 'EUR';
 
   const loadMessages = useCallback(
     async (opts?: { append?: boolean; next?: string | null }) => {
@@ -661,6 +675,7 @@ export function MaloumChatThread({
 
   const openVault = useCallback(async () => {
     setVaultOpen(true);
+    setVaultTypeFilter('all');
     setVaultLoading(true);
     setVaultError(null);
     try {
@@ -808,7 +823,7 @@ export function MaloumChatThread({
           germanTranslatedMessage: textToSend || null,
           actualSentText: textToSend || null,
           priceNet: hasMedia && priceNet > 0 ? priceNet : null,
-          currency: typeof currency === 'string' ? currency : 'EUR',
+          currency: 'EUR',
           purchased: false,
           mediaCount: mediaPayload?.length || 0,
           pictureCount,
@@ -855,60 +870,84 @@ export function MaloumChatThread({
   ]);
 
   const title = partnerName(chat);
-  const spend = formatSpend(chat?.chatPartner?.totalSpendForCreator);
+  const spend = formatSpend(chat?.chatPartner?.totalSpendForCreator, 'EUR');
+  const initials = (title || '?').slice(0, 2).toUpperCase();
+  const currencySymbol = '€';
+
+  const filteredVaultItems = useMemo(() => {
+    if (vaultTypeFilter === 'all') return vaultItems;
+    return vaultItems.filter((item) => {
+      const video = isVideoAsset(item.media?.type);
+      return vaultTypeFilter === 'video' ? video : !video;
+    });
+  }, [vaultItems, vaultTypeFilter]);
 
   return (
-    <div className={`flex flex-col h-full min-h-0 relative ${className}`}>
-      <div className="h-14 px-4 border-b border-gray-200 dark:border-white/10 flex items-center gap-3 shrink-0">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 min-w-0">
-            <h2 className="text-sm font-semibold truncate">{title}</h2>
-            {spend && (
-              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
-                {spend}
-              </span>
-            )}
+    <div
+      className={`flex flex-col h-full min-h-0 relative chatter-thread-bg ${className}`}
+    >
+      <div className="absolute inset-0 bg-zinc-950/95 z-0 pointer-events-none" />
+
+      <div className="h-16 px-4 md:px-6 border-b border-zinc-800/60 flex items-center justify-between gap-3 shrink-0 relative z-10 bg-zinc-950/80 backdrop-blur-md">
+        <div className="flex items-center gap-4 min-w-0">
+          <div className="relative shrink-0 hidden sm:block">
+            <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-sm font-medium border border-zinc-700 text-zinc-300">
+              {initials}
+            </div>
+            <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-green-500 border-2 border-zinc-950" />
           </div>
-          <p className="text-xs text-gray-500 truncate">
-            @{chat?.chatPartner?.username || 'fan'}
-          </p>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <h2 className="text-base font-bold text-white truncate">{title}</h2>
+              {spend && (
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+                  LTV: {spend}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-zinc-500 truncate mt-0.5">
+              @{chat?.chatPartner?.username || 'fan'}
+            </p>
+          </div>
         </div>
-        <button
-          type="button"
-          onClick={() => void loadMessages()}
-          className="p-1.5 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
-          title="Refresh"
-        >
-          <RefreshCw className="w-4 h-4" />
-        </button>
-        {onClose && (
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
-            onClick={onClose}
-            className="p-1.5 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
-            title="Close conversation"
-            aria-label="Close conversation"
+            onClick={() => void loadMessages()}
+            className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all border border-transparent hover:border-zinc-700"
+            title="Refresh"
           >
-            <X className="w-4 h-4" />
+            <RefreshCw className="w-4 h-4" />
           </button>
-        )}
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all border border-transparent hover:border-zinc-700"
+              title="Close chat"
+              aria-label="Close chat"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
+      <div className="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 min-h-0 relative z-10 scroll-smooth animate-fade-in">
         {messagesNext && (
           <button
             type="button"
             onClick={() => void loadMessages({ append: true, next: messagesNext })}
-            className="mx-auto block text-xs text-brand-600 dark:text-brand-400 hover:underline"
+            className="mx-auto block text-xs text-maloum-500 hover:underline"
           >
             Load older messages
           </button>
         )}
         {messagesLoading && messages.length === 0 && (
-          <p className="text-xs text-gray-500 text-center py-8">Loading messages…</p>
+          <p className="text-xs text-zinc-500 text-center py-8">Loading messages…</p>
         )}
         {messagesError && (
-          <p className="text-xs text-red-600 dark:text-red-400">{messagesError}</p>
+          <p className="text-xs text-red-400">{messagesError}</p>
         )}
         {messages.map((msg) => {
           const mine = Boolean(
@@ -931,80 +970,113 @@ export function MaloumChatThread({
               ? historyTranslations[`${msgKey}::${text.trim()}`]
               : undefined;
           const isPpv = msg.content?.type === 'chat_product';
+          const ppvLabel =
+            isPpv && typeof msg.content?.priceNet === 'number'
+              ? formatSpend(msg.content.priceNet, 'EUR')
+              : null;
           return (
             <div
               key={msg._id}
-              className={`flex ${mine ? 'justify-end' : 'justify-start'}`}
+              className={`flex animate-slide-up ${mine ? 'justify-end' : 'justify-start'}`}
             >
               <div
-                className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm ${
-                  mine
-                    ? 'bg-brand-600 text-white'
-                    : 'bg-gray-100 dark:bg-white/10 text-gray-900 dark:text-gray-100'
+                className={`max-w-[85%] md:max-w-[70%] flex flex-col ${
+                  mine ? 'items-end' : 'items-start'
                 }`}
               >
-                {assets.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 mb-1.5">
-                    {assets.map((asset, idx) => {
-                      const src = maloumMediaUrl(creatorId, {
-                        uploadId: asset.uploadId,
-                        variant: 'thumbnail',
-                        url: asset.url,
-                      });
-                      const fullSrc = maloumMediaUrl(creatorId, {
-                        uploadId: asset.uploadId,
-                        variant: 'full',
-                        url: asset.url,
-                      });
-                      return (
-                        <button
-                          key={`${msg._id}-${asset.uploadId || idx}`}
-                          type="button"
-                          onClick={() => setPreviewUrl(fullSrc)}
-                          className="block overflow-hidden rounded-lg"
-                        >
-                          <img
-                            src={src}
-                            alt=""
-                            className="w-28 h-28 object-cover bg-black/20"
-                            loading="lazy"
-                          />
-                        </button>
-                      );
-                    })}
+                {assets.length > 0 || isPpv ? (
+                  <div
+                    className={`rounded-2xl p-1.5 shadow-lg relative overflow-hidden ${
+                      mine
+                        ? 'bg-zinc-900 border border-maloum-500/30 text-white chat-bubble-out'
+                        : 'bg-zinc-800/80 border border-zinc-700/50 text-zinc-200 chat-bubble-in'
+                    }`}
+                  >
+                    {ppvLabel && (
+                      <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-black/60 backdrop-blur border border-white/10 text-[10px] font-bold tracking-widest text-emerald-400 flex items-center gap-1">
+                        <Lock className="w-3 h-3" /> PPV · {ppvLabel}
+                      </div>
+                    )}
+                    {assets.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mb-2">
+                        {assets.map((asset, idx) => {
+                          const src = maloumMediaUrl(creatorId, {
+                            uploadId: asset.uploadId,
+                            variant: 'thumbnail',
+                            url: asset.url,
+                          });
+                          const fullSrc = maloumMediaUrl(creatorId, {
+                            uploadId: asset.uploadId,
+                            variant: 'full',
+                            url: asset.url,
+                          });
+                          return (
+                            <button
+                              key={`${msg._id}-${asset.uploadId || idx}`}
+                              type="button"
+                              onClick={() => setPreviewUrl(fullSrc)}
+                              className="w-32 h-32 md:w-40 md:h-40 rounded-xl relative overflow-hidden group"
+                            >
+                              <img
+                                src={src}
+                                alt=""
+                                className="w-full h-full object-cover bg-black/20 group-hover:scale-105 transition-transform duration-500"
+                                loading="lazy"
+                              />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {text && (
+                      <div className="px-3 pb-2 pt-1 text-sm">
+                        <p className="whitespace-pre-wrap break-words">{text}</p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div
+                    className={`rounded-2xl px-4 py-3 text-sm shadow-sm backdrop-blur-sm ${
+                      mine
+                        ? 'bg-maloum-600 text-white chat-bubble-out shadow-md'
+                        : 'bg-zinc-800/80 border border-zinc-700/50 text-zinc-200 chat-bubble-in'
+                    }`}
+                  >
+                    {text && (
+                      <p className="whitespace-pre-wrap break-words">{text}</p>
+                    )}
                   </div>
                 )}
-                {isPpv && typeof msg.content?.priceNet === 'number' && (
-                  <p className="text-[10px] uppercase tracking-wide opacity-80 mb-1">
-                    PPV · {formatSpend(msg.content.priceNet, currency || 'EUR')}
-                  </p>
-                )}
-                {text && <p className="whitespace-pre-wrap break-words">{text}</p>}
+
                 {historyEn && (
-                  <p
-                    className={`mt-1 text-xs whitespace-pre-wrap break-words ${
-                      mine ? 'text-white/75' : 'text-gray-500 dark:text-gray-400'
+                  <div
+                    className={`mt-1.5 rounded-xl px-3 py-2 text-[11px] italic shadow-sm w-fit max-w-full flex items-center gap-1.5 ${
+                      mine
+                        ? 'bg-zinc-800/60 border border-zinc-700/50 text-zinc-300'
+                        : 'bg-zinc-900/80 border border-zinc-800 text-zinc-400'
                     }`}
                   >
-                    {historyEn}
-                  </p>
+                    {!mine && (
+                      <Languages className="w-3 h-3 text-zinc-500 shrink-0" />
+                    )}
+                    <span className="whitespace-pre-wrap break-words">{historyEn}</span>
+                  </div>
                 )}
-                <p
-                  className={`text-[10px] mt-1 ${
-                    mine ? 'text-white/70' : 'text-gray-400'
+
+                <div
+                  className={`mt-2 flex flex-col gap-1.5 ${
+                    mine ? 'items-end mr-1' : 'items-start ml-1'
                   }`}
                 >
-                  {formatRelativeTime(msg.sentAt) || ''}
-                </p>
-                {sentBy && (
-                  <p
-                    className={`text-[10px] mt-0.5 ${
-                      mine ? 'text-white/60' : 'text-gray-400'
-                    }`}
-                  >
-                    Sent by {sentBy}
-                  </p>
-                )}
+                  <span className="text-[10px] text-zinc-600">
+                    {formatRelativeTime(msg.sentAt) || ''}
+                  </span>
+                  {sentBy && (
+                    <div className="px-2.5 py-0.5 rounded-full bg-zinc-900/90 border border-zinc-800 text-[9px] font-medium text-zinc-400 shadow-sm">
+                      Sent by {sentBy}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           );
@@ -1012,79 +1084,82 @@ export function MaloumChatThread({
         <div ref={messagesEndRef} />
       </div>
 
-      {selectedVaultItems.length > 0 && (
-        <div className="px-4 py-2 border-t border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/[0.03] flex items-center gap-3">
-          <div className="flex items-center gap-1.5 shrink-0 max-w-[40%] overflow-x-auto">
-            {selectedVaultItems.map((item) => {
-              const uploadId = vaultUploadId(item);
-              const src = maloumMediaUrl(creatorId, {
-                uploadId,
-                variant: 'thumbnail',
-                url: item.thumbnail?.url || item.media?.url,
-              });
-              return (
-                <button
-                  key={uploadId || src}
-                  type="button"
-                  onClick={() => toggleVaultItem(item)}
-                  className="relative shrink-0"
-                  title="Remove"
-                >
-                  <img src={src} alt="" className="w-12 h-12 rounded object-cover" />
-                  <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/70 text-white flex items-center justify-center">
-                    <X className="w-3 h-3" />
+      <div className="border-t border-zinc-800/80 bg-zinc-950 p-4 shrink-0 relative z-10 shadow-[0_-10px_40px_rgba(0,0,0,0.3)]">
+        {selectedVaultItems.length > 0 && (
+          <div className="flex items-center gap-4 mb-3 px-1 animate-fade-in">
+            <div className="flex gap-2 max-w-[40%] overflow-x-auto">
+              {selectedVaultItems.map((item) => {
+                const uploadId = vaultUploadId(item);
+                const src = maloumMediaUrl(creatorId, {
+                  uploadId,
+                  variant: 'thumbnail',
+                  url: item.thumbnail?.url || item.media?.url,
+                });
+                return (
+                  <button
+                    key={uploadId || src}
+                    type="button"
+                    onClick={() => toggleVaultItem(item)}
+                    className="w-12 h-12 rounded-lg relative group overflow-hidden border border-zinc-700 shrink-0"
+                    title="Remove"
+                  >
+                    <img src={src} alt="" className="w-full h-full object-cover" />
+                    <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/60 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <X className="w-3 h-3" />
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="h-8 w-px bg-zinc-800" />
+            <div className="flex items-center gap-3">
+              <div className="flex flex-col">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 mb-0.5">
+                  PPV Price
+                </label>
+                <div className="relative">
+                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">
+                    {currencySymbol}
                   </span>
-                </button>
-              );
-            })}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-xs font-medium truncate">
-              {selectedVaultItems.length} media selected
-            </p>
-            <div className="flex items-center gap-2 mt-1">
-              <label className="text-xs text-gray-500">
-                Price {currency || 'EUR'}
-              </label>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={ppvPrice}
-                onChange={(e) => setPpvPrice(e.target.value)}
-                className="w-20 px-2 py-1 text-xs rounded border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5"
-              />
-              <span className="text-xs text-gray-400">
-                {Number(ppvPrice) > 0 ? '(PPV)' : '(free)'}
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={ppvPrice}
+                    onChange={(e) => setPpvPrice(e.target.value)}
+                    className="w-20 pl-6 pr-2 py-1 rounded-md border border-zinc-700 bg-zinc-900 text-sm text-white focus:border-domx-500 focus:outline-none transition-colors"
+                  />
+                </div>
+              </div>
+              <span className="text-xs text-zinc-400 mt-4">
+                {selectedVaultItems.length} item
+                {selectedVaultItems.length === 1 ? '' : 's'} attached
               </span>
             </div>
+            <button
+              type="button"
+              onClick={() => setSelectedVaultItems([])}
+              className="p-1 text-zinc-500 hover:text-white ml-auto"
+              aria-label="Clear attachment"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => setSelectedVaultItems([])}
-            className="p-1 text-gray-400 hover:text-gray-600"
-            aria-label="Clear attachment"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
+        )}
 
-      <div className="shrink-0 border-t border-gray-200 dark:border-white/10 p-3 space-y-2">
         {sendError && (
-          <p className="text-xs text-red-600 dark:text-red-400">{sendError}</p>
+          <p className="text-xs text-red-400 mb-2">{sendError}</p>
         )}
         {translatingOutgoing && (
-          <p className="text-xs text-gray-500 dark:text-gray-400">
-            Translating to German…
-          </p>
+          <p className="text-xs text-zinc-500 mb-2">Translating to German…</p>
         )}
-        <div className="flex items-end gap-2">
+
+        <div className="flex items-end gap-2 bg-zinc-900/80 border border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50 focus-within:bg-zinc-900 transition-all shadow-inner">
           <button
             type="button"
             onClick={() => void openVault()}
-            className="p-2 rounded-lg border border-gray-200 dark:border-white/10 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
-            title="Open vault"
+            className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors shrink-0"
+            title="Open Media Vault"
           >
             <ImageIcon className="w-5 h-5" />
           </button>
@@ -1097,9 +1172,13 @@ export function MaloumChatThread({
                 void handleSend();
               }
             }}
-            rows={2}
-            placeholder="Type a message…"
-            className="flex-1 resize-none rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-black/20 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500/40"
+            rows={1}
+            placeholder={
+              autoTranslateOutgoing
+                ? 'Type a message… (Auto-translates to German)'
+                : 'Type a message…'
+            }
+            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-white focus:outline-none placeholder:text-zinc-600 leading-relaxed"
           />
           <button
             type="button"
@@ -1109,7 +1188,7 @@ export function MaloumChatThread({
               translatingOutgoing ||
               (!draft.trim() && selectedVaultItems.length === 0)
             }
-            className="p-2.5 rounded-xl bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40"
+            className="p-3 mb-0.5 rounded-xl bg-domx-600 text-white hover:bg-domx-500 transition-all shadow-lg shadow-domx-600/20 shrink-0 transform hover:scale-105 active:scale-95 disabled:opacity-40 disabled:hover:scale-100"
             title="Send"
           >
             {sending || translatingOutgoing ? (
@@ -1120,52 +1199,61 @@ export function MaloumChatThread({
           </button>
         </div>
         {showTranslationToggles && (
-          <TranslationToggles
-            autoTranslateOutgoing={autoTranslateOutgoing}
-            autoTranslateHistory={autoTranslateHistory}
-            onOutgoingChange={handleAutoTranslateOutgoingChange}
-            onHistoryChange={handleAutoTranslateHistoryChange}
-          />
+          <div className="mt-3">
+            <TranslationToggles
+              autoTranslateOutgoing={autoTranslateOutgoing}
+              autoTranslateHistory={autoTranslateHistory}
+              onOutgoingChange={handleAutoTranslateOutgoingChange}
+              onHistoryChange={handleAutoTranslateHistoryChange}
+            />
+          </div>
         )}
       </div>
 
       {vaultOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 animate-fade-in">
           <button
             type="button"
             aria-label="Close vault"
-            className="absolute inset-0 bg-black/50"
+            className="absolute inset-0 bg-black/80 backdrop-blur-sm"
             onClick={() => setVaultOpen(false)}
           />
-          <div className="relative bg-white dark:bg-[#111] rounded-xl shadow-xl w-full max-w-4xl max-h-[85vh] flex flex-col border border-gray-200 dark:border-white/10">
-            <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-white/10 gap-2">
-              <h3 className="font-semibold">
-                Vault
-                {selectedVaultItems.length > 0
-                  ? ` · ${selectedVaultItems.length} selected`
-                  : ''}
-              </h3>
-              <div className="flex items-center gap-1">
+          <div className="relative bg-zinc-950 border border-zinc-800/80 rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-slide-up">
+            <div className="flex items-center justify-between p-5 border-b border-zinc-800/60 bg-zinc-900/50 backdrop-blur-md">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-domx-600/20 flex items-center justify-center border border-domx-500/30">
+                  <Box className="w-5 h-5 text-domx-400" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-white">Media Vault</h3>
+                  <p className="text-xs text-zinc-400">
+                    {selectedVaultItems.length} item
+                    {selectedVaultItems.length === 1 ? '' : 's'} selected
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
                 {selectedVaultItems.length > 0 && (
                   <button
                     type="button"
                     onClick={() => setSelectedVaultItems([])}
-                    className="px-2 py-1 text-xs text-gray-500 hover:text-gray-800"
+                    className="px-3 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
                   >
-                    Clear
+                    Clear Selection
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={() => setVaultOpen(false)}
-                  className="px-2.5 py-1 text-xs font-medium rounded-md bg-brand-600 text-white hover:bg-brand-700"
+                  className="px-5 py-2 text-sm font-semibold rounded-lg bg-domx-600 text-white hover:bg-domx-500 transition-colors shadow-lg shadow-domx-600/20"
                 >
-                  Done
+                  Insert Media
                 </button>
+                <div className="w-px h-6 bg-zinc-800 mx-1" />
                 <button
                   type="button"
                   onClick={() => setVaultOpen(false)}
-                  className="p-1 text-gray-400 hover:text-gray-600"
+                  className="p-2 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-lg transition-colors"
                   aria-label="Close vault"
                 >
                   <X className="w-5 h-5" />
@@ -1173,94 +1261,164 @@ export function MaloumChatThread({
               </div>
             </div>
 
-            <div className="px-3 py-2 border-b border-gray-100 dark:border-white/10 overflow-x-auto flex gap-1.5 shrink-0">
-              {vaultFolders.map((folder) => (
-                <button
-                  key={folder._id}
-                  type="button"
-                  onClick={() => setSelectedFolderId(folder._id)}
-                  className={`shrink-0 px-3 py-1.5 text-xs rounded-full border transition-colors max-w-[180px] truncate ${
-                    selectedFolderId === folder._id
-                      ? 'bg-brand-600 text-white border-brand-600'
-                      : 'border-gray-200 dark:border-white/10 hover:bg-gray-50 dark:hover:bg-white/5'
-                  }`}
-                  title={folder.name || 'Folder'}
-                >
-                  {folder.name || 'Folder'}
-                </button>
-              ))}
-            </div>
+            <div className="flex flex-1 overflow-hidden min-h-0">
+              <div className="w-48 sm:w-56 border-r border-zinc-800/60 bg-zinc-900/20 p-3 overflow-y-auto hidden md:block shrink-0">
+                <h4 className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 mb-3 px-2">
+                  Folders
+                </h4>
+                <ul className="space-y-1">
+                  {vaultFolders.map((folder) => {
+                    const active = selectedFolderId === folder._id;
+                    return (
+                      <li key={folder._id}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFolderId(folder._id)}
+                          className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 truncate ${
+                            active
+                              ? 'bg-zinc-800 text-white font-medium'
+                              : 'hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200'
+                          }`}
+                          title={folder.name || 'Folder'}
+                        >
+                          {active ? (
+                            <FolderOpen className="w-4 h-4 text-domx-400 shrink-0" />
+                          ) : (
+                            <Folder className="w-4 h-4 shrink-0" />
+                          )}
+                          <span className="truncate">{folder.name || 'Folder'}</span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
 
-            <div className="flex-1 overflow-y-auto p-4">
-              {vaultLoading && (
-                <div className="flex justify-center py-12">
-                  <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
-                </div>
-              )}
-              {vaultError && (
-                <p className="text-sm text-red-600 dark:text-red-400">{vaultError}</p>
-              )}
-              {!vaultLoading && !vaultError && vaultItems.length === 0 && (
-                <p className="text-sm text-gray-500">
-                  {selectedFolderId ? 'No media in this folder.' : 'Vault is empty.'}
-                </p>
-              )}
-              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
-                {vaultItems.map((item) => {
-                  const uploadId = vaultUploadId(item);
-                  const src = maloumMediaUrl(creatorId, {
-                    uploadId,
-                    variant: 'thumbnail',
-                    url: item.thumbnail?.url || item.media?.url,
-                  });
-                  const selected = selectedVaultItems.some(
-                    (entry) => vaultUploadId(entry) === uploadId
-                  );
-                  const video = isVideoAsset(item.media?.type);
-                  const durationSec =
-                    typeof item.media?.length === 'number'
-                      ? item.media.length
-                      : undefined;
-                  const durationLabel = formatDuration(durationSec);
-                  return (
+              <div className="flex-1 flex flex-col min-w-0">
+                <div className="p-3 border-b border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0 md:hidden">
+                  {vaultFolders.map((folder) => (
                     <button
-                      key={uploadId || src}
+                      key={folder._id}
                       type="button"
-                      onClick={() => toggleVaultItem(item)}
-                      className={`relative aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-white/5 group border-2 ${
-                        selected ? 'border-brand-500' : 'border-transparent'
+                      onClick={() => setSelectedFolderId(folder._id)}
+                      className={`shrink-0 px-3 py-1.5 text-xs rounded-full border transition-colors max-w-[160px] truncate ${
+                        selectedFolderId === folder._id
+                          ? 'bg-zinc-800 text-white border-zinc-700'
+                          : 'bg-zinc-900/50 text-zinc-400 border-zinc-800 hover:border-zinc-700'
                       }`}
                     >
-                      {src ? (
-                        <img
-                          src={src}
-                          alt=""
-                          className="w-full h-full object-cover"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-gray-400">
-                          <ImageIcon className="w-6 h-6" />
-                        </div>
-                      )}
-                      {selected && (
-                        <span className="absolute top-1 right-1 w-5 h-5 rounded-full bg-brand-600 text-white flex items-center justify-center z-10">
-                          <Check className="w-3 h-3" />
-                        </span>
-                      )}
-                      {video && (
-                        <span className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/30">
-                          <Play className="w-8 h-8 text-white drop-shadow" />
-                        </span>
-                      )}
-                      {video && durationLabel && (
-                        <span className="absolute bottom-1 right-1 text-[10px] px-1 rounded bg-black/70 text-white">
-                          {durationLabel}
-                        </span>
-                      )}
+                      {folder.name || 'Folder'}
                     </button>
-                  );
-                })}
+                  ))}
+                </div>
+                <div className="p-3 border-b border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0">
+                  {(
+                    [
+                      { id: 'all', label: 'All Types' },
+                      { id: 'image', label: 'Images', icon: ImageIcon },
+                      { id: 'video', label: 'Videos', icon: Video },
+                    ] as const
+                  ).map((chip) => {
+                    const active = vaultTypeFilter === chip.id;
+                    const Icon = 'icon' in chip ? chip.icon : null;
+                    return (
+                      <button
+                        key={chip.id}
+                        type="button"
+                        onClick={() => setVaultTypeFilter(chip.id)}
+                        className={`px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors flex items-center gap-1.5 ${
+                          active
+                            ? 'bg-zinc-800 text-white border-zinc-700'
+                            : 'bg-zinc-900/50 text-zinc-400 hover:text-white border-zinc-800 hover:border-zinc-700'
+                        }`}
+                      >
+                        {Icon && <Icon className="w-3 h-3" />}
+                        {chip.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4">
+                  {vaultLoading && (
+                    <div className="flex justify-center py-12">
+                      <Loader2 className="w-6 h-6 animate-spin text-zinc-400" />
+                    </div>
+                  )}
+                  {vaultError && (
+                    <p className="text-sm text-red-400">{vaultError}</p>
+                  )}
+                  {!vaultLoading &&
+                    !vaultError &&
+                    filteredVaultItems.length === 0 && (
+                      <p className="text-sm text-zinc-500">
+                        {selectedFolderId
+                          ? 'No media in this folder.'
+                          : 'Vault is empty.'}
+                      </p>
+                    )}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                    {filteredVaultItems.map((item) => {
+                      const uploadId = vaultUploadId(item);
+                      const src = maloumMediaUrl(creatorId, {
+                        uploadId,
+                        variant: 'thumbnail',
+                        url: item.thumbnail?.url || item.media?.url,
+                      });
+                      const selected = selectedVaultItems.some(
+                        (entry) => vaultUploadId(entry) === uploadId
+                      );
+                      const video = isVideoAsset(item.media?.type);
+                      const durationSec =
+                        typeof item.media?.length === 'number'
+                          ? item.media.length
+                          : undefined;
+                      const durationLabel = formatDuration(durationSec);
+                      return (
+                        <button
+                          key={uploadId || src}
+                          type="button"
+                          onClick={() => toggleVaultItem(item)}
+                          className={`relative aspect-square rounded-xl overflow-hidden group transition-all ${
+                            selected
+                              ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-zinc-950'
+                              : 'border border-zinc-800 hover:border-zinc-600'
+                          }`}
+                        >
+                          {src ? (
+                            <img
+                              src={src}
+                              alt=""
+                              className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-500">
+                              <ImageIcon className="w-6 h-6" />
+                            </div>
+                          )}
+                          {selected && (
+                            <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center z-10 shadow-lg">
+                              <Check className="w-3.5 h-3.5" />
+                            </span>
+                          )}
+                          {video && (
+                            <span className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/10 transition-colors">
+                              <span className="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center text-white/90">
+                                <Play className="w-5 h-5 ml-0.5" />
+                              </span>
+                            </span>
+                          )}
+                          {video && durationLabel && (
+                            <span className="absolute bottom-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white backdrop-blur">
+                              {durationLabel}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1268,7 +1426,7 @@ export function MaloumChatThread({
       )}
 
       {previewUrl && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-6">
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-6 animate-fade-in">
           <button
             type="button"
             className="absolute inset-0"
@@ -1278,7 +1436,7 @@ export function MaloumChatThread({
           <img
             src={previewUrl}
             alt=""
-            className="relative z-10 max-w-full max-h-full rounded-lg object-contain"
+            className="relative z-10 max-w-full max-h-full rounded-lg object-contain animate-slide-up"
           />
           <button
             type="button"
@@ -1351,57 +1509,81 @@ export function MaloumSingleCreatorChat({
   }, []);
 
   return (
-    <div className="flex-1 flex min-w-0 min-h-0">
-      <aside className="w-56 border-r border-gray-200 dark:border-white/10 flex flex-col shrink-0">
-        <div className="h-14 px-4 border-b border-gray-200 dark:border-white/10 flex items-center">
-          <span className="text-sm font-medium">Maloum</span>
+    <div className="flex-1 flex min-w-0 min-h-0 bg-zinc-950 text-zinc-300">
+      <aside className="w-64 border-r border-zinc-800/60 flex flex-col shrink-0 bg-zinc-950/50 glass-panel">
+        <div className="h-16 px-4 border-b border-zinc-800/60 flex items-center gap-2">
+          <img src={maloumIcon} alt="" className="w-5 h-5 rounded" />
+          <span className="text-sm font-semibold text-white">Maloum</span>
+          <span className="w-2 h-2 rounded-full bg-maloum-500 ml-0.5" />
         </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+        <div className="flex-1 overflow-y-auto p-3 space-y-1.5 animate-fade-in">
           {creatorsLoading && (
-            <p className="text-xs text-gray-500 p-3">Loading creators…</p>
+            <p className="text-xs text-zinc-500 p-3">Loading creators…</p>
           )}
           {!creatorsLoading && creators.length === 0 && (
-            <p className="text-xs text-gray-500 p-3">
+            <p className="text-xs text-zinc-500 p-3">
               No Maloum creators yet. Connect one from Manage Creators.
             </p>
           )}
           {creators.map((creator) => {
             const unread = unreadByCreatorId[creator.id] || 0;
             const notificationUnread = notificationUnreadByCreatorId[creator.id] || 0;
+            const active = selectedCreatorId === creator.id;
             return (
               <button
                 key={creator.id}
                 type="button"
                 onClick={() => onSelectCreator(creator.id)}
-                className={`w-full flex items-center gap-2 p-2 rounded-lg text-left transition-colors ${
-                  selectedCreatorId === creator.id
-                    ? 'bg-brand-50 dark:bg-brand-900/20 border border-brand-200 dark:border-brand-800'
-                    : 'hover:bg-gray-50 dark:hover:bg-white/5 border border-transparent'
+                className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all group ${
+                  active
+                    ? 'bg-zinc-800/50 border border-zinc-700/50 hover:bg-zinc-800'
+                    : 'hover:bg-zinc-800/30 border border-transparent'
                 }`}
               >
-                <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-xs font-medium shrink-0 overflow-hidden">
-                  {creator.avatarUrl ? (
-                    <img
-                      src={creator.avatarUrl}
-                      alt=""
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    creator.displayName.charAt(0).toUpperCase()
-                  )}
+                <div className="relative shrink-0">
+                  <div
+                    className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white overflow-hidden ${
+                      active
+                        ? 'shadow-md bg-gradient-to-br from-orange-400 to-rose-500'
+                        : 'opacity-80 group-hover:opacity-100 bg-gradient-to-br from-pink-400 to-purple-500'
+                    }`}
+                  >
+                    {creator.avatarUrl ? (
+                      <img
+                        src={creator.avatarUrl}
+                        alt=""
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      creator.displayName.charAt(0).toUpperCase()
+                    )}
+                  </div>
+                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-maloum-500 border-2 border-zinc-900 rounded-full flex items-center justify-center">
+                    <img src={maloumIcon} alt="" className="w-2.5 h-2.5 rounded-sm" />
+                  </div>
                 </div>
                 <div className="min-w-0 flex-1">
-                  <span className="text-sm truncate block">{creator.displayName}</span>
-                  <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                  <span
+                    className={`text-sm truncate block transition-colors ${
+                      active
+                        ? 'font-semibold text-zinc-100 group-hover:text-white'
+                        : 'font-medium text-zinc-300 group-hover:text-white'
+                    }`}
+                  >
+                    {creator.displayName}
+                  </span>
+                  <div className="flex flex-wrap items-center gap-2 mt-1">
                     <UnreadBadge
                       icon={MessageSquare}
                       count={unread}
                       label="Unread messages"
+                      accentClass="text-maloum-500"
                     />
                     <UnreadBadge
                       icon={Bell}
                       count={notificationUnread}
                       label="Unread notifications"
+                      accentClass="text-zinc-400"
                     />
                   </div>
                 </div>
@@ -1409,7 +1591,7 @@ export function MaloumSingleCreatorChat({
             );
           })}
         </div>
-        <div className="shrink-0 border-t border-gray-200 dark:border-white/10 p-3 space-y-3 bg-white dark:bg-[#0a0a0a]">
+        <div className="shrink-0 border-t border-zinc-800/60 p-4 bg-zinc-950/80">
           <TranslationToggles
             autoTranslateOutgoing={autoTranslateOutgoing}
             autoTranslateHistory={autoTranslateHistory}
@@ -1419,10 +1601,11 @@ export function MaloumSingleCreatorChat({
         </div>
       </aside>
 
-      <aside className="w-80 border-r border-gray-200 dark:border-white/10 flex flex-col shrink-0">
+      <aside className="w-80 border-r border-zinc-800/60 flex flex-col shrink-0 bg-[#0a0a0c] glass-panel">
         {selectedCreatorId ? (
           <MaloumChatList
             creatorId={selectedCreatorId}
+            creatorName={selectedCreator?.displayName}
             selectedChatId={selectedChatId}
             onSelectChat={(chat) => {
               setSelectedChatId(chat._id);
@@ -1430,7 +1613,7 @@ export function MaloumSingleCreatorChat({
             }}
           />
         ) : (
-          <p className="text-xs text-gray-500 p-4">Select a creator</p>
+          <p className="text-xs text-zinc-500 p-4">Select a creator</p>
         )}
       </aside>
 
@@ -1446,8 +1629,9 @@ export function MaloumSingleCreatorChat({
             }}
           />
         ) : (
-          <div className="flex-1 flex items-center justify-center text-sm text-gray-500">
-            Select a conversation
+          <div className="flex-1 flex items-center justify-center text-sm text-zinc-500 chatter-thread-bg relative">
+            <div className="absolute inset-0 bg-zinc-950/95" />
+            <span className="relative z-10">Select a creator chat to start</span>
           </div>
         )}
       </main>
