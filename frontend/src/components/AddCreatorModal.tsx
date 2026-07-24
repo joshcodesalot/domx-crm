@@ -107,7 +107,7 @@ export default function AddCreatorModal({
       ? ([
           platform === '4based' ? 'Connect 4based account' : 'Connect Maloum account',
           platform === '4based'
-            ? 'Enter credentials and your static residential proxy. Login runs on the DomX server through that proxy.'
+            ? 'Enter credentials. Login uses the dedicated 4based proxy from the server (.env).'
             : "Sign into your creator's Maloum account in the embedded browser.",
         ] as [string, string])
       : STEP_TITLES[step];
@@ -323,10 +323,6 @@ export default function AddCreatorModal({
       setLoginError('Email and password are required.');
       return;
     }
-    if (!proxyUrl.trim()) {
-      setLoginError('Static residential proxy URL is required.');
-      return;
-    }
     if (!accountId && !isReconnect) {
       setLoginError('Session is not ready. Please try again.');
       return;
@@ -336,11 +332,12 @@ export default function AddCreatorModal({
     setConnecting(true);
 
     try {
+      const optionalProxy = proxyUrl.trim() || undefined;
       if (isReconnect && reconnectCreator) {
         await reconnectFourBasedAccount(reconnectCreator.id, {
           email: loginEmail.trim(),
           password: loginPassword,
-          proxyUrl: proxyUrl.trim(),
+          ...(optionalProxy ? { proxyUrl: optionalProxy } : {}),
         });
         setConnectSucceeded(false);
         connectSucceededRef.current = false;
@@ -353,7 +350,7 @@ export default function AddCreatorModal({
         accountId: accountId!,
         email: loginEmail.trim(),
         password: loginPassword,
-        proxyUrl: proxyUrl.trim(),
+        ...(optionalProxy ? { proxyUrl: optionalProxy } : {}),
       });
 
       setAccountToken(result.accountToken);
@@ -597,7 +594,7 @@ export default function AddCreatorModal({
             <div className="space-y-4">
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 {platform === '4based'
-                  ? 'Login runs on the DomX server through your static residential proxy. All 4based traffic for this account will use that proxy.'
+                  ? 'Login uses FOURBASED_PROXY_URL from the server (.env). Optional override below. If the proxy fails, the account is not saved.'
                   : 'Login runs in DomX on this computer (not on the server), so Cloudflare treats it like a normal browser. If a security check appears below, complete it there.'}
               </p>
 
@@ -659,7 +656,8 @@ export default function AddCreatorModal({
               {platform === '4based' && (
                 <div>
                   <label className="block text-sm font-medium mb-1.5">
-                    Static residential proxy <span className="text-red-500">*</span>
+                    Proxy override{' '}
+                    <span className="text-gray-400 font-normal">(optional)</span>
                   </label>
                   <input
                     type="text"
@@ -668,12 +666,12 @@ export default function AddCreatorModal({
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !connecting) void handleConnectAccount();
                     }}
-                    placeholder="http://user:pass@host:port"
+                    placeholder="Leave blank to use FOURBASED_PROXY_URL"
                     className={inputClassName}
                     disabled={connecting}
                   />
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    Used for login, chat API, socket, and media for this account.
+                    Default is the dedicated proxy in backend .env. Override only if needed.
                   </p>
                 </div>
               )}

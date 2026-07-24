@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Bell,
   Image as ImageIcon,
   Loader2,
+  MessageSquare,
   Pin,
   Play,
   RefreshCw,
@@ -9,6 +11,7 @@ import {
   ShieldCheck,
   User,
   X,
+  type LucideIcon,
 } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
@@ -21,6 +24,7 @@ import {
   fourBasedMediaUrl,
   fourBasedPreviewPath,
   getCreators,
+  getFourBasedBadges,
   getFourBasedChat,
   getFourBasedCoinPackages,
   getFourBasedMessages,
@@ -45,12 +49,40 @@ const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
 const MAX_TRANSLATION_HISTORY = 8;
+const BADGE_POLL_INTERVAL_MS = 20_000;
+
+type CreatorUnreadCounts = { messages: number; notifications: number };
 
 function readStoredBoolean(key: string, defaultValue: boolean): boolean {
   const stored = localStorage.getItem(key);
   if (stored === 'true') return true;
   if (stored === 'false') return false;
   return defaultValue;
+}
+
+function UnreadBadge({
+  icon: Icon,
+  count,
+  label,
+}: {
+  icon: LucideIcon;
+  count: number;
+  label: string;
+}) {
+  const hasUnread = count > 0;
+  const badgeClass = hasUnread
+    ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+    : 'bg-gray-100 text-gray-600 dark:bg-white/5 dark:text-gray-400';
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ${badgeClass}`}
+      title={label}
+    >
+      <Icon className="w-3 h-3 shrink-0" aria-hidden />
+      <span>{count > 99 ? '99+' : count}</span>
+    </span>
+  );
 }
 
 async function translateTextToEnglish(text: string): Promise<string | null> {
@@ -299,6 +331,9 @@ export default function Chatter4Based() {
   const [creators, setCreators] = useState<Creator[]>([]);
   const [creatorsLoading, setCreatorsLoading] = useState(true);
   const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
+  const [badgeCountsByCreatorId, setBadgeCountsByCreatorId] = useState<
+    Record<string, CreatorUnreadCounts>
+  >({});
 
   const [providerUserId, setProviderUserId] = useState<string | null>(null);
   const [chats, setChats] = useState<FourBasedChat[]>([]);
@@ -461,6 +496,41 @@ export default function Chatter4Based() {
       cancelled = true;
     };
   }, []);
+
+  const refreshCreatorBadges = useCallback(async (creatorIds: string[]) => {
+    if (creatorIds.length === 0) return;
+    const results = await Promise.allSettled(
+      creatorIds.map(async (creatorId) => {
+        const badges = await getFourBasedBadges(creatorId);
+        return {
+          creatorId,
+          messages: Number(badges.messages) || 0,
+          notifications: Number(badges.notifications) || 0,
+        };
+      })
+    );
+    setBadgeCountsByCreatorId((prev) => {
+      const next = { ...prev };
+      for (const result of results) {
+        if (result.status !== 'fulfilled') continue;
+        next[result.value.creatorId] = {
+          messages: result.value.messages,
+          notifications: result.value.notifications,
+        };
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (creators.length === 0) return;
+    const creatorIds = creators.map((c) => c.id);
+    void refreshCreatorBadges(creatorIds);
+    const timer = window.setInterval(() => {
+      void refreshCreatorBadges(creatorIds);
+    }, BADGE_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [creators, refreshCreatorBadges]);
 
   const loadChats = useCallback(async (creatorId: string, silent = false) => {
     if (!silent) {
@@ -637,11 +707,12 @@ export default function Chatter4Based() {
       if (event.type !== '4based:event') return;
       if (!selectedCreatorId || event.creatorId !== selectedCreatorId) return;
       void loadChats(selectedCreatorId, true);
+      void refreshCreatorBadges([selectedCreatorId]);
       if (selectedChatId) {
         void loadMessages(selectedCreatorId, selectedChatId, true);
       }
     });
-  }, [onSyncEvent, selectedCreatorId, selectedChatId, loadChats, loadMessages]);
+  }, [onSyncEvent, selectedCreatorId, selectedChatId, loadChats, loadMessages, refreshCreatorBadges]);
 
   // Silent 5s refresh — keeps going even when panel is hidden (never unloads)
   useEffect(() => {
@@ -649,13 +720,14 @@ export default function Chatter4Based() {
       const creatorId = selectedCreatorIdRef.current;
       if (!creatorId) return;
       void loadChats(creatorId, true);
+      void refreshCreatorBadges([creatorId]);
       const chatId = selectedChatIdRef.current;
       if (chatId) {
         void loadMessages(creatorId, chatId, true);
       }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [loadChats, loadMessages]);
+  }, [loadChats, loadMessages, refreshCreatorBadges]);
 
   async function handleSendText() {
     if (!selectedCreatorId || !selectedChatId || sending || translatingOutgoing) return;
@@ -943,7 +1015,12 @@ export default function Chatter4Based() {
                 No 4based creators yet. Connect one from Manage Creators.
               </p>
             )}
-            {creators.map((creator) => (
+            {creators.map((creator) => {
+              const unread = badgeCountsByCreatorId[creator.id] || {
+                messages: 0,
+                notifications: 0,
+              };
+              return (
               <button
                 key={creator.id}
                 type="button"
@@ -960,9 +1037,24 @@ export default function Chatter4Based() {
                   className="w-8 h-8 rounded-full object-cover shrink-0"
                   initialsClassName="w-8 h-8 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-xs font-medium shrink-0"
                 />
-                <span className="text-sm truncate">{creator.displayName}</span>
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm truncate block">{creator.displayName}</span>
+                  <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                    <UnreadBadge
+                      icon={MessageSquare}
+                      count={unread.messages}
+                      label="Unread messages"
+                    />
+                    <UnreadBadge
+                      icon={Bell}
+                      count={unread.notifications}
+                      label="Unread notifications"
+                    />
+                  </div>
+                </div>
               </button>
-            ))}
+              );
+            })}
           </div>
           <div className="shrink-0 border-t border-gray-200 dark:border-white/10 p-3 space-y-3 bg-white dark:bg-[#0a0a0a]">
             <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
@@ -1012,6 +1104,7 @@ export default function Chatter4Based() {
               onClick={() => {
                 if (!selectedCreatorId || chatsLoading) return;
                 void loadChats(selectedCreatorId);
+                void refreshCreatorBadges([selectedCreatorId]);
                 if (selectedChatId) {
                   void loadMessages(selectedCreatorId, selectedChatId);
                 }

@@ -327,8 +327,15 @@ router.post(
       if (!password || typeof password !== 'string' || !password.length) {
         return res.status(400).json({ error: 'Password is required' });
       }
-      if (!proxyUrl || typeof proxyUrl !== 'string' || !proxyUrl.trim()) {
-        return res.status(400).json({ error: 'Static residential proxy URL is required' });
+
+      let resolvedProxy;
+      try {
+        resolvedProxy = fourBasedClient.resolveFourBasedProxyUrl(proxyUrl);
+      } catch (err) {
+        if (err instanceof fourBasedClient.FourBasedApiError) {
+          return res.status(err.status || 400).json({ error: err.message });
+        }
+        throw err;
       }
 
       try {
@@ -359,7 +366,7 @@ router.post(
           loginResult = await fourBasedClient.login({
             identifier: email.trim(),
             password,
-            proxyUrl: proxyUrl.trim(),
+            proxyUrl: resolvedProxy,
           });
         } catch (err) {
           if (err instanceof fourBasedClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
@@ -388,7 +395,7 @@ router.post(
         };
         const encryptedSession = encryptJson(sessionPayload);
         const encryptedAccessToken = encryptSecret(loginResult.token);
-        const encryptedProxy = encryptSecret(proxyUrl.trim());
+        const encryptedProxy = encryptSecret(resolvedProxy);
         const encryptedLoginPassword = encryptOptionalLoginPassword(password);
         const expiresAt = new Date(Date.now() + PENDING_TTL_MINUTES * 60 * 1000);
         const resolvedDisplayName =
@@ -1546,7 +1553,14 @@ async function loadFourBasedCreator(creatorId) {
   }
 
   const accessToken = decryptSecret(row.encryptedAccessToken) || session.token || null;
-  const proxyUrl = decryptSecret(row.encryptedProxy) || null;
+  let proxyUrl = decryptSecret(row.encryptedProxy) || null;
+  if (!proxyUrl) {
+    try {
+      proxyUrl = fourBasedClient.resolveFourBasedProxyUrl(null);
+    } catch {
+      proxyUrl = null;
+    }
+  }
   const providerUserId = row.providerUserId || session.providerUserId || null;
 
   if (!accessToken || !providerUserId) {
@@ -1554,6 +1568,16 @@ async function loadFourBasedCreator(creatorId) {
       error: {
         status: 400,
         message: '4based account is missing auth credentials. Please reconnect.',
+      },
+    };
+  }
+
+  if (!proxyUrl) {
+    return {
+      error: {
+        status: 400,
+        message:
+          '4based proxy is required. Set FOURBASED_PROXY_URL in backend .env or reconnect with a proxy.',
       },
     };
   }
@@ -1607,8 +1631,15 @@ router.post(
     if (!password || typeof password !== 'string' || !password.length) {
       return res.status(400).json({ error: 'Password is required' });
     }
-    if (!proxyUrl || typeof proxyUrl !== 'string' || !proxyUrl.trim()) {
-      return res.status(400).json({ error: 'Static residential proxy URL is required' });
+
+    let resolvedProxy;
+    try {
+      resolvedProxy = fourBasedClient.resolveFourBasedProxyUrl(proxyUrl);
+    } catch (err) {
+      if (err instanceof fourBasedClient.FourBasedApiError) {
+        return res.status(err.status || 400).json({ error: err.message });
+      }
+      throw err;
     }
 
     try {
@@ -1629,7 +1660,7 @@ router.post(
         loginResult = await fourBasedClient.login({
           identifier: email.trim(),
           password,
-          proxyUrl: proxyUrl.trim(),
+          proxyUrl: resolvedProxy,
         });
       } catch (err) {
         if (err instanceof fourBasedClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
@@ -1655,7 +1686,7 @@ router.post(
       };
       const encryptedSession = encryptJson(sessionPayload);
       const encryptedAccessToken = encryptSecret(loginResult.token);
-      const encryptedProxy = encryptSecret(proxyUrl.trim());
+      const encryptedProxy = encryptSecret(resolvedProxy);
       const encryptedLoginPassword = encryptOptionalLoginPassword(password);
 
       const updated = await pool.query(
@@ -1770,6 +1801,35 @@ router.get(
       res.json({ unread });
     } catch (err) {
       return handleFourBasedError(res, err, 'Get 4based unread error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/badges',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const badges = await fourBasedClient.getBadges(loaded.creator);
+      res.json(badges);
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Get 4based badges error:');
     }
   }
 );

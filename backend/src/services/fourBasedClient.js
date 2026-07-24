@@ -38,12 +38,47 @@ function normalizeProxyUrl(proxyUrl) {
   return `http://${trimmed}`;
 }
 
+/**
+ * Resolve 4based proxy: explicit override, else FOURBASED_PROXY_URL from env.
+ * Always required — 4based traffic must never go direct.
+ */
+function resolveFourBasedProxyUrl(override) {
+  const fromOverride = typeof override === 'string' ? override.trim() : '';
+  const fromEnv =
+    typeof process.env.FOURBASED_PROXY_URL === 'string'
+      ? process.env.FOURBASED_PROXY_URL.trim()
+      : '';
+  const resolved = fromOverride || fromEnv;
+  if (!resolved) {
+    throw new FourBasedApiError(
+      '4based proxy is required. Set FOURBASED_PROXY_URL in backend .env or provide proxyUrl.',
+      400
+    );
+  }
+  const normalized = normalizeProxyUrl(resolved);
+  if (!normalized) {
+    throw new FourBasedApiError('4based proxy URL is invalid', 400);
+  }
+  return normalized;
+}
+
 function createDispatcher(proxyUrl) {
   const normalized = normalizeProxyUrl(proxyUrl);
   if (!normalized) {
-    return undefined;
+    throw new FourBasedApiError(
+      '4based proxy is required. Account not loaded.',
+      400
+    );
   }
   return new ProxyAgent(normalized);
+}
+
+function proxyFailureError(err) {
+  const detail = err?.cause?.message || err?.message || 'connection error';
+  return new FourBasedApiError(
+    `4based proxy failed (${detail}). Account not loaded.`,
+    502
+  );
 }
 
 function cookieHeaderFromMap(cookies) {
@@ -149,12 +184,17 @@ async function requestJson({
   extraHeaders,
 }) {
   const dispatcher = createDispatcher(proxyUrl);
-  const response = await undiciFetch(url, {
-    method,
-    headers: baseHeaders({ cookies, token, resource, extra: extraHeaders }),
-    body: body === undefined ? undefined : JSON.stringify(body),
-    dispatcher,
-  });
+  let response;
+  try {
+    response = await undiciFetch(url, {
+      method,
+      headers: baseHeaders({ cookies, token, resource, extra: extraHeaders }),
+      body: body === undefined ? undefined : JSON.stringify(body),
+      dispatcher,
+    });
+  } catch (err) {
+    throw proxyFailureError(err);
+  }
 
   const text = await response.text();
   const parsed = decodeMaybeBase64Json(text);
@@ -180,7 +220,8 @@ async function login({ identifier, password, proxyUrl, locale = 'en' }) {
     throw new FourBasedApiError('Email and password are required', 400);
   }
 
-  const dispatcher = createDispatcher(proxyUrl);
+  const resolvedProxy = resolveFourBasedProxyUrl(proxyUrl);
+  const dispatcher = createDispatcher(resolvedProxy);
   let response;
   try {
     response = await undiciFetch(`${REST_BASE}/auth/login`, {
@@ -194,10 +235,7 @@ async function login({ identifier, password, proxyUrl, locale = 'en' }) {
       dispatcher,
     });
   } catch (err) {
-    throw new FourBasedApiError(
-      err?.message || 'Failed to reach 4based login endpoint',
-      502
-    );
+    throw proxyFailureError(err);
   }
 
   const text = await response.text();
@@ -289,6 +327,32 @@ async function getUnread(creator) {
     resource,
   });
   return result.data;
+}
+
+function sumUnreadMessages(unread) {
+  if (!unread || typeof unread !== 'object' || Array.isArray(unread)) {
+    return 0;
+  }
+  let total = 0;
+  for (const value of Object.values(unread)) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n > 0) {
+      total += n;
+    }
+  }
+  return total;
+}
+
+async function getBadges(creator) {
+  const { providerUserId } = authContext(creator);
+  const [unread, profile] = await Promise.all([
+    getUnread(creator),
+    getUser(creator, providerUserId),
+  ]);
+  return {
+    messages: sumUnreadMessages(unread),
+    notifications: Number(profile?.activity_count) || 0,
+  };
 }
 
 async function getChat(creator, chatId) {
@@ -572,11 +636,16 @@ async function fetchMedia(creator, { path, rangeHeader } = {}) {
     headers.range = rangeHeader;
   }
 
-  const response = await undiciFetch(`${MEDIA_BASE}/${safePath}`, {
-    method: 'GET',
-    headers,
-    dispatcher,
-  });
+  let response;
+  try {
+    response = await undiciFetch(`${MEDIA_BASE}/${safePath}`, {
+      method: 'GET',
+      headers,
+      dispatcher,
+    });
+  } catch (err) {
+    throw proxyFailureError(err);
+  }
 
   return {
     status: response.status,
@@ -595,9 +664,11 @@ module.exports = {
   WrongPasswordError,
   FourBasedApiError,
   normalizeProxyUrl,
+  resolveFourBasedProxyUrl,
   login,
   listChats,
   getUnread,
+  getBadges,
   getChat,
   getMessages,
   markReceived,

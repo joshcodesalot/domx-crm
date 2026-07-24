@@ -800,7 +800,8 @@ export interface ConnectFourBasedInput {
   accountId: string;
   email: string;
   password: string;
-  proxyUrl: string;
+  /** Optional override; backend uses FOURBASED_PROXY_URL when omitted. */
+  proxyUrl?: string;
   displayName?: string;
   username?: string;
 }
@@ -942,7 +943,7 @@ export async function connectFourBasedAccount(
       platform: '4based',
       email: input.email,
       password: input.password,
-      proxyUrl: input.proxyUrl,
+      ...(input.proxyUrl ? { proxyUrl: input.proxyUrl } : {}),
       ...(input.displayName ? { displayName: input.displayName } : {}),
       ...(input.username ? { username: input.username } : {}),
     }),
@@ -951,11 +952,15 @@ export async function connectFourBasedAccount(
 
 export async function reconnectFourBasedAccount(
   creatorId: string,
-  input: { email: string; password: string; proxyUrl: string }
+  input: { email: string; password: string; proxyUrl?: string }
 ): Promise<{ creator: Creator }> {
   return request(`/api/creators/${creatorId}/4based/reconnect`, {
     method: 'POST',
-    body: JSON.stringify(input),
+    body: JSON.stringify({
+      email: input.email,
+      password: input.password,
+      ...(input.proxyUrl ? { proxyUrl: input.proxyUrl } : {}),
+    }),
   });
 }
 
@@ -1072,6 +1077,12 @@ export async function getFourBasedUnread(
   creatorId: string
 ): Promise<{ unread: unknown }> {
   return request(`/api/creators/${creatorId}/4based/unread`);
+}
+
+export async function getFourBasedBadges(
+  creatorId: string
+): Promise<{ messages: number; notifications: number }> {
+  return request(`/api/creators/${creatorId}/4based/badges`);
 }
 
 /** Build a media-proxy URL for use in <img>/<video src>. Includes DomX access token. */

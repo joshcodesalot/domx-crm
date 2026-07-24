@@ -3,7 +3,7 @@ const { HttpsProxyAgent } = require('https-proxy-agent');
 const pool = require('../db/pool');
 const { decryptJson, decryptSecret } = require('./crypto');
 const { emitToUsers } = require('./userEventBus');
-const { normalizeProxyUrl } = require('./fourBasedClient');
+const { resolveFourBasedProxyUrl } = require('./fourBasedClient');
 
 const SOCKET_URL = 'https://socket.4based.com';
 const connections = new Map();
@@ -61,11 +61,21 @@ function disconnectCreator(creatorId) {
 
 function connectCreator(row) {
   const creatorId = row.id;
-  const { token, proxyUrl, providerUserId } = loadCreatorAuth(row);
+  const { token, proxyUrl: storedProxy, providerUserId } = loadCreatorAuth(row);
 
   if (!token || !providerUserId) {
     console.warn(
       `[4based-socket] Skipping creator ${creatorId}: missing token or providerUserId`
+    );
+    return null;
+  }
+
+  let proxyUrl;
+  try {
+    proxyUrl = resolveFourBasedProxyUrl(storedProxy);
+  } catch (err) {
+    console.warn(
+      `[4based-socket] Skipping creator ${creatorId}: ${err.message || 'missing proxy'}`
     );
     return null;
   }
@@ -86,12 +96,8 @@ function connectCreator(row) {
     extraHeaders: {
       Origin: 'https://4based.com',
     },
+    agent: new HttpsProxyAgent(proxyUrl),
   };
-
-  const normalizedProxy = normalizeProxyUrl(proxyUrl);
-  if (normalizedProxy) {
-    options.agent = new HttpsProxyAgent(normalizedProxy);
-  }
 
   const socket = io(SOCKET_URL, options);
 
