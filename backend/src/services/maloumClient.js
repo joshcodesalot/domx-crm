@@ -722,6 +722,7 @@ module.exports = {
   authContext,
   login,
   fetchCurrentUser,
+  avatarFromUser,
   buildSyntheticOrigins,
   listChats,
   getChat,

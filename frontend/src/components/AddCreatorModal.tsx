@@ -14,13 +14,9 @@ import {
   reconnectMaloumAccount,
   createCreator,
   discardCreatorConnect,
-  saveCreatorAvatarFromMaloum,
-  shouldFetchMaloumIcon,
   type CreateCreatorInput,
   type Creator,
 } from '@/lib/api';
-import { warmCreatorInBackground } from '@/lib/localMaloumSession';
-import type { PlaywrightCookie } from '@/types/electron';
 
 const inputClassName =
   'w-full px-3 py-2 text-sm border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-white/5 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500';
@@ -46,33 +42,6 @@ interface AddCreatorModalProps {
   onClose: () => void;
   onSaved: () => void;
   reconnectCreator?: Creator | null;
-}
-
-async function hydrateElectronMaloumSession({
-  accountId,
-  cookies,
-  origins,
-  savedAt,
-}: {
-  accountId: string;
-  cookies: PlaywrightCookie[];
-  origins: Array<{
-    origin: string;
-    localStorage: Array<{ name: string; value: string }>;
-  }>;
-  savedAt?: string | null;
-}) {
-  if (!window.electronAPI?.loadCreatorSession) {
-    return;
-  }
-
-  await window.electronAPI.loadCreatorSession({
-    accountId,
-    cookies,
-    origins,
-    force: true,
-    savedAt: savedAt || null,
-  });
 }
 
 export default function AddCreatorModal({
@@ -129,9 +98,6 @@ export default function AddCreatorModal({
       await discardCreatorConnect(id);
     } catch {
       // Best-effort cleanup when discarding pending connect session
-    }
-    if (window.electronAPI) {
-      await window.electronAPI.clearSession(id);
     }
   }, [isReconnect]);
 
@@ -247,45 +213,14 @@ export default function AddCreatorModal({
       const optionalProxy = proxyUrl.trim() || undefined;
 
       if (isReconnect && reconnectCreator) {
-        const result = await reconnectMaloumAccount(reconnectCreator.id, {
+        await reconnectMaloumAccount(reconnectCreator.id, {
           email: loginEmail.trim(),
           password: loginPassword,
           ...(optionalProxy ? { proxyUrl: optionalProxy } : {}),
         });
 
-        if (reconnectCreator.accountId) {
-          await hydrateElectronMaloumSession({
-            accountId: reconnectCreator.accountId,
-            cookies: (result.cookies || []) as PlaywrightCookie[],
-            origins: result.origins || [],
-            savedAt: result.sessionUpdatedAt,
-          });
-        }
-
-        if (
-          result.creator.avatarUrl &&
-          shouldFetchMaloumIcon({
-            profileImageUrl: result.creator.avatarUrl,
-            overwriteIcon: false,
-            currentAvatarUrl: reconnectCreator.avatarUrl,
-            avatarSource: reconnectCreator.avatarSource,
-          })
-        ) {
-          await saveCreatorAvatarFromMaloum(
-            reconnectCreator.id,
-            result.creator.avatarUrl,
-            {
-              overwrite: false,
-              accountId: reconnectCreator.accountId || undefined,
-            }
-          );
-        }
-
         setConnectSucceeded(false);
         connectSucceededRef.current = false;
-        if (reconnectCreator.accountId) {
-          void warmCreatorInBackground(reconnectCreator.id, reconnectCreator.accountId);
-        }
         onSaved();
         onClose();
         return;
@@ -296,12 +231,6 @@ export default function AddCreatorModal({
         email: loginEmail.trim(),
         password: loginPassword,
         ...(optionalProxy ? { proxyUrl: optionalProxy } : {}),
-      });
-
-      await hydrateElectronMaloumSession({
-        accountId: result.accountId,
-        cookies: (result.cookies || []) as PlaywrightCookie[],
-        origins: result.origins || [],
       });
 
       setAccountToken(result.accountToken);
@@ -347,29 +276,10 @@ export default function AddCreatorModal({
         accountId,
       };
 
-      const { creator } = await createCreator(input);
-
-      if (
-        platform === 'maloum' &&
-        session.profileImageUrl &&
-        shouldFetchMaloumIcon({
-          profileImageUrl: session.profileImageUrl,
-          overwriteIcon: false,
-          currentAvatarUrl: null,
-          avatarSource: null,
-        })
-      ) {
-        await saveCreatorAvatarFromMaloum(creator.id, session.profileImageUrl, {
-          overwrite: false,
-          accountId,
-        });
-      }
+      await createCreator(input);
 
       setConnectSucceeded(false);
       connectSucceededRef.current = false;
-      if (platform === 'maloum') {
-        void warmCreatorInBackground(creator.id, accountId);
-      }
       onSaved();
       onClose();
     } catch (err) {

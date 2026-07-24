@@ -228,16 +228,6 @@ export default function MessagingDashboard() {
   }, [loadEntries]);
 
   useEffect(() => {
-    const unsubscribe = window.electronAPI?.onDashboardEntryUpdated?.(() => {
-      void loadEntries({ silent: true });
-    });
-
-    return () => {
-      unsubscribe?.();
-    };
-  }, [loadEntries]);
-
-  useEffect(() => {
     if (!creatorId) return;
     const stillValid = filteredCreators.some((creator) => creator.id === creatorId);
     if (!stillValid) {

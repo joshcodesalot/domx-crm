@@ -67,9 +67,6 @@ function enterBlockedState(info = {}) {
   state.macDownloadUrl = info.macDownloadUrl || state.macDownloadUrl;
   state.progress = info.progress ?? state.progress;
 
-  const creatorBrowser = require('./creatorBrowser');
-  creatorBrowser.hideAllBrowserViewsForUpdate();
-
   sendToRenderer('updater:blocked', getUpdaterState());
 
   if (info.version) {

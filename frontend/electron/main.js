@@ -49,10 +49,6 @@ const { initializeAppPaths } = require('./app-paths');
 
 initializeAppPaths();
 
-const creatorBrowser = require('./creatorBrowser');
-const messagePro = require('./messagePro');
-const { registerCreatorIpc } = require('./ipc/creator');
-const { registerMessageProIpc } = require('./ipc/messagePro');
 const {
   registerUpdaterIpc,
   runInitialUpdateCheck,
@@ -85,22 +81,10 @@ function createWindow() {
 
   applyWebContentsGuards(win.webContents);
 
-  creatorBrowser.setMainWindow(win);
-
-  win.on('close', () => {
-    messagePro.closeMessageProWindow();
-  });
-
   win.on('closed', () => {
-    messagePro.closeMessageProWindow();
-    creatorBrowser.setMainWindow(null);
     if (mainWindow === win) {
       mainWindow = null;
     }
-  });
-
-  win.on('resize', () => {
-    win.webContents.send('creator:window-resized');
   });
 
   win.once('ready-to-show', () => {
@@ -119,8 +103,6 @@ function createWindow() {
 
 async function bootstrap() {
   Menu.setApplicationMenu(null);
-  registerCreatorIpc();
-  registerMessageProIpc();
   registerUpdaterIpc(ipcMain);
 
   if (!isDev) {

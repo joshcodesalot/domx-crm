@@ -75,10 +75,6 @@ export function StaffSyncProvider({ children }: { children: ReactNode }) {
       handlingDeactivationRef.current = true;
 
       try {
-        if (window.electronAPI?.releaseAllCreatorChats) {
-          await window.electronAPI.releaseAllCreatorChats();
-        }
-
         clearToken();
         await logout();
         navigate('/login', {
@@ -102,14 +98,6 @@ export function StaffSyncProvider({ children }: { children: ReactNode }) {
       if (event.type === 'account:deleted') {
         await handleAccountDeactivated('Your account has been removed.');
         return;
-      }
-
-      if (event.type === 'creator:access-revoked' && event.accountId) {
-        if (window.electronAPI?.clearSession) {
-          await window.electronAPI.clearSession(event.accountId);
-        } else if (window.electronAPI?.releaseCreatorChat) {
-          await window.electronAPI.releaseCreatorChat(event.accountId);
-        }
       }
 
       notifyListeners(event);

@@ -657,34 +657,12 @@ export async function updateCreatorSessionValidation(
   });
 }
 
-export async function saveCreatorAvatarFromMaloum(
-  creatorId: string,
-  sourceUrl: string,
-  options: { overwrite?: boolean; accountId: string }
+export async function refreshMaloumAvatar(
+  creatorId: string
 ): Promise<{ creator: Creator; skipped?: boolean; reason?: string }> {
-  if (!window.electronAPI?.isElectron) {
-    throw new Error('Saving Maloum avatars requires the DomX desktop app');
-  }
-
-  if (!options?.accountId) {
-    throw new Error('accountId is required to download avatar from Maloum');
-  }
-
-  const image = await window.electronAPI.fetchCreatorAvatarImage({
-    accountId: options.accountId,
-    sourceUrl,
-  });
-
   return request<{ creator: Creator; skipped?: boolean; reason?: string }>(
-    `/api/creators/${creatorId}/avatar`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        imageBase64: image.base64,
-        contentType: image.contentType,
-        overwrite: options.overwrite ?? false,
-      }),
-    }
+    `/api/creators/${creatorId}/maloum/refresh-avatar`,
+    { method: 'POST' }
   );
 }
 

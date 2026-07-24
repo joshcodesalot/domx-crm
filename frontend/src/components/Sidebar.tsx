@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   BarChart2,
-  Bell,
   LayoutGrid,
   LogOut,
   MessageSquare,
@@ -65,14 +64,10 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       ? 'text-gray-900 dark:text-white'
       : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors';
 
-  function handleMaloumNavigate(view: 'chat' | 'notifications' | 'message-pro') {
+  function handleMaloumNavigate(view: 'chat' | 'message-pro') {
     setMaloumMenuOpen(false);
     if (view === 'message-pro') {
       navigate('/message-pro');
-      return;
-    }
-    if (view === 'notifications') {
-      navigate('/chatter?view=notifications');
       return;
     }
     navigate('/chatter');
@@ -141,15 +136,6 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 >
                   <MessageSquare className="w-4 h-4 shrink-0" />
                   Chat
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => handleMaloumNavigate('notifications')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                >
-                  <Bell className="w-4 h-4 shrink-0" />
-                  Notifications
                 </button>
                 <button
                   type="button"

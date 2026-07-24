@@ -4,7 +4,6 @@ import {
   ImageIcon,
   Pencil,
   RefreshCw,
-  ShieldCheck,
   Trash2,
   Users,
 } from 'lucide-react';
@@ -14,10 +13,8 @@ import AssignCreatorStaffModal from '@/components/AssignCreatorStaffModal';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import RemoveCreatorModal from '@/components/RemoveCreatorModal';
 import RenameCreatorModal from '@/components/RenameCreatorModal';
-import VerifySessionModal from '@/components/VerifySessionModal';
 import { useAuth } from '@/context/AuthContext';
-import { deleteCreator, getCreatorSession, getCreators, saveCreatorAvatarFromMaloum, type Creator } from '@/lib/api';
-import type { PlaywrightCookie } from '@/types/electron';
+import { deleteCreator, getCreators, refreshMaloumAvatar, type Creator } from '@/lib/api';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 
 function platformLabel(platform: Creator['platform']): string {
@@ -49,10 +46,6 @@ function formatValidatedAt(value: string | null): string | null {
   }
 }
 
-function getCurrentDomXTheme(): 'dark' | 'light' {
-  return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
-}
-
 export default function ManageCreators() {
   const { hasPermission } = useAuth();
   const [creators, setCreators] = useState<Creator[]>([]);
@@ -63,7 +56,6 @@ export default function ManageCreators() {
   const [reconnectCreator, setReconnectCreator] = useState<Creator | null>(null);
   const [removeTarget, setRemoveTarget] = useState<Creator | null>(null);
   const [staffTarget, setStaffTarget] = useState<Creator | null>(null);
-  const [verifyTarget, setVerifyTarget] = useState<Creator | null>(null);
   const [renameTarget, setRenameTarget] = useState<Creator | null>(null);
   const [refreshingIconId, setRefreshingIconId] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -103,50 +95,11 @@ export default function ManageCreators() {
   }
 
   async function handleRefreshIconFromMaloum(creator: Creator) {
-    if (!window.electronAPI?.isElectron) {
-      setError('Refresh Icon from Maloum requires the DomX desktop app.');
-      return;
-    }
-
-    if (!creator.accountId) {
-      setError('No saved session for this creator.');
-      return;
-    }
-
     setRefreshingIconId(creator.id);
     setError(null);
 
     try {
-      const session = await getCreatorSession(creator.id);
-
-      await window.electronAPI.loadCreatorSession({
-        accountId: session.accountId,
-        cookies: session.cookies as PlaywrightCookie[],
-        origins: session.origins,
-      });
-
-      const verification = await window.electronAPI.verifyMaloumSession({
-        accountId: session.accountId,
-        theme: getCurrentDomXTheme(),
-        reuseVisibleView: false,
-      });
-
-      if (!verification.verified) {
-        throw new Error(
-          verification.reason || 'Could not verify Maloum session for icon refresh.'
-        );
-      }
-
-      if (!verification.profileImageUrl) {
-        throw new Error('No profile image found on Maloum.');
-      }
-
-      await saveCreatorAvatarFromMaloum(
-        creator.id,
-        verification.profileImageUrl,
-        { overwrite: true, accountId: session.accountId }
-      );
-
+      await refreshMaloumAvatar(creator.id);
       await loadCreators();
     } catch (err) {
       setError(
@@ -163,12 +116,7 @@ export default function ManageCreators() {
     setRemoving(true);
     setError(null);
     try {
-      const result = await deleteCreator(removeTarget.id);
-
-      if (window.electronAPI?.isElectron && result.accountId) {
-        await window.electronAPI.clearSession(result.accountId);
-      }
-
+      await deleteCreator(removeTarget.id);
       setRemoveTarget(null);
       await loadCreators();
     } catch (err) {
@@ -217,15 +165,27 @@ export default function ManageCreators() {
           </div>
         )}
 
-        <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden">
+        <div className="border border-gray-200 dark:border-white/10 rounded-xl overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 dark:bg-white/5 text-left text-xs uppercase tracking-wide text-gray-500">
-              <tr>
-                <th className="px-4 py-3 font-medium">Creator</th>
-                <th className="px-4 py-3 font-medium">Account Info</th>
-                <th className="px-4 py-3 font-medium">Connection Status</th>
-                <th className="px-4 py-3 font-medium">Staff</th>
-                {canManage && <th className="px-4 py-3 font-medium w-20" />}
+            <thead>
+              <tr className="border-b border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/[0.02]">
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
+                  Creator
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
+                  Platform
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
+                  Status
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
+                  Validated
+                </th>
+                {canManage && (
+                  <th className="text-right px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
+                    Actions
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -235,7 +195,7 @@ export default function ManageCreators() {
                     colSpan={canManage ? 5 : 4}
                     className="px-4 py-8 text-center text-gray-400"
                   >
-                    Loading creators...
+                    Loading…
                   </td>
                 </tr>
               ) : creators.length === 0 ? (
@@ -245,77 +205,59 @@ export default function ManageCreators() {
                     className="px-4 py-8 text-center text-gray-400"
                   >
                     No creators yet.
-                    {canManage && ' Click Add Creator to connect one.'}
                   </td>
                 </tr>
               ) : (
                 creators.map((creator) => (
                   <tr
                     key={creator.id}
-                    className="border-t border-gray-100 dark:border-white/5 hover:bg-gray-50/50 dark:hover:bg-white/[0.02]"
+                    className="border-b border-gray-100 dark:border-white/5 last:border-0"
                   >
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
                         <CreatorAvatar
-                          avatarUrl={creator.avatarUrl}
                           displayName={creator.displayName}
-                          className="w-8 h-8 rounded-full object-cover shrink-0"
-                          initialsClassName="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-600 text-xs font-bold shrink-0"
+                          avatarUrl={creator.avatarUrl}
+                          className="w-9 h-9 rounded-full object-cover shrink-0"
+                          initialsClassName="w-9 h-9 rounded-full bg-orange-100 flex items-center justify-center shrink-0 text-orange-600 font-bold text-sm"
                         />
-                        <div>
-                          <p className="font-medium">{creator.displayName}</p>
-                          <p className="text-xs text-gray-400 inline-flex items-center gap-1.5">
-                            {creator.platform === '4based' && (
-                              <img
-                                src={fourBasedIcon}
-                                alt=""
-                                className="w-3.5 h-3.5 rounded"
-                              />
-                            )}
-                            {platformLabel(creator.platform)}
-                          </p>
+                        <div className="min-w-0">
+                          <p className="font-medium truncate">{creator.displayName}</p>
+                          {creator.username && (
+                            <p className="text-xs text-gray-400 truncate">
+                              @{creator.username}
+                            </p>
+                          )}
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-gray-500">
-                      {creator.username || '—'}
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center gap-1.5">
+                        {creator.platform === '4based' && (
+                          <img src={fourBasedIcon} alt="" className="w-3.5 h-3.5" />
+                        )}
+                        {platformLabel(creator.platform)}
+                      </span>
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex flex-col gap-0.5">
-                        <span
-                          className={`inline-flex w-fit px-2 py-0.5 text-xs font-medium rounded-full ${connectionBadgeClass(creator.connectionStatus)}`}
-                        >
-                          {connectionLabel(creator.connectionStatus)}
-                        </span>
-                        {formatValidatedAt(creator.lastValidatedAt) && (
-                          <span className="text-xs text-gray-400">
-                            Verified {formatValidatedAt(creator.lastValidatedAt)}
-                          </span>
-                        )}
-                      </div>
+                      <span
+                        className={`inline-flex px-2 py-0.5 text-xs font-medium rounded-full ${connectionBadgeClass(
+                          creator.connectionStatus
+                        )}`}
+                      >
+                        {connectionLabel(creator.connectionStatus)}
+                      </span>
                     </td>
-                    <td className="px-4 py-3 text-gray-500">
-                      {canManage ? (
-                        <button
-                          type="button"
-                          onClick={() => setStaffTarget(creator)}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 -mx-2 rounded-md hover:bg-gray-100 dark:hover:bg-white/5 hover:text-brand-600 dark:hover:text-brand-400 transition-colors"
-                          title="Manage assigned staff"
-                        >
-                          {creator.staffCount}
-                        </button>
-                      ) : (
-                        creator.staffCount
-                      )}
+                    <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
+                      {formatValidatedAt(creator.lastValidatedAt) || '—'}
                     </td>
                     {canManage && (
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          {(creator.connectionStatus === 'error' ||
-                            creator.platform === '4based') && (
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-0.5">
+                          {creator.accountId && (
                             <button
                               type="button"
-                              className="p-1.5 text-gray-400 hover:text-brand-600 dark:hover:text-brand-400 rounded-md hover:bg-brand-50 dark:hover:bg-brand-900/20 transition-colors"
+                              className="p-1.5 text-gray-400 hover:text-amber-500 dark:hover:text-amber-400 rounded-md hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors"
                               title={
                                 creator.platform === '4based'
                                   ? 'Reconnect 4based account'
@@ -334,7 +276,6 @@ export default function ManageCreators() {
                             className="p-1.5 text-gray-400 hover:text-purple-500 dark:hover:text-purple-400 rounded-md hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                             title="Refresh Icon from Maloum"
                             disabled={
-                              !creator.accountId ||
                               creator.platform !== 'maloum' ||
                               refreshingIconId === creator.id
                             }
@@ -343,15 +284,6 @@ export default function ManageCreators() {
                             <ImageIcon
                               className={`w-4 h-4 ${refreshingIconId === creator.id ? 'animate-pulse' : ''}`}
                             />
-                          </button>
-                          <button
-                            type="button"
-                            className="p-1.5 text-gray-400 hover:text-blue-500 dark:hover:text-blue-400 rounded-md hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                            title="Verify session"
-                            disabled={!creator.accountId || creator.platform !== 'maloum'}
-                            onClick={() => setVerifyTarget(creator)}
-                          >
-                            <ShieldCheck className="w-4 h-4" />
                           </button>
                           <button
                             type="button"
@@ -396,19 +328,6 @@ export default function ManageCreators() {
             setReconnectCreator(null);
           }}
           onSaved={loadCreators}
-        />
-      )}
-
-      {verifyTarget && (
-        <VerifySessionModal
-          creator={verifyTarget}
-          onClose={() => setVerifyTarget(null)}
-          onValidated={loadCreators}
-          onReconnect={() => {
-            setReconnectCreator(verifyTarget);
-            setVerifyTarget(null);
-            setShowAddModal(true);
-          }}
         />
       )}
 

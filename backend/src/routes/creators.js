@@ -12,7 +12,7 @@ const {
   hashToken,
   generateAccountToken,
 } = require('../services/crypto');
-const { saveCreatorAvatarFromBuffer } = require('../services/creatorAvatar');
+const { saveCreatorAvatarFromBuffer, cacheCreatorAvatarFromUrl } = require('../services/creatorAvatar');
 const {
   userSeesAllCreators,
   userCanAccessCreator,
@@ -81,6 +81,51 @@ function toCreator(row) {
 
 function isBackendStoredAvatarUrl(avatarUrl) {
   return typeof avatarUrl === 'string' && avatarUrl.startsWith('/uploads/avatars/');
+}
+
+/**
+ * Best-effort: download Maloum thumbnail via proxy and store under /uploads/avatars.
+ * Returns local path or null on failure.
+ */
+async function tryCacheMaloumAvatar(creatorId, imageUrl, proxyUrl) {
+  if (!creatorId || !imageUrl || typeof imageUrl !== 'string') {
+    return null;
+  }
+  if (isBackendStoredAvatarUrl(imageUrl)) {
+    return imageUrl;
+  }
+  if (imageUrl.startsWith('/')) {
+    return null;
+  }
+
+  try {
+    const resolvedProxy = maloumClient.resolveMaloumProxyUrl(proxyUrl);
+    return await cacheCreatorAvatarFromUrl(creatorId, imageUrl, {
+      proxyUrl: resolvedProxy,
+    });
+  } catch (err) {
+    console.warn('Maloum avatar cache failed:', err.message);
+    return null;
+  }
+}
+
+async function persistCachedMaloumAvatar(creatorId, localPath) {
+  if (!localPath) {
+    return null;
+  }
+  const result = await pool.query(
+    `UPDATE creators
+     SET "avatarUrl" = $2,
+         "avatarSource" = 'maloum',
+         "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING id, "displayName", username, platform, "connectionStatus",
+               "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
+               "loginEmail", "lastValidatedAt", "authRefreshState", "accessTokenExpiresAt",
+               "createdAt", "updatedAt"`,
+    [creatorId, localPath]
+  );
+  return result.rows[0] || null;
 }
 
 function partitionIdFor(accountId) {
@@ -733,6 +778,32 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
     }
 
     const saved = result.rows[0];
+    if (
+      saved.platform === 'maloum' &&
+      pending?.avatarUrl &&
+      !isBackendStoredAvatarUrl(pending.avatarUrl)
+    ) {
+      let pendingProxy = null;
+      try {
+        pendingProxy = pending.encryptedProxy
+          ? decryptSecret(pending.encryptedProxy)
+          : null;
+      } catch {
+        pendingProxy = null;
+      }
+      const cachedPath = await tryCacheMaloumAvatar(
+        saved.id,
+        pending.avatarUrl,
+        pendingProxy
+      );
+      if (cachedPath) {
+        const updated = await persistCachedMaloumAvatar(saved.id, cachedPath);
+        if (updated) {
+          Object.assign(saved, updated);
+        }
+      }
+    }
+
     if (pending?.encryptedSession && saved.accountId) {
       let sessionSavedAt = null;
       try {
@@ -1867,10 +1938,23 @@ router.post(
       const encryptedLoginPassword = encryptOptionalLoginPassword(password);
 
       const creator = result.rows[0];
-      const nextAvatarUrl =
+      let nextAvatarUrl =
         creator.avatarSource === 'manual' || isBackendStoredAvatarUrl(creator.avatarUrl)
           ? creator.avatarUrl
           : loginResult.avatarUrl || creator.avatarUrl;
+      let nextAvatarSource = creator.avatarSource || null;
+
+      if (creator.avatarSource !== 'manual' && loginResult.avatarUrl) {
+        const cachedPath = await tryCacheMaloumAvatar(
+          id,
+          loginResult.avatarUrl,
+          resolvedProxy
+        );
+        if (cachedPath) {
+          nextAvatarUrl = cachedPath;
+          nextAvatarSource = 'maloum';
+        }
+      }
 
       const updated = await pool.query(
         `UPDATE creators SET
@@ -1884,13 +1968,14 @@ router.post(
            "encryptedLoginPassword" = COALESCE($8, "encryptedLoginPassword"),
            username = COALESCE($9, username),
            "avatarUrl" = COALESCE($10, "avatarUrl"),
-           "postLoginUrl" = $11,
+           "avatarSource" = COALESCE($11, "avatarSource"),
+           "postLoginUrl" = $12,
            "connectionStatus" = 'connected',
            "lastValidatedAt" = NOW(),
            "authRefreshState" = 'active',
            "tokenRefreshFailureCount" = 0,
            "updatedAt" = NOW()
-         WHERE id = $12
+         WHERE id = $13
          RETURNING id, "displayName", username, platform, "connectionStatus",
                    "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
                    "loginEmail", "lastValidatedAt", "authRefreshState", "accessTokenExpiresAt",
@@ -1906,6 +1991,7 @@ router.post(
           encryptedLoginPassword ?? null,
           loginResult.username,
           nextAvatarUrl,
+          nextAvatarSource,
           loginResult.postLoginUrl,
           id,
         ]
@@ -1927,6 +2013,83 @@ router.post(
     } catch (err) {
       console.error('Reconnect Maloum creator error:', err);
       res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/:id/maloum/refresh-avatar',
+  authenticate,
+  requirePermission('creators.manage'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const existing = await pool.query(
+        `SELECT id, platform, "avatarUrl", "avatarSource"
+         FROM creators WHERE id = $1`,
+        [id]
+      );
+      if (existing.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+      if (existing.rows[0].platform !== 'maloum') {
+        return res.status(400).json({ error: 'Creator is not a Maloum account' });
+      }
+      if (existing.rows[0].avatarSource === 'manual') {
+        return res.json({
+          creator: toCreator(
+            (
+              await pool.query(
+                `SELECT id, "displayName", username, platform, "connectionStatus",
+                        "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId",
+                        "partitionId", "loginEmail", "lastValidatedAt", "authRefreshState",
+                        "accessTokenExpiresAt", "createdAt", "updatedAt"
+                 FROM creators WHERE id = $1`,
+                [id]
+              )
+            ).rows[0]
+          ),
+          skipped: true,
+          reason: 'Manual avatar is protected',
+        });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const currentUser = await maloumClient.fetchCurrentUser({
+        accessToken: loaded.creator.accessToken,
+        proxyUrl: loaded.creator.proxyUrl,
+        timezone: loaded.creator.timezone || 'UTC',
+      });
+      const remoteAvatarUrl = maloumClient.avatarFromUser(currentUser);
+      if (!remoteAvatarUrl) {
+        return res.status(404).json({ error: 'Maloum profile has no avatar' });
+      }
+
+      const cachedPath = await tryCacheMaloumAvatar(
+        id,
+        remoteAvatarUrl,
+        loaded.creator.proxyUrl
+      );
+      if (!cachedPath) {
+        return res.status(502).json({ error: 'Failed to download Maloum avatar' });
+      }
+
+      const updated = await persistCachedMaloumAvatar(id, cachedPath);
+      if (!updated) {
+        return res.status(500).json({ error: 'Failed to save avatar' });
+      }
+
+      res.json({ creator: toCreator(updated) });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Refresh Maloum avatar error:');
     }
   }
 );

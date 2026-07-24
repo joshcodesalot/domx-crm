@@ -14,8 +14,6 @@ export default function ThemeToggle({ className = '' }: { className?: string }) 
       document.documentElement.classList.remove('dark');
       localStorage.setItem('color-theme', 'light');
     }
-
-    void window.electronAPI?.setDomXTheme(isDark ? 'dark' : 'light');
   }, [isDark]);
 
   return (
