@@ -1,4 +1,5 @@
 const express = require('express');
+const { randomUUID } = require('crypto');
 const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/authorize');
@@ -73,6 +74,366 @@ async function enrichCreatorFields(creatorId) {
 async function enrichChatterEmail(chatterId) {
   const result = await pool.query('SELECT email FROM users WHERE id = $1', [chatterId]);
   return result.rows[0]?.email || null;
+}
+
+function parsePriceNet(priceNet) {
+  if (typeof priceNet === 'number' && Number.isFinite(priceNet)) {
+    return priceNet;
+  }
+  if (typeof priceNet === 'string' && priceNet.trim() !== '') {
+    const parsed = Number.parseFloat(priceNet);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+async function unlockSaleByMessageId({
+  maloumMessageId,
+  priceNet = null,
+  notificationId = null,
+} = {}) {
+  if (!maloumMessageId || typeof maloumMessageId !== 'string') {
+    return {
+      updated: false,
+      reason: 'maloumMessageId_required',
+      maloumMessageId: maloumMessageId || null,
+      notificationId,
+    };
+  }
+
+  const existing = await pool.query(
+    `SELECT purchased
+     FROM messaging_dashboard_entries
+     WHERE "maloumMessageId" = $1`,
+    [maloumMessageId]
+  );
+
+  if (existing.rows.length === 0) {
+    return {
+      updated: false,
+      reason: 'entry_not_found',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  if (existing.rows[0].purchased) {
+    return {
+      updated: false,
+      reason: 'already_purchased',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  const parsedPriceNet = parsePriceNet(priceNet);
+
+  const result = await pool.query(
+    `UPDATE messaging_dashboard_entries
+     SET purchased = true,
+         "priceNet" = COALESCE("priceNet", $1),
+         "updatedAt" = NOW()
+     WHERE "maloumMessageId" = $2
+       AND purchased = false
+     RETURNING *`,
+    [parsedPriceNet, maloumMessageId]
+  );
+
+  if (result.rows.length === 0) {
+    return {
+      updated: false,
+      reason: 'already_purchased',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  return {
+    updated: true,
+    entry: toDashboardEntry({
+      ...result.rows[0],
+      chatterSalesTotal: null,
+    }),
+    notificationId,
+  };
+}
+
+async function resolveTipContext(creatorId, fanId) {
+  if (fanId) {
+    const fanRow = await pool.query(
+      `SELECT "chatId", "chatterId", "chatterName", "chatterEmail"
+       FROM messaging_dashboard_entries
+       WHERE "creatorId" = $1 AND "fanId" = $2
+       ORDER BY "sentAt" DESC
+       LIMIT 1`,
+      [creatorId, fanId]
+    );
+    if (fanRow.rows.length > 0) {
+      return {
+        chatId: fanRow.rows[0].chatId,
+        chatterId: fanRow.rows[0].chatterId,
+        chatterName: fanRow.rows[0].chatterName,
+        chatterEmail: fanRow.rows[0].chatterEmail,
+      };
+    }
+  }
+
+  const creatorRow = await pool.query(
+    `SELECT "chatId", "chatterId", "chatterName", "chatterEmail"
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+     ORDER BY "sentAt" DESC
+     LIMIT 1`,
+    [creatorId]
+  );
+  if (creatorRow.rows.length > 0) {
+    return {
+      chatId: fanId ? `maloum-tip:${fanId}` : creatorRow.rows[0].chatId,
+      chatterId: creatorRow.rows[0].chatterId,
+      chatterName: creatorRow.rows[0].chatterName,
+      chatterEmail: creatorRow.rows[0].chatterEmail,
+    };
+  }
+
+  const staffRow = await pool.query(
+    `SELECT u.id, u.name, u.email
+     FROM creator_staff_assignments a
+     JOIN users u ON u.id = a."userId"
+     WHERE a."creatorId" = $1
+     ORDER BY a."assignedAt" ASC
+     LIMIT 1`,
+    [creatorId]
+  );
+  if (staffRow.rows.length > 0) {
+    return {
+      chatId: fanId ? `maloum-tip:${fanId}` : `maloum-tip:${creatorId}`,
+      chatterId: staffRow.rows[0].id,
+      chatterName: staffRow.rows[0].name || 'Staff',
+      chatterEmail: staffRow.rows[0].email || null,
+    };
+  }
+
+  const adminRow = await pool.query(
+    `SELECT id, name, email
+     FROM users
+     WHERE role = 'owner'
+     ORDER BY "createdAt" ASC
+     LIMIT 1`
+  );
+  if (adminRow.rows.length > 0) {
+    return {
+      chatId: fanId ? `maloum-tip:${fanId}` : `maloum-tip:${creatorId}`,
+      chatterId: adminRow.rows[0].id,
+      chatterName: adminRow.rows[0].name || 'System',
+      chatterEmail: adminRow.rows[0].email || null,
+    };
+  }
+
+  return null;
+}
+
+async function logTip({
+  creatorId,
+  fanId = null,
+  fanUsername = null,
+  maloumMessageId,
+  priceNet = null,
+  notificationId = null,
+  createdAt = null,
+  currency = 'EUR',
+} = {}) {
+  if (!creatorId || !isValidUuid(creatorId)) {
+    return {
+      updated: false,
+      reason: 'creatorId_required',
+      maloumMessageId: maloumMessageId || null,
+      notificationId,
+    };
+  }
+
+  if (!maloumMessageId || typeof maloumMessageId !== 'string') {
+    return {
+      updated: false,
+      reason: 'maloumMessageId_required',
+      maloumMessageId: maloumMessageId || null,
+      notificationId,
+    };
+  }
+
+  const existing = await pool.query(
+    `SELECT *
+     FROM messaging_dashboard_entries
+     WHERE "maloumMessageId" = $1`,
+    [maloumMessageId]
+  );
+
+  if (existing.rows.length > 0) {
+    return {
+      updated: false,
+      reason: 'already_logged',
+      entry: toDashboardEntry({
+        ...existing.rows[0],
+        chatterSalesTotal: null,
+      }),
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  const enriched = await enrichCreatorFields(creatorId);
+  if (!enriched) {
+    return {
+      updated: false,
+      reason: 'creator_not_found',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  const tipContext = await resolveTipContext(creatorId, fanId);
+  if (!tipContext) {
+    return {
+      updated: false,
+      reason: 'no_chatter_context',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  const parsedPriceNet = parsePriceNet(priceNet);
+  const sentAt =
+    createdAt && !Number.isNaN(Date.parse(createdAt))
+      ? new Date(createdAt).toISOString()
+      : new Date().toISOString();
+
+  const result = await pool.query(
+    `INSERT INTO messaging_dashboard_entries (
+      id,
+      "creatorId",
+      "creatorName",
+      "creatorUsername",
+      "creatorAvatarUrl",
+      "chatterId",
+      "chatterName",
+      "chatterEmail",
+      "chatId",
+      "fanId",
+      "fanUsername",
+      "maloumMessageId",
+      "optimisticMessageId",
+      "contentType",
+      "englishMessage",
+      "germanTranslatedMessage",
+      "actualSentText",
+      "priceNet",
+      currency,
+      purchased,
+      "mediaCount",
+      "pictureCount",
+      "videoCount",
+      "mediaJson",
+      "previousFanMessageAt",
+      "responseTimeSeconds",
+      "sentAt"
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+      $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+      $21, $22, $23, $24, $25, $26, $27
+    )
+    ON CONFLICT ("maloumMessageId") DO NOTHING
+    RETURNING *`,
+    [
+      randomUUID(),
+      creatorId,
+      enriched.creatorName,
+      enriched.creatorUsername,
+      enriched.creatorAvatarUrl,
+      tipContext.chatterId,
+      tipContext.chatterName,
+      tipContext.chatterEmail,
+      tipContext.chatId,
+      fanId,
+      fanUsername,
+      maloumMessageId,
+      null,
+      'tip',
+      null,
+      null,
+      null,
+      parsedPriceNet,
+      typeof currency === 'string' && currency ? currency : 'EUR',
+      true,
+      0,
+      0,
+      0,
+      null,
+      null,
+      null,
+      sentAt,
+    ]
+  );
+
+  if (result.rows.length === 0) {
+    return {
+      updated: false,
+      reason: 'already_logged',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  return {
+    updated: true,
+    entry: toDashboardEntry({
+      ...result.rows[0],
+      chatterSalesTotal: null,
+    }),
+    notificationId,
+  };
+}
+
+async function processMaloumSaleAndTipNotifications(creatorId, notifications) {
+  const list = Array.isArray(notifications) ? notifications : [];
+  const results = [];
+
+  for (const entry of list) {
+    const type = entry?.type;
+    const messageId = entry?.messageId ? String(entry.messageId) : null;
+    const notificationId = entry?._id || entry?.id ? String(entry._id || entry.id) : null;
+
+    if (!messageId) {
+      continue;
+    }
+
+    if (type === 'CHAT_PRODUCT_SOLD') {
+      const result = await unlockSaleByMessageId({
+        maloumMessageId: messageId,
+        priceNet: entry.net,
+        notificationId,
+      });
+      results.push({ type, ...result });
+      continue;
+    }
+
+    if (type === 'FAN_TIPPED') {
+      const result = await logTip({
+        creatorId,
+        fanId: entry.fanId ? String(entry.fanId) : null,
+        fanUsername: entry.fanUsername
+          ? String(entry.fanUsername)
+          : entry.fanNickname
+            ? String(entry.fanNickname)
+            : null,
+        maloumMessageId: messageId,
+        priceNet: entry.net,
+        notificationId,
+        createdAt: entry.createdAt || null,
+      });
+      results.push({ type, ...result });
+    }
+  }
+
+  return results;
 }
 
 router.get(
@@ -403,62 +764,51 @@ router.post(
       return res.status(400).json({ error: 'maloumMessageId is required' });
     }
 
-    const existing = await pool.query(
-      `SELECT purchased
-       FROM messaging_dashboard_entries
-       WHERE "maloumMessageId" = $1`,
-      [maloumMessageId]
-    );
-
-    if (existing.rows.length === 0) {
-      return res.json({
-        updated: false,
-        reason: 'entry_not_found',
-        maloumMessageId,
-        notificationId,
-      });
-    }
-
-    if (existing.rows[0].purchased) {
-      return res.json({
-        updated: false,
-        reason: 'already_purchased',
-        maloumMessageId,
-        notificationId,
-      });
-    }
-
-    const parsedPriceNet =
-      typeof priceNet === 'number' && Number.isFinite(priceNet) ? priceNet : null;
-
-    const result = await pool.query(
-      `UPDATE messaging_dashboard_entries
-       SET purchased = true,
-           "priceNet" = COALESCE("priceNet", $1),
-           "updatedAt" = NOW()
-       WHERE "maloumMessageId" = $2
-         AND purchased = false
-       RETURNING *`,
-      [parsedPriceNet, maloumMessageId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.json({
-        updated: false,
-        reason: 'already_purchased',
-        maloumMessageId,
-        notificationId,
-      });
-    }
-
-    res.json({
-      updated: true,
-      entry: toDashboardEntry({
-        ...result.rows[0],
-        chatterSalesTotal: null,
-      }),
+    const result = await unlockSaleByMessageId({
+      maloumMessageId,
+      priceNet,
       notificationId,
     });
+
+    res.json(result);
+  }
+);
+
+router.post(
+  '/internal/log-tip',
+  requireElectronServiceKey,
+  async (req, res) => {
+    const {
+      creatorId,
+      fanId = null,
+      fanUsername = null,
+      maloumMessageId,
+      priceNet = null,
+      notificationId = null,
+      createdAt = null,
+      currency = 'EUR',
+    } = req.body || {};
+
+    if (!creatorId || !isValidUuid(String(creatorId))) {
+      return res.status(400).json({ error: 'Valid creatorId is required' });
+    }
+
+    if (!maloumMessageId || typeof maloumMessageId !== 'string') {
+      return res.status(400).json({ error: 'maloumMessageId is required' });
+    }
+
+    const result = await logTip({
+      creatorId,
+      fanId,
+      fanUsername,
+      maloumMessageId,
+      priceNet,
+      notificationId,
+      createdAt,
+      currency,
+    });
+
+    res.json(result);
   }
 );
 
@@ -495,3 +845,6 @@ router.patch(
 );
 
 module.exports = router;
+module.exports.unlockSaleByMessageId = unlockSaleByMessageId;
+module.exports.logTip = logTip;
+module.exports.processMaloumSaleAndTipNotifications = processMaloumSaleAndTipNotifications;

@@ -18,16 +18,20 @@ const {
   userCanAccessCreator,
 } = require('../services/creatorAccess');
 const {
+  buildEncryptedTokenFields,
   buildTokenWriteFromOrigins,
   decryptAccessToken,
 } = require('../services/maloumAuthTokens');
 const { emitToUser, emitToUsers } = require('../services/userEventBus');
 const fourBasedClient = require('../services/fourBasedClient');
+const maloumClient = require('../services/maloumClient');
+const messagingDashboard = require('./messagingDashboard');
 const {
   connectCreatorById,
   disconnectCreator,
 } = require('../services/fourBasedSocket');
 const fourBasedMediaCache = require('../services/fourBasedMediaCache');
+const maloumMediaCache = require('../services/maloumMediaCache');
 const { randomUUID } = require('crypto');
 
 const router = express.Router();
@@ -461,21 +465,26 @@ router.post(
       }
     }
 
-    // --- Maloum client-session connect ---
+    // --- Maloum API-based connect ---
     if (platform !== 'maloum') {
       return res.status(400).json({ error: 'Only Maloum and 4based are supported currently' });
     }
 
-    if (!isClientMaloumSession(req.body)) {
-      return res.status(400).json({
-        error:
-          'Connect requires a Maloum session from the DomX desktop app. Server-side login is no longer supported.',
-      });
+    if (!email || typeof email !== 'string' || !email.trim()) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    if (!password || typeof password !== 'string' || !password.length) {
+      return res.status(400).json({ error: 'Password is required' });
     }
 
-    const sessionError = validateClientSessionPayload(req.body);
-    if (sessionError) {
-      return res.status(400).json({ error: sessionError });
+    let resolvedProxy;
+    try {
+      resolvedProxy = maloumClient.resolveMaloumProxyUrl(proxyUrl);
+    } catch (err) {
+      if (err instanceof maloumClient.MaloumApiError) {
+        return res.status(err.status || 400).json({ error: err.message });
+      }
+      throw err;
     }
 
     try {
@@ -501,61 +510,101 @@ router.post(
         );
       }
 
+      let loginResult;
+      try {
+        loginResult = await maloumClient.login({
+          usernameOrEmail: email.trim(),
+          password,
+          proxyUrl: resolvedProxy,
+        });
+      } catch (err) {
+        if (err instanceof maloumClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
+          return res.status(400).json({ error: 'Password not correct' });
+        }
+        if (err instanceof maloumClient.MaloumApiError) {
+          return res.status(err.status >= 400 && err.status < 600 ? err.status : 502).json({
+            error: err.message || 'Maloum login failed',
+          });
+        }
+        throw err;
+      }
+
       const accountToken = generateAccountToken();
       const accountTokenHash = hashToken(accountToken);
       const partitionId = partitionIdFor(accountId);
       const loginEmail = email.trim();
       const { encryptedSession } = buildEncryptedSessionPayload({
-        cookies,
-        origins,
+        cookies: loginResult.cookies,
+        origins: loginResult.origins,
         loginEmail,
       });
-      const tokenPersistence = buildTokenPersistenceFromOrigins(origins);
+      const tokenFields = buildEncryptedTokenFields({
+        accessToken: loginResult.accessToken,
+        refreshToken: loginResult.refreshToken,
+        expiresAt: loginResult.expiresAt,
+      });
+      const encryptedProxy = encryptSecret(resolvedProxy);
       const encryptedLoginPassword = encryptOptionalLoginPassword(password);
       const expiresAt = new Date(Date.now() + PENDING_TTL_MINUTES * 60 * 1000);
+      const resolvedDisplayName =
+        (typeof displayName === 'string' && displayName.trim()) ||
+        loginResult.displayName;
+      const resolvedUsername =
+        (typeof username === 'string' && username.trim()) ||
+        loginResult.username ||
+        null;
+      const resolvedAvatar = avatarUrl || loginResult.avatarUrl || null;
+      const resolvedPostLoginUrl =
+        (typeof postLoginUrl === 'string' && postLoginUrl.trim()) ||
+        loginResult.postLoginUrl;
 
       await pool.query(
         `INSERT INTO creator_connect_pending (
            "accountId", "accountTokenHash", "partitionId", platform,
            "displayName", username, "postLoginUrl", "avatarUrl", "encryptedSession",
            "loginEmail", "encryptedLoginPassword", "encryptedAccessToken",
-           "encryptedRefreshToken", "accessTokenExpiresAt", "createdBy", "expiresAt"
+           "encryptedRefreshToken", "accessTokenExpiresAt",
+           "providerUserId", "encryptedProxy",
+           "createdBy", "expiresAt"
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
         [
           accountId,
           accountTokenHash,
           partitionId,
           platform,
-          displayName.trim(),
-          username || null,
-          postLoginUrl,
-          avatarUrl || null,
+          resolvedDisplayName,
+          resolvedUsername,
+          resolvedPostLoginUrl,
+          resolvedAvatar,
           encryptedSession,
           loginEmail,
           encryptedLoginPassword ?? null,
-          tokenPersistence?.encryptedAccessToken ?? null,
-          tokenPersistence?.encryptedRefreshToken ?? null,
-          tokenPersistence?.accessTokenExpiresAt ?? null,
+          tokenFields?.encryptedAccessToken ?? null,
+          tokenFields?.encryptedRefreshToken ?? null,
+          tokenFields?.accessTokenExpiresAt ?? null,
+          loginResult.providerUserId,
+          encryptedProxy,
           req.user.id,
           expiresAt,
         ]
       );
 
-      res.status(201).json({
+      return res.status(201).json({
         accountToken,
         accountId,
         partitionId,
-        displayName: displayName.trim(),
-        username: username || null,
-        postLoginUrl,
-        avatarUrl: avatarUrl || null,
-        cookies,
-        origins: origins || [],
+        displayName: resolvedDisplayName,
+        username: resolvedUsername,
+        postLoginUrl: resolvedPostLoginUrl,
+        avatarUrl: resolvedAvatar,
+        providerUserId: loginResult.providerUserId,
+        cookies: loginResult.cookies,
+        origins: loginResult.origins,
       });
     } catch (err) {
-      console.error('Connect creator error:', err);
-      res.status(500).json({ error: 'Internal server error' });
+      console.error('Connect Maloum creator error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
     }
   }
 );
@@ -1742,6 +1791,146 @@ router.post(
   }
 );
 
+router.post(
+  '/:id/maloum/reconnect',
+  authenticate,
+  requirePermission('creators.manage'),
+  connectLimiter,
+  async (req, res) => {
+    const { id } = req.params;
+    const { email, password, proxyUrl } = req.body || {};
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!email || typeof email !== 'string' || !email.trim()) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    if (!password || typeof password !== 'string' || !password.length) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+
+    let resolvedProxy;
+    try {
+      resolvedProxy = maloumClient.resolveMaloumProxyUrl(proxyUrl);
+    } catch (err) {
+      if (err instanceof maloumClient.MaloumApiError) {
+        return res.status(err.status || 400).json({ error: err.message });
+      }
+      throw err;
+    }
+
+    try {
+      const result = await pool.query(
+        `SELECT id, platform, "accountId", "displayName", "avatarUrl", "avatarSource"
+         FROM creators WHERE id = $1`,
+        [id]
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+      if (result.rows[0].platform !== 'maloum') {
+        return res.status(400).json({ error: 'Creator is not a Maloum account' });
+      }
+
+      let loginResult;
+      try {
+        loginResult = await maloumClient.login({
+          usernameOrEmail: email.trim(),
+          password,
+          proxyUrl: resolvedProxy,
+        });
+      } catch (err) {
+        if (err instanceof maloumClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
+          return res.status(400).json({ error: 'Password not correct' });
+        }
+        if (err instanceof maloumClient.MaloumApiError) {
+          return res
+            .status(err.status >= 400 && err.status < 600 ? err.status : 502)
+            .json({ error: err.message || 'Maloum login failed' });
+        }
+        throw err;
+      }
+
+      const loginEmail = email.trim();
+      const { encryptedSession, savedAt: sessionSavedAt } = buildEncryptedSessionPayload({
+        cookies: loginResult.cookies,
+        origins: loginResult.origins,
+        loginEmail,
+      });
+      const tokenFields = buildEncryptedTokenFields({
+        accessToken: loginResult.accessToken,
+        refreshToken: loginResult.refreshToken,
+        expiresAt: loginResult.expiresAt,
+      });
+      const encryptedProxy = encryptSecret(resolvedProxy);
+      const encryptedLoginPassword = encryptOptionalLoginPassword(password);
+
+      const creator = result.rows[0];
+      const nextAvatarUrl =
+        creator.avatarSource === 'manual' || isBackendStoredAvatarUrl(creator.avatarUrl)
+          ? creator.avatarUrl
+          : loginResult.avatarUrl || creator.avatarUrl;
+
+      const updated = await pool.query(
+        `UPDATE creators SET
+           "encryptedSession" = $1,
+           "encryptedAccessToken" = $2,
+           "encryptedRefreshToken" = $3,
+           "accessTokenExpiresAt" = $4,
+           "encryptedProxy" = $5,
+           "providerUserId" = $6,
+           "loginEmail" = $7,
+           "encryptedLoginPassword" = COALESCE($8, "encryptedLoginPassword"),
+           username = COALESCE($9, username),
+           "avatarUrl" = COALESCE($10, "avatarUrl"),
+           "postLoginUrl" = $11,
+           "connectionStatus" = 'connected',
+           "lastValidatedAt" = NOW(),
+           "authRefreshState" = 'active',
+           "tokenRefreshFailureCount" = 0,
+           "updatedAt" = NOW()
+         WHERE id = $12
+         RETURNING id, "displayName", username, platform, "connectionStatus",
+                   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
+                   "loginEmail", "lastValidatedAt", "authRefreshState", "accessTokenExpiresAt",
+                   "createdAt", "updatedAt"`,
+        [
+          encryptedSession,
+          tokenFields?.encryptedAccessToken ?? null,
+          tokenFields?.encryptedRefreshToken ?? null,
+          tokenFields?.accessTokenExpiresAt ?? null,
+          encryptedProxy,
+          loginResult.providerUserId,
+          loginEmail,
+          encryptedLoginPassword ?? null,
+          loginResult.username,
+          nextAvatarUrl,
+          loginResult.postLoginUrl,
+          id,
+        ]
+      );
+
+      const accessUserIds = await getUserIdsWithCreatorAccess(id);
+      emitCreatorSessionUpdated(accessUserIds, {
+        creatorId: id,
+        accountId: updated.rows[0].accountId,
+        sessionUpdatedAt: sessionSavedAt,
+      });
+
+      res.json({
+        creator: toCreator(updated.rows[0]),
+        cookies: loginResult.cookies,
+        origins: loginResult.origins,
+        sessionUpdatedAt: sessionSavedAt,
+      });
+    } catch (err) {
+      console.error('Reconnect Maloum creator error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
 router.get(
   '/:id/4based/chats',
   authenticate,
@@ -2278,6 +2467,638 @@ router.get(
       nodeStream.pipe(res);
     } catch (err) {
       return handleFourBasedError(res, err, 'Proxy 4based media error:');
+    }
+  }
+);
+
+async function loadMaloumCreator(creatorId) {
+  const result = await pool.query(
+    `SELECT id, platform, "displayName", "providerUserId", "encryptedSession",
+            "encryptedAccessToken", "encryptedProxy", "connectionStatus", "accountId"
+     FROM creators
+     WHERE id = $1`,
+    [creatorId]
+  );
+
+  if (result.rows.length === 0) {
+    return { error: { status: 404, message: 'Creator not found' } };
+  }
+
+  const row = result.rows[0];
+  if (row.platform !== 'maloum') {
+    return { error: { status: 400, message: 'Creator is not a Maloum account' } };
+  }
+
+  let session = {};
+  try {
+    if (row.encryptedSession) {
+      session = decryptJson(row.encryptedSession) || {};
+    }
+  } catch (err) {
+    return { error: { status: 500, message: 'Failed to decrypt Maloum session' } };
+  }
+
+  const accessToken =
+    decryptAccessToken(row.encryptedAccessToken) ||
+    decryptSecret(row.encryptedAccessToken) ||
+    null;
+  let proxyUrl = decryptSecret(row.encryptedProxy) || null;
+  if (!proxyUrl) {
+    try {
+      proxyUrl = maloumClient.resolveMaloumProxyUrl(null);
+    } catch {
+      proxyUrl = null;
+    }
+  }
+  const providerUserId = row.providerUserId || null;
+
+  if (!accessToken) {
+    return {
+      error: {
+        status: 400,
+        message: 'Maloum account is missing auth credentials. Please reconnect.',
+      },
+    };
+  }
+
+  if (!proxyUrl) {
+    return {
+      error: {
+        status: 400,
+        message:
+          'Maloum proxy is required. Set MALOUM_PROXY_URL in backend .env or reconnect with a proxy.',
+      },
+    };
+  }
+
+  return {
+    creator: {
+      id: row.id,
+      displayName: row.displayName,
+      accountId: row.accountId,
+      providerUserId,
+      accessToken,
+      proxyUrl,
+      timezone: 'UTC',
+      session: {
+        ...session,
+        providerUserId,
+        accessToken,
+      },
+    },
+  };
+}
+
+function handleMaloumError(res, err, label) {
+  if (err instanceof maloumClient.WrongPasswordError) {
+    return res.status(400).json({ error: 'Password not correct' });
+  }
+  if (err instanceof maloumClient.MaloumApiError) {
+    const status = err.status >= 400 && err.status < 600 ? err.status : 502;
+    return res.status(status).json({ error: err.message || 'Maloum request failed' });
+  }
+  console.error(label, err);
+  return res.status(500).json({ error: 'Internal server error' });
+}
+
+router.get(
+  '/:id/maloum/chats',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 15, 100);
+      const next = typeof req.query.next === 'string' ? req.query.next : undefined;
+      const chats = await maloumClient.listChats(loaded.creator, { limit, next });
+      res.json({
+        next: chats?.next ?? null,
+        chats: Array.isArray(chats?.data) ? chats.data : Array.isArray(chats) ? chats : [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'List Maloum chats error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/chats/unread-count',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const unread = await maloumClient.getUnreadCount(loaded.creator);
+      res.json({ unread: typeof unread === 'number' ? unread : Number(unread) || 0 });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Get Maloum unread count error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/badges',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const [chatsPayload, notificationsPayload] = await Promise.all([
+        maloumClient.listChats(loaded.creator, { limit: 15 }),
+        maloumClient.listNotifications(loaded.creator, { limit: 15 }),
+      ]);
+
+      const notifications = maloumClient.normalizeListData(notificationsPayload);
+
+      try {
+        await messagingDashboard.processMaloumSaleAndTipNotifications(id, notifications);
+      } catch (err) {
+        console.warn('Maloum sale/tip sync failed:', err.message);
+      }
+
+      res.json({
+        messages: maloumClient.countUnreadChatsFromList(chatsPayload),
+        notifications: maloumClient.countUnreadNotificationsFromList(notificationsPayload),
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Get Maloum badges error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/notifications',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 15, 100);
+      const next = typeof req.query.next === 'string' ? req.query.next : undefined;
+      const payload = await maloumClient.listNotifications(loaded.creator, { limit, next });
+      const notifications = maloumClient.normalizeListData(payload);
+
+      try {
+        await messagingDashboard.processMaloumSaleAndTipNotifications(id, notifications);
+      } catch (err) {
+        console.warn('Maloum sale/tip sync failed:', err.message);
+      }
+
+      res.json({
+        next: payload?.next ?? null,
+        notifications,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'List Maloum notifications error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/chats/:chatId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, chatId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const chat = await maloumClient.getChat(loaded.creator, chatId);
+      try {
+        await maloumClient.markRead(loaded.creator, chatId);
+      } catch (err) {
+        console.warn('Maloum markRead failed:', err.message);
+      }
+
+      res.json({ chat, providerUserId: loaded.creator.providerUserId });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Get Maloum chat error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/chats/:chatId/messages',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, chatId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 15, 100);
+      const next = typeof req.query.next === 'string' ? req.query.next : undefined;
+      const messages = await maloumClient.getMessages(loaded.creator, chatId, {
+        limit,
+        next,
+      });
+      res.json({
+        next: messages?.next ?? null,
+        messages: Array.isArray(messages?.data)
+          ? messages.data
+          : Array.isArray(messages)
+            ? messages
+            : [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Get Maloum messages error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/maloum/chats/:chatId/messages',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, chatId } = req.params;
+    const {
+      message,
+      text,
+      media,
+      priceNet,
+      optimisticMessageId,
+    } = req.body || {};
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const bodyText =
+        typeof text === 'string' ? text : typeof message === 'string' ? message : '';
+      const resolvedOptimisticId =
+        typeof optimisticMessageId === 'string' && optimisticMessageId.trim()
+          ? optimisticMessageId.trim()
+          : randomUUID();
+
+      if (Array.isArray(media) && media.length > 0) {
+        const net = Number(priceNet) || 0;
+        const messageId = await maloumClient.sendMedia(loaded.creator, chatId, {
+          media,
+          text: bodyText,
+          priceNet: net,
+          optimisticMessageId: resolvedOptimisticId,
+        });
+        return res.status(201).json({
+          messageId,
+          message: { _id: messageId },
+          optimisticMessageId: resolvedOptimisticId,
+        });
+      }
+
+      if (!bodyText.trim()) {
+        return res.status(400).json({ error: 'Message text is required' });
+      }
+
+      const messageId = await maloumClient.sendText(loaded.creator, chatId, {
+        text: bodyText,
+        optimisticMessageId: resolvedOptimisticId,
+      });
+      return res.status(201).json({
+        messageId,
+        message: { _id: messageId },
+        optimisticMessageId: resolvedOptimisticId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Send Maloum message error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/vault/folders',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 15, 100);
+      const query = typeof req.query.query === 'string' ? req.query.query : '';
+      const next =
+        req.query.next !== undefined && req.query.next !== null && req.query.next !== ''
+          ? Number(req.query.next)
+          : undefined;
+      const folders = await maloumClient.listVaultFolders(loaded.creator, {
+        query,
+        limit,
+        next: Number.isFinite(next) ? next : undefined,
+      });
+      res.json({
+        next: folders?.next ?? null,
+        folders: Array.isArray(folders?.data)
+          ? folders.data
+          : Array.isArray(folders)
+            ? folders
+            : [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'List Maloum vault folders error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/vault/folders/:folderId/media',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, folderId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!folderId) {
+      return res.status(400).json({ error: 'folderId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 50, 100);
+      const fanId = typeof req.query.fanId === 'string' ? req.query.fanId : undefined;
+      const next =
+        req.query.next !== undefined && req.query.next !== null && req.query.next !== ''
+          ? Number(req.query.next)
+          : undefined;
+      const media = await maloumClient.listVaultMedia(loaded.creator, folderId, {
+        fanId,
+        limit,
+        next: Number.isFinite(next) ? next : undefined,
+      });
+      res.json({
+        next: media?.next ?? null,
+        items: Array.isArray(media?.data) ? media.data : Array.isArray(media) ? media : [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'List Maloum vault media error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/media',
+  async (req, res, next) => {
+    if (!req.headers.authorization && typeof req.query.access_token === 'string') {
+      req.headers.authorization = `Bearer ${req.query.access_token}`;
+    }
+    return authenticate(req, res, next);
+  },
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    const uploadId = typeof req.query.uploadId === 'string' ? req.query.uploadId : '';
+    const variant =
+      req.query.variant === 'full' ? 'full' : 'thumbnail';
+    const mediaUrl = typeof req.query.url === 'string' ? req.query.url : '';
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!uploadId && !mediaUrl) {
+      return res.status(400).json({ error: 'uploadId or url is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const canUseDiskCache =
+        Boolean(uploadId) &&
+        maloumMediaCache.isCacheableVariant(variant) &&
+        (!mediaUrl || maloumMediaCache.isCacheableUrl(mediaUrl));
+
+      if (canUseDiskCache) {
+        const cached = await maloumMediaCache.readCache(id, uploadId, variant);
+        if (cached) {
+          res.setHeader('Content-Type', cached.contentType);
+          res.setHeader('Content-Length', String(cached.buffer.length));
+          res.setHeader(
+            'Cache-Control',
+            'private, max-age=86400, stale-while-revalidate=604800'
+          );
+          res.setHeader('X-DomX-Media-Cache', 'HIT');
+          res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+          if (cached.etag) {
+            res.setHeader('ETag', cached.etag);
+          }
+          return res.status(200).end(cached.buffer);
+        }
+      }
+
+      if (!mediaUrl) {
+        return res.status(400).json({
+          error: 'url is required when media is not cached',
+        });
+      }
+
+      if (!maloumClient.isAllowedMediaUrl(mediaUrl)) {
+        return res.status(400).json({ error: 'Invalid or disallowed media URL' });
+      }
+
+      const upstream = await maloumClient.fetchMedia(loaded.creator, { url: mediaUrl });
+      if (!upstream.ok) {
+        return res.status(upstream.status || 502).json({ error: 'Failed to fetch media' });
+      }
+
+      const contentType =
+        upstream.headers.get('content-type') || 'application/octet-stream';
+      const etag = upstream.headers.get('etag') || null;
+
+      if (canUseDiskCache) {
+        res.setHeader(
+          'Cache-Control',
+          'private, max-age=86400, stale-while-revalidate=604800'
+        );
+        res.setHeader('X-DomX-Media-Cache', 'MISS');
+      } else {
+        res.setHeader('Cache-Control', 'private, max-age=300');
+        res.setHeader('X-DomX-Media-Cache', 'BYPASS');
+      }
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      if (etag) {
+        res.setHeader('ETag', etag);
+      }
+      res.status(upstream.status);
+
+      if (!upstream.body) {
+        return res.end();
+      }
+
+      const { Readable } = require('stream');
+      const nodeStream = Readable.fromWeb(upstream.body);
+
+      if (canUseDiskCache && upstream.status === 200) {
+        const chunks = [];
+        nodeStream.on('data', (chunk) => chunks.push(chunk));
+        nodeStream.on('error', (err) => {
+          console.warn('Maloum media stream error:', err.message);
+          if (!res.headersSent) {
+            res.status(502).end();
+          } else {
+            res.destroy(err);
+          }
+        });
+        nodeStream.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          if (!res.headersSent) {
+            res.setHeader('Content-Length', String(buffer.length));
+          }
+          res.end(buffer);
+          void maloumMediaCache.writeCache(id, uploadId, variant, {
+            buffer,
+            contentType,
+            etag,
+            url: mediaUrl,
+          });
+        });
+        return;
+      }
+
+      nodeStream.on('error', (err) => {
+        console.warn('Maloum media stream error:', err.message);
+        if (!res.headersSent) {
+          res.status(502).end();
+        } else {
+          res.destroy(err);
+        }
+      });
+      nodeStream.pipe(res);
+    } catch (err) {
+      return handleMaloumError(res, err, 'Proxy Maloum media error:');
     }
   }
 );

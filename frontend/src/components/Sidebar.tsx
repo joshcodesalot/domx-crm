@@ -68,9 +68,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   function handleMaloumNavigate(view: 'chat' | 'notifications' | 'message-pro') {
     setMaloumMenuOpen(false);
     if (view === 'message-pro') {
-      if (window.electronAPI?.openMessageProWindow) {
-        void window.electronAPI.openMessageProWindow();
-      }
+      navigate('/message-pro');
       return;
     }
     if (view === 'notifications') {

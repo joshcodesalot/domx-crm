@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Eye,
   EyeOff,
@@ -8,20 +8,19 @@ import {
 import CreatorAvatar from '@/components/CreatorAvatar';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import {
-  connectCreatorAccount,
   connectFourBasedAccount,
+  connectMaloumAccount,
   reconnectFourBasedAccount,
+  reconnectMaloumAccount,
   createCreator,
   discardCreatorConnect,
-  reconnectCreatorSession,
   saveCreatorAvatarFromMaloum,
   shouldFetchMaloumIcon,
-  type ConnectCreatorResponse,
   type CreateCreatorInput,
   type Creator,
 } from '@/lib/api';
 import { warmCreatorInBackground } from '@/lib/localMaloumSession';
-import type { BrowserBounds } from '@/types/electron';
+import type { PlaywrightCookie } from '@/types/electron';
 
 const inputClassName =
   'w-full px-3 py-2 text-sm border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-white/5 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500';
@@ -49,16 +48,31 @@ interface AddCreatorModalProps {
   reconnectCreator?: Creator | null;
 }
 
-function measureBounds(el: HTMLElement | null): BrowserBounds | null {
-  if (!el) return null;
-  const rect = el.getBoundingClientRect();
-  if (rect.width < 40 || rect.height < 40) return null;
-  return {
-    x: Math.round(rect.x),
-    y: Math.round(rect.y),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
-  };
+async function hydrateElectronMaloumSession({
+  accountId,
+  cookies,
+  origins,
+  savedAt,
+}: {
+  accountId: string;
+  cookies: PlaywrightCookie[];
+  origins: Array<{
+    origin: string;
+    localStorage: Array<{ name: string; value: string }>;
+  }>;
+  savedAt?: string | null;
+}) {
+  if (!window.electronAPI?.loadCreatorSession) {
+    return;
+  }
+
+  await window.electronAPI.loadCreatorSession({
+    accountId,
+    cookies,
+    origins,
+    force: true,
+    savedAt: savedAt || null,
+  });
 }
 
 export default function AddCreatorModal({
@@ -88,40 +102,25 @@ export default function AddCreatorModal({
   );
   const [accountToken, setAccountToken] = useState<string | null>(null);
   const [connectSucceeded, setConnectSucceeded] = useState(false);
-  const [browserVisible, setBrowserVisible] = useState(false);
-  const [manualLoginMode, setManualLoginMode] = useState(false);
 
   const accountIdRef = useRef<string | null>(reconnectCreator?.accountId || null);
   const connectSucceededRef = useRef(false);
-  const browserContainerRef = useRef<HTMLDivElement | null>(null);
-  const completingManualLoginRef = useRef(false);
 
-  const [title, subtitle] = isReconnect && step === 2
-    ? ([
-        platform === '4based' ? 'Reconnect 4based account' : 'Reconnect Maloum account',
-        platform === '4based'
-          ? `Sign in again to refresh the session for ${reconnectCreator?.displayName || 'this creator'}.`
-          : `Sign in again to refresh the session for ${reconnectCreator?.displayName || 'this creator'}.`,
-      ] as [string, string])
-    : step === 2
+  const proxyEnvLabel =
+    platform === '4based' ? 'FOURBASED_PROXY_URL' : 'MALOUM_PROXY_URL';
+
+  const [title, subtitle] =
+    isReconnect && step === 2
       ? ([
-          platform === '4based' ? 'Connect 4based account' : 'Connect Maloum account',
-          platform === '4based'
-            ? 'Enter credentials. Login uses the dedicated 4based proxy from the server (.env).'
-            : "Sign into your creator's Maloum account in the embedded browser.",
+          platform === '4based' ? 'Reconnect 4based account' : 'Reconnect Maloum account',
+          `Sign in again to refresh the session for ${reconnectCreator?.displayName || 'this creator'}.`,
         ] as [string, string])
-      : STEP_TITLES[step];
-
-  const hideLoginBrowser = useCallback(async () => {
-    if (!window.electronAPI) return;
-    try {
-      await window.electronAPI.hideLoginBrowser();
-    } catch {
-      // Best-effort cleanup
-    }
-    setBrowserVisible(false);
-    setManualLoginMode(false);
-  }, []);
+      : step === 2
+        ? ([
+            platform === '4based' ? 'Connect 4based account' : 'Connect Maloum account',
+            `Enter credentials. Login uses the dedicated ${proxyEnvLabel} proxy from the server (.env).`,
+          ] as [string, string])
+        : STEP_TITLES[step];
 
   const discardPendingConnect = useCallback(async () => {
     const id = accountIdRef.current;
@@ -138,12 +137,11 @@ export default function AddCreatorModal({
 
   const cleanup = useCallback(
     async (options?: { discardPending?: boolean }) => {
-      await hideLoginBrowser();
       if (options?.discardPending) {
         await discardPendingConnect();
       }
     },
-    [discardPendingConnect, hideLoginBrowser]
+    [discardPendingConnect]
   );
 
   useEffect(() => {
@@ -160,146 +158,6 @@ export default function AddCreatorModal({
     setAccountId(id);
     accountIdRef.current = id;
   }, [step, isReconnect]);
-
-  useEffect(() => {
-    return () => {
-      void hideLoginBrowser();
-    };
-  }, [hideLoginBrowser]);
-
-  const syncLoginBrowserBounds = useCallback(() => {
-    const bounds = measureBounds(browserContainerRef.current);
-    if (!bounds || !window.electronAPI) return;
-    void window.electronAPI.resizeLoginBrowser(bounds);
-  }, []);
-
-  useLayoutEffect(() => {
-    if (step !== 2 || !browserVisible || !window.electronAPI) return;
-
-    syncLoginBrowserBounds();
-    const observer = new ResizeObserver(syncLoginBrowserBounds);
-    if (browserContainerRef.current) {
-      observer.observe(browserContainerRef.current);
-    }
-    window.addEventListener('resize', syncLoginBrowserBounds);
-    const unsubscribe = window.electronAPI.onWindowResized(syncLoginBrowserBounds);
-
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', syncLoginBrowserBounds);
-      unsubscribe();
-    };
-  }, [step, browserVisible, syncLoginBrowserBounds]);
-
-  type CapturedMaloumSession = Omit<ConnectCreatorResponse, 'accountToken'> & {
-    accountToken?: string;
-  };
-
-  async function finalizeCapturedSession(captured: CapturedMaloumSession) {
-    if (!accountId) {
-      throw new Error('Session is not ready. Please try again.');
-    }
-
-    if (isReconnect && reconnectCreator) {
-      await reconnectCreatorSession(reconnectCreator.id, {
-        email: loginEmail.trim(),
-        cookies: captured.cookies,
-        origins: captured.origins,
-        displayName: captured.displayName,
-        username: captured.username,
-        postLoginUrl: captured.postLoginUrl,
-        avatarUrl: captured.avatarUrl,
-        ...(loginPassword.trim() ? { password: loginPassword } : {}),
-      });
-
-      if (
-        captured.avatarUrl &&
-        shouldFetchMaloumIcon({
-          profileImageUrl: captured.avatarUrl,
-          overwriteIcon: false,
-          currentAvatarUrl: reconnectCreator.avatarUrl,
-          avatarSource: reconnectCreator.avatarSource,
-        })
-      ) {
-        await saveCreatorAvatarFromMaloum(reconnectCreator.id, captured.avatarUrl, {
-          overwrite: false,
-          accountId,
-        });
-      }
-
-      await hideLoginBrowser();
-      setConnectSucceeded(false);
-      connectSucceededRef.current = false;
-      void warmCreatorInBackground(reconnectCreator.id, accountId);
-      onSaved();
-      onClose();
-      return;
-    }
-
-    const result = await connectCreatorAccount({
-      accountId: captured.accountId,
-      platform: 'maloum',
-      email: loginEmail.trim(),
-      cookies: captured.cookies,
-      origins: captured.origins,
-      displayName: captured.displayName,
-      username: captured.username,
-      postLoginUrl: captured.postLoginUrl,
-      avatarUrl: captured.avatarUrl,
-      ...(loginPassword.trim() ? { password: loginPassword } : {}),
-    });
-
-    setAccountToken(result.accountToken);
-
-    const sessionData: SessionData = {
-      displayName: result.displayName,
-      username: result.username || '',
-      postLoginUrl: result.postLoginUrl,
-      avatarUrl: result.avatarUrl,
-      profileImageUrl: result.avatarUrl,
-    };
-
-    await hideLoginBrowser();
-    setSession(sessionData);
-    setDisplayNameOverride(result.displayName);
-    setConnectSucceeded(true);
-    connectSucceededRef.current = true;
-    setManualLoginMode(false);
-    setStep(3);
-  }
-
-  const completeManualLogin = useCallback(async () => {
-    if (!window.electronAPI || !accountId || completingManualLoginRef.current) {
-      return;
-    }
-
-    completingManualLoginRef.current = true;
-    setConnecting(true);
-    setLoginError(null);
-
-    try {
-      syncLoginBrowserBounds();
-      const captured = await window.electronAPI.completeLoginCaptureFromActiveLogin(
-        accountId
-      );
-      await finalizeCapturedSession(captured);
-    } catch (err) {
-      setLoginError(err instanceof Error ? err.message : 'Failed to complete login');
-    } finally {
-      completingManualLoginRef.current = false;
-      setConnecting(false);
-    }
-  }, [accountId, isReconnect, loginEmail, reconnectCreator, syncLoginBrowserBounds]);
-
-  useEffect(() => {
-    if (!manualLoginMode || !window.electronAPI || !accountId) return;
-
-    const unsubscribe = window.electronAPI.onLoginDetected(() => {
-      void completeManualLogin();
-    });
-
-    return unsubscribe;
-  }, [manualLoginMode, accountId, completeManualLogin]);
 
   async function handleClose() {
     await cleanup({ discardPending: connectSucceeded && step < 3 && !isReconnect });
@@ -372,62 +230,105 @@ export default function AddCreatorModal({
     }
   }
 
-  async function handleConnectAccount() {
-    if (platform === '4based') {
-      await handleConnectFourBased();
-      return;
-    }
-
-    if (!window.electronAPI) {
-      setLoginError('Connecting Maloum accounts requires the DomX desktop app.');
-      return;
-    }
-
+  async function handleConnectMaloum() {
     if (!loginEmail.trim() || !loginPassword.trim()) {
       setLoginError('Email or username and password are required.');
       return;
     }
-
-    if (!accountId) {
+    if (!accountId && !isReconnect) {
       setLoginError('Session is not ready. Please try again.');
       return;
     }
 
     setLoginError(null);
     setConnecting(true);
-    setManualLoginMode(false);
 
     try {
-      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      const optionalProxy = proxyUrl.trim() || undefined;
 
-      const bounds = measureBounds(browserContainerRef.current);
-      if (!bounds) {
-        throw new Error('Login browser area is not ready. Please try again.');
+      if (isReconnect && reconnectCreator) {
+        const result = await reconnectMaloumAccount(reconnectCreator.id, {
+          email: loginEmail.trim(),
+          password: loginPassword,
+          ...(optionalProxy ? { proxyUrl: optionalProxy } : {}),
+        });
+
+        if (reconnectCreator.accountId) {
+          await hydrateElectronMaloumSession({
+            accountId: reconnectCreator.accountId,
+            cookies: (result.cookies || []) as PlaywrightCookie[],
+            origins: result.origins || [],
+            savedAt: result.sessionUpdatedAt,
+          });
+        }
+
+        if (
+          result.creator.avatarUrl &&
+          shouldFetchMaloumIcon({
+            profileImageUrl: result.creator.avatarUrl,
+            overwriteIcon: false,
+            currentAvatarUrl: reconnectCreator.avatarUrl,
+            avatarSource: reconnectCreator.avatarSource,
+          })
+        ) {
+          await saveCreatorAvatarFromMaloum(
+            reconnectCreator.id,
+            result.creator.avatarUrl,
+            {
+              overwrite: false,
+              accountId: reconnectCreator.accountId || undefined,
+            }
+          );
+        }
+
+        setConnectSucceeded(false);
+        connectSucceededRef.current = false;
+        if (reconnectCreator.accountId) {
+          void warmCreatorInBackground(reconnectCreator.id, reconnectCreator.accountId);
+        }
+        onSaved();
+        onClose();
+        return;
       }
 
-      setBrowserVisible(true);
-
-      const captured = await window.electronAPI.loginAndCaptureMaloumSession({
-        accountId,
+      const result = await connectMaloumAccount({
+        accountId: accountId!,
         email: loginEmail.trim(),
         password: loginPassword,
-        bounds,
+        ...(optionalProxy ? { proxyUrl: optionalProxy } : {}),
       });
 
-      await finalizeCapturedSession(captured);
+      await hydrateElectronMaloumSession({
+        accountId: result.accountId,
+        cookies: (result.cookies || []) as PlaywrightCookie[],
+        origins: result.origins || [],
+      });
+
+      setAccountToken(result.accountToken);
+      setSession({
+        displayName: result.displayName,
+        username: result.username || '',
+        postLoginUrl: result.postLoginUrl,
+        avatarUrl: result.avatarUrl,
+        profileImageUrl: result.avatarUrl,
+      });
+      setDisplayNameOverride(result.displayName);
+      setConnectSucceeded(true);
+      connectSucceededRef.current = true;
+      setStep(3);
     } catch (err) {
-      setBrowserVisible(true);
-      setManualLoginMode(true);
-      setLoginError(
-        err instanceof Error
-          ? `${err.message} Complete login in the browser below, then press Continue after login.`
-          : 'Failed to connect account. Complete login in the browser below, then press Continue after login.'
-      );
-      syncLoginBrowserBounds();
+      setLoginError(err instanceof Error ? err.message : 'Failed to connect Maloum account');
     } finally {
       setConnecting(false);
     }
+  }
+
+  async function handleConnectAccount() {
+    if (platform === '4based') {
+      await handleConnectFourBased();
+      return;
+    }
+    await handleConnectMaloum();
   }
 
   async function handleSaveCreator() {
@@ -497,8 +398,6 @@ export default function AddCreatorModal({
     return 'ml-2 text-xs text-gray-400 hidden sm:inline';
   }
 
-  const showBrowserPanel = browserVisible || manualLoginMode;
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <button
@@ -563,7 +462,7 @@ export default function AddCreatorModal({
                 <div>
                   <p className="font-medium text-sm">Maloum</p>
                   <p className="text-xs text-gray-500 dark:text-gray-400">
-                    The home for the world&apos;s hottest creators and their fans
+                    API-based connect with residential proxy
                   </p>
                 </div>
               </button>
@@ -593,16 +492,9 @@ export default function AddCreatorModal({
           {step === 2 && (
             <div className="space-y-4">
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                {platform === '4based'
-                  ? 'Login uses FOURBASED_PROXY_URL from the server (.env). Optional override below. If the proxy fails, the account is not saved.'
-                  : 'Login runs in DomX on this computer (not on the server), so Cloudflare treats it like a normal browser. If a security check appears below, complete it there.'}
+                Login uses {proxyEnvLabel} from the server (.env). Optional override below.
+                If the proxy fails, the account is not saved.
               </p>
-
-              {platform === 'maloum' && !window.electronAPI && (
-                <p className="text-sm text-red-600 dark:text-red-400">
-                  The DomX desktop app is required to connect Maloum accounts.
-                </p>
-              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -653,51 +545,29 @@ export default function AddCreatorModal({
                 </div>
               </div>
 
-              {platform === '4based' && (
-                <div>
-                  <label className="block text-sm font-medium mb-1.5">
-                    Proxy override{' '}
-                    <span className="text-gray-400 font-normal">(optional)</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={proxyUrl}
-                    onChange={(e) => setProxyUrl(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !connecting) void handleConnectAccount();
-                    }}
-                    placeholder="Leave blank to use FOURBASED_PROXY_URL"
-                    className={inputClassName}
-                    disabled={connecting}
-                  />
-                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    Default is the dedicated proxy in backend .env. Override only if needed.
-                  </p>
-                </div>
-              )}
+              <div>
+                <label className="block text-sm font-medium mb-1.5">
+                  Proxy override{' '}
+                  <span className="text-gray-400 font-normal">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={proxyUrl}
+                  onChange={(e) => setProxyUrl(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !connecting) void handleConnectAccount();
+                  }}
+                  placeholder={`Leave blank to use ${proxyEnvLabel}`}
+                  className={inputClassName}
+                  disabled={connecting}
+                />
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Default is the dedicated proxy in backend .env. Override only if needed.
+                </p>
+              </div>
 
               {loginError && (
                 <p className="text-sm text-red-600 dark:text-red-400">{loginError}</p>
-              )}
-
-              {platform === 'maloum' && (
-                <div
-                  ref={browserContainerRef}
-                  className={`relative rounded-lg border border-gray-200 dark:border-white/10 bg-[#f8f9fa] dark:bg-[#0d0d0d] overflow-hidden ${
-                    showBrowserPanel ? 'min-h-[360px]' : 'min-h-[120px]'
-                  }`}
-                >
-                  {!showBrowserPanel && (
-                    <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 px-4 text-center">
-                      Click Connect Account to open Maloum login here.
-                    </div>
-                  )}
-                  {connecting && showBrowserPanel && (
-                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-black/20">
-                      {manualLoginMode ? 'Waiting for Maloum login…' : 'Opening Maloum login…'}
-                    </div>
-                  )}
-                </div>
               )}
             </div>
           )}
@@ -766,10 +636,7 @@ export default function AddCreatorModal({
           {step > 1 && !isReconnect ? (
             <button
               type="button"
-              onClick={() => {
-                void hideLoginBrowser();
-                setStep((s) => s - 1);
-              }}
+              onClick={() => setStep((s) => s - 1)}
               disabled={connecting}
               className="px-4 py-2 text-sm font-medium border border-gray-200 dark:border-white/10 rounded-lg hover:bg-gray-50 dark:hover:bg-white/5 transition-colors disabled:opacity-50"
             >
@@ -788,24 +655,11 @@ export default function AddCreatorModal({
               Cancel
             </button>
 
-            {step === 2 && manualLoginMode && (
-              <button
-                type="button"
-                onClick={() => void completeManualLogin()}
-                disabled={connecting || !window.electronAPI}
-                className="px-4 py-2 text-sm font-medium border border-brand-600 text-brand-600 rounded-lg hover:bg-brand-50 dark:hover:bg-brand-900/10 transition-colors disabled:opacity-50"
-              >
-                {connecting ? 'Continuing…' : 'Continue after login'}
-              </button>
-            )}
-
             {step === 2 && (
               <button
                 type="button"
                 onClick={() => void handleConnectAccount()}
-                disabled={
-                  connecting || (platform === 'maloum' && !window.electronAPI)
-                }
+                disabled={connecting}
                 className="px-4 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-500 rounded-lg transition-colors disabled:opacity-50"
               >
                 {connecting

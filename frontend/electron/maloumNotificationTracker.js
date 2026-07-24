@@ -6,6 +6,7 @@ const { getApiUrl } = require('./apiConfig');
 
 const NOTIFICATION_POLL_INTERVAL_MS = 20000;
 const SALE_NOTIFICATION_TYPE = 'CHAT_PRODUCT_SOLD';
+const TIP_NOTIFICATION_TYPE = 'FAN_TIPPED';
 
 const DOMX_API_BASE = getApiUrl();
 const DOMX_SERVICE_KEY = process.env.DOMX_ELECTRON_SERVICE_KEY || '';
@@ -29,7 +30,17 @@ function isMaloumNotificationsUrl(url, method = 'GET') {
   return method === 'GET' && NOTIFICATIONS_API_REGEX.test(url || '');
 }
 
-function parseSaleNotifications(responseBody) {
+function parseNet(rawNet) {
+  if (typeof rawNet === 'number') {
+    return rawNet;
+  }
+  if (typeof rawNet === 'string' && rawNet.trim() !== '') {
+    return Number.parseFloat(rawNet);
+  }
+  return NaN;
+}
+
+function parseTrackedNotifications(responseBody) {
   if (!responseBody) {
     return [];
   }
@@ -40,18 +51,15 @@ function parseSaleNotifications(responseBody) {
 
     return data
       .map((entry) => {
-        if (entry?.type !== SALE_NOTIFICATION_TYPE || !entry?.messageId) {
+        const type = entry?.type;
+        if (
+          (type !== SALE_NOTIFICATION_TYPE && type !== TIP_NOTIFICATION_TYPE) ||
+          !entry?.messageId
+        ) {
           return null;
         }
 
-        const rawNet = entry.net;
-        const net =
-          typeof rawNet === 'number'
-            ? rawNet
-            : typeof rawNet === 'string' && rawNet.trim() !== ''
-              ? Number.parseFloat(rawNet)
-              : NaN;
-
+        const net = parseNet(entry.net);
         if (!Number.isFinite(net)) {
           return null;
         }
@@ -64,11 +72,16 @@ function parseSaleNotifications(responseBody) {
         }
 
         return {
+          type,
           notificationId,
           messageId,
           net,
           fanId: entry.fanId ? String(entry.fanId) : null,
-          fanUsername: entry.fanUsername ? String(entry.fanUsername) : null,
+          fanUsername: entry.fanUsername
+            ? String(entry.fanUsername)
+            : entry.fanNickname
+              ? String(entry.fanNickname)
+              : null,
           createdAt: entry.createdAt || null,
         };
       })
@@ -126,15 +139,75 @@ async function applyUnlockSale(notification) {
   }
 }
 
-async function processSaleNotifications(responseBody) {
-  const sales = parseSaleNotifications(responseBody);
+async function applyLogTip(notification, creatorId) {
+  if (!notification?.messageId || processedNotificationIds.has(notification.notificationId)) {
+    return { updated: false };
+  }
 
-  for (const sale of sales) {
-    await applyUnlockSale(sale);
+  if (!DOMX_SERVICE_KEY) {
+    return { updated: false, reason: 'missing_service_key' };
+  }
+
+  if (!creatorId) {
+    return { updated: false, reason: 'missing_creator_id' };
+  }
+
+  try {
+    const response = await fetch(`${DOMX_API_BASE}/api/messaging-dashboard/internal/log-tip`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-DomX-Service-Key': DOMX_SERVICE_KEY,
+      },
+      body: JSON.stringify({
+        creatorId,
+        fanId: notification.fanId,
+        fanUsername: notification.fanUsername,
+        maloumMessageId: notification.messageId,
+        priceNet: notification.net,
+        notificationId: notification.notificationId,
+        createdAt: notification.createdAt,
+      }),
+    });
+
+    if (!response.ok) {
+      return { updated: false, reason: `http_${response.status}` };
+    }
+
+    const payload = await response.json();
+
+    if (payload?.updated || payload?.reason === 'already_logged') {
+      processedNotificationIds.add(notification.notificationId);
+    }
+
+    if (payload?.updated && payload?.entry && mainWindowRef && !mainWindowRef.isDestroyed()) {
+      mainWindowRef.webContents.send('dashboard:entry-updated', {
+        entry: payload.entry,
+      });
+    }
+
+    return payload;
+  } catch (error) {
+    return {
+      updated: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
-async function handleNotificationsResponse(requestId, debuggerSession) {
+async function processTrackedNotifications(responseBody, creatorId) {
+  const entries = parseTrackedNotifications(responseBody);
+
+  for (const entry of entries) {
+    if (entry.type === SALE_NOTIFICATION_TYPE) {
+      await applyUnlockSale(entry);
+    } else if (entry.type === TIP_NOTIFICATION_TYPE) {
+      await applyLogTip(entry, creatorId);
+    }
+  }
+}
+
+async function handleNotificationsResponse(requestId, debuggerSession, accountId) {
   if (!notificationRequestIds.has(requestId)) {
     return;
   }
@@ -159,7 +232,7 @@ async function handleNotificationsResponse(requestId, debuggerSession) {
     return;
   }
 
-  await processSaleNotifications(responseBody);
+  await processTrackedNotifications(responseBody, accountId);
 }
 
 function captureMaloumAuthToken(accountId, params) {
@@ -335,7 +408,7 @@ async function triggerNotificationsFetch(webContents, accountId) {
     const responseBody = response.ok && body.length > 0 ? body : null;
 
     if (responseBody) {
-      await processSaleNotifications(responseBody);
+      await processTrackedNotifications(responseBody, accountId);
     }
   } catch {
     // Best-effort polling only.
@@ -431,7 +504,7 @@ async function installMaloumNotificationTracker(webContents, accountId) {
       }
 
       if (method === 'Network.loadingFinished') {
-        await handleNotificationsResponse(params.requestId, debuggerSession);
+        await handleNotificationsResponse(params.requestId, debuggerSession, accountId);
       }
     } catch (error) {
       console.warn('Maloum notification tracker CDP handler error:', error);
@@ -469,6 +542,7 @@ module.exports = {
   setMainWindow,
   installMaloumNotificationTracker,
   uninstallMaloumNotificationTracker,
-  parseSaleNotifications,
+  parseTrackedNotifications,
   applyUnlockSale,
+  applyLogTip,
 };

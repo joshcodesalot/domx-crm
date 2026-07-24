@@ -12,7 +12,7 @@ import Login from '@/pages/Login';
 import SetupOwner from '@/pages/SetupOwner';
 import ManageCreators from '@/pages/ManageCreators';
 import ManageStaff from '@/pages/ManageStaff';
-import Chatter from '@/pages/Chatter';
+import ChatterMaloum from '@/pages/ChatterMaloum';
 import Chatter4Based from '@/pages/Chatter4Based';
 import MessagePro from '@/pages/MessagePro';
 import MessagingDashboard from '@/pages/MessagingDashboard';
@@ -27,8 +27,7 @@ function PersistentFourBasedPanel() {
   const [everOpened, setEverOpened] = useState(false);
 
   const isActive = location.pathname === '/chatter/4based';
-  const canView =
-    isAuthenticated && hasPermission('creators.view');
+  const canView = isAuthenticated && hasPermission('creators.view');
 
   useEffect(() => {
     if (isActive && canView) {
@@ -57,11 +56,50 @@ function PersistentFourBasedPanel() {
   );
 }
 
+/**
+ * Keeps Maloum API chat mounted after first visit (same pattern as 4based).
+ */
+function PersistentMaloumPanel() {
+  const location = useLocation();
+  const { isAuthenticated, hasPermission } = useAuth();
+  const [everOpened, setEverOpened] = useState(false);
+
+  const isActive = location.pathname === '/chatter';
+  const canView = isAuthenticated && hasPermission('creators.view');
+
+  useEffect(() => {
+    if (isActive && canView) {
+      setEverOpened(true);
+    }
+  }, [isActive, canView]);
+
+  useEffect(() => {
+    if (!canView) {
+      setEverOpened(false);
+    }
+  }, [canView]);
+
+  if (!everOpened || !canView) {
+    return null;
+  }
+
+  return (
+    <div
+      className={isActive ? 'contents' : 'hidden'}
+      aria-hidden={!isActive}
+      style={isActive ? undefined : { display: 'none' }}
+    >
+      <ChatterMaloum />
+    </div>
+  );
+}
+
 function AppRoutes() {
   return (
     <HashRouter>
       <StaffSyncProvider>
         <PersistentFourBasedPanel />
+        <PersistentMaloumPanel />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/setup" element={<SetupOwner />} />
@@ -79,7 +117,8 @@ function AppRoutes() {
                 <Route path="/staff/manage" element={<ManageStaff />} />
               </Route>
               <Route element={<PermissionRoute permission="creators.view" />}>
-                <Route path="/chatter" element={<Chatter />} />
+                {/* Placeholder — real panel is mounted by PersistentMaloumPanel */}
+                <Route path="/chatter" element={null} />
                 {/* Placeholder — real panel is mounted by PersistentFourBasedPanel */}
                 <Route path="/chatter/4based" element={null} />
               </Route>

@@ -794,6 +794,67 @@ export async function updateMessagingDashboardPurchased(
   );
 }
 
+// --- Maloum API connect ---
+
+export interface ConnectMaloumInput {
+  accountId: string;
+  email: string;
+  password: string;
+  /** Optional override; backend uses MALOUM_PROXY_URL when omitted. */
+  proxyUrl?: string;
+  displayName?: string;
+  username?: string;
+}
+
+export interface ConnectMaloumResponse {
+  accountToken: string;
+  accountId: string;
+  partitionId: string;
+  displayName: string;
+  username: string | null;
+  postLoginUrl: string;
+  avatarUrl: string | null;
+  providerUserId: string | null;
+  cookies: ConnectCreatorResponse['cookies'];
+  origins: ConnectCreatorResponse['origins'];
+}
+
+export async function connectMaloumAccount(
+  input: ConnectMaloumInput
+): Promise<ConnectMaloumResponse> {
+  return request<ConnectMaloumResponse>('/api/creators/connect', {
+    method: 'POST',
+    body: JSON.stringify({
+      accountId: input.accountId,
+      platform: 'maloum',
+      email: input.email,
+      password: input.password,
+      ...(input.proxyUrl ? { proxyUrl: input.proxyUrl } : {}),
+      ...(input.displayName ? { displayName: input.displayName } : {}),
+      ...(input.username ? { username: input.username } : {}),
+    }),
+  });
+}
+
+export async function reconnectMaloumAccount(
+  creatorId: string,
+  input: { email: string; password: string; proxyUrl?: string }
+): Promise<{
+  creator: Creator;
+  cookies: ConnectCreatorResponse['cookies'];
+  origins: ConnectCreatorResponse['origins'];
+  sessionUpdatedAt: string | null;
+}> {
+  return request(`/api/creators/${creatorId}/maloum/reconnect`, {
+    method: 'POST',
+    body: JSON.stringify({
+      email: input.email,
+      password: input.password,
+      ...(input.proxyUrl ? { proxyUrl: input.proxyUrl } : {}),
+    }),
+  });
+}
+
 // --- 4based ---
 
 export interface ConnectFourBasedInput {
@@ -1101,6 +1162,274 @@ export function fourBasedPreviewPath(
   size: string = '500x500.jpg'
 ): string {
   return `protected/${providerUserId}/${fileStackId}/preview/${size}`;
+}
+
+/* ─── Maloum chat / vault API ─────────────────────────────────────────── */
+
+export interface MaloumChatPartner {
+  _id?: string;
+  username?: string;
+  nickname?: string;
+  isCreator?: boolean;
+  isTrusted?: boolean;
+  totalSpendForCreator?: number;
+  chatAccessSettings?: unknown;
+  [key: string]: unknown;
+}
+
+export interface MaloumLastMessage {
+  _id?: string;
+  sentAt?: string;
+  type?: string;
+  text?: string;
+  priceCurrency?: string;
+  senderId?: string;
+  [key: string]: unknown;
+}
+
+export interface MaloumChat {
+  _id: string;
+  createdAt?: string;
+  unreadMessages?: boolean;
+  inbox?: string;
+  chatPartner?: MaloumChatPartner;
+  lastRelevantMessage?: MaloumLastMessage;
+  taggedLists?: unknown[];
+  unlocked?: boolean;
+  hasMediaGallery?: boolean;
+  chatPartnerBlockedByCurrentUser?: boolean;
+  currentUserBlockedByChatPartner?: boolean;
+  [key: string]: unknown;
+}
+
+export interface MaloumMediaAsset {
+  uploadId?: string;
+  mediaId?: string;
+  uploadStatus?: string;
+  type?: string;
+  url?: string;
+  width?: number;
+  height?: number;
+  length?: number;
+  [key: string]: unknown;
+}
+
+export interface MaloumMessageContent {
+  type?: string;
+  text?: string;
+  media?: MaloumMediaAsset[];
+  thumbnails?: MaloumMediaAsset[];
+  priceNet?: number;
+  [key: string]: unknown;
+}
+
+export interface MaloumMessage {
+  _id: string;
+  chat?: string;
+  readAt?: string | null;
+  senderId?: string;
+  sentAt?: string;
+  isBroadcasted?: boolean;
+  content?: MaloumMessageContent;
+  isBought?: boolean;
+  [key: string]: unknown;
+}
+
+export interface MaloumVaultFolder {
+  _id: string;
+  createdAt?: string;
+  name?: string;
+  isManaged?: boolean;
+  pictureCount?: number;
+  videoCount?: number;
+  mostRecentMediaThumbnails?: MaloumMediaAsset[];
+  [key: string]: unknown;
+}
+
+export interface MaloumVaultMediaItem {
+  media?: MaloumMediaAsset;
+  thumbnail?: MaloumMediaAsset;
+  [key: string]: unknown;
+}
+
+export async function listMaloumChats(
+  creatorId: string,
+  options: { limit?: number; next?: string } = {}
+): Promise<{ chats: MaloumChat[]; next: string | null; providerUserId: string | null }> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.next) params.set('next', options.next);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/chats${query ? `?${query}` : ''}`
+  );
+}
+
+export async function getMaloumUnreadCount(
+  creatorId: string
+): Promise<{ unread: number }> {
+  const badges = await getMaloumBadges(creatorId);
+  return { unread: badges.messages };
+}
+
+export async function getMaloumBadges(
+  creatorId: string
+): Promise<{ messages: number; notifications: number }> {
+  return request(`/api/creators/${creatorId}/maloum/badges`);
+}
+
+export async function getMaloumNotifications(
+  creatorId: string,
+  options: { limit?: number; next?: string } = {}
+): Promise<{
+  notifications: Array<Record<string, unknown>>;
+  next: string | null;
+  providerUserId: string | null;
+}> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.next) params.set('next', options.next);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/notifications${query ? `?${query}` : ''}`
+  );
+}
+
+export async function getMaloumChat(
+  creatorId: string,
+  chatId: string
+): Promise<{ chat: MaloumChat; providerUserId: string | null }> {
+  return request(`/api/creators/${creatorId}/maloum/chats/${encodeURIComponent(chatId)}`);
+}
+
+export async function getMaloumMessages(
+  creatorId: string,
+  chatId: string,
+  options: { limit?: number; next?: string } = {}
+): Promise<{
+  messages: MaloumMessage[];
+  next: string | null;
+  providerUserId: string | null;
+}> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.next) params.set('next', options.next);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/chats/${encodeURIComponent(chatId)}/messages${
+      query ? `?${query}` : ''
+    }`
+  );
+}
+
+export async function sendMaloumMessage(
+  creatorId: string,
+  chatId: string,
+  payload: {
+    message?: string;
+    text?: string;
+    media?: Array<{
+      mediaId: string;
+      type?: string;
+      width?: number;
+      height?: number;
+    }>;
+    priceNet?: number;
+    optimisticMessageId?: string;
+  }
+): Promise<{
+  messageId: string;
+  message: { _id: string };
+  optimisticMessageId: string;
+}> {
+  return request(
+    `/api/creators/${creatorId}/maloum/chats/${encodeURIComponent(chatId)}/messages`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function sendMaloumPpv(
+  creatorId: string,
+  chatId: string,
+  payload: {
+    text?: string;
+    message?: string;
+    media: Array<{
+      mediaId: string;
+      type?: string;
+      width?: number;
+      height?: number;
+    }>;
+    priceNet: number;
+    optimisticMessageId?: string;
+  }
+): Promise<{
+  messageId: string;
+  message: { _id: string };
+  optimisticMessageId: string;
+}> {
+  return sendMaloumMessage(creatorId, chatId, payload);
+}
+
+export async function listMaloumVaultFolders(
+  creatorId: string,
+  options: { query?: string; limit?: number; next?: number } = {}
+): Promise<{
+  folders: MaloumVaultFolder[];
+  next: number | null;
+  providerUserId: string | null;
+}> {
+  const params = new URLSearchParams();
+  if (options.query) params.set('query', options.query);
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.next != null) params.set('next', String(options.next));
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/vault/folders${query ? `?${query}` : ''}`
+  );
+}
+
+export async function listMaloumVaultMedia(
+  creatorId: string,
+  folderId: string,
+  options: { fanId?: string; limit?: number; next?: number } = {}
+): Promise<{
+  items: MaloumVaultMediaItem[];
+  next: number | null;
+  providerUserId: string | null;
+}> {
+  const params = new URLSearchParams();
+  if (options.fanId) params.set('fanId', options.fanId);
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.next != null) params.set('next', String(options.next));
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/vault/folders/${encodeURIComponent(folderId)}/media${
+      query ? `?${query}` : ''
+    }`
+  );
+}
+
+/** Build a Maloum media-proxy URL for use in <img src>. Includes DomX access token. */
+export function maloumMediaUrl(
+  creatorId: string,
+  options: {
+    uploadId?: string | null;
+    variant?: 'thumbnail' | 'full';
+    url?: string | null;
+  }
+): string {
+  const token = getToken() || '';
+  const params = new URLSearchParams({
+    access_token: token,
+    variant: options.variant || 'thumbnail',
+  });
+  if (options.uploadId) params.set('uploadId', options.uploadId);
+  if (options.url) params.set('url', options.url);
+  return `${API_URL}/api/creators/${creatorId}/maloum/media?${params.toString()}`;
 }
 
 export interface TranslateHistoryItem {
