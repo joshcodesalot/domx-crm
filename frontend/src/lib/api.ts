@@ -187,6 +187,10 @@ export interface CreatorSessionResponse {
   avatarUrl: string | null;
   cookies: ConnectCreatorResponse['cookies'];
   origins: ConnectCreatorResponse['origins'];
+  /** Cloudflare-bypass User-Agent that earned cf_clearance (Electron must reuse). */
+  userAgent?: string | null;
+  /** Creator residential proxy — required with cf_clearance (same exit IP). */
+  proxyUrl?: string | null;
   sessionUpdatedAt: string | null;
 }
 
@@ -365,6 +369,16 @@ export function clearToken(): void {
   localStorage.removeItem('domx_token');
 }
 
+/** DomX JWT auth failures only — not Maloum/4based "Unauthorized". */
+function isDomxAuthFailure(status: number, error: unknown): boolean {
+  if (status !== 401) return false;
+  const message = typeof error === 'string' ? error : '';
+  return (
+    message === 'Authentication required' ||
+    message === 'Invalid or expired token'
+  );
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {}
@@ -386,13 +400,13 @@ async function request<T>(
 
   const data = await response.json().catch(() => ({}));
 
-  if (response.status === 401 && token) {
+  if (isDomxAuthFailure(response.status, (data as { error?: string }).error) && token) {
     clearToken();
     window.dispatchEvent(new CustomEvent('domx:session-expired'));
   }
 
   if (!response.ok) {
-    throw new Error(data.error || 'Request failed');
+    throw new Error((data as { error?: string }).error || 'Request failed');
   }
 
   return data as T;
@@ -662,6 +676,16 @@ export async function refreshMaloumAvatar(
 ): Promise<{ creator: Creator; skipped?: boolean; reason?: string }> {
   return request<{ creator: Creator; skipped?: boolean; reason?: string }>(
     `/api/creators/${creatorId}/maloum/refresh-avatar`,
+    { method: 'POST' }
+  );
+}
+
+/** Validate Maloum Bearer session via CF bypass; updates lastValidatedAt. */
+export async function verifyMaloumSession(
+  creatorId: string
+): Promise<{ ok: boolean; creator: Creator }> {
+  return request<{ ok: boolean; creator: Creator }>(
+    `/api/creators/${creatorId}/maloum/verify-session`,
     { method: 'POST' }
   );
 }

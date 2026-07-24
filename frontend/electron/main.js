@@ -55,6 +55,7 @@ const {
   startUpdateChecks,
 } = require('./ipc/updater');
 const { applyWebContentsGuards } = require('./webContentsGuards');
+const { loadMaloumPartitionSession } = require('./maloumPartitionSession');
 
 const isDev = !app.isPackaged;
 
@@ -62,6 +63,12 @@ let mainWindow = null;
 
 function getMainWindow() {
   return mainWindow;
+}
+
+function registerMaloumSessionIpc() {
+  ipcMain.handle('maloum:load-partition-session', async (_event, payload) => {
+    return loadMaloumPartitionSession(payload || {});
+  });
 }
 
 function createWindow() {
@@ -104,6 +111,7 @@ function createWindow() {
 async function bootstrap() {
   Menu.setApplicationMenu(null);
   registerUpdaterIpc(ipcMain);
+  registerMaloumSessionIpc();
 
   if (!isDev) {
     await runInitialUpdateCheck();

@@ -53,6 +53,19 @@ export interface ElectronAPI {
   getUpdaterState: () => Promise<UpdaterState>;
   installUpdateNow: () => Promise<{ ok: boolean; reason?: string }>;
   openMacDownload: () => Promise<{ ok: boolean; reason?: string }>;
+  loadMaloumPartitionSession?: (payload: {
+    accountId: string;
+    cookies?: Array<Record<string, unknown>>;
+    proxyUrl?: string | null;
+    userAgent?: string | null;
+  }) => Promise<{
+    accountId: string;
+    partitionId: string;
+    userAgent: string;
+    proxyConfigured: boolean;
+    imported: number;
+    failed: number;
+  }>;
   onUpdaterChecking: (callback: (state: UpdaterState) => void) => () => void;
   onUpdaterBlocked: (callback: (state: UpdaterState) => void) => () => void;
   onUpdaterAvailable: (callback: (state: UpdaterState) => void) => () => void;

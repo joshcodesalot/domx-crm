@@ -157,7 +157,7 @@ export function StaffSyncProvider({ children }: { children: ReactNode }) {
           signal: controller.signal,
         });
 
-        if (response.status === 401) {
+    if (response.status === 401) {
           clearToken();
           window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
           return;

@@ -6,6 +6,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getUpdaterState: () => ipcRenderer.invoke('updater:get-state'),
   installUpdateNow: () => ipcRenderer.invoke('updater:install-now'),
   openMacDownload: () => ipcRenderer.invoke('updater:open-mac-download'),
+  /**
+   * Apply Maloum proxy + CF-bypass User-Agent, then import clearance cookies
+   * into persist:creator-{accountId}. Required before browser Verify Session.
+   */
+  loadMaloumPartitionSession: (payload) =>
+    ipcRenderer.invoke('maloum:load-partition-session', payload),
   onUpdaterChecking: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('updater:checking', listener);

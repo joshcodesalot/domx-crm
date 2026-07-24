@@ -248,7 +248,6 @@ async function requestJson({
   contentType,
   rawBody,
 }) {
-  const dispatcher = createDispatcher(proxyUrl);
   const headers = baseHeaders({ accessToken, timezone });
 
   let requestBody;
@@ -265,6 +264,25 @@ async function requestJson({
     delete headers['content-type'];
   }
 
+  const { resolveCfBypassBaseUrl } = require('./maloumCfBypass');
+  if (resolveCfBypassBaseUrl()) {
+    const viaBypass = await tryRequestJsonViaCfBypass({
+      method,
+      path,
+      proxyUrl,
+      headers,
+      requestBody,
+      prefer: true,
+    });
+    if (viaBypass) {
+      return viaBypass;
+    }
+    console.warn(
+      `[maloumClient] CF bypass unavailable for ${method} ${path}; falling back to undici`
+    );
+  }
+
+  const dispatcher = createDispatcher(proxyUrl);
   let response;
   try {
     response = await undiciFetch(`${API_BASE}${path}`, {
@@ -278,7 +296,18 @@ async function requestJson({
   }
 
   const text = await response.text();
+  const responseContentType = response.headers.get('content-type') || '';
   const parsed = parseJsonSafe(text);
+
+  if (
+    !response.ok &&
+    isCloudflareBlocked(response.status, text, responseContentType)
+  ) {
+    throw new MaloumApiError(
+      'Maloum blocked this request (Cloudflare/proxy). Rotate MALOUM_PROXY_URL and retry.',
+      403
+    );
+  }
 
   if (!response.ok) {
     const message =
@@ -292,6 +321,73 @@ async function requestJson({
     status: response.status,
     data: parsed !== null ? parsed : text,
     text,
+  };
+}
+
+/**
+ * Maloum JSON API via CloudflareBypassForScraping mirror.
+ * Returns the same shape as requestJson, or null if bypass is unavailable.
+ */
+async function tryRequestJsonViaCfBypass({
+  method,
+  path,
+  proxyUrl,
+  headers,
+  requestBody,
+  prefer = false,
+}) {
+  const {
+    resolveCfBypassBaseUrl,
+    mirrorMaloumRequest,
+  } = require('./maloumCfBypass');
+  if (!resolveCfBypassBaseUrl()) {
+    return null;
+  }
+
+  if (prefer) {
+    console.log(`[maloumClient] ${method} ${path} via CF bypass`);
+  } else {
+    console.warn(
+      `[maloumClient] ${method} ${path} blocked by Cloudflare; retrying via CF bypass`
+    );
+  }
+
+  let mirrored;
+  try {
+    mirrored = await mirrorMaloumRequest({
+      method,
+      path,
+      proxyUrl,
+      headers,
+      body: requestBody,
+    });
+  } catch (err) {
+    if (err?.code === 'CF_BYPASS_UNAVAILABLE' || err?.status === 503) {
+      console.warn('[maloumClient] CF bypass unavailable:', err.message);
+      return null;
+    }
+    throw err;
+  }
+
+  if (isCloudflareBlocked(mirrored.status, mirrored.text, mirrored.contentType)) {
+    throw new MaloumApiError(
+      'Maloum blocked this request (Cloudflare/proxy). Rotate MALOUM_PROXY_URL and retry.',
+      403
+    );
+  }
+
+  if (!mirrored.ok) {
+    const message =
+      mirrored.parsed?.message ||
+      mirrored.parsed?.error ||
+      `Maloum request failed (${mirrored.status})`;
+    throw new MaloumApiError(message, mirrored.status, mirrored.parsed);
+  }
+
+  return {
+    status: mirrored.status,
+    data: mirrored.parsed !== null ? mirrored.parsed : mirrored.text,
+    text: mirrored.text,
   };
 }
 
@@ -635,8 +731,54 @@ async function fetchCurrentUser({ accessToken, proxyUrl, timezone }) {
 }
 
 /**
- * Server-side Maloum login via api.maloum.com through the required US residential proxy.
- * On Cloudflare 403, falls back once to headless Playwright+stealth (same proxy).
+ * After primary login path fails Cloudflare: CF bypass (if not already tried), then Playwright.
+ */
+async function loginAfterCloudflareBlock({
+  usernameOrEmail,
+  password,
+  proxyUrl,
+  skipBypass = false,
+}) {
+  const { resolveCfBypassBaseUrl, loginViaCfBypass } = require('./maloumCfBypass');
+  const bypassBase = resolveCfBypassBaseUrl();
+
+  if (bypassBase && !skipBypass) {
+    try {
+      console.warn(
+        `[maloumClient] Cloudflare blocked; mirroring login via ${bypassBase}`
+      );
+      return await loginViaCfBypass({
+        usernameOrEmail,
+        password,
+        proxyUrl,
+      });
+    } catch (err) {
+      if (err instanceof WrongPasswordError) {
+        throw err;
+      }
+      if (err?.code === 'CF_BYPASS_UNAVAILABLE' || err?.status === 503) {
+        console.warn(
+          '[maloumClient] CF bypass unavailable, falling back to Playwright:',
+          err.message
+        );
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  console.warn('[maloumClient] trying Playwright Cloudflare bypass');
+  const { loginWithBrowser } = require('./maloumLoginBrowser');
+  return loginWithBrowser({
+    usernameOrEmail,
+    password,
+    proxyUrl,
+  });
+}
+
+/**
+ * Server-side Maloum login. Prefers CloudflareBypassForScraping mirror when configured
+ * (default http://127.0.0.1:8000); undici+proxy otherwise; Playwright last resort.
  */
 async function login({
   usernameOrEmail,
@@ -653,64 +795,92 @@ async function login({
 
   let session = null;
 
-  const dispatcher = createDispatcher(resolvedProxy);
-  let response;
-  try {
-    response = await undiciFetch(`${API_BASE}/user-management/login`, {
-      method: 'POST',
-      headers: baseHeaders({ timezone }),
-      body: JSON.stringify({
+  const { resolveCfBypassBaseUrl, loginViaCfBypass } = require('./maloumCfBypass');
+  const bypassBase = resolveCfBypassBaseUrl();
+
+  if (bypassBase) {
+    console.log(`[maloumClient] login via CF bypass ${bypassBase}`);
+    try {
+      session = await loginViaCfBypass({
         usernameOrEmail: identifier,
-        password: String(password),
-      }),
-      dispatcher,
-    });
-  } catch (err) {
-    throw proxyFailureError(err);
+        password,
+        proxyUrl: resolvedProxy,
+      });
+    } catch (err) {
+      if (err instanceof WrongPasswordError) {
+        throw err;
+      }
+      if (err?.code === 'CF_BYPASS_UNAVAILABLE' || err?.status === 503) {
+        console.warn(
+          '[maloumClient] CF bypass unavailable for login; falling back to undici:',
+          err.message
+        );
+      } else {
+        throw err;
+      }
+    }
   }
 
-  const text = await response.text();
-  const contentType = response.headers.get('content-type') || '';
-  const parsed = parseJsonSafe(text);
+  if (!session) {
+    const dispatcher = createDispatcher(resolvedProxy);
+    let response;
+    try {
+      response = await undiciFetch(`${API_BASE}/user-management/login`, {
+        method: 'POST',
+        headers: baseHeaders({ timezone }),
+        body: JSON.stringify({
+          usernameOrEmail: identifier,
+          password: String(password),
+        }),
+        dispatcher,
+      });
+    } catch (err) {
+      throw proxyFailureError(err);
+    }
 
-  if (response.status === 401) {
-    throw new WrongPasswordError('Password not correct');
-  }
+    const text = await response.text();
+    const contentType = response.headers.get('content-type') || '';
+    const parsed = parseJsonSafe(text);
 
-  if (response.ok) {
-    session = extractSessionTokens(parsed);
-    if (!session?.access_token || !session?.refresh_token) {
+    if (response.status === 401) {
+      throw new WrongPasswordError('Password not correct');
+    }
+
+    if (response.ok) {
+      session = extractSessionTokens(parsed);
+      if (!session?.access_token || !session?.refresh_token) {
+        throw new MaloumApiError(
+          'Login response missing access or refresh token',
+          502,
+          parsed
+        );
+      }
+    } else if (isCloudflareBlocked(response.status, text, contentType)) {
+      console.warn(
+        '[maloumClient] undici login blocked by Cloudflare:',
+        response.status,
+        contentType,
+        text.slice(0, 200)
+      );
+      session = await loginAfterCloudflareBlock({
+        usernameOrEmail: identifier,
+        password,
+        proxyUrl: resolvedProxy,
+        skipBypass: Boolean(bypassBase),
+      });
+    } else {
+      console.warn(
+        '[maloumClient] login failed:',
+        response.status,
+        contentType,
+        text.slice(0, 200)
+      );
       throw new MaloumApiError(
-        'Login response missing access or refresh token',
-        502,
+        parsed?.message || parsed?.error || `Login failed (${response.status})`,
+        response.status,
         parsed
       );
     }
-  } else if (isCloudflareBlocked(response.status, text, contentType)) {
-    console.warn(
-      '[maloumClient] undici login blocked by Cloudflare; trying Playwright bypass:',
-      response.status,
-      contentType,
-      text.slice(0, 200)
-    );
-    const { loginWithBrowser } = require('./maloumLoginBrowser');
-    session = await loginWithBrowser({
-      usernameOrEmail: identifier,
-      password,
-      proxyUrl: resolvedProxy,
-    });
-  } else {
-    console.warn(
-      '[maloumClient] login failed:',
-      response.status,
-      contentType,
-      text.slice(0, 200)
-    );
-    throw new MaloumApiError(
-      parsed?.message || parsed?.error || `Login failed (${response.status})`,
-      response.status,
-      parsed
-    );
   }
 
   let currentUser = null;
@@ -751,13 +921,28 @@ async function login({
   const displayName = displayNameFromUser(currentUser, username || identifier);
   const avatarUrl = avatarFromUser(currentUser);
 
+  let cookies = [];
+  let userAgent = null;
+  try {
+    const { fetchAppClearanceCookies } = require('./maloumCfBypass');
+    const clearance = await fetchAppClearanceCookies(resolvedProxy);
+    cookies = clearance.cookies || [];
+    userAgent = clearance.userAgent || null;
+  } catch (err) {
+    console.warn(
+      '[maloumClient] clearance cookie capture failed (tokens still saved):',
+      err?.message || err
+    );
+  }
+
   return {
     accessToken: session.access_token,
     refreshToken: session.refresh_token,
     expiresAt: typeof session.expires_at === 'number' ? session.expires_at : null,
     expiresIn: session.expires_in,
     session,
-    cookies: [],
+    cookies,
+    userAgent,
     origins,
     providerUserId,
     displayName,

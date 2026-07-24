@@ -22,6 +22,40 @@ const LOGIN_API_URL = `${API_BASE}/user-management/login`;
 const CF_WAIT_MS = 60_000;
 const NAV_TIMEOUT_MS = 60_000;
 
+function isBrowserHeadless() {
+  const raw = String(process.env.MALOUM_BROWSER_HEADLESS || '')
+    .trim()
+    .toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+}
+
+async function launchMaloumBrowser(proxy) {
+  const headless = isBrowserHeadless();
+  const shared = {
+    headless,
+    proxy,
+    args: ['--disable-blink-features=AutomationControlled'],
+  };
+
+  try {
+    const browser = await chromium.launch({ ...shared, channel: 'chrome' });
+    console.log(
+      `[maloumLoginBrowser] launched system Chrome (headless=${headless})`
+    );
+    return browser;
+  } catch (err) {
+    console.warn(
+      '[maloumLoginBrowser] system Chrome unavailable, falling back to Chromium:',
+      err?.message || err
+    );
+    const browser = await chromium.launch(shared);
+    console.log(
+      `[maloumLoginBrowser] launched Chromium (headless=${headless})`
+    );
+    return browser;
+  }
+}
+
 function parseProxyForPlaywright(proxyUrl) {
   let parsed;
   try {
@@ -86,7 +120,8 @@ async function waitForCloudflareClear(page) {
 }
 
 /**
- * Headless Playwright + stealth login through the US residential proxy.
+ * Headed Playwright + stealth login through the US residential proxy
+ * (defaults to system Chrome; set MALOUM_BROWSER_HEADLESS=true for headless).
  * Used when undici login is blocked by Cloudflare.
  * Returns the same session token object as extractSessionTokens().
  */
@@ -101,11 +136,7 @@ async function loginWithBrowser({ usernameOrEmail, password, proxyUrl }) {
 
   let browser;
   try {
-    browser = await chromium.launch({
-      headless: true,
-      proxy,
-      args: ['--disable-blink-features=AutomationControlled'],
-    });
+    browser = await launchMaloumBrowser(proxy);
 
     const context = await browser.newContext({
       locale: 'en-US',
@@ -193,7 +224,7 @@ async function loginWithBrowser({ usernameOrEmail, password, proxyUrl }) {
     const detail = err?.message || 'browser login failed';
     console.warn('[maloumLoginBrowser] error:', detail);
     throw new MaloumApiError(
-      `Maloum Cloudflare login bypass failed (${detail}). Check MALOUM_PROXY_URL and Chromium install.`,
+      `Maloum Cloudflare login bypass failed (${detail}). Check MALOUM_PROXY_URL, Chrome/Chromium install, and display (headed is default).`,
       502
     );
   } finally {

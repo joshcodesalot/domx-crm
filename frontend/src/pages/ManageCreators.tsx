@@ -4,6 +4,7 @@ import {
   ImageIcon,
   Pencil,
   RefreshCw,
+  ShieldCheck,
   Trash2,
   Users,
 } from 'lucide-react';
@@ -14,7 +15,13 @@ import CreatorAvatar from '@/components/CreatorAvatar';
 import RemoveCreatorModal from '@/components/RemoveCreatorModal';
 import RenameCreatorModal from '@/components/RenameCreatorModal';
 import { useAuth } from '@/context/AuthContext';
-import { deleteCreator, getCreators, refreshMaloumAvatar, type Creator } from '@/lib/api';
+import {
+  deleteCreator,
+  getCreators,
+  refreshMaloumAvatar,
+  verifyMaloumSession,
+  type Creator,
+} from '@/lib/api';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 
 function platformLabel(platform: Creator['platform']): string {
@@ -58,6 +65,7 @@ export default function ManageCreators() {
   const [staffTarget, setStaffTarget] = useState<Creator | null>(null);
   const [renameTarget, setRenameTarget] = useState<Creator | null>(null);
   const [refreshingIconId, setRefreshingIconId] = useState<string | null>(null);
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
 
   const canManage = hasPermission('creators.manage');
@@ -107,6 +115,21 @@ export default function ManageCreators() {
       );
     } finally {
       setRefreshingIconId(null);
+    }
+  }
+
+  async function handleVerifyMaloumSession(creator: Creator) {
+    setVerifyingId(creator.id);
+    setError(null);
+    try {
+      await verifyMaloumSession(creator.id);
+      await loadCreators();
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to verify Maloum session'
+      );
+    } finally {
+      setVerifyingId(null);
     }
   }
 
@@ -269,6 +292,19 @@ export default function ManageCreators() {
                               }}
                             >
                               <RefreshCw className="w-4 h-4" />
+                            </button>
+                          )}
+                          {creator.platform === 'maloum' && creator.accountId && (
+                            <button
+                              type="button"
+                              className="p-1.5 text-gray-400 hover:text-sky-500 dark:hover:text-sky-400 rounded-md hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                              title="Verify Maloum session (API)"
+                              disabled={verifyingId === creator.id}
+                              onClick={() => void handleVerifyMaloumSession(creator)}
+                            >
+                              <ShieldCheck
+                                className={`w-4 h-4 ${verifyingId === creator.id ? 'animate-pulse' : ''}`}
+                              />
                             </button>
                           )}
                           <button

@@ -132,7 +132,7 @@ function partitionIdFor(accountId) {
   return `persist:creator-${accountId}`;
 }
 
-function buildEncryptedSessionPayload({ cookies, origins, loginEmail, savedAt }) {
+function buildEncryptedSessionPayload({ cookies, origins, loginEmail, savedAt, userAgent }) {
   const stampedAt = savedAt || new Date().toISOString();
   return {
     encryptedSession: encryptJson({
@@ -140,6 +140,7 @@ function buildEncryptedSessionPayload({ cookies, origins, loginEmail, savedAt })
       origins: origins || [],
       loginEmail,
       savedAt: stampedAt,
+      ...(userAgent ? { userAgent } : {}),
     }),
     savedAt: stampedAt,
   };
@@ -567,8 +568,8 @@ router.post(
           return res.status(400).json({ error: 'Password not correct' });
         }
         if (err instanceof maloumClient.MaloumApiError) {
-          return res.status(err.status >= 400 && err.status < 600 ? err.status : 502).json({
-            error: err.message || 'Maloum login failed',
+          return res.status(maloumClientHttpStatus(err)).json({
+            error: maloumClientHttpMessage(err, 'Maloum login failed'),
           });
         }
         throw err;
@@ -582,15 +583,8 @@ router.post(
         cookies: loginResult.cookies,
         origins: loginResult.origins,
         loginEmail,
+        userAgent: loginResult.userAgent || null,
       });
-      const tokenFields = buildEncryptedTokenFields({
-        accessToken: loginResult.accessToken,
-        refreshToken: loginResult.refreshToken,
-        expiresAt: loginResult.expiresAt,
-      });
-      const encryptedProxy = encryptSecret(resolvedProxy);
-      const encryptedLoginPassword = encryptOptionalLoginPassword(password);
-      const expiresAt = new Date(Date.now() + PENDING_TTL_MINUTES * 60 * 1000);
       const resolvedDisplayName =
         (typeof displayName === 'string' && displayName.trim()) ||
         loginResult.displayName;
@@ -1379,7 +1373,7 @@ router.get(
 
       const result = await pool.query(
         `SELECT id, "displayName", username, "avatarUrl", "accountId", "partitionId",
-                "encryptedSession", "connectionStatus", "updatedAt"
+                "encryptedSession", "encryptedProxy", "connectionStatus", "updatedAt"
          FROM creators
          WHERE id = $1`,
         [id]
@@ -1398,6 +1392,18 @@ router.get(
       const session = decryptJson(creator.encryptedSession);
       const cookies = session.cookies || [];
       const origins = session.origins || [];
+      const userAgent =
+        typeof session.userAgent === 'string' && session.userAgent.trim()
+          ? session.userAgent.trim()
+          : null;
+      let proxyUrl = null;
+      if (creator.encryptedProxy) {
+        try {
+          proxyUrl = decryptSecret(creator.encryptedProxy) || null;
+        } catch {
+          proxyUrl = null;
+        }
+      }
 
       res.json({
         accountId: creator.accountId,
@@ -1407,6 +1413,8 @@ router.get(
         avatarUrl: creator.avatarUrl || null,
         cookies,
         origins,
+        userAgent,
+        proxyUrl,
         sessionUpdatedAt: sessionUpdatedAtFrom(session, creator.updatedAt),
       });
     } catch (err) {
@@ -1917,8 +1925,8 @@ router.post(
         }
         if (err instanceof maloumClient.MaloumApiError) {
           return res
-            .status(err.status >= 400 && err.status < 600 ? err.status : 502)
-            .json({ error: err.message || 'Maloum login failed' });
+            .status(maloumClientHttpStatus(err))
+            .json({ error: maloumClientHttpMessage(err, 'Maloum login failed') });
         }
         throw err;
       }
@@ -1928,6 +1936,7 @@ router.post(
         cookies: loginResult.cookies,
         origins: loginResult.origins,
         loginEmail,
+        userAgent: loginResult.userAgent || null,
       });
       const tokenFields = buildEncryptedTokenFields({
         accessToken: loginResult.accessToken,
@@ -2012,6 +2021,59 @@ router.post(
       });
     } catch (err) {
       console.error('Reconnect Maloum creator error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+/**
+ * API-side Maloum session verify (CF bypass + Bearer). Marks lastValidatedAt.
+ * Prefer this over Electron BrowserView when chatter is API-based.
+ */
+router.post(
+  '/:id/maloum/verify-session',
+  authenticate,
+  requirePermission('creators.manage'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      try {
+        await maloumClient.fetchCurrentUser({
+          accessToken: loaded.creator.accessToken,
+          proxyUrl: loaded.creator.proxyUrl,
+          timezone: loaded.creator.timezone,
+        });
+      } catch (err) {
+        return handleMaloumError(res, err, 'Verify Maloum session error:');
+      }
+
+      const updated = await pool.query(
+        `UPDATE creators
+         SET "connectionStatus" = 'connected',
+             "lastValidatedAt" = NOW(),
+             "updatedAt" = NOW()
+         WHERE id = $1
+         RETURNING id, "displayName", username, platform, "connectionStatus",
+                   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
+                   "loginEmail", "lastValidatedAt", "createdAt", "updatedAt"`,
+        [id]
+      );
+
+      res.json({
+        ok: true,
+        creator: toCreator(updated.rows[0]),
+      });
+    } catch (err) {
+      console.error('Verify Maloum session error:', err);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -2712,13 +2774,27 @@ async function loadMaloumCreator(creatorId) {
   };
 }
 
+/** Never forward Maloum/platform 401 as HTTP 401 — that clears the DomX staff JWT. */
+function maloumClientHttpStatus(err) {
+  const status = err?.status >= 400 && err.status < 600 ? err.status : 502;
+  return status === 401 ? 502 : status;
+}
+
+function maloumClientHttpMessage(err, fallback = 'Maloum request failed') {
+  if (err?.status === 401) {
+    return 'Maloum session expired. Reconnect this creator.';
+  }
+  return err?.message || fallback;
+}
+
 function handleMaloumError(res, err, label) {
   if (err instanceof maloumClient.WrongPasswordError) {
     return res.status(400).json({ error: 'Password not correct' });
   }
   if (err instanceof maloumClient.MaloumApiError) {
-    const status = err.status >= 400 && err.status < 600 ? err.status : 502;
-    return res.status(status).json({ error: err.message || 'Maloum request failed' });
+    return res
+      .status(maloumClientHttpStatus(err))
+      .json({ error: maloumClientHttpMessage(err) });
   }
   console.error(label, err);
   return res.status(500).json({ error: 'Internal server error' });
