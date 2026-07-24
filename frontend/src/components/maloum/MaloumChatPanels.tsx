@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Check,
   Image as ImageIcon,
   Loader2,
   RefreshCw,
   Send,
   X,
 } from 'lucide-react';
+import ToggleSwitch from '@/components/ToggleSwitch';
 import {
   createMessagingDashboardEntry,
   getMaloumChat,
@@ -21,10 +23,96 @@ import {
   type MaloumMessage,
   type MaloumVaultFolder,
   type MaloumVaultMediaItem,
+  type TranslateHistoryItem,
 } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 
 const POLL_MS = 20_000;
+const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
+const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
+const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
+const MAX_TRANSLATION_HISTORY = 8;
+const TRANSLATION_SETTINGS_EVENT = 'domx-translation-settings';
+
+function readStoredBoolean(key: string, defaultValue: boolean): boolean {
+  const stored = localStorage.getItem(key);
+  if (stored === 'true') return true;
+  if (stored === 'false') return false;
+  return defaultValue;
+}
+
+function emitTranslationSettings() {
+  window.dispatchEvent(new Event(TRANSLATION_SETTINGS_EVENT));
+}
+
+async function translateTextToEnglish(text: string): Promise<string | null> {
+  if (!text.trim()) return null;
+  const response = await fetch(HISTORY_TRANSLATE_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      q: text,
+      source: 'de',
+      target: 'en',
+      format: 'text',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error('Translation API failed with status ' + response.status);
+  }
+  const data = (await response.json()) as { translatedText?: string };
+  return data?.translatedText?.trim() || null;
+}
+
+function TranslationToggles({
+  autoTranslateOutgoing,
+  autoTranslateHistory,
+  onOutgoingChange,
+  onHistoryChange,
+}: {
+  autoTranslateOutgoing: boolean;
+  autoTranslateHistory: boolean;
+  onOutgoingChange: (enabled: boolean) => void;
+  onHistoryChange: (enabled: boolean) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+        Translation
+      </p>
+      <label className="flex items-start gap-3 cursor-pointer">
+        <ToggleSwitch
+          checked={autoTranslateOutgoing}
+          onChange={onOutgoingChange}
+          aria-label="Auto-translate outgoing messages"
+        />
+        <span className="min-w-0">
+          <span className="block text-sm font-medium text-gray-900 dark:text-gray-100">
+            Auto-translate outgoing
+          </span>
+          <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            Translate messages to German before sending
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-3 cursor-pointer">
+        <ToggleSwitch
+          checked={autoTranslateHistory}
+          onChange={onHistoryChange}
+          aria-label="Auto-translate chat history"
+        />
+        <span className="min-w-0">
+          <span className="block text-sm font-medium text-gray-900 dark:text-gray-100">
+            Auto-translate chat history
+          </span>
+          <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            Show English translations under messages
+          </span>
+        </span>
+      </label>
+    </div>
+  );
+}
 
 export function partnerName(chat: MaloumChat | null | undefined): string {
   if (!chat?.chatPartner) return 'Fan';
@@ -316,6 +404,8 @@ type MaloumChatThreadProps = {
   initialChat?: MaloumChat | null;
   className?: string;
   onClose?: () => void;
+  /** Show translation toggles under the composer (e.g. Message Pro). */
+  showTranslationToggles?: boolean;
 };
 
 export function MaloumChatThread({
@@ -324,6 +414,7 @@ export function MaloumChatThread({
   initialChat = null,
   className = '',
   onClose,
+  showTranslationToggles = false,
 }: MaloumChatThreadProps) {
   const { user } = useAuth();
   const creatorId = creator.id;
@@ -340,7 +431,18 @@ export function MaloumChatThread({
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(true);
+  const [translatingOutgoing, setTranslatingOutgoing] = useState(false);
+  const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
+    readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
+  );
+  const [autoTranslateHistory, setAutoTranslateHistory] = useState(() =>
+    readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true)
+  );
+  const [historyTranslations, setHistoryTranslations] = useState<
+    Record<string, string>
+  >({});
+  const historyTranslationsRef = useRef<Record<string, string>>({});
+  const historyInFlightRef = useRef<Set<string>>(new Set());
 
   const [vaultOpen, setVaultOpen] = useState(false);
   const [vaultFolders, setVaultFolders] = useState<MaloumVaultFolder[]>([]);
@@ -348,8 +450,8 @@ export function MaloumChatThread({
   const [vaultItems, setVaultItems] = useState<MaloumVaultMediaItem[]>([]);
   const [vaultLoading, setVaultLoading] = useState(false);
   const [vaultError, setVaultError] = useState<string | null>(null);
-  const [selectedVaultItem, setSelectedVaultItem] = useState<MaloumVaultMediaItem | null>(
-    null
+  const [selectedVaultItems, setSelectedVaultItems] = useState<MaloumVaultMediaItem[]>(
+    []
   );
   const [ppvPrice, setPpvPrice] = useState('5');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -404,8 +506,11 @@ export function MaloumChatThread({
     setMessages([]);
     setDraft('');
     setSendError(null);
-    setSelectedVaultItem(null);
+    setSelectedVaultItems([]);
     setVaultOpen(false);
+    setHistoryTranslations({});
+    historyTranslationsRef.current = {};
+    historyInFlightRef.current.clear();
     void loadMessages();
     const timer = window.setInterval(() => {
       void loadMessages();
@@ -414,8 +519,90 @@ export function MaloumChatThread({
   }, [chatId, creatorId, initialChat, loadMessages]);
 
   useEffect(() => {
+    historyTranslationsRef.current = historyTranslations;
+  }, [historyTranslations]);
+
+  useEffect(() => {
+    const sync = () => {
+      setAutoTranslateOutgoing(readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true));
+      setAutoTranslateHistory(readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true));
+    };
+    window.addEventListener(TRANSLATION_SETTINGS_EVENT, sync);
+    return () => window.removeEventListener(TRANSLATION_SETTINGS_EVENT, sync);
+  }, []);
+
+  const handleAutoTranslateOutgoingChange = useCallback((enabled: boolean) => {
+    setAutoTranslateOutgoing(enabled);
+    localStorage.setItem(AUTO_TRANSLATE_OUTGOING_KEY, String(enabled));
+    emitTranslationSettings();
+  }, []);
+
+  const handleAutoTranslateHistoryChange = useCallback((enabled: boolean) => {
+    setAutoTranslateHistory(enabled);
+    localStorage.setItem(AUTO_TRANSLATE_HISTORY_KEY, String(enabled));
+    emitTranslationSettings();
+  }, []);
+
+  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
+
+  useEffect(() => {
+    if (!autoTranslateHistory) return;
+    const pending: Array<{ key: string; text: string }> = [];
+    for (const msg of messages) {
+      const text = messageText(msg).trim();
+      if (!text) continue;
+      const msgKey = String(msg._id || '');
+      if (!msgKey) continue;
+      const cacheKey = `${msgKey}::${text}`;
+      if (historyTranslationsRef.current[cacheKey]) continue;
+      if (historyInFlightRef.current.has(cacheKey)) continue;
+      pending.push({ key: cacheKey, text });
+    }
+    if (pending.length === 0) return;
+
+    let cancelled = false;
+    for (const item of pending) {
+      historyInFlightRef.current.add(item.key);
+    }
+
+    void (async () => {
+      const updates: Record<string, string> = {};
+      await Promise.all(
+        pending.map(async (item) => {
+          try {
+            const translated = await translateTextToEnglish(item.text);
+            if (translated && !cancelled) {
+              updates[item.key] = translated;
+            }
+          } catch {
+            // Best-effort
+          } finally {
+            historyInFlightRef.current.delete(item.key);
+          }
+        })
+      );
+      if (cancelled || Object.keys(updates).length === 0) return;
+      setHistoryTranslations((prev) => ({ ...prev, ...updates }));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [messages, autoTranslateHistory]);
+
+  const toggleVaultItem = useCallback((item: MaloumVaultMediaItem) => {
+    const uploadId = vaultUploadId(item);
+    if (!uploadId) return;
+    setSelectedVaultItems((prev) => {
+      const exists = prev.some((entry) => vaultUploadId(entry) === uploadId);
+      if (exists) {
+        return prev.filter((entry) => vaultUploadId(entry) !== uploadId);
+      }
+      return [...prev, item];
+    });
+  }, []);
 
   const openVault = useCallback(async () => {
     setVaultOpen(true);
@@ -464,19 +651,37 @@ export function MaloumChatThread({
 
   const handleSend = useCallback(async () => {
     const englishDraft = draft.trim();
-    const vaultItem = selectedVaultItem;
-    if (!englishDraft && !vaultItem) return;
-    if (sending) return;
+    const vaultItemsSelected = selectedVaultItems;
+    if (!englishDraft && vaultItemsSelected.length === 0) return;
+    if (sending || translatingOutgoing) return;
 
     setSending(true);
     setSendError(null);
     try {
       let textToSend = englishDraft;
       if (autoTranslateOutgoing && englishDraft) {
+        setTranslatingOutgoing(true);
         try {
-          textToSend = await translateToGerman(englishDraft);
-        } catch {
-          // Fall back to English draft if translation fails
+          const history: TranslateHistoryItem[] = messages
+            .filter((m) => messageText(m).trim())
+            .slice(-MAX_TRANSLATION_HISTORY)
+            .map((m) => ({
+              role:
+                providerUserId && m.senderId === providerUserId
+                  ? 'assistant'
+                  : 'user',
+              content: messageText(m).trim(),
+            }));
+          textToSend = await translateToGerman(englishDraft, history);
+        } catch (err) {
+          setSendError(
+            err instanceof Error
+              ? err.message
+              : 'Translation failed. Message was not sent.'
+          );
+          return;
+        } finally {
+          setTranslatingOutgoing(false);
         }
       }
 
@@ -487,19 +692,20 @@ export function MaloumChatThread({
       let mediaPayload:
         | Array<{ mediaId: string; type?: string; width?: number; height?: number }>
         | undefined;
-      if (vaultItem) {
-        const uploadId = vaultUploadId(vaultItem);
-        if (!uploadId) {
-          throw new Error('Selected vault item is missing uploadId');
-        }
-        mediaPayload = [
-          {
+      if (vaultItemsSelected.length > 0) {
+        mediaPayload = [];
+        for (const vaultItem of vaultItemsSelected) {
+          const uploadId = vaultUploadId(vaultItem);
+          if (!uploadId) {
+            throw new Error('Selected vault item is missing uploadId');
+          }
+          mediaPayload.push({
             mediaId: uploadId,
             type: vaultItem.media?.type || 'picture',
             width: vaultItem.media?.width,
             height: vaultItem.media?.height,
-          },
-        ];
+          });
+        }
       }
 
       const result = await sendMaloumMessage(creatorId, chatId, {
@@ -512,7 +718,12 @@ export function MaloumChatThread({
       const messageId = result.messageId || result.message?._id;
       if (user?.id && messageId) {
         const hasMedia = Boolean(mediaPayload?.length);
-        const isVideo = isVideoAsset(vaultItem?.media?.type);
+        const pictureCount = vaultItemsSelected.filter(
+          (item) => !isVideoAsset(item.media?.type)
+        ).length;
+        const videoCount = vaultItemsSelected.filter((item) =>
+          isVideoAsset(item.media?.type)
+        ).length;
         void createMessagingDashboardEntry({
           id: crypto.randomUUID(),
           creatorId,
@@ -538,16 +749,14 @@ export function MaloumChatThread({
           priceNet: hasMedia && priceNet > 0 ? priceNet : null,
           currency: typeof currency === 'string' ? currency : 'EUR',
           purchased: false,
-          mediaCount: hasMedia ? 1 : 0,
-          pictureCount: hasMedia && !isVideo ? 1 : 0,
-          videoCount: hasMedia && isVideo ? 1 : 0,
+          mediaCount: mediaPayload?.length || 0,
+          pictureCount,
+          videoCount,
           mediaJson: hasMedia
-            ? [
-                {
-                  mediaId: mediaPayload![0].mediaId,
-                  type: isVideo ? 'video' : 'image',
-                },
-              ]
+            ? mediaPayload!.map((entry) => ({
+                mediaId: entry.mediaId,
+                type: isVideoAsset(entry.type) ? 'video' : 'image',
+              }))
             : null,
           previousFanMessageAt: responseSnapshot.previousFanMessageAt,
           responseTimeSeconds: responseSnapshot.responseTimeSeconds,
@@ -558,17 +767,19 @@ export function MaloumChatThread({
       }
 
       setDraft('');
-      setSelectedVaultItem(null);
+      setSelectedVaultItems([]);
       await loadMessages();
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Failed to send');
     } finally {
       setSending(false);
+      setTranslatingOutgoing(false);
     }
   }, [
     draft,
-    selectedVaultItem,
+    selectedVaultItems,
     sending,
+    translatingOutgoing,
     autoTranslateOutgoing,
     ppvPrice,
     messages,
@@ -643,6 +854,11 @@ export function MaloumChatThread({
           );
           const assets = messageMediaAssets(msg);
           const text = messageText(msg);
+          const msgKey = String(msg._id || '');
+          const historyEn =
+            autoTranslateHistory && msgKey && text.trim()
+              ? historyTranslations[`${msgKey}::${text.trim()}`]
+              : undefined;
           const isPpv = msg.content?.type === 'chat_product';
           return (
             <div
@@ -693,6 +909,15 @@ export function MaloumChatThread({
                   </p>
                 )}
                 {text && <p className="whitespace-pre-wrap break-words">{text}</p>}
+                {historyEn && (
+                  <p
+                    className={`mt-1 text-xs whitespace-pre-wrap break-words ${
+                      mine ? 'text-white/75' : 'text-gray-500 dark:text-gray-400'
+                    }`}
+                  >
+                    {historyEn}
+                  </p>
+                )}
                 <p
                   className={`text-[10px] mt-1 ${
                     mine ? 'text-white/70' : 'text-gray-400'
@@ -707,41 +932,58 @@ export function MaloumChatThread({
         <div ref={messagesEndRef} />
       </div>
 
-      {selectedVaultItem && (
-        <div className="px-4 py-2 border-t border-gray-200 dark:border-white/10 flex items-center gap-3 bg-gray-50 dark:bg-white/5">
-          {(() => {
-            const uploadId = vaultUploadId(selectedVaultItem);
-            const thumbUrl = selectedVaultItem.thumbnail?.url || selectedVaultItem.media?.url;
-            const src = maloumMediaUrl(creatorId, {
-              uploadId,
-              variant: 'thumbnail',
-              url: thumbUrl,
-            });
-            return (
-              <img src={src} alt="" className="w-12 h-12 rounded object-cover" />
-            );
-          })()}
-          <div className="min-w-0 flex-1">
+      {selectedVaultItems.length > 0 && (
+        <div className="px-4 py-2 border-t border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/[0.03] flex items-center gap-3">
+          <div className="flex items-center gap-1.5 shrink-0 max-w-[40%] overflow-x-auto">
+            {selectedVaultItems.map((item) => {
+              const uploadId = vaultUploadId(item);
+              const src = maloumMediaUrl(creatorId, {
+                uploadId,
+                variant: 'thumbnail',
+                url: item.thumbnail?.url || item.media?.url,
+              });
+              return (
+                <button
+                  key={uploadId || src}
+                  type="button"
+                  onClick={() => toggleVaultItem(item)}
+                  className="relative shrink-0"
+                  title="Remove"
+                >
+                  <img src={src} alt="" className="w-12 h-12 rounded object-cover" />
+                  <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/70 text-white flex items-center justify-center">
+                    <X className="w-3 h-3" />
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex-1 min-w-0">
             <p className="text-xs font-medium truncate">
-              {isVideoAsset(selectedVaultItem.media?.type) ? 'Video' : 'Picture'} selected
+              {selectedVaultItems.length} media selected
             </p>
-            <label className="flex items-center gap-2 text-xs text-gray-500 mt-1">
-              PPV price ({currency || 'EUR'})
+            <div className="flex items-center gap-2 mt-1">
+              <label className="text-xs text-gray-500">
+                Price {currency || 'EUR'}
+              </label>
               <input
                 type="number"
                 min="0"
                 step="1"
                 value={ppvPrice}
                 onChange={(e) => setPpvPrice(e.target.value)}
-                className="w-20 rounded border border-gray-200 dark:border-white/10 bg-white dark:bg-black/30 px-2 py-0.5"
+                className="w-20 px-2 py-1 text-xs rounded border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5"
               />
-              <span className="text-[10px]">0 = free media</span>
-            </label>
+              <span className="text-xs text-gray-400">
+                {Number(ppvPrice) > 0 ? '(PPV)' : '(free)'}
+              </span>
+            </div>
           </div>
           <button
             type="button"
-            onClick={() => setSelectedVaultItem(null)}
-            className="p-1 text-gray-400 hover:text-gray-700"
+            onClick={() => setSelectedVaultItems([])}
+            className="p-1 text-gray-400 hover:text-gray-600"
+            aria-label="Clear attachment"
           >
             <X className="w-4 h-4" />
           </button>
@@ -751,6 +993,11 @@ export function MaloumChatThread({
       <div className="shrink-0 border-t border-gray-200 dark:border-white/10 p-3 space-y-2">
         {sendError && (
           <p className="text-xs text-red-600 dark:text-red-400">{sendError}</p>
+        )}
+        {translatingOutgoing && (
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Translating to German…
+          </p>
         )}
         <div className="flex items-end gap-2">
           <button
@@ -777,25 +1024,29 @@ export function MaloumChatThread({
           <button
             type="button"
             onClick={() => void handleSend()}
-            disabled={sending || (!draft.trim() && !selectedVaultItem)}
+            disabled={
+              sending ||
+              translatingOutgoing ||
+              (!draft.trim() && selectedVaultItems.length === 0)
+            }
             className="p-2.5 rounded-xl bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-40"
             title="Send"
           >
-            {sending ? (
+            {sending || translatingOutgoing ? (
               <Loader2 className="w-5 h-5 animate-spin" />
             ) : (
               <Send className="w-5 h-5" />
             )}
           </button>
         </div>
-        <label className="flex items-center gap-2 text-xs text-gray-500">
-          <input
-            type="checkbox"
-            checked={autoTranslateOutgoing}
-            onChange={(e) => setAutoTranslateOutgoing(e.target.checked)}
+        {showTranslationToggles && (
+          <TranslationToggles
+            autoTranslateOutgoing={autoTranslateOutgoing}
+            autoTranslateHistory={autoTranslateHistory}
+            onOutgoingChange={handleAutoTranslateOutgoingChange}
+            onHistoryChange={handleAutoTranslateHistoryChange}
           />
-          Auto-translate outgoing to German
-        </label>
+        )}
       </div>
 
       {vaultOpen && (
@@ -807,15 +1058,39 @@ export function MaloumChatThread({
             onClick={() => setVaultOpen(false)}
           />
           <div className="w-full max-w-md h-full bg-white dark:bg-[#0a0a0a] border-l border-gray-200 dark:border-white/10 flex flex-col shadow-xl">
-            <div className="h-14 px-4 border-b border-gray-200 dark:border-white/10 flex items-center justify-between">
-              <span className="text-sm font-medium">Vault</span>
-              <button
-                type="button"
-                onClick={() => setVaultOpen(false)}
-                className="p-1.5 rounded-md text-gray-400 hover:text-gray-700"
-              >
-                <X className="w-4 h-4" />
-              </button>
+            <div className="h-14 px-4 border-b border-gray-200 dark:border-white/10 flex items-center justify-between gap-2">
+              <span className="text-sm font-medium">
+                Vault
+                {selectedVaultItems.length > 0
+                  ? ` · ${selectedVaultItems.length} selected`
+                  : ''}
+              </span>
+              <div className="flex items-center gap-1">
+                {selectedVaultItems.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedVaultItems([])}
+                    className="px-2 py-1 text-xs text-gray-500 hover:text-gray-800"
+                  >
+                    Clear
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setVaultOpen(false)}
+                  className="px-2.5 py-1 text-xs font-medium rounded-md bg-brand-600 text-white hover:bg-brand-700"
+                >
+                  Done
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setVaultOpen(false)}
+                  className="p-1.5 rounded-md text-gray-400 hover:text-gray-700"
+                  aria-label="Close vault"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             <div className="flex-1 min-h-0 flex">
               <div className="w-36 border-r border-gray-200 dark:border-white/10 overflow-y-auto">
@@ -872,15 +1147,14 @@ export function MaloumChatThread({
                       variant: 'thumbnail',
                       url: item.thumbnail?.url || item.media?.url,
                     });
-                    const selected = vaultUploadId(selectedVaultItem || {}) === uploadId;
+                    const selected = selectedVaultItems.some(
+                      (entry) => vaultUploadId(entry) === uploadId
+                    );
                     return (
                       <button
                         key={uploadId || src}
                         type="button"
-                        onClick={() => {
-                          setSelectedVaultItem(item);
-                          setVaultOpen(false);
-                        }}
+                        onClick={() => toggleVaultItem(item)}
                         className={`relative aspect-square rounded-lg overflow-hidden border-2 ${
                           selected
                             ? 'border-brand-500'
@@ -893,6 +1167,11 @@ export function MaloumChatThread({
                           className="w-full h-full object-cover"
                           loading="lazy"
                         />
+                        {selected && (
+                          <span className="absolute top-1 right-1 w-5 h-5 rounded-full bg-brand-600 text-white flex items-center justify-center">
+                            <Check className="w-3 h-3" />
+                          </span>
+                        )}
                         {isVideoAsset(item.media?.type) && (
                           <span className="absolute bottom-1 left-1 text-[10px] px-1 rounded bg-black/70 text-white">
                             Video
@@ -953,6 +1232,12 @@ export function MaloumSingleCreatorChat({
 }: MaloumSingleCreatorChatProps) {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [selectedChat, setSelectedChat] = useState<MaloumChat | null>(null);
+  const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
+    readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
+  );
+  const [autoTranslateHistory, setAutoTranslateHistory] = useState(() =>
+    readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true)
+  );
 
   const selectedCreator = useMemo(
     () => creators.find((c) => c.id === selectedCreatorId) || null,
@@ -963,6 +1248,27 @@ export function MaloumSingleCreatorChat({
     setSelectedChatId(null);
     setSelectedChat(null);
   }, [selectedCreatorId]);
+
+  useEffect(() => {
+    const sync = () => {
+      setAutoTranslateOutgoing(readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true));
+      setAutoTranslateHistory(readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true));
+    };
+    window.addEventListener(TRANSLATION_SETTINGS_EVENT, sync);
+    return () => window.removeEventListener(TRANSLATION_SETTINGS_EVENT, sync);
+  }, []);
+
+  const handleAutoTranslateOutgoingChange = useCallback((enabled: boolean) => {
+    setAutoTranslateOutgoing(enabled);
+    localStorage.setItem(AUTO_TRANSLATE_OUTGOING_KEY, String(enabled));
+    emitTranslationSettings();
+  }, []);
+
+  const handleAutoTranslateHistoryChange = useCallback((enabled: boolean) => {
+    setAutoTranslateHistory(enabled);
+    localStorage.setItem(AUTO_TRANSLATE_HISTORY_KEY, String(enabled));
+    emitTranslationSettings();
+  }, []);
 
   return (
     <div className="flex-1 flex min-w-0 min-h-0">
@@ -1019,6 +1325,14 @@ export function MaloumSingleCreatorChat({
               </button>
             );
           })}
+        </div>
+        <div className="shrink-0 border-t border-gray-200 dark:border-white/10 p-3 space-y-3 bg-white dark:bg-[#0a0a0a]">
+          <TranslationToggles
+            autoTranslateOutgoing={autoTranslateOutgoing}
+            autoTranslateHistory={autoTranslateHistory}
+            onOutgoingChange={handleAutoTranslateOutgoingChange}
+            onHistoryChange={handleAutoTranslateHistoryChange}
+          />
         </div>
       </aside>
 

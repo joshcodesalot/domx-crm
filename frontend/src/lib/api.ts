@@ -857,6 +857,17 @@ export async function reconnectMaloumAccount(
   });
 }
 
+export async function reconnectMaloumAccountSaved(creatorId: string): Promise<{
+  creator: Creator;
+  cookies: ConnectCreatorResponse['cookies'];
+  origins: ConnectCreatorResponse['origins'];
+  sessionUpdatedAt: string | null;
+}> {
+  return request(`/api/creators/${creatorId}/maloum/reconnect-saved`, {
+    method: 'POST',
+  });
+}
+
 // --- 4based ---
 
 export interface ConnectFourBasedInput {
@@ -1027,6 +1038,14 @@ export async function reconnectFourBasedAccount(
   });
 }
 
+export async function reconnectFourBasedAccountSaved(
+  creatorId: string
+): Promise<{ creator: Creator }> {
+  return request(`/api/creators/${creatorId}/4based/reconnect-saved`, {
+    method: 'POST',
+  });
+}
+
 export async function listFourBasedChats(
   creatorId: string,
   options: { limit?: number; offset?: number } = {}
@@ -1086,8 +1105,14 @@ export async function sendFourBasedPpv(
   chatId: string,
   payload: {
     message: string;
-    vaultId: string;
+    vaultId?: string;
     vaultGuid?: string;
+    vaults?: Array<{
+      id: string;
+      guid?: string;
+      position?: number;
+      is_teaser?: boolean;
+    }>;
     priceCoins: number;
     localId?: string;
   }

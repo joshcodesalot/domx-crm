@@ -330,6 +330,7 @@ export default function MessagePro() {
                 creator={activeWorkspace.creator}
                 chatId={activeFanTab.chatId}
                 initialChat={activeFanTab.chat || null}
+                showTranslationToggles
                 onClose={() =>
                   closeFanTab(activeWorkspace.creator.id, activeFanTab.chatId)
                 }

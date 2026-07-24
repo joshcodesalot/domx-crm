@@ -94,20 +94,56 @@ function PersistentMaloumPanel() {
   );
 }
 
+/**
+ * Keeps Message Pro workspaces mounted after first visit.
+ */
+function PersistentMessageProPanel() {
+  const location = useLocation();
+  const { isAuthenticated, hasPermission } = useAuth();
+  const [everOpened, setEverOpened] = useState(false);
+
+  const isActive = location.pathname === '/message-pro';
+  const canView = isAuthenticated && hasPermission('creators.view');
+
+  useEffect(() => {
+    if (isActive && canView) {
+      setEverOpened(true);
+    }
+  }, [isActive, canView]);
+
+  useEffect(() => {
+    if (!canView) {
+      setEverOpened(false);
+    }
+  }, [canView]);
+
+  if (!everOpened || !canView) {
+    return null;
+  }
+
+  return (
+    <div
+      className={isActive ? 'contents' : 'hidden'}
+      aria-hidden={!isActive}
+      style={isActive ? undefined : { display: 'none' }}
+    >
+      <MessagePro />
+    </div>
+  );
+}
+
 function AppRoutes() {
   return (
     <HashRouter>
       <StaffSyncProvider>
         <PersistentFourBasedPanel />
         <PersistentMaloumPanel />
+        <PersistentMessageProPanel />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/setup" element={<SetupOwner />} />
           <Route path="/change-password" element={<ChangePassword />} />
           <Route element={<ProtectedRoute />}>
-            <Route element={<PermissionRoute permission="creators.view" />}>
-              <Route path="/message-pro" element={<MessagePro />} />
-            </Route>
             <Route element={<CreatorBootProvider />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route element={<PermissionRoute permission="analytics.view" />}>
@@ -121,6 +157,8 @@ function AppRoutes() {
                 <Route path="/chatter" element={null} />
                 {/* Placeholder — real panel is mounted by PersistentFourBasedPanel */}
                 <Route path="/chatter/4based" element={null} />
+                {/* Placeholder — real panel is mounted by PersistentMessageProPanel */}
+                <Route path="/message-pro" element={null} />
               </Route>
               <Route element={<PermissionRoute permission="creators.manage" />}>
                 <Route path="/creators/manage" element={<ManageCreators />} />

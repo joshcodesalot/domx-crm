@@ -1871,6 +1871,136 @@ router.post(
 );
 
 router.post(
+  '/:id/4based/reconnect-saved',
+  authenticate,
+  requirePermission('creators.manage'),
+  connectLimiter,
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const result = await pool.query(
+        `SELECT id, platform, "accountId", "displayName", "loginEmail",
+                "encryptedLoginPassword", "encryptedProxy"
+         FROM creators WHERE id = $1`,
+        [id]
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+      const row = result.rows[0];
+      if (row.platform !== '4based') {
+        return res.status(400).json({ error: 'Creator is not a 4based account' });
+      }
+      if (!row.loginEmail || !row.encryptedLoginPassword) {
+        return res.status(404).json({ error: 'No saved credentials for this creator' });
+      }
+
+      const loginPassword = decryptSecret(row.encryptedLoginPassword);
+      if (!loginPassword) {
+        return res.status(404).json({ error: 'No saved credentials for this creator' });
+      }
+
+      const storedProxy = row.encryptedProxy ? decryptSecret(row.encryptedProxy) : null;
+      let resolvedProxy;
+      try {
+        resolvedProxy = fourBasedClient.resolveFourBasedProxyUrl(storedProxy);
+      } catch (err) {
+        if (err instanceof fourBasedClient.FourBasedApiError) {
+          return res.status(err.status || 400).json({ error: err.message });
+        }
+        throw err;
+      }
+
+      let loginResult;
+      try {
+        loginResult = await fourBasedClient.login({
+          identifier: row.loginEmail.trim(),
+          password: loginPassword,
+          proxyUrl: resolvedProxy,
+        });
+      } catch (err) {
+        if (err instanceof fourBasedClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
+          return res.status(400).json({ error: 'Password not correct' });
+        }
+        if (err instanceof fourBasedClient.FourBasedApiError) {
+          return res
+            .status(err.status >= 400 && err.status < 600 ? err.status : 502)
+            .json({ error: err.message || '4based login failed' });
+        }
+        throw err;
+      }
+
+      const loginEmail = row.loginEmail.trim();
+      const sessionPayload = {
+        cookies: loginResult.cookies,
+        token: loginResult.token,
+        resource: loginResult.resource,
+        providerUserId: loginResult.providerUserId,
+        loginEmail,
+        savedAt: new Date().toISOString(),
+        platform: '4based',
+      };
+      const encryptedSession = encryptJson(sessionPayload);
+      const encryptedAccessToken = encryptSecret(loginResult.token);
+      const encryptedProxy = encryptSecret(resolvedProxy);
+
+      const updated = await pool.query(
+        `UPDATE creators SET
+           "encryptedSession" = $1,
+           "encryptedAccessToken" = $2,
+           "encryptedProxy" = $3,
+           "providerUserId" = $4,
+           "loginEmail" = $5,
+           username = COALESCE($6, username),
+           "avatarUrl" = COALESCE($7, "avatarUrl"),
+           "postLoginUrl" = $8,
+           "connectionStatus" = 'connected',
+           "lastValidatedAt" = NOW(),
+           "authRefreshState" = 'active',
+           "updatedAt" = NOW()
+         WHERE id = $9
+         RETURNING id, "displayName", username, platform, "connectionStatus",
+                   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
+                   "loginEmail", "encryptedLoginPassword", "lastValidatedAt", "authRefreshState",
+                   "accessTokenExpiresAt", "createdAt", "updatedAt"`,
+        [
+          encryptedSession,
+          encryptedAccessToken,
+          encryptedProxy,
+          loginResult.providerUserId,
+          loginEmail,
+          loginResult.username,
+          loginResult.avatarUrl,
+          loginResult.postLoginUrl,
+          id,
+        ]
+      );
+
+      void connectCreatorById(id).catch((err) => {
+        console.warn('[4based] Failed to reopen socket after reconnect-saved:', err.message);
+      });
+
+      const accessUserIds = await getUserIdsWithCreatorAccess(id);
+      emitCreatorSessionUpdated(accessUserIds, {
+        creatorId: id,
+        accountId: updated.rows[0].accountId,
+        sessionUpdatedAt: sessionPayload.savedAt,
+      });
+
+      res.json({ creator: toCreator(updated.rows[0]) });
+    } catch (err) {
+      console.error('Reconnect-saved 4based creator error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
   '/:id/maloum/reconnect',
   authenticate,
   requirePermission('creators.manage'),
@@ -2021,6 +2151,164 @@ router.post(
       });
     } catch (err) {
       console.error('Reconnect Maloum creator error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/:id/maloum/reconnect-saved',
+  authenticate,
+  requirePermission('creators.manage'),
+  connectLimiter,
+  async (req, res) => {
+    const { id } = req.params;
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const result = await pool.query(
+        `SELECT id, platform, "accountId", "displayName", "avatarUrl", "avatarSource",
+                "loginEmail", "encryptedLoginPassword", "encryptedProxy"
+         FROM creators WHERE id = $1`,
+        [id]
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+      const creator = result.rows[0];
+      if (creator.platform !== 'maloum') {
+        return res.status(400).json({ error: 'Creator is not a Maloum account' });
+      }
+      if (!creator.loginEmail || !creator.encryptedLoginPassword) {
+        return res.status(404).json({ error: 'No saved credentials for this creator' });
+      }
+
+      const loginPassword = decryptSecret(creator.encryptedLoginPassword);
+      if (!loginPassword) {
+        return res.status(404).json({ error: 'No saved credentials for this creator' });
+      }
+
+      const storedProxy = creator.encryptedProxy
+        ? decryptSecret(creator.encryptedProxy)
+        : null;
+      let resolvedProxy;
+      try {
+        resolvedProxy = maloumClient.resolveMaloumProxyUrl(storedProxy);
+      } catch (err) {
+        if (err instanceof maloumClient.MaloumApiError) {
+          return res.status(err.status || 400).json({ error: err.message });
+        }
+        throw err;
+      }
+
+      let loginResult;
+      try {
+        loginResult = await maloumClient.login({
+          usernameOrEmail: creator.loginEmail.trim(),
+          password: loginPassword,
+          proxyUrl: resolvedProxy,
+        });
+      } catch (err) {
+        if (err instanceof maloumClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
+          return res.status(400).json({ error: 'Password not correct' });
+        }
+        if (err instanceof maloumClient.MaloumApiError) {
+          return res
+            .status(maloumClientHttpStatus(err))
+            .json({ error: maloumClientHttpMessage(err, 'Maloum login failed') });
+        }
+        throw err;
+      }
+
+      const loginEmail = creator.loginEmail.trim();
+      const { encryptedSession, savedAt: sessionSavedAt } = buildEncryptedSessionPayload({
+        cookies: loginResult.cookies,
+        origins: loginResult.origins,
+        loginEmail,
+        userAgent: loginResult.userAgent || null,
+      });
+      const tokenFields = buildEncryptedTokenFields({
+        accessToken: loginResult.accessToken,
+        refreshToken: loginResult.refreshToken,
+        expiresAt: loginResult.expiresAt,
+      });
+      const encryptedProxy = encryptSecret(resolvedProxy);
+
+      let nextAvatarUrl =
+        creator.avatarSource === 'manual' || isBackendStoredAvatarUrl(creator.avatarUrl)
+          ? creator.avatarUrl
+          : loginResult.avatarUrl || creator.avatarUrl;
+      let nextAvatarSource = creator.avatarSource || null;
+
+      if (creator.avatarSource !== 'manual' && loginResult.avatarUrl) {
+        const cachedPath = await tryCacheMaloumAvatar(
+          id,
+          loginResult.avatarUrl,
+          resolvedProxy
+        );
+        if (cachedPath) {
+          nextAvatarUrl = cachedPath;
+          nextAvatarSource = 'maloum';
+        }
+      }
+
+      const updated = await pool.query(
+        `UPDATE creators SET
+           "encryptedSession" = $1,
+           "encryptedAccessToken" = $2,
+           "encryptedRefreshToken" = $3,
+           "accessTokenExpiresAt" = $4,
+           "encryptedProxy" = $5,
+           "providerUserId" = $6,
+           "loginEmail" = $7,
+           username = COALESCE($8, username),
+           "avatarUrl" = COALESCE($9, "avatarUrl"),
+           "avatarSource" = COALESCE($10, "avatarSource"),
+           "postLoginUrl" = $11,
+           "connectionStatus" = 'connected',
+           "lastValidatedAt" = NOW(),
+           "authRefreshState" = 'active',
+           "tokenRefreshFailureCount" = 0,
+           "updatedAt" = NOW()
+         WHERE id = $12
+         RETURNING id, "displayName", username, platform, "connectionStatus",
+                   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
+                   "loginEmail", "encryptedLoginPassword", "lastValidatedAt", "authRefreshState",
+                   "accessTokenExpiresAt", "createdAt", "updatedAt"`,
+        [
+          encryptedSession,
+          tokenFields?.encryptedAccessToken ?? null,
+          tokenFields?.encryptedRefreshToken ?? null,
+          tokenFields?.accessTokenExpiresAt ?? null,
+          encryptedProxy,
+          loginResult.providerUserId,
+          loginEmail,
+          loginResult.username,
+          nextAvatarUrl,
+          nextAvatarSource,
+          loginResult.postLoginUrl,
+          id,
+        ]
+      );
+
+      const accessUserIds = await getUserIdsWithCreatorAccess(id);
+      emitCreatorSessionUpdated(accessUserIds, {
+        creatorId: id,
+        accountId: updated.rows[0].accountId,
+        sessionUpdatedAt: sessionSavedAt,
+      });
+
+      res.json({
+        creator: toCreator(updated.rows[0]),
+        cookies: loginResult.cookies,
+        origins: loginResult.origins,
+        sessionUpdatedAt: sessionSavedAt,
+      });
+    } catch (err) {
+      console.error('Reconnect-saved Maloum creator error:', err);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -2337,6 +2625,7 @@ router.post(
       fileStackId,
       vaultId,
       vaultGuid,
+      vaults,
       priceCoins,
       localId,
     } = req.body || {};
@@ -2363,12 +2652,15 @@ router.post(
       const resolvedLocalId =
         typeof localId === 'string' && localId.trim() ? localId.trim() : randomUUID();
 
-      // PPV / priced vault send
-      if (vaultId) {
+      const hasVaults = Array.isArray(vaults) && vaults.length > 0;
+
+      // PPV / priced vault send (single or multi)
+      if (vaultId || hasVaults) {
         const result = await fourBasedClient.sendPpv(loaded.creator, chatId, {
           message: text,
           vaultId,
           vaultGuid,
+          vaults: hasVaults ? vaults : undefined,
           priceCoins: Number(priceCoins) || 0,
           localId: resolvedLocalId,
         });

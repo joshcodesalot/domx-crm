@@ -56,6 +56,10 @@ const {
 } = require('./ipc/updater');
 const { applyWebContentsGuards } = require('./webContentsGuards');
 const { loadMaloumPartitionSession } = require('./maloumPartitionSession');
+const {
+  openMessageProWindow,
+  closeMessageProWindow,
+} = require('./messageProWindow');
 
 const isDev = !app.isPackaged;
 
@@ -69,6 +73,10 @@ function registerMaloumSessionIpc() {
   ipcMain.handle('maloum:load-partition-session', async (_event, payload) => {
     return loadMaloumPartitionSession(payload || {});
   });
+}
+
+function registerMessageProIpc() {
+  ipcMain.handle('messagepro:open-window', async () => openMessageProWindow());
 }
 
 function createWindow() {
@@ -91,6 +99,7 @@ function createWindow() {
   win.on('closed', () => {
     if (mainWindow === win) {
       mainWindow = null;
+      closeMessageProWindow();
     }
   });
 
@@ -112,6 +121,7 @@ async function bootstrap() {
   Menu.setApplicationMenu(null);
   registerUpdaterIpc(ipcMain);
   registerMaloumSessionIpc();
+  registerMessageProIpc();
 
   if (!isDev) {
     await runInitialUpdateCheck();

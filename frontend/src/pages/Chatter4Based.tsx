@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
+  Check,
   Image as ImageIcon,
   Loader2,
   MessageSquare,
@@ -374,8 +375,8 @@ export default function Chatter4Based() {
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<FourBasedVaultItem | null>(null);
   const [vaultPreviewPlaying, setVaultPreviewPlaying] = useState(false);
-  const [selectedVaultItem, setSelectedVaultItem] = useState<FourBasedVaultItem | null>(
-    null
+  const [selectedVaultItems, setSelectedVaultItems] = useState<FourBasedVaultItem[]>(
+    []
   );
   const [ppvDollars, setPpvDollars] = useState('10');
   const [coinPackages, setCoinPackages] = useState<FourBasedCoinPackage[]>([]);
@@ -462,7 +463,7 @@ export default function Chatter4Based() {
     setMessagesLoading(false);
     setDraft('');
     setSendError(null);
-    setSelectedVaultItem(null);
+    setSelectedVaultItems([]);
     setPlayingMsgId(null);
     setFanProfile(null);
     setVaultOpen(false);
@@ -553,7 +554,7 @@ export default function Chatter4Based() {
     setSelectedChatId(null);
     setMessages([]);
     setFanProfile(null);
-    setSelectedVaultItem(null);
+    setSelectedVaultItems([]);
     setVaultFolders([]);
     setSelectedFolder(null);
     void loadChats(selectedCreatorId);
@@ -722,16 +723,28 @@ export default function Chatter4Based() {
     return () => window.clearInterval(timer);
   }, [loadChats, loadMessages]);
 
+  function toggleVaultItem(item: FourBasedVaultItem) {
+    const id = vaultItemId(item);
+    if (!id) return;
+    setSelectedVaultItems((prev) => {
+      const exists = prev.some((entry) => vaultItemId(entry) === id);
+      if (exists) {
+        return prev.filter((entry) => vaultItemId(entry) !== id);
+      }
+      return [...prev, item];
+    });
+  }
+
   async function handleSendText() {
     if (!selectedCreatorId || !selectedChatId || sending || translatingOutgoing) return;
     const text = draft.trim();
-    if (!text && !selectedVaultItem) return;
+    if (!text && selectedVaultItems.length === 0) return;
 
     setSending(true);
     setSendError(null);
     const localId = crypto.randomUUID();
     const englishDraft = text;
-    const vaultForLog = selectedVaultItem;
+    const vaultForLog = selectedVaultItems;
     const dollarsForLog = Number(ppvDollars) || 0;
     const responseSnapshot = computeFourBasedResponseTime(messages, providerUserId);
 
@@ -761,18 +774,21 @@ export default function Chatter4Based() {
 
       let sentMessage: FourBasedMessage | null = null;
 
-      if (vaultForLog) {
-        const vaultId = vaultItemId(vaultForLog);
+      if (vaultForLog.length > 0) {
         const dollars = dollarsForLog;
         const result = await sendFourBasedPpv(selectedCreatorId, selectedChatId, {
-          message: messageToSend || vaultForLog.description || '',
-          vaultId,
-          vaultGuid: vaultItemGuid(vaultForLog),
+          message: messageToSend || vaultForLog[0]?.description || '',
+          vaults: vaultForLog.map((item, index) => ({
+            id: vaultItemId(item),
+            guid: vaultItemGuid(item),
+            position: index,
+            is_teaser: false,
+          })),
           priceCoins: dollars > 0 ? priceCoins : 0,
           localId,
         });
         sentMessage = result.message;
-        setSelectedVaultItem(null);
+        setSelectedVaultItems([]);
         setPpvDollars('10');
       } else {
         const result = await sendFourBasedMessage(selectedCreatorId, selectedChatId, {
@@ -783,11 +799,12 @@ export default function Chatter4Based() {
       }
 
       if (user?.id && sentMessage?._id) {
-        const isVideo = isVideoItem(vaultForLog);
-        const hasMedia = Boolean(vaultForLog);
+        const pictureCount = vaultForLog.filter((item) => !isVideoItem(item)).length;
+        const videoCount = vaultForLog.filter((item) => isVideoItem(item)).length;
+        const hasMedia = vaultForLog.length > 0;
         const actualSent =
           messageToSend ||
-          (vaultForLog ? vaultForLog.description || '' : '') ||
+          (vaultForLog[0] ? vaultForLog[0].description || '' : '') ||
           englishDraft;
         void createMessagingDashboardEntry({
           id: crypto.randomUUID(),
@@ -807,19 +824,17 @@ export default function Chatter4Based() {
           englishMessage: englishDraft || actualSent || null,
           germanTranslatedMessage: actualSent || null,
           actualSentText: actualSent || null,
-          priceNet: vaultForLog && dollarsForLog > 0 ? dollarsForLog : null,
+          priceNet: hasMedia && dollarsForLog > 0 ? dollarsForLog : null,
           currency: 'USD',
           purchased: false,
-          mediaCount: hasMedia ? 1 : 0,
-          pictureCount: hasMedia && !isVideo ? 1 : 0,
-          videoCount: hasMedia && isVideo ? 1 : 0,
+          mediaCount: vaultForLog.length,
+          pictureCount,
+          videoCount,
           mediaJson: hasMedia
-            ? [
-                {
-                  mediaId: vaultItemId(vaultForLog!),
-                  type: isVideo ? 'video' : 'image',
-                },
-              ]
+            ? vaultForLog.map((item) => ({
+                mediaId: vaultItemId(item),
+                type: isVideoItem(item) ? 'video' : 'image',
+              }))
             : null,
           previousFanMessageAt: responseSnapshot.previousFanMessageAt,
           responseTimeSeconds: responseSnapshot.responseTimeSeconds,
@@ -1381,20 +1396,41 @@ export default function Chatter4Based() {
             <div ref={messagesEndRef} />
           </div>
 
-          {selectedVaultItem && (
+          {selectedVaultItems.length > 0 && (
             <div className="px-4 py-2 border-t border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/[0.03] flex items-center gap-3">
-              {mediaSrcForVaultItem(selectedVaultItem, '200x200.jpg') && (
-                <img
-                  src={mediaSrcForVaultItem(selectedVaultItem, '200x200.jpg')!}
-                  alt=""
-                  loading="lazy"
-                  decoding="async"
-                  className="w-12 h-12 rounded object-cover"
-                />
-              )}
+              <div className="flex items-center gap-1.5 shrink-0 max-w-[40%] overflow-x-auto">
+                {selectedVaultItems.map((item) => {
+                  const thumb = mediaSrcForVaultItem(item, '200x200.jpg');
+                  const id = vaultItemId(item);
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => toggleVaultItem(item)}
+                      className="relative shrink-0"
+                      title="Remove"
+                    >
+                      {thumb ? (
+                        <img
+                          src={thumb}
+                          alt=""
+                          loading="lazy"
+                          decoding="async"
+                          className="w-12 h-12 rounded object-cover"
+                        />
+                      ) : (
+                        <div className="w-12 h-12 rounded bg-gray-200 dark:bg-white/10" />
+                      )}
+                      <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/70 text-white flex items-center justify-center">
+                        <X className="w-3 h-3" />
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-medium truncate">
-                  {selectedVaultItem.name || vaultItemId(selectedVaultItem)}
+                  {selectedVaultItems.length} media selected
                 </p>
                 <div className="flex items-center gap-2 mt-1">
                   <label className="text-xs text-gray-500">Price $</label>
@@ -1413,7 +1449,7 @@ export default function Chatter4Based() {
               </div>
               <button
                 type="button"
-                onClick={() => setSelectedVaultItem(null)}
+                onClick={() => setSelectedVaultItems([])}
                 className="p-1 text-gray-400 hover:text-gray-600"
                 aria-label="Clear attachment"
               >
@@ -1465,7 +1501,7 @@ export default function Chatter4Based() {
                 !selectedChatId ||
                 sending ||
                 translatingOutgoing ||
-                (!draft.trim() && !selectedVaultItem)
+                (!draft.trim() && selectedVaultItems.length === 0)
               }
               className="p-2.5 rounded-lg bg-brand-600 text-white hover:bg-brand-500 disabled:opacity-40"
               title="Send"
@@ -1493,20 +1529,48 @@ export default function Chatter4Based() {
             }}
           />
           <div className="relative bg-white dark:bg-[#111] rounded-xl shadow-xl w-full max-w-4xl max-h-[85vh] flex flex-col border border-gray-200 dark:border-white/10">
-            <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-white/10">
-              <h3 className="font-semibold">Vault</h3>
-              <button
-                type="button"
+            <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-white/10 gap-2">
+              <h3 className="font-semibold">
+                Vault
+                {selectedVaultItems.length > 0
+                  ? ` · ${selectedVaultItems.length} selected`
+                  : ''}
+              </h3>
+              <div className="flex items-center gap-1">
+                {selectedVaultItems.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedVaultItems([])}
+                    className="px-2 py-1 text-xs text-gray-500 hover:text-gray-800"
+                  >
+                    Clear
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVaultOpen(false);
+                    setPreviewItem(null);
+                    setVaultPreviewPlaying(false);
+                  }}
+                  className="px-2.5 py-1 text-xs font-medium rounded-md bg-brand-600 text-white hover:bg-brand-700"
+                >
+                  Done
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     setVaultOpen(false);
                     setPreviewItem(null);
                     setVaultPreviewPlaying(false);
                   }}
                   className="p-1 text-gray-400 hover:text-gray-600"
+                  aria-label="Close vault"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
+            </div>
 
               {/* Folder bar */}
             <div className="px-3 py-2 border-b border-gray-100 dark:border-white/10 overflow-x-auto flex gap-1.5 shrink-0">
@@ -1601,26 +1665,30 @@ export default function Chatter4Based() {
                   <button
                     type="button"
                     onClick={() => {
-                      setSelectedVaultItem(previewItem);
+                      toggleVaultItem(previewItem);
                       setPpvDollars('0');
-                      setVaultOpen(false);
                       setPreviewItem(null);
                     }}
                     className="px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-white/10"
                   >
-                    Attach free
+                    Toggle free attach
                   </button>
                   <button
                     type="button"
                     onClick={() => {
-                      setSelectedVaultItem(previewItem);
+                      const id = vaultItemId(previewItem);
+                      setSelectedVaultItems((prev) => {
+                        if (prev.some((entry) => vaultItemId(entry) === id)) {
+                          return prev;
+                        }
+                        return [...prev, previewItem];
+                      });
                       setPpvDollars('10');
-                      setVaultOpen(false);
                       setPreviewItem(null);
                     }}
                     className="px-3 py-2 text-sm rounded-lg bg-brand-600 text-white"
                   >
-                    Attach as PPV
+                    Add as PPV
                   </button>
                 </div>
               </div>
@@ -1645,15 +1713,25 @@ export default function Chatter4Based() {
                   {vaultItems.map((item) => {
                     const thumb = mediaSrcForVaultItem(item, '200x200.jpg');
                     const video = isVideoItem(item);
+                    const id = vaultItemId(item);
+                    const selected = selectedVaultItems.some(
+                      (entry) => vaultItemId(entry) === id
+                    );
                     return (
                       <button
-                        key={vaultItemId(item)}
+                        key={id}
                         type="button"
-                        onClick={() => {
+                        onClick={() => toggleVaultItem(item)}
+                        onDoubleClick={() => {
                           setVaultPreviewPlaying(false);
                           setPreviewItem(item);
                         }}
-                        className="relative aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-white/5 group"
+                        className={`relative aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-white/5 group border-2 ${
+                          selected
+                            ? 'border-brand-500'
+                            : 'border-transparent'
+                        }`}
+                        title="Click to select · double-click to preview"
                       >
                         {thumb ? (
                           <img
@@ -1667,6 +1745,11 @@ export default function Chatter4Based() {
                           <div className="w-full h-full flex items-center justify-center text-gray-400">
                             <ImageIcon className="w-6 h-6" />
                           </div>
+                        )}
+                        {selected && (
+                          <span className="absolute top-1 right-1 w-5 h-5 rounded-full bg-brand-600 text-white flex items-center justify-center z-10">
+                            <Check className="w-3 h-3" />
+                          </span>
                         )}
                         {video && (
                           <span className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/30">

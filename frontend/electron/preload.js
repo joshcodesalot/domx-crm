@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
    */
   loadMaloumPartitionSession: (payload) =>
     ipcRenderer.invoke('maloum:load-partition-session', payload),
+  openMessageProWindow: () => ipcRenderer.invoke('messagepro:open-window'),
   onUpdaterChecking: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('updater:checking', listener);

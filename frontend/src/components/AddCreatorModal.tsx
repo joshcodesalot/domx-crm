@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import fourBasedIcon from '@/assets/4based_icon.ico';
+import maloumIcon from '@/assets/maloum_icon.png';
 import {
   connectFourBasedAccount,
   connectMaloumAccount,
@@ -366,8 +367,12 @@ export default function AddCreatorModal({
                 onClick={handleSelectMaloum}
                 className="w-full flex items-center gap-4 p-4 border-2 border-brand-600 rounded-lg hover:bg-brand-50 dark:hover:bg-brand-900/10 transition-colors text-left"
               >
-                <div className="w-10 h-10 rounded-lg bg-orange-100 flex items-center justify-center shrink-0">
-                  <span className="text-orange-600 font-bold text-lg">M</span>
+                <div className="w-10 h-10 rounded-lg bg-orange-100 flex items-center justify-center shrink-0 overflow-hidden">
+                  <img
+                    src={maloumIcon}
+                    alt="Maloum"
+                    className="w-7 h-7 object-contain"
+                  />
                 </div>
                 <div>
                   <p className="font-medium text-sm">Maloum</p>

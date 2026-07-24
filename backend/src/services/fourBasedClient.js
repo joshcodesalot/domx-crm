@@ -523,13 +523,40 @@ async function getCoinPackages(creator) {
 async function createFileStackFromVault(creator, {
   vaultId,
   vaultGuid,
+  vaults,
   description,
   priceCoins,
   guid,
 } = {}) {
   const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
-  if (!vaultId) {
-    throw new FourBasedApiError('vaultId is required', 400);
+
+  let vaultEntries = [];
+  if (Array.isArray(vaults) && vaults.length > 0) {
+    vaultEntries = vaults
+      .map((entry, index) => {
+        const id = entry?.id || entry?.vaultId;
+        if (!id) return null;
+        return {
+          id: String(id),
+          guid: entry?.guid || entry?.vaultGuid || randomUUID(),
+          position: Number.isFinite(entry?.position) ? Number(entry.position) : index,
+          is_teaser: Boolean(entry?.is_teaser),
+        };
+      })
+      .filter(Boolean);
+  } else if (vaultId) {
+    vaultEntries = [
+      {
+        id: String(vaultId),
+        guid: vaultGuid || randomUUID(),
+        position: 0,
+        is_teaser: false,
+      },
+    ];
+  }
+
+  if (vaultEntries.length === 0) {
+    throw new FourBasedApiError('At least one vault item is required', 400);
   }
 
   const result = await requestJson({
@@ -541,14 +568,7 @@ async function createFileStackFromVault(creator, {
     resource,
     body: {
       vaults_to_file_stack: {
-        vaults: [
-          {
-            id: vaultId,
-            guid: vaultGuid || randomUUID(),
-            position: 0,
-            is_teaser: false,
-          },
-        ],
+        vaults: vaultEntries,
         description: description || '',
         price: Number(priceCoins) || 0,
         status: 'available',
@@ -565,12 +585,14 @@ async function sendPpv(creator, chatId, {
   message,
   vaultId,
   vaultGuid,
+  vaults,
   priceCoins,
   localId,
 } = {}) {
   const fileStack = await createFileStackFromVault(creator, {
     vaultId,
     vaultGuid,
+    vaults,
     description: message || '',
     priceCoins: Number(priceCoins) || 0,
   });

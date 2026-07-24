@@ -18,11 +18,14 @@ import { useAuth } from '@/context/AuthContext';
 import {
   deleteCreator,
   getCreators,
+  reconnectFourBasedAccountSaved,
+  reconnectMaloumAccountSaved,
   refreshMaloumAvatar,
   verifyMaloumSession,
   type Creator,
 } from '@/lib/api';
 import fourBasedIcon from '@/assets/4based_icon.ico';
+import maloumIcon from '@/assets/maloum_icon.png';
 
 function platformLabel(platform: Creator['platform']): string {
   return platform === 'maloum' ? 'Maloum' : '4based';
@@ -66,6 +69,7 @@ export default function ManageCreators() {
   const [renameTarget, setRenameTarget] = useState<Creator | null>(null);
   const [refreshingIconId, setRefreshingIconId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [reconnectingId, setReconnectingId] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
 
   const canManage = hasPermission('creators.manage');
@@ -130,6 +134,52 @@ export default function ManageCreators() {
       );
     } finally {
       setVerifyingId(null);
+    }
+  }
+
+  async function handleReconnect(creator: Creator) {
+    if (!creator.accountId) return;
+
+    if (!creator.hasSavedCredentials) {
+      setReconnectCreator(creator);
+      setShowAddModal(true);
+      return;
+    }
+
+    setReconnectingId(creator.id);
+    setError(null);
+    try {
+      if (creator.platform === '4based') {
+        await reconnectFourBasedAccountSaved(creator.id);
+      } else {
+        const result = await reconnectMaloumAccountSaved(creator.id);
+        const avatarUrl = result.creator.avatarUrl;
+        const needsAvatarRefresh =
+          !avatarUrl ||
+          (!avatarUrl.startsWith('/uploads/avatars/') &&
+            result.creator.avatarSource !== 'manual');
+        if (needsAvatarRefresh) {
+          try {
+            await refreshMaloumAvatar(creator.id);
+          } catch {
+            // Non-blocking — reconnect already succeeded
+          }
+        }
+      }
+      await loadCreators();
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to reconnect account';
+      if (
+        message.toLowerCase().includes('no saved credentials') ||
+        message.toLowerCase().includes('password not correct')
+      ) {
+        setReconnectCreator(creator);
+        setShowAddModal(true);
+      }
+      setError(message);
+    } finally {
+      setReconnectingId(null);
     }
   }
 
@@ -256,8 +306,14 @@ export default function ManageCreators() {
                     </td>
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center gap-1.5">
-                        {creator.platform === '4based' && (
+                        {creator.platform === '4based' ? (
                           <img src={fourBasedIcon} alt="" className="w-3.5 h-3.5" />
+                        ) : (
+                          <img
+                            src={maloumIcon}
+                            alt=""
+                            className="w-3.5 h-3.5 rounded-sm object-cover"
+                          />
                         )}
                         {platformLabel(creator.platform)}
                       </span>
@@ -280,18 +336,24 @@ export default function ManageCreators() {
                           {creator.accountId && (
                             <button
                               type="button"
-                              className="p-1.5 text-gray-400 hover:text-amber-500 dark:hover:text-amber-400 rounded-md hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors"
+                              className="p-1.5 text-gray-400 hover:text-amber-500 dark:hover:text-amber-400 rounded-md hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               title={
-                                creator.platform === '4based'
-                                  ? 'Reconnect 4based account'
-                                  : 'Reconnect Maloum account'
+                                creator.hasSavedCredentials
+                                  ? creator.platform === '4based'
+                                    ? 'Reconnect 4based with saved password'
+                                    : 'Reconnect Maloum with saved password'
+                                  : creator.platform === '4based'
+                                    ? 'Reconnect 4based account'
+                                    : 'Reconnect Maloum account'
                               }
-                              onClick={() => {
-                                setReconnectCreator(creator);
-                                setShowAddModal(true);
-                              }}
+                              disabled={reconnectingId === creator.id}
+                              onClick={() => void handleReconnect(creator)}
                             >
-                              <RefreshCw className="w-4 h-4" />
+                              <RefreshCw
+                                className={`w-4 h-4 ${
+                                  reconnectingId === creator.id ? 'animate-spin' : ''
+                                }`}
+                              />
                             </button>
                           )}
                           {creator.platform === 'maloum' && creator.accountId && (
