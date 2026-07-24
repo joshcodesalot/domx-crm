@@ -818,6 +818,10 @@ export interface FourBasedChatUser {
   avatar?: {
     preview?: Record<string, string>;
   };
+  is_online?: boolean;
+  verified?: boolean;
+  trusted_user?: boolean;
+  creator?: boolean;
   [key: string]: unknown;
 }
 
@@ -835,6 +839,7 @@ export interface FourBasedChat {
   user_ids?: string[];
   users?: FourBasedChatUser[];
   last_message?: FourBasedLastMessage | null;
+  last_real_message_updated_at?: string;
   unread_message_count?: number;
   updated_at?: string;
   sales_volume?: number;
@@ -890,6 +895,8 @@ export interface FourBasedVaultItem {
   vault_file_stack_id?: string;
   status?: string;
   name?: string;
+  tag?: string[] | string;
+  collection?: unknown[];
   [key: string]: unknown;
 }
 
@@ -898,6 +905,23 @@ export interface FourBasedCoinPackage {
   coins?: number;
   price?: number;
   currency?: string;
+  [key: string]: unknown;
+}
+
+export interface FourBasedUserProfile {
+  _id: string;
+  name?: string;
+  is_online?: boolean;
+  last_activity_date?: string;
+  last_seen_at?: string;
+  last_login?: string;
+  verified?: boolean;
+  trusted_user?: boolean;
+  creator?: boolean;
+  folders?: string[];
+  avatar?: {
+    preview?: Record<string, string>;
+  };
   [key: string]: unknown;
 }
 
@@ -1009,12 +1033,26 @@ export async function sendFourBasedPpv(
 export async function listFourBasedVault(
   creatorId: string,
   fanId: string,
-  options: { limit?: number; offset?: number } = {}
+  options: { limit?: number; offset?: number; tag?: string } = {}
 ): Promise<{ items: FourBasedVaultItem[]; providerUserId: string }> {
   const params = new URLSearchParams({ fanId });
   if (options.limit != null) params.set('limit', String(options.limit));
   if (options.offset != null) params.set('offset', String(options.offset));
+  if (options.tag) params.set('tag', options.tag);
   return request(`/api/creators/${creatorId}/4based/vault?${params.toString()}`);
+}
+
+export async function getFourBasedProfile(
+  creatorId: string
+): Promise<{ profile: FourBasedUserProfile; providerUserId: string }> {
+  return request(`/api/creators/${creatorId}/4based/profile`);
+}
+
+export async function getFourBasedUser(
+  creatorId: string,
+  userId: string
+): Promise<{ user: FourBasedUserProfile; providerUserId: string }> {
+  return request(`/api/creators/${creatorId}/4based/users/${encodeURIComponent(userId)}`);
 }
 
 export async function getFourBasedCoinPackages(

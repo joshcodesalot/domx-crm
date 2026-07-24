@@ -2,8 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image as ImageIcon,
   Loader2,
+  Pin,
   Play,
+  RefreshCw,
   Send,
+  ShieldCheck,
+  User,
   X,
 } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
@@ -17,22 +21,36 @@ import {
   getFourBasedChat,
   getFourBasedCoinPackages,
   getFourBasedMessages,
+  getFourBasedProfile,
+  getFourBasedUser,
   listFourBasedChats,
   listFourBasedVault,
   sendFourBasedMessage,
   sendFourBasedPpv,
   type Creator,
   type FourBasedChat,
+  type FourBasedChatUser,
   type FourBasedCoinPackage,
   type FourBasedMessage,
+  type FourBasedUserProfile,
   type FourBasedVaultItem,
 } from '@/lib/api';
+
+type FanInfo = {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
+  isOnline: boolean;
+  verified: boolean;
+  trustedUser: boolean;
+  isCreator: boolean;
+};
 
 function fanFromChat(
   chat: FourBasedChat,
   providerUserId: string | null
-): { id: string; name: string; avatarUrl: string | null } {
-  const other =
+): FanInfo {
+  const other: FourBasedChatUser | undefined =
     chat.users?.find((u) => u._id && u._id !== providerUserId) ||
     chat.users?.[0];
   const fanId =
@@ -49,6 +67,10 @@ function fanFromChat(
     id: fanId,
     name: other?.name || fanId.slice(0, 8) || 'Fan',
     avatarUrl,
+    isOnline: Boolean(other?.is_online),
+    verified: Boolean(other?.verified),
+    trustedUser: Boolean(other?.trusted_user),
+    isCreator: Boolean(other?.creator),
   };
 }
 
@@ -64,11 +86,47 @@ function formatTime(value?: string): string {
   });
 }
 
+function formatRelativeTime(value?: string): string {
+  if (!value) return '';
+  const date = new Date(value.includes('T') ? value : value.replace(' ', 'T') + 'Z');
+  if (Number.isNaN(date.getTime())) return value;
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0) return 'just now';
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} ${min === 1 ? 'minute' : 'minutes'} ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} ${hr === 1 ? 'hour' : 'hours'} ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day} ${day === 1 ? 'day' : 'days'} ago`;
+  const month = Math.floor(day / 30);
+  if (month < 12) return `${month} ${month === 1 ? 'month' : 'months'} ago`;
+  const year = Math.floor(month / 12);
+  return `${year} ${year === 1 ? 'year' : 'years'} ago`;
+}
+
 function formatDuration(seconds?: number): string {
   if (!seconds || seconds <= 0) return '';
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function formatSpent(salesVolume?: number): string | null {
+  if (typeof salesVolume !== 'number' || salesVolume === 0) return null;
+  const rounded =
+    Math.abs(salesVolume) >= 100
+      ? salesVolume.toFixed(0)
+      : salesVolume.toFixed(2).replace(/\.?0+$/, '');
+  return `${rounded}$`;
+}
+
+function spentBadgeClass(salesVolume?: number): string {
+  if (typeof salesVolume !== 'number') return 'bg-emerald-600 text-white';
+  if (salesVolume > 50000) return 'bg-amber-400 text-black';
+  if (salesVolume > 10000) return 'bg-slate-300 text-black';
+  return 'bg-emerald-600 text-white';
 }
 
 function vaultItemId(item: FourBasedVaultItem): string {
@@ -83,6 +141,13 @@ function isVideoItem(item: FourBasedVaultItem | null | undefined): boolean {
   if (!item) return false;
   const type = String(item.fileStackType || item.type || '').toLowerCase();
   return type.includes('video');
+}
+
+function itemHasTag(item: FourBasedVaultItem, folder: string): boolean {
+  const tag = item.tag;
+  if (Array.isArray(tag)) return tag.includes(folder);
+  if (typeof tag === 'string') return tag === folder;
+  return false;
 }
 
 /** Rough dollars -> coins using packages when available; else ~121 coins per $1 from HAR ($10 = 1210). */
@@ -104,6 +169,41 @@ function dollarsToCoins(
   return Math.round(dollars * 121);
 }
 
+function FanAvatar({
+  name,
+  avatarUrl,
+  isOnline,
+  size = 'md',
+}: {
+  name: string;
+  avatarUrl: string | null;
+  isOnline?: boolean;
+  size?: 'sm' | 'md';
+}) {
+  const dim = size === 'sm' ? 'w-10 h-10' : 'w-9 h-9';
+  const initials = (name || '?').slice(0, 1).toUpperCase();
+  return (
+    <div className={`relative shrink-0 ${dim}`}>
+      {avatarUrl ? (
+        <img
+          src={avatarUrl}
+          alt=""
+          className={`${dim} rounded-full object-cover bg-gray-200 dark:bg-white/10`}
+        />
+      ) : (
+        <div
+          className={`${dim} rounded-full bg-blue-900 text-blue-200 flex items-center justify-center text-sm font-semibold`}
+        >
+          {initials}
+        </div>
+      )}
+      {isOnline && (
+        <span className="absolute -top-0.5 -left-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-white dark:border-[#0a0a0a]" />
+      )}
+    </div>
+  );
+}
+
 export default function Chatter4Based() {
   const { onSyncEvent } = useStaffSync();
 
@@ -121,12 +221,17 @@ export default function Chatter4Based() {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
 
+  const [fanProfile, setFanProfile] = useState<FourBasedUserProfile | null>(null);
+  const [fanProfileLoading, setFanProfileLoading] = useState(false);
+
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
 
   const [vaultOpen, setVaultOpen] = useState(false);
   const [vaultItems, setVaultItems] = useState<FourBasedVaultItem[]>([]);
+  const [vaultFolders, setVaultFolders] = useState<string[]>([]);
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [vaultLoading, setVaultLoading] = useState(false);
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<FourBasedVaultItem | null>(null);
@@ -137,6 +242,9 @@ export default function Chatter4Based() {
   const [coinPackages, setCoinPackages] = useState<FourBasedCoinPackage[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const selectedCreatorIdRef = useRef<string | null>(null);
+  const selectedChatIdRef = useRef<string | null>(null);
+
   const selectedCreator = useMemo(
     () => creators.find((c) => c.id === selectedCreatorId) || null,
     [creators, selectedCreatorId]
@@ -149,11 +257,48 @@ export default function Chatter4Based() {
     () =>
       selectedChat
         ? fanFromChat(selectedChat, providerUserId)
-        : { id: '', name: '', avatarUrl: null },
+        : {
+            id: '',
+            name: '',
+            avatarUrl: null,
+            isOnline: false,
+            verified: false,
+            trustedUser: false,
+            isCreator: false,
+          },
     [selectedChat, providerUserId]
   );
 
+  const sortedChats = useMemo(() => {
+    return [...chats].sort((a, b) => {
+      const pinA = a.is_pinned ? 1 : 0;
+      const pinB = b.is_pinned ? 1 : 0;
+      if (pinA !== pinB) return pinB - pinA;
+      const ta = a.last_real_message_updated_at || a.updated_at || '';
+      const tb = b.last_real_message_updated_at || b.updated_at || '';
+      return tb.localeCompare(ta);
+    });
+  }, [chats]);
+
   const priceCoins = dollarsToCoins(Number(ppvDollars) || 0, coinPackages);
+
+  const fanIsOnline =
+    fanProfile?.is_online != null ? Boolean(fanProfile.is_online) : fan.isOnline;
+  const fanLastOnline =
+    fanProfile?.last_activity_date ||
+    fanProfile?.last_seen_at ||
+    fanProfile?.last_login ||
+    null;
+  const fanVerified =
+    fanProfile?.verified != null ? Boolean(fanProfile.verified) : fan.verified;
+
+  useEffect(() => {
+    selectedCreatorIdRef.current = selectedCreatorId;
+  }, [selectedCreatorId]);
+
+  useEffect(() => {
+    selectedChatIdRef.current = selectedChatId;
+  }, [selectedChatId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -180,18 +325,25 @@ export default function Chatter4Based() {
     };
   }, []);
 
-  const loadChats = useCallback(async (creatorId: string) => {
-    setChatsLoading(true);
-    setChatsError(null);
+  const loadChats = useCallback(async (creatorId: string, silent = false) => {
+    if (!silent) {
+      setChatsLoading(true);
+      setChatsError(null);
+    }
     try {
       const result = await listFourBasedChats(creatorId, { limit: 50 });
+      if (selectedCreatorIdRef.current !== creatorId) return;
       setChats(Array.isArray(result.chats) ? result.chats : []);
       setProviderUserId(result.providerUserId || null);
     } catch (err) {
-      setChatsError(err instanceof Error ? err.message : 'Failed to load chats');
-      setChats([]);
+      if (!silent && selectedCreatorIdRef.current === creatorId) {
+        setChatsError(err instanceof Error ? err.message : 'Failed to load chats');
+        setChats([]);
+      }
     } finally {
-      setChatsLoading(false);
+      if (!silent && selectedCreatorIdRef.current === creatorId) {
+        setChatsLoading(false);
+      }
     }
   }, []);
 
@@ -199,37 +351,96 @@ export default function Chatter4Based() {
     if (!selectedCreatorId) return;
     setSelectedChatId(null);
     setMessages([]);
+    setFanProfile(null);
     setSelectedVaultItem(null);
+    setVaultFolders([]);
+    setSelectedFolder(null);
     void loadChats(selectedCreatorId);
     void getFourBasedCoinPackages(selectedCreatorId)
       .then((r) => setCoinPackages(r.packages || []))
       .catch(() => setCoinPackages([]));
+    void getFourBasedProfile(selectedCreatorId)
+      .then((r) => {
+        const folders = Array.isArray(r.profile?.folders)
+          ? r.profile.folders.filter((f): f is string => typeof f === 'string')
+          : [];
+        setVaultFolders(folders);
+        if (r.providerUserId) setProviderUserId(r.providerUserId);
+      })
+      .catch(() => setVaultFolders([]));
   }, [selectedCreatorId, loadChats]);
 
-  const loadMessages = useCallback(async (creatorId: string, chatId: string) => {
-    setMessagesLoading(true);
-    setMessagesError(null);
-    try {
-      await getFourBasedChat(creatorId, chatId);
-      const result = await getFourBasedMessages(creatorId, chatId, { limit: 40 });
-      const list = Array.isArray(result.messages) ? result.messages : [];
-      // API returns newest first
-      setMessages([...list].reverse());
-      if (result.providerUserId) {
-        setProviderUserId(result.providerUserId);
+  const loadMessages = useCallback(
+    async (creatorId: string, chatId: string, silent = false) => {
+      if (!silent) {
+        setMessagesLoading(true);
+        setMessagesError(null);
       }
-    } catch (err) {
-      setMessagesError(err instanceof Error ? err.message : 'Failed to load messages');
-      setMessages([]);
-    } finally {
-      setMessagesLoading(false);
-    }
-  }, []);
+      try {
+        if (!silent) {
+          await getFourBasedChat(creatorId, chatId);
+        }
+        const result = await getFourBasedMessages(creatorId, chatId, { limit: 40 });
+        if (
+          selectedCreatorIdRef.current !== creatorId ||
+          selectedChatIdRef.current !== chatId
+        ) {
+          return;
+        }
+        const list = Array.isArray(result.messages) ? result.messages : [];
+        // API returns newest first
+        setMessages([...list].reverse());
+        if (result.providerUserId) {
+          setProviderUserId(result.providerUserId);
+        }
+      } catch (err) {
+        if (
+          !silent &&
+          selectedCreatorIdRef.current === creatorId &&
+          selectedChatIdRef.current === chatId
+        ) {
+          setMessagesError(err instanceof Error ? err.message : 'Failed to load messages');
+          setMessages([]);
+        }
+      } finally {
+        if (
+          !silent &&
+          selectedCreatorIdRef.current === creatorId &&
+          selectedChatIdRef.current === chatId
+        ) {
+          setMessagesLoading(false);
+        }
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (!selectedCreatorId || !selectedChatId) return;
     void loadMessages(selectedCreatorId, selectedChatId);
   }, [selectedCreatorId, selectedChatId, loadMessages]);
+
+  useEffect(() => {
+    if (!selectedCreatorId || !fan.id) {
+      setFanProfile(null);
+      return;
+    }
+    let cancelled = false;
+    setFanProfileLoading(true);
+    void getFourBasedUser(selectedCreatorId, fan.id)
+      .then((r) => {
+        if (!cancelled) setFanProfile(r.user || null);
+      })
+      .catch(() => {
+        if (!cancelled) setFanProfile(null);
+      })
+      .finally(() => {
+        if (!cancelled) setFanProfileLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCreatorId, fan.id]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -239,13 +450,26 @@ export default function Chatter4Based() {
     return onSyncEvent((event) => {
       if (event.type !== '4based:event') return;
       if (!selectedCreatorId || event.creatorId !== selectedCreatorId) return;
-      // Refresh chats list on any event; refresh messages if open
-      void loadChats(selectedCreatorId);
+      void loadChats(selectedCreatorId, true);
       if (selectedChatId) {
-        void loadMessages(selectedCreatorId, selectedChatId);
+        void loadMessages(selectedCreatorId, selectedChatId, true);
       }
     });
   }, [onSyncEvent, selectedCreatorId, selectedChatId, loadChats, loadMessages]);
+
+  // Silent 5s refresh — keeps going even when panel is hidden (never unloads)
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const creatorId = selectedCreatorIdRef.current;
+      if (!creatorId) return;
+      void loadChats(creatorId, true);
+      const chatId = selectedChatIdRef.current;
+      if (chatId) {
+        void loadMessages(creatorId, chatId, true);
+      }
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [loadChats, loadMessages]);
 
   async function handleSendText() {
     if (!selectedCreatorId || !selectedChatId || sending) return;
@@ -260,24 +484,13 @@ export default function Chatter4Based() {
       if (selectedVaultItem) {
         const vaultId = vaultItemId(selectedVaultItem);
         const dollars = Number(ppvDollars) || 0;
-        if (dollars > 0) {
-          await sendFourBasedPpv(selectedCreatorId, selectedChatId, {
-            message: text || selectedVaultItem.description || '',
-            vaultId,
-            vaultGuid: vaultItemGuid(selectedVaultItem),
-            priceCoins,
-            localId,
-          });
-        } else {
-          // Free media: mint file stack at price 0 via PPV path
-          await sendFourBasedPpv(selectedCreatorId, selectedChatId, {
-            message: text || selectedVaultItem.description || '',
-            vaultId,
-            vaultGuid: vaultItemGuid(selectedVaultItem),
-            priceCoins: 0,
-            localId,
-          });
-        }
+        await sendFourBasedPpv(selectedCreatorId, selectedChatId, {
+          message: text || selectedVaultItem.description || '',
+          vaultId,
+          vaultGuid: vaultItemGuid(selectedVaultItem),
+          priceCoins: dollars > 0 ? priceCoins : 0,
+          localId,
+        });
         setSelectedVaultItem(null);
         setPpvDollars('10');
       } else {
@@ -287,12 +500,39 @@ export default function Chatter4Based() {
         });
       }
       setDraft('');
-      await loadMessages(selectedCreatorId, selectedChatId);
-      await loadChats(selectedCreatorId);
+      await loadMessages(selectedCreatorId, selectedChatId, true);
+      await loadChats(selectedCreatorId, true);
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Failed to send');
     } finally {
       setSending(false);
+    }
+  }
+
+  async function loadVaultItems(folder: string | null) {
+    if (!selectedCreatorId || !fan.id) return;
+    setVaultLoading(true);
+    setVaultError(null);
+    try {
+      const result = await listFourBasedVault(selectedCreatorId, fan.id, {
+        limit: 60,
+        ...(folder ? { tag: folder } : {}),
+      });
+      let items = Array.isArray(result.items) ? result.items : [];
+      // Client-side fallback if server ignored the tag filter
+      if (folder && items.length > 0 && items.every((it) => !itemHasTag(it, folder))) {
+        // Keep server result as-is when tags are empty (common); trust server filter
+      } else if (folder) {
+        const tagged = items.filter((it) => itemHasTag(it, folder));
+        if (tagged.length > 0) items = tagged;
+      }
+      setVaultItems(items);
+      if (result.providerUserId) setProviderUserId(result.providerUserId);
+    } catch (err) {
+      setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
+      setVaultItems([]);
+    } finally {
+      setVaultLoading(false);
     }
   }
 
@@ -303,21 +543,28 @@ export default function Chatter4Based() {
       return;
     }
     setVaultOpen(true);
-    setVaultLoading(true);
-    setVaultError(null);
     setPreviewItem(null);
-    try {
-      const result = await listFourBasedVault(selectedCreatorId, fan.id, {
-        limit: 60,
-      });
-      setVaultItems(Array.isArray(result.items) ? result.items : []);
-      if (result.providerUserId) setProviderUserId(result.providerUserId);
-    } catch (err) {
-      setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
-      setVaultItems([]);
-    } finally {
-      setVaultLoading(false);
+    setSelectedFolder(null);
+
+    if (vaultFolders.length === 0) {
+      try {
+        const r = await getFourBasedProfile(selectedCreatorId);
+        const folders = Array.isArray(r.profile?.folders)
+          ? r.profile.folders.filter((f): f is string => typeof f === 'string')
+          : [];
+        setVaultFolders(folders);
+      } catch {
+        // keep empty
+      }
     }
+
+    await loadVaultItems(null);
+  }
+
+  async function selectVaultFolder(folder: string | null) {
+    setSelectedFolder(folder);
+    setPreviewItem(null);
+    await loadVaultItems(folder);
   }
 
   function mediaSrcForVaultItem(item: FourBasedVaultItem, size = '500x500.jpg'): string | null {
@@ -334,12 +581,7 @@ export default function Chatter4Based() {
     if (!selectedCreatorId || !providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
-    // Prefer destination path if present (relative under protected)
-    if (typeof item.destination === 'string' && item.destination.includes('/')) {
-      // destination looks like fileStack/x/9/m/... — not usable via media.4based.com/protected
-    }
     if (isVideoItem(item)) {
-      // Stream via preview path family; many videos also serve under protected/{uid}/{id}/...
       return fourBasedMediaUrl(
         selectedCreatorId,
         `protected/${providerUserId}/${id}/preview/900xxx.jpg`
@@ -355,16 +597,6 @@ export default function Chatter4Based() {
     if (!selectedCreatorId || !providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
-    // HAR uses protected/{uid}/{fileStackId}/... for video bytes; try common mp4 path via destination code
-    const codeMatch =
-      typeof item.destination === 'string'
-        ? item.destination
-        : null;
-    if (codeMatch && !codeMatch.includes('://')) {
-      // destination is a relative storage key — not directly on media.4based.com/protected
-    }
-    // Fallback: use vault_file_stack_id path pattern from HAR for video poster; for playback
-    // try protected/{uid}/{id}.mp4 style if available — otherwise poster-only preview.
     return fourBasedMediaUrl(
       selectedCreatorId,
       `protected/${providerUserId}/${id}/file.mp4`
@@ -423,12 +655,31 @@ export default function Chatter4Based() {
         </aside>
 
         {/* Conversations */}
-        <aside className="w-72 border-r border-gray-200 dark:border-white/10 flex flex-col shrink-0">
-          <div className="h-14 px-4 border-b border-gray-200 dark:border-white/10 flex items-center justify-between">
-            <span className="text-sm font-medium">
+        <aside className="w-80 border-r border-gray-200 dark:border-white/10 flex flex-col shrink-0">
+          <div className="h-14 px-4 border-b border-gray-200 dark:border-white/10 flex items-center justify-between gap-2">
+            <span className="text-sm font-medium truncate">
               {selectedCreator?.displayName || 'Chats'}
             </span>
-            {chatsLoading && <Loader2 className="w-4 h-4 animate-spin text-gray-400" />}
+            <button
+              type="button"
+              onClick={() => {
+                if (!selectedCreatorId || chatsLoading) return;
+                void loadChats(selectedCreatorId);
+                if (selectedChatId) {
+                  void loadMessages(selectedCreatorId, selectedChatId);
+                }
+              }}
+              disabled={!selectedCreatorId || chatsLoading}
+              className="p-1.5 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 disabled:opacity-40"
+              title="Refresh chats"
+              aria-label="Refresh chats"
+            >
+              {chatsLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4" />
+              )}
+            </button>
           </div>
           <div className="flex-1 overflow-y-auto">
             {chatsError && (
@@ -437,31 +688,77 @@ export default function Chatter4Based() {
             {!chatsLoading && !chatsError && chats.length === 0 && selectedCreatorId && (
               <p className="text-xs text-gray-500 p-3">No conversations yet.</p>
             )}
-            {chats.map((chat) => {
+            {sortedChats.map((chat) => {
               const peer = fanFromChat(chat, providerUserId);
               const active = chat._id === selectedChatId;
+              const spent = formatSpent(chat.sales_volume);
+              const relative = formatRelativeTime(
+                chat.last_message?.created_at ||
+                  chat.last_real_message_updated_at ||
+                  chat.updated_at
+              );
               return (
                 <button
                   key={chat._id}
                   type="button"
                   onClick={() => setSelectedChatId(chat._id)}
-                  className={`w-full text-left px-3 py-3 border-b border-gray-100 dark:border-white/5 transition-colors ${
+                  className={`w-full text-left px-3 py-2.5 border-b border-gray-100 dark:border-white/5 transition-colors ${
                     active
                       ? 'bg-brand-50 dark:bg-brand-900/20'
                       : 'hover:bg-gray-50 dark:hover:bg-white/5'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium truncate">{peer.name}</span>
-                    {(chat.unread_message_count || 0) > 0 && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-500 text-white">
-                        {chat.unread_message_count}
-                      </span>
-                    )}
+                  <div className="flex items-start gap-2.5">
+                    <FanAvatar
+                      name={peer.name}
+                      avatarUrl={peer.avatarUrl}
+                      isOnline={peer.isOnline}
+                      size="sm"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-sm font-medium truncate">{peer.name}</span>
+                        {peer.verified && !peer.isCreator && (
+                          <span
+                            title="Trusted user — verified payment"
+                            className="shrink-0 text-amber-400"
+                          >
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                          </span>
+                        )}
+                        <span title="Fan" className="shrink-0 text-gray-400">
+                          <User className="w-3 h-3" />
+                        </span>
+                        {spent && (
+                          <span
+                            className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${spentBadgeClass(
+                              chat.sales_volume
+                            )}`}
+                          >
+                            {spent}
+                          </span>
+                        )}
+                        <div className="ml-auto flex items-center gap-1 shrink-0">
+                          {(chat.unread_message_count || 0) > 0 && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-500 text-white">
+                              {chat.unread_message_count}
+                            </span>
+                          )}
+                          {chat.is_pinned && (
+                            <Pin className="w-3.5 h-3.5 text-red-500 fill-red-500" />
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
+                        {chat.last_message?.message || '—'}
+                      </p>
+                      {relative && (
+                        <p className="text-[10px] uppercase tracking-wide text-gray-400 mt-0.5">
+                          {relative}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
-                    {chat.last_message?.message || '—'}
-                  </p>
                 </button>
               );
             })}
@@ -470,11 +767,48 @@ export default function Chatter4Based() {
 
         {/* Thread */}
         <section className="flex-1 flex flex-col min-w-0">
-          <div className="h-14 px-4 border-b border-gray-200 dark:border-white/10 flex items-center gap-3">
+          <div className="h-14 px-4 border-b border-gray-200 dark:border-white/10 flex items-center gap-3 min-w-0">
             {selectedChat ? (
               <>
-                <span className="text-sm font-medium">{fan.name}</span>
-                <span className="text-xs text-gray-400 truncate">{fan.id}</span>
+                <FanAvatar
+                  name={fan.name}
+                  avatarUrl={fan.avatarUrl}
+                  isOnline={fanIsOnline}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-sm font-medium truncate">{fan.name}</span>
+                    {fanVerified && !fan.isCreator && (
+                      <span
+                        title="Trusted user — verified payment"
+                        className="shrink-0 text-amber-400"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5" />
+                      </span>
+                    )}
+                    <span title="Fan" className="shrink-0 text-gray-400">
+                      <User className="w-3 h-3" />
+                    </span>
+                    {formatSpent(selectedChat.sales_volume) && (
+                      <span
+                        className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${spentBadgeClass(
+                          selectedChat.sales_volume
+                        )}`}
+                      >
+                        {formatSpent(selectedChat.sales_volume)}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 truncate">
+                    {fanProfileLoading
+                      ? '…'
+                      : fanIsOnline
+                        ? 'Online'
+                        : fanLastOnline
+                          ? `Last online ${formatRelativeTime(fanLastOnline)}`
+                          : 'Offline'}
+                  </p>
+                </div>
               </>
             ) : (
               <span className="text-sm text-gray-500">Select a conversation</span>
@@ -656,6 +990,36 @@ export default function Chatter4Based() {
               </button>
             </div>
 
+            {/* Folder bar */}
+            <div className="px-3 py-2 border-b border-gray-100 dark:border-white/10 overflow-x-auto flex gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => void selectVaultFolder(null)}
+                className={`shrink-0 px-3 py-1.5 text-xs rounded-full border transition-colors ${
+                  selectedFolder === null
+                    ? 'bg-brand-600 text-white border-brand-600'
+                    : 'border-gray-200 dark:border-white/10 hover:bg-gray-50 dark:hover:bg-white/5'
+                }`}
+              >
+                All
+              </button>
+              {vaultFolders.map((folder) => (
+                <button
+                  key={folder}
+                  type="button"
+                  onClick={() => void selectVaultFolder(folder)}
+                  className={`shrink-0 px-3 py-1.5 text-xs rounded-full border transition-colors max-w-[180px] truncate ${
+                    selectedFolder === folder
+                      ? 'bg-brand-600 text-white border-brand-600'
+                      : 'border-gray-200 dark:border-white/10 hover:bg-gray-50 dark:hover:bg-white/5'
+                  }`}
+                  title={folder}
+                >
+                  {folder}
+                </button>
+              ))}
+            </div>
+
             {previewItem ? (
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
                 <button
@@ -723,7 +1087,11 @@ export default function Chatter4Based() {
                   <p className="text-sm text-red-600 dark:text-red-400">{vaultError}</p>
                 )}
                 {!vaultLoading && !vaultError && vaultItems.length === 0 && (
-                  <p className="text-sm text-gray-500">Vault is empty.</p>
+                  <p className="text-sm text-gray-500">
+                    {selectedFolder
+                      ? `No media in “${selectedFolder}”.`
+                      : 'Vault is empty.'}
+                  </p>
                 )}
                 <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
                   {vaultItems.map((item) => {

@@ -1930,6 +1930,76 @@ router.post(
 );
 
 router.get(
+  '/:id/4based/profile',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const profile = await fourBasedClient.getUser(
+        loaded.creator,
+        loaded.creator.providerUserId
+      );
+      res.json({
+        profile,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Get 4based profile error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/users/:userId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, userId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!userId || typeof userId !== 'string') {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const user = await fourBasedClient.getUser(loaded.creator, userId);
+      res.json({
+        user,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Get 4based user error:');
+    }
+  }
+);
+
+router.get(
   '/:id/4based/vault',
   authenticate,
   requirePermission('creators.view'),
@@ -1956,10 +2026,15 @@ router.get(
 
       const limit = Math.min(Number(req.query.limit) || 60, 120);
       const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const tag =
+        typeof req.query.tag === 'string' && req.query.tag.trim()
+          ? req.query.tag.trim()
+          : undefined;
       const vault = await fourBasedClient.listVault(loaded.creator, {
         fanId,
         limit,
         offset,
+        tag,
       });
       res.json({
         items: Array.isArray(vault) ? vault : vault?.items || vault || [],

@@ -406,17 +406,36 @@ async function sendMessage(creator, chatId, { message, fileStackId, localId } = 
   return result.data;
 }
 
-async function listVault(creator, { fanId, limit = 60, offset = 0 } = {}) {
+async function getUser(creator, userId) {
+  const { token, resource, cookies, proxyUrl } = authContext(creator);
+  if (!userId) {
+    throw new FourBasedApiError('userId is required', 400);
+  }
+  const result = await requestJson({
+    url: `${REST_BASE}/user/${encodeURIComponent(userId)}`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  return result.data;
+}
+
+async function listVault(creator, { fanId, limit = 60, offset = 0, tag } = {}) {
   const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
   if (!fanId) {
     throw new FourBasedApiError('fanId is required to list vault', 400);
   }
   const sort = encodeURIComponent(JSON.stringify({ created_at: 'desc' }));
+  let url =
+    `${REST_BASE}/user/${providerUserId}/vault` +
+    `?offset=${offset}&limit=${limit}&sort=${sort}` +
+    `&with_source=true&buyer_user_id=${encodeURIComponent(fanId)}`;
+  if (typeof tag === 'string' && tag.trim()) {
+    url += `&tag=${encodeURIComponent(tag.trim())}`;
+  }
   const result = await requestJson({
-    url:
-      `${REST_BASE}/user/${providerUserId}/vault` +
-      `?offset=${offset}&limit=${limit}&sort=${sort}` +
-      `&with_source=true&buyer_user_id=${encodeURIComponent(fanId)}`,
+    url,
     proxyUrl,
     cookies,
     token,
@@ -586,6 +605,7 @@ module.exports = {
   sendTyping,
   sendText,
   sendMessage,
+  getUser,
   listVault,
   getCoinPackages,
   createFileStackFromVault,
