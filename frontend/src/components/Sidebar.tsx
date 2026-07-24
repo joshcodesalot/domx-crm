@@ -5,6 +5,7 @@ import {
   LayoutGrid,
   LogOut,
   MessageSquare,
+  PanelsTopLeft,
   UserCog,
   Users,
 } from 'lucide-react';
@@ -61,8 +62,14 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       ? 'text-gray-900 dark:text-white'
       : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors';
 
-  function handleMaloumNavigate(view: 'chat' | 'notifications') {
+  function handleMaloumNavigate(view: 'chat' | 'notifications' | 'message-pro') {
     setMaloumMenuOpen(false);
+    if (view === 'message-pro') {
+      if (window.electronAPI?.openMessageProWindow) {
+        void window.electronAPI.openMessageProWindow();
+      }
+      return;
+    }
     if (view === 'notifications') {
       navigate('/chatter?view=notifications');
       return;
@@ -142,6 +149,15 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 >
                   <Bell className="w-4 h-4 shrink-0" />
                   Notifications
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => handleMaloumNavigate('message-pro')}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                >
+                  <PanelsTopLeft className="w-4 h-4 shrink-0" />
+                  Message Pro
                 </button>
               </div>
             )}

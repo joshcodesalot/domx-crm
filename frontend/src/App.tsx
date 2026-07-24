@@ -12,6 +12,7 @@ import SetupOwner from '@/pages/SetupOwner';
 import ManageCreators from '@/pages/ManageCreators';
 import ManageStaff from '@/pages/ManageStaff';
 import Chatter from '@/pages/Chatter';
+import MessagePro from '@/pages/MessagePro';
 import MessagingDashboard from '@/pages/MessagingDashboard';
 
 function AppRoutes() {
@@ -23,6 +24,9 @@ function AppRoutes() {
           <Route path="/setup" element={<SetupOwner />} />
           <Route path="/change-password" element={<ChangePassword />} />
           <Route element={<ProtectedRoute />}>
+            <Route element={<PermissionRoute permission="creators.view" />}>
+              <Route path="/message-pro" element={<MessagePro />} />
+            </Route>
             <Route element={<CreatorBootProvider />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route element={<PermissionRoute permission="analytics.view" />}>

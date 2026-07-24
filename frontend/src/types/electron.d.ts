@@ -409,6 +409,30 @@ export interface ElectronAPI {
   onUpdaterReady: (callback: (state: UpdaterState) => void) => () => void;
   onUpdaterError: (callback: (state: UpdaterState) => void) => () => void;
   onUpdaterNotAvailable: (callback: (state: UpdaterState) => void) => () => void;
+  openMessageProWindow: () => Promise<{ opened: boolean; focused?: boolean }>;
+  showMessageProView: (opts: {
+    accountId: string;
+    tabId: string;
+    bounds: BrowserBounds;
+  }) => Promise<{ accountId: string; tabId: string }>;
+  setMessageProBounds: (bounds: BrowserBounds) => Promise<void>;
+  closeMessageProTab: (opts: {
+    accountId: string;
+    tabId: string;
+  }) => Promise<{ closed: boolean }>;
+  closeMessageProCreator: (opts: {
+    accountId: string;
+  }) => Promise<{ closed: boolean }>;
+  hideMessageProView: () => Promise<void>;
+  onMessageProOpenFanTab: (
+    callback: (payload: {
+      accountId: string;
+      chatId: string;
+      displayName: string;
+      avatarUrl: string | null;
+    }) => void
+  ) => () => void;
+  onMessageProWindowResized: (callback: () => void) => () => void;
 }
 
 declare global {

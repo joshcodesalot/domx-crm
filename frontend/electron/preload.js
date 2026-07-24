@@ -144,4 +144,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('updater:not-available', listener);
     return () => ipcRenderer.removeListener('updater:not-available', listener);
   },
+  openMessageProWindow: () => ipcRenderer.invoke('messagepro:open-window'),
+  showMessageProView: (opts) => ipcRenderer.invoke('messagepro:show-view', opts),
+  setMessageProBounds: (bounds) => ipcRenderer.invoke('messagepro:set-bounds', bounds),
+  closeMessageProTab: (opts) => ipcRenderer.invoke('messagepro:close-tab', opts),
+  closeMessageProCreator: (opts) => ipcRenderer.invoke('messagepro:close-creator', opts),
+  hideMessageProView: () => ipcRenderer.invoke('messagepro:hide-view'),
+  onMessageProOpenFanTab: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('messagepro:open-fan-tab', listener);
+    return () => ipcRenderer.removeListener('messagepro:open-fan-tab', listener);
+  },
+  onMessageProWindowResized: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('messagepro:window-resized', listener);
+    return () => ipcRenderer.removeListener('messagepro:window-resized', listener);
+  },
 });

@@ -2610,8 +2610,21 @@ async function navigateChatBrowser({ accountId, page = 'chat' }) {
   return { accountId: resolvedId, url: webContents.getURL() };
 }
 
+function getDomXTheme() {
+  return currentDomXTheme;
+}
+
 async function setDomXTheme(theme) {
   currentDomXTheme = theme;
+
+  try {
+    const messagePro = require('./messagePro');
+    if (typeof messagePro.applyDomXTheme === 'function') {
+      void messagePro.applyDomXTheme(theme);
+    }
+  } catch {
+    // Message Pro module may not be loaded yet.
+  }
 
   for (const [accountId, view] of chatBrowserViews.entries()) {
     if (!isLiveBrowserView(view)) {
@@ -2706,6 +2719,7 @@ module.exports = {
   loginCreatorLocally,
   fetchCreatorAvatarImage,
   setDomXTheme,
+  getDomXTheme,
   getTranslationSettings,
   setTranslationSettings,
   getAllCreatorBadgeStates,

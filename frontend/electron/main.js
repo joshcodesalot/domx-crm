@@ -51,6 +51,7 @@ initializeAppPaths();
 
 const creatorBrowser = require('./creatorBrowser');
 const { registerCreatorIpc } = require('./ipc/creator');
+const { registerMessageProIpc } = require('./ipc/messagePro');
 const {
   registerUpdaterIpc,
   runInitialUpdateCheck,
@@ -113,6 +114,7 @@ function createWindow() {
 async function bootstrap() {
   Menu.setApplicationMenu(null);
   registerCreatorIpc();
+  registerMessageProIpc();
   registerUpdaterIpc(ipcMain);
 
   if (!isDev) {
