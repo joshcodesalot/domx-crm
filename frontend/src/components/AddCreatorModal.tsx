@@ -6,8 +6,11 @@ import {
   X,
 } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import fourBasedIcon from '@/assets/4based_icon.ico';
 import {
   connectCreatorAccount,
+  connectFourBasedAccount,
+  reconnectFourBasedAccount,
   createCreator,
   discardCreatorConnect,
   reconnectCreatorSession,
@@ -26,8 +29,8 @@ const inputClassName =
 const STEP_TITLES: Record<number, [string, string]> = {
   1: ['Select a platform', 'Choose the platform you want to connect.'],
   2: [
-    'Connect Maloum account',
-    "Sign into your creator's Maloum account in the embedded browser.",
+    'Connect account',
+    "Sign into your creator's platform account.",
   ],
   3: ['Review details', 'Confirm account info before saving.'],
 };
@@ -65,8 +68,12 @@ export default function AddCreatorModal({
 }: AddCreatorModalProps) {
   const isReconnect = Boolean(reconnectCreator?.accountId);
   const [step, setStep] = useState(isReconnect ? 2 : 1);
+  const [platform, setPlatform] = useState<'maloum' | '4based'>(
+    reconnectCreator?.platform === '4based' ? '4based' : 'maloum'
+  );
   const [loginEmail, setLoginEmail] = useState(reconnectCreator?.loginEmail || '');
   const [loginPassword, setLoginPassword] = useState('');
+  const [proxyUrl, setProxyUrl] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
@@ -91,10 +98,19 @@ export default function AddCreatorModal({
 
   const [title, subtitle] = isReconnect && step === 2
     ? ([
-        'Reconnect Maloum account',
-        `Sign in again to refresh the session for ${reconnectCreator?.displayName || 'this creator'}.`,
+        platform === '4based' ? 'Reconnect 4based account' : 'Reconnect Maloum account',
+        platform === '4based'
+          ? `Sign in again to refresh the session for ${reconnectCreator?.displayName || 'this creator'}.`
+          : `Sign in again to refresh the session for ${reconnectCreator?.displayName || 'this creator'}.`,
       ] as [string, string])
-    : STEP_TITLES[step];
+    : step === 2
+      ? ([
+          platform === '4based' ? 'Connect 4based account' : 'Connect Maloum account',
+          platform === '4based'
+            ? 'Enter credentials and your static residential proxy. Login runs on the DomX server through that proxy.'
+            : "Sign into your creator's Maloum account in the embedded browser.",
+        ] as [string, string])
+      : STEP_TITLES[step];
 
   const hideLoginBrowser = useCallback(async () => {
     if (!window.electronAPI) return;
@@ -214,7 +230,7 @@ export default function AddCreatorModal({
       await hideLoginBrowser();
       setConnectSucceeded(false);
       connectSucceededRef.current = false;
-      void warmCreatorInBackground(reconnectCreator.id, accountId, loginEmail.trim() || null);
+      void warmCreatorInBackground(reconnectCreator.id, accountId);
       onSaved();
       onClose();
       return;
@@ -291,11 +307,80 @@ export default function AddCreatorModal({
   }
 
   function handleSelectMaloum() {
+    setPlatform('maloum');
     setStep(2);
     setLoginError(null);
   }
 
+  function handleSelectFourBased() {
+    setPlatform('4based');
+    setStep(2);
+    setLoginError(null);
+  }
+
+  async function handleConnectFourBased() {
+    if (!loginEmail.trim() || !loginPassword.trim()) {
+      setLoginError('Email and password are required.');
+      return;
+    }
+    if (!proxyUrl.trim()) {
+      setLoginError('Static residential proxy URL is required.');
+      return;
+    }
+    if (!accountId && !isReconnect) {
+      setLoginError('Session is not ready. Please try again.');
+      return;
+    }
+
+    setLoginError(null);
+    setConnecting(true);
+
+    try {
+      if (isReconnect && reconnectCreator) {
+        await reconnectFourBasedAccount(reconnectCreator.id, {
+          email: loginEmail.trim(),
+          password: loginPassword,
+          proxyUrl: proxyUrl.trim(),
+        });
+        setConnectSucceeded(false);
+        connectSucceededRef.current = false;
+        onSaved();
+        onClose();
+        return;
+      }
+
+      const result = await connectFourBasedAccount({
+        accountId: accountId!,
+        email: loginEmail.trim(),
+        password: loginPassword,
+        proxyUrl: proxyUrl.trim(),
+      });
+
+      setAccountToken(result.accountToken);
+      setSession({
+        displayName: result.displayName,
+        username: result.username || '',
+        postLoginUrl: result.postLoginUrl,
+        avatarUrl: result.avatarUrl,
+        profileImageUrl: result.avatarUrl,
+      });
+      setDisplayNameOverride(result.displayName);
+      setConnectSucceeded(true);
+      connectSucceededRef.current = true;
+      setStep(3);
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : 'Failed to connect 4based account');
+    } finally {
+      setConnecting(false);
+    }
+  }
+
   async function handleConnectAccount() {
+    if (platform === '4based') {
+      await handleConnectFourBased();
+      return;
+    }
+
     if (!window.electronAPI) {
       setLoginError('Connecting Maloum accounts requires the DomX desktop app.');
       return;
@@ -358,7 +443,7 @@ export default function AddCreatorModal({
       const input: CreateCreatorInput = {
         displayName: displayNameOverride.trim() || session.displayName,
         username: session.username || undefined,
-        platform: 'maloum',
+        platform,
         postLoginUrl: session.postLoginUrl,
         connectionStatus: 'connected',
         accountId,
@@ -367,6 +452,7 @@ export default function AddCreatorModal({
       const { creator } = await createCreator(input);
 
       if (
+        platform === 'maloum' &&
         session.profileImageUrl &&
         shouldFetchMaloumIcon({
           profileImageUrl: session.profileImageUrl,
@@ -383,7 +469,9 @@ export default function AddCreatorModal({
 
       setConnectSucceeded(false);
       connectSucceededRef.current = false;
-      void warmCreatorInBackground(creator.id, accountId, loginEmail.trim() || null);
+      if (platform === 'maloum') {
+        void warmCreatorInBackground(creator.id, accountId);
+      }
       onSaved();
       onClose();
     } catch (err) {
@@ -483,29 +571,37 @@ export default function AddCreatorModal({
                 </div>
               </button>
 
-              <div className="w-full flex items-center gap-4 p-4 border border-gray-200 dark:border-white/10 rounded-lg opacity-50 cursor-not-allowed text-left">
-                <div className="w-10 h-10 rounded-lg bg-gray-900 flex items-center justify-center shrink-0">
-                  <span className="text-white font-bold text-xs">4B</span>
+              <button
+                type="button"
+                onClick={handleSelectFourBased}
+                className="w-full flex items-center gap-4 p-4 border-2 border-gray-200 dark:border-white/10 rounded-lg hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/10 transition-colors text-left"
+              >
+                <div className="w-10 h-10 rounded-lg bg-gray-900 flex items-center justify-center shrink-0 overflow-hidden">
+                  <img
+                    src={fourBasedIcon}
+                    alt="4based"
+                    className="w-7 h-7 object-contain"
+                  />
                 </div>
                 <div>
                   <p className="font-medium text-sm">4based</p>
                   <p className="text-xs text-gray-500 dark:text-gray-400">
-                    Coming soon — Another platform is on the way
+                    API-based connect with residential proxy
                   </p>
                 </div>
-              </div>
+              </button>
             </div>
           )}
 
           {step === 2 && (
             <div className="space-y-4">
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                Login runs in DomX on this computer (not on the server), so Cloudflare
-                treats it like a normal browser. If a security check appears below,
-                complete it there.
+                {platform === '4based'
+                  ? 'Login runs on the DomX server through your static residential proxy. All 4based traffic for this account will use that proxy.'
+                  : 'Login runs in DomX on this computer (not on the server), so Cloudflare treats it like a normal browser. If a security check appears below, complete it there.'}
               </p>
 
-              {!window.electronAPI && (
+              {platform === 'maloum' && !window.electronAPI && (
                 <p className="text-sm text-red-600 dark:text-red-400">
                   The DomX desktop app is required to connect Maloum accounts.
                 </p>
@@ -560,27 +656,51 @@ export default function AddCreatorModal({
                 </div>
               </div>
 
+              {platform === '4based' && (
+                <div>
+                  <label className="block text-sm font-medium mb-1.5">
+                    Static residential proxy <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={proxyUrl}
+                    onChange={(e) => setProxyUrl(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !connecting) void handleConnectAccount();
+                    }}
+                    placeholder="http://user:pass@host:port"
+                    className={inputClassName}
+                    disabled={connecting}
+                  />
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Used for login, chat API, socket, and media for this account.
+                  </p>
+                </div>
+              )}
+
               {loginError && (
                 <p className="text-sm text-red-600 dark:text-red-400">{loginError}</p>
               )}
 
-              <div
-                ref={browserContainerRef}
-                className={`relative rounded-lg border border-gray-200 dark:border-white/10 bg-[#f8f9fa] dark:bg-[#0d0d0d] overflow-hidden ${
-                  showBrowserPanel ? 'min-h-[360px]' : 'min-h-[120px]'
-                }`}
-              >
-                {!showBrowserPanel && (
-                  <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 px-4 text-center">
-                    Click Connect Account to open Maloum login here.
-                  </div>
-                )}
-                {connecting && showBrowserPanel && (
-                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-black/20">
-                    {manualLoginMode ? 'Waiting for Maloum login…' : 'Opening Maloum login…'}
-                  </div>
-                )}
-              </div>
+              {platform === 'maloum' && (
+                <div
+                  ref={browserContainerRef}
+                  className={`relative rounded-lg border border-gray-200 dark:border-white/10 bg-[#f8f9fa] dark:bg-[#0d0d0d] overflow-hidden ${
+                    showBrowserPanel ? 'min-h-[360px]' : 'min-h-[120px]'
+                  }`}
+                >
+                  {!showBrowserPanel && (
+                    <div className="absolute inset-0 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 px-4 text-center">
+                      Click Connect Account to open Maloum login here.
+                    </div>
+                  )}
+                  {connecting && showBrowserPanel && (
+                    <div className="absolute inset-0 pointer-events-none flex items-center justify-center text-sm text-gray-500 dark:text-gray-400 bg-black/5 dark:bg-black/20">
+                      {manualLoginMode ? 'Waiting for Maloum login…' : 'Opening Maloum login…'}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -685,7 +805,9 @@ export default function AddCreatorModal({
               <button
                 type="button"
                 onClick={() => void handleConnectAccount()}
-                disabled={connecting || !window.electronAPI}
+                disabled={
+                  connecting || (platform === 'maloum' && !window.electronAPI)
+                }
                 className="px-4 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-500 rounded-lg transition-colors disabled:opacity-50"
               >
                 {connecting

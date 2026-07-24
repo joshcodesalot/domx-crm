@@ -22,6 +22,12 @@ const {
   decryptAccessToken,
 } = require('../services/maloumAuthTokens');
 const { emitToUser, emitToUsers } = require('../services/userEventBus');
+const fourBasedClient = require('../services/fourBasedClient');
+const {
+  connectCreatorById,
+  disconnectCreator,
+} = require('../services/fourBasedSocket');
+const { randomUUID } = require('crypto');
 
 const router = express.Router();
 
@@ -295,6 +301,7 @@ router.post(
       postLoginUrl,
       avatarUrl,
       password,
+      proxyUrl,
     } = req.body;
 
     if (!accountId || !platform) {
@@ -311,8 +318,144 @@ router.post(
       return res.status(400).json({ error: 'Invalid platform' });
     }
 
+    // --- 4based API-based connect ---
+    if (platform === '4based') {
+      if (!email || typeof email !== 'string' || !email.trim()) {
+        return res.status(400).json({ error: 'Email is required' });
+      }
+      if (!password || typeof password !== 'string' || !password.length) {
+        return res.status(400).json({ error: 'Password is required' });
+      }
+      if (!proxyUrl || typeof proxyUrl !== 'string' || !proxyUrl.trim()) {
+        return res.status(400).json({ error: 'Static residential proxy URL is required' });
+      }
+
+      try {
+        await cleanupExpiredPending();
+
+        const existingCreator = await pool.query(
+          'SELECT id FROM creators WHERE "accountId" = $1',
+          [accountId]
+        );
+        if (existingCreator.rows.length > 0) {
+          return res.status(409).json({ error: 'Account ID is already in use' });
+        }
+
+        const existingPending = await pool.query(
+          `SELECT "accountId" FROM creator_connect_pending
+           WHERE "accountId" = $1 AND "createdBy" = $2 AND "expiresAt" > NOW()`,
+          [accountId, req.user.id]
+        );
+        if (existingPending.rows.length > 0) {
+          await pool.query(
+            'DELETE FROM creator_connect_pending WHERE "accountId" = $1',
+            [accountId]
+          );
+        }
+
+        let loginResult;
+        try {
+          loginResult = await fourBasedClient.login({
+            identifier: email.trim(),
+            password,
+            proxyUrl: proxyUrl.trim(),
+          });
+        } catch (err) {
+          if (err instanceof fourBasedClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
+            return res.status(400).json({ error: 'Password not correct' });
+          }
+          if (err instanceof fourBasedClient.FourBasedApiError) {
+            return res.status(err.status >= 400 && err.status < 600 ? err.status : 502).json({
+              error: err.message || '4based login failed',
+            });
+          }
+          throw err;
+        }
+
+        const accountToken = generateAccountToken();
+        const accountTokenHash = hashToken(accountToken);
+        const partitionId = partitionIdFor(accountId);
+        const loginEmail = email.trim();
+        const sessionPayload = {
+          cookies: loginResult.cookies,
+          token: loginResult.token,
+          resource: loginResult.resource,
+          providerUserId: loginResult.providerUserId,
+          loginEmail,
+          savedAt: new Date().toISOString(),
+          platform: '4based',
+        };
+        const encryptedSession = encryptJson(sessionPayload);
+        const encryptedAccessToken = encryptSecret(loginResult.token);
+        const encryptedProxy = encryptSecret(proxyUrl.trim());
+        const encryptedLoginPassword = encryptOptionalLoginPassword(password);
+        const expiresAt = new Date(Date.now() + PENDING_TTL_MINUTES * 60 * 1000);
+        const resolvedDisplayName =
+          (typeof displayName === 'string' && displayName.trim()) ||
+          loginResult.displayName;
+        const resolvedUsername =
+          (typeof username === 'string' && username.trim()) ||
+          loginResult.username ||
+          null;
+        const resolvedAvatar =
+          avatarUrl || loginResult.avatarUrl || null;
+        const resolvedPostLoginUrl =
+          (typeof postLoginUrl === 'string' && postLoginUrl.trim()) ||
+          loginResult.postLoginUrl;
+
+        await pool.query(
+          `INSERT INTO creator_connect_pending (
+             "accountId", "accountTokenHash", "partitionId", platform,
+             "displayName", username, "postLoginUrl", "avatarUrl", "encryptedSession",
+             "loginEmail", "encryptedLoginPassword", "encryptedAccessToken",
+             "encryptedRefreshToken", "accessTokenExpiresAt",
+             "providerUserId", "encryptedProxy",
+             "createdBy", "expiresAt"
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+          [
+            accountId,
+            accountTokenHash,
+            partitionId,
+            platform,
+            resolvedDisplayName,
+            resolvedUsername,
+            resolvedPostLoginUrl,
+            resolvedAvatar,
+            encryptedSession,
+            loginEmail,
+            encryptedLoginPassword ?? null,
+            encryptedAccessToken,
+            null,
+            null,
+            loginResult.providerUserId,
+            encryptedProxy,
+            req.user.id,
+            expiresAt,
+          ]
+        );
+
+        return res.status(201).json({
+          accountToken,
+          accountId,
+          partitionId,
+          displayName: resolvedDisplayName,
+          username: resolvedUsername,
+          postLoginUrl: resolvedPostLoginUrl,
+          avatarUrl: resolvedAvatar,
+          providerUserId: loginResult.providerUserId,
+          cookies: [],
+          origins: [],
+        });
+      } catch (err) {
+        console.error('Connect 4based creator error:', err);
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+
+    // --- Maloum client-session connect ---
     if (platform !== 'maloum') {
-      return res.status(400).json({ error: 'Only Maloum is supported currently' });
+      return res.status(400).json({ error: 'Only Maloum and 4based are supported currently' });
     }
 
     if (!isClientMaloumSession(req.body)) {
@@ -493,13 +636,14 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
          "accountId", "accountTokenHash", "partitionId", "encryptedSession",
          "loginEmail", "encryptedLoginPassword", "encryptedAccessToken",
          "encryptedRefreshToken", "accessTokenExpiresAt", "authRefreshState",
-         "tokenRefreshFailureCount", "lastValidatedAt"
+         "tokenRefreshFailureCount", "lastValidatedAt",
+         "providerUserId", "encryptedProxy"
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        RETURNING id, "displayName", username, platform, "connectionStatus",
                  "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
                  "loginEmail", "lastValidatedAt", "authRefreshState", "accessTokenExpiresAt",
-                 "createdAt", "updatedAt"`,
+                 "providerUserId", "createdAt", "updatedAt"`,
       [
         displayName.trim(),
         username?.trim() || pending?.username || null,
@@ -519,6 +663,8 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
         pending?.encryptedRefreshToken ? 'active' : 'active',
         0,
         pending ? new Date() : null,
+        pending?.providerUserId || null,
+        pending?.encryptedProxy || null,
       ]
     );
 
@@ -544,6 +690,12 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
         creatorId: saved.id,
         accountId: saved.accountId,
         sessionUpdatedAt: sessionSavedAt,
+      });
+    }
+
+    if (saved.platform === '4based') {
+      void connectCreatorById(saved.id).catch((err) => {
+        console.warn('[4based] Failed to open socket after create:', err.message);
       });
     }
 
@@ -1327,11 +1479,15 @@ router.delete('/:id', authenticate, requirePermission('creators.manage'), async 
     const result = await pool.query(
       `DELETE FROM creators
        WHERE id = $1
-       RETURNING id, "accountId", "partitionId"`,
+       RETURNING id, "accountId", "partitionId", platform`,
       [id]
     );
 
-    const { accountId, partitionId } = result.rows[0];
+    const { accountId, partitionId, platform } = result.rows[0];
+
+    if (platform === '4based') {
+      disconnectCreator(id);
+    }
 
     if (accountId) {
       await pool.query(
@@ -1360,5 +1516,569 @@ router.delete('/:id', authenticate, requirePermission('creators.manage'), async 
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+async function loadFourBasedCreator(creatorId) {
+  const result = await pool.query(
+    `SELECT id, platform, "displayName", "providerUserId", "encryptedSession",
+            "encryptedAccessToken", "encryptedProxy", "connectionStatus", "accountId"
+     FROM creators
+     WHERE id = $1`,
+    [creatorId]
+  );
+
+  if (result.rows.length === 0) {
+    return { error: { status: 404, message: 'Creator not found' } };
+  }
+
+  const row = result.rows[0];
+  if (row.platform !== '4based') {
+    return { error: { status: 400, message: 'Creator is not a 4based account' } };
+  }
+
+  let session = {};
+  try {
+    if (row.encryptedSession) {
+      session = decryptJson(row.encryptedSession) || {};
+    }
+  } catch (err) {
+    return { error: { status: 500, message: 'Failed to decrypt 4based session' } };
+  }
+
+  const accessToken = decryptSecret(row.encryptedAccessToken) || session.token || null;
+  const proxyUrl = decryptSecret(row.encryptedProxy) || null;
+  const providerUserId = row.providerUserId || session.providerUserId || null;
+
+  if (!accessToken || !providerUserId) {
+    return {
+      error: {
+        status: 400,
+        message: '4based account is missing auth credentials. Please reconnect.',
+      },
+    };
+  }
+
+  return {
+    creator: {
+      id: row.id,
+      displayName: row.displayName,
+      accountId: row.accountId,
+      providerUserId,
+      accessToken,
+      proxyUrl,
+      session: {
+        ...session,
+        providerUserId,
+        token: accessToken,
+        cookies: session.cookies || {},
+        resource: session.resource || null,
+      },
+    },
+  };
+}
+
+function handleFourBasedError(res, err, label) {
+  if (err instanceof fourBasedClient.WrongPasswordError) {
+    return res.status(400).json({ error: 'Password not correct' });
+  }
+  if (err instanceof fourBasedClient.FourBasedApiError) {
+    const status = err.status >= 400 && err.status < 600 ? err.status : 502;
+    return res.status(status).json({ error: err.message || '4based request failed' });
+  }
+  console.error(label, err);
+  return res.status(500).json({ error: 'Internal server error' });
+}
+
+router.post(
+  '/:id/4based/reconnect',
+  authenticate,
+  requirePermission('creators.manage'),
+  connectLimiter,
+  async (req, res) => {
+    const { id } = req.params;
+    const { email, password, proxyUrl } = req.body || {};
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!email || typeof email !== 'string' || !email.trim()) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    if (!password || typeof password !== 'string' || !password.length) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+    if (!proxyUrl || typeof proxyUrl !== 'string' || !proxyUrl.trim()) {
+      return res.status(400).json({ error: 'Static residential proxy URL is required' });
+    }
+
+    try {
+      const result = await pool.query(
+        `SELECT id, platform, "accountId", "displayName"
+         FROM creators WHERE id = $1`,
+        [id]
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+      if (result.rows[0].platform !== '4based') {
+        return res.status(400).json({ error: 'Creator is not a 4based account' });
+      }
+
+      let loginResult;
+      try {
+        loginResult = await fourBasedClient.login({
+          identifier: email.trim(),
+          password,
+          proxyUrl: proxyUrl.trim(),
+        });
+      } catch (err) {
+        if (err instanceof fourBasedClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
+          return res.status(400).json({ error: 'Password not correct' });
+        }
+        if (err instanceof fourBasedClient.FourBasedApiError) {
+          return res
+            .status(err.status >= 400 && err.status < 600 ? err.status : 502)
+            .json({ error: err.message || '4based login failed' });
+        }
+        throw err;
+      }
+
+      const loginEmail = email.trim();
+      const sessionPayload = {
+        cookies: loginResult.cookies,
+        token: loginResult.token,
+        resource: loginResult.resource,
+        providerUserId: loginResult.providerUserId,
+        loginEmail,
+        savedAt: new Date().toISOString(),
+        platform: '4based',
+      };
+      const encryptedSession = encryptJson(sessionPayload);
+      const encryptedAccessToken = encryptSecret(loginResult.token);
+      const encryptedProxy = encryptSecret(proxyUrl.trim());
+      const encryptedLoginPassword = encryptOptionalLoginPassword(password);
+
+      const updated = await pool.query(
+        `UPDATE creators SET
+           "encryptedSession" = $1,
+           "encryptedAccessToken" = $2,
+           "encryptedProxy" = $3,
+           "providerUserId" = $4,
+           "loginEmail" = $5,
+           "encryptedLoginPassword" = COALESCE($6, "encryptedLoginPassword"),
+           username = COALESCE($7, username),
+           "avatarUrl" = COALESCE($8, "avatarUrl"),
+           "postLoginUrl" = $9,
+           "connectionStatus" = 'connected',
+           "lastValidatedAt" = NOW(),
+           "authRefreshState" = 'active',
+           "updatedAt" = NOW()
+         WHERE id = $10
+         RETURNING id, "displayName", username, platform, "connectionStatus",
+                   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
+                   "loginEmail", "lastValidatedAt", "authRefreshState", "accessTokenExpiresAt",
+                   "createdAt", "updatedAt"`,
+        [
+          encryptedSession,
+          encryptedAccessToken,
+          encryptedProxy,
+          loginResult.providerUserId,
+          loginEmail,
+          encryptedLoginPassword ?? null,
+          loginResult.username,
+          loginResult.avatarUrl,
+          loginResult.postLoginUrl,
+          id,
+        ]
+      );
+
+      void connectCreatorById(id).catch((err) => {
+        console.warn('[4based] Failed to reopen socket after reconnect:', err.message);
+      });
+
+      const accessUserIds = await getUserIdsWithCreatorAccess(id);
+      emitCreatorSessionUpdated(accessUserIds, {
+        creatorId: id,
+        accountId: updated.rows[0].accountId,
+        sessionUpdatedAt: sessionPayload.savedAt,
+      });
+
+      res.json({ creator: toCreator(updated.rows[0]) });
+    } catch (err) {
+      console.error('Reconnect 4based creator error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/chats',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 30, 100);
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const chats = await fourBasedClient.listChats(loaded.creator, { limit, offset });
+      res.json({
+        chats: Array.isArray(chats) ? chats : chats?.items || chats || [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'List 4based chats error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/unread',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const unread = await fourBasedClient.getUnread(loaded.creator);
+      res.json({ unread });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Get 4based unread error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/chats/:chatId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, chatId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const chat = await fourBasedClient.getChat(loaded.creator, chatId);
+      try {
+        await fourBasedClient.markReceived(loaded.creator, chatId);
+      } catch (err) {
+        console.warn('markReceived failed:', err.message);
+      }
+
+      res.json({ chat, providerUserId: loaded.creator.providerUserId });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Get 4based chat error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/chats/:chatId/messages',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, chatId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 20, 100);
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const messages = await fourBasedClient.getMessages(loaded.creator, chatId, {
+        limit,
+        offset,
+      });
+      res.json({
+        messages: Array.isArray(messages) ? messages : messages?.items || messages || [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Get 4based messages error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/4based/chats/:chatId/messages',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, chatId } = req.params;
+    const {
+      message,
+      fileStackId,
+      vaultId,
+      vaultGuid,
+      priceCoins,
+      localId,
+    } = req.body || {};
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const text = typeof message === 'string' ? message : '';
+      const resolvedLocalId =
+        typeof localId === 'string' && localId.trim() ? localId.trim() : randomUUID();
+
+      // PPV / priced vault send
+      if (vaultId) {
+        const result = await fourBasedClient.sendPpv(loaded.creator, chatId, {
+          message: text,
+          vaultId,
+          vaultGuid,
+          priceCoins: Number(priceCoins) || 0,
+          localId: resolvedLocalId,
+        });
+        return res.status(201).json({
+          message: result.message,
+          fileStack: result.fileStack,
+          localId: resolvedLocalId,
+        });
+      }
+
+      // Free media (existing file stack) or plain text
+      if (fileStackId) {
+        const sent = await fourBasedClient.sendMessage(loaded.creator, chatId, {
+          message: text,
+          fileStackId,
+          localId: resolvedLocalId,
+        });
+        return res.status(201).json({ message: sent, localId: resolvedLocalId });
+      }
+
+      if (!text.trim()) {
+        return res.status(400).json({ error: 'Message text is required' });
+      }
+
+      const sent = await fourBasedClient.sendText(loaded.creator, chatId, {
+        message: text,
+        localId: resolvedLocalId,
+      });
+      return res.status(201).json({ message: sent, localId: resolvedLocalId });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Send 4based message error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/vault',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    const fanId = req.query.fanId;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!fanId || typeof fanId !== 'string') {
+      return res.status(400).json({ error: 'fanId query parameter is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 60, 120);
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const vault = await fourBasedClient.listVault(loaded.creator, {
+        fanId,
+        limit,
+        offset,
+      });
+      res.json({
+        items: Array.isArray(vault) ? vault : vault?.items || vault || [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'List 4based vault error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/coin-packages',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const packages = await fourBasedClient.getCoinPackages(loaded.creator);
+      res.json({
+        packages: Array.isArray(packages) ? packages : packages?.items || packages || [],
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Get 4based coin packages error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/media',
+  async (req, res, next) => {
+    // <img>/<video> cannot send Authorization headers; allow ?access_token=
+    if (!req.headers.authorization && typeof req.query.access_token === 'string') {
+      req.headers.authorization = `Bearer ${req.query.access_token}`;
+    }
+    return authenticate(req, res, next);
+  },
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    const mediaPath = req.query.path;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!mediaPath || typeof mediaPath !== 'string') {
+      return res.status(400).json({ error: 'path query parameter is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const upstream = await fourBasedClient.fetchMedia(loaded.creator, {
+        path: mediaPath,
+        rangeHeader: req.headers.range || null,
+      });
+
+      if (!upstream.ok && upstream.status !== 206) {
+        return res.status(upstream.status || 502).json({ error: 'Failed to fetch media' });
+      }
+
+      const passthrough = [
+        'content-type',
+        'content-length',
+        'content-range',
+        'accept-ranges',
+        'cache-control',
+        'etag',
+        'last-modified',
+      ];
+      for (const header of passthrough) {
+        const value = upstream.headers.get(header);
+        if (value) {
+          res.setHeader(header, value);
+        }
+      }
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      res.status(upstream.status);
+
+      if (!upstream.body) {
+        return res.end();
+      }
+
+      const { Readable } = require('stream');
+      const nodeStream = Readable.fromWeb(upstream.body);
+      nodeStream.on('error', (err) => {
+        console.warn('4based media stream error:', err.message);
+        if (!res.headersSent) {
+          res.status(502).end();
+        } else {
+          res.destroy(err);
+        }
+      });
+      nodeStream.pipe(res);
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Proxy 4based media error:');
+    }
+  }
+);
 
 module.exports = router;

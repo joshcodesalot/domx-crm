@@ -13,6 +13,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import ThemeToggle from '@/components/ThemeToggle';
 import maloumIcon from '@/assets/maloum_icon.png';
+import fourBasedIcon from '@/assets/4based_icon.ico';
 
 interface SidebarProps {
   activePage?: 'dashboard' | 'analytics' | 'chatter' | 'creators' | 'staff';
@@ -23,6 +24,8 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   const navigate = useNavigate();
   const [maloumMenuOpen, setMaloumMenuOpen] = useState(false);
   const maloumMenuRef = useRef<HTMLDivElement>(null);
+  const isFourBasedChatter =
+    typeof window !== 'undefined' && window.location.hash.includes('/chatter/4based');
 
   async function handleLogout() {
     await logout();
@@ -162,6 +165,28 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
               </div>
             )}
           </div>
+        )}
+        {hasPermission('creators.view') && (
+          <button
+            type="button"
+            onClick={() => navigate('/chatter/4based')}
+            className={`${
+              isFourBasedChatter
+                ? 'text-gray-900 dark:text-white'
+                : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
+            } group`}
+            title="4based Chatter"
+          >
+            <img
+              src={fourBasedIcon}
+              alt=""
+              className={`w-5 h-5 rounded object-cover transition-opacity ${
+                isFourBasedChatter
+                  ? 'opacity-100'
+                  : 'opacity-50 group-hover:opacity-100'
+              }`}
+            />
+          </button>
         )}
         {hasPermission('creators.manage') && (
           <button

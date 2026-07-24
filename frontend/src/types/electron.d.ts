@@ -112,6 +112,13 @@ export type StaffSyncEvent =
       creatorId: string;
       accountId: string | null;
       sessionUpdatedAt: string | null;
+    }
+  | {
+      type: '4based:event';
+      event: string;
+      creatorId: string;
+      providerUserId: string;
+      payload: unknown;
     };
 
 export type UpdaterStatus =

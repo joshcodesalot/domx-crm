@@ -70,4 +70,8 @@ app.use((err, _req, res, _next) => {
 app.listen(PORT, () => {
   console.log(`DomX API running on http://localhost:${PORT}`);
   startMaloumTokenRefreshScheduler();
+  const {
+    startFourBasedSocketManager,
+  } = require('./services/fourBasedSocket');
+  startFourBasedSocketManager();
 });

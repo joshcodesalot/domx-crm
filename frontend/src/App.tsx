@@ -12,6 +12,7 @@ import SetupOwner from '@/pages/SetupOwner';
 import ManageCreators from '@/pages/ManageCreators';
 import ManageStaff from '@/pages/ManageStaff';
 import Chatter from '@/pages/Chatter';
+import Chatter4Based from '@/pages/Chatter4Based';
 import MessagePro from '@/pages/MessagePro';
 import MessagingDashboard from '@/pages/MessagingDashboard';
 
@@ -37,6 +38,7 @@ function AppRoutes() {
               </Route>
               <Route element={<PermissionRoute permission="creators.view" />}>
                 <Route path="/chatter" element={<Chatter />} />
+                <Route path="/chatter/4based" element={<Chatter4Based />} />
               </Route>
               <Route element={<PermissionRoute permission="creators.manage" />}>
                 <Route path="/creators/manage" element={<ManageCreators />} />

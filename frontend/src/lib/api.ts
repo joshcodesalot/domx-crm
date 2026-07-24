@@ -787,3 +787,263 @@ export async function updateMessagingDashboardPurchased(
     }
   );
 }
+
+// --- 4based ---
+
+export interface ConnectFourBasedInput {
+  accountId: string;
+  email: string;
+  password: string;
+  proxyUrl: string;
+  displayName?: string;
+  username?: string;
+}
+
+export interface ConnectFourBasedResponse {
+  accountToken: string;
+  accountId: string;
+  partitionId: string;
+  displayName: string;
+  username: string | null;
+  postLoginUrl: string;
+  avatarUrl: string | null;
+  providerUserId: string;
+  cookies: ConnectCreatorResponse['cookies'];
+  origins: ConnectCreatorResponse['origins'];
+}
+
+export interface FourBasedChatUser {
+  _id: string;
+  name?: string;
+  avatar?: {
+    preview?: Record<string, string>;
+  };
+  [key: string]: unknown;
+}
+
+export interface FourBasedLastMessage {
+  _id?: string;
+  message?: string;
+  user_id?: string;
+  created_at?: string;
+  file_stack?: FourBasedFileStack | null;
+  [key: string]: unknown;
+}
+
+export interface FourBasedChat {
+  _id: string;
+  user_ids?: string[];
+  users?: FourBasedChatUser[];
+  last_message?: FourBasedLastMessage | null;
+  unread_message_count?: number;
+  updated_at?: string;
+  sales_volume?: number;
+  is_pinned?: boolean;
+  [key: string]: unknown;
+}
+
+export interface FourBasedFileStack {
+  _id: string;
+  type?: string;
+  fileStackType?: string;
+  extension?: string;
+  duration?: number;
+  price?: number;
+  description?: string;
+  destination?: string;
+  video_thumbnail_source?: string;
+  vault_file_stack_id?: string;
+  width?: number;
+  height?: number;
+  [key: string]: unknown;
+}
+
+export interface FourBasedMessage {
+  _id: string;
+  chat_id?: string;
+  user_id?: string;
+  receiver_user_id?: string;
+  message?: string;
+  local_id?: string;
+  sender_status?: string;
+  created_at?: string;
+  updated_at?: string;
+  file_stack_id?: string | null;
+  file_stack?: FourBasedFileStack | null;
+  tip?: unknown;
+  [key: string]: unknown;
+}
+
+export interface FourBasedVaultItem {
+  _id?: string;
+  id?: string;
+  guid?: string;
+  fileStackType?: string;
+  type?: string;
+  duration?: number;
+  width?: number;
+  height?: number;
+  price?: number;
+  description?: string;
+  destination?: string;
+  video_thumbnail_source?: string;
+  vault_file_stack_id?: string;
+  status?: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
+export interface FourBasedCoinPackage {
+  _id?: string;
+  coins?: number;
+  price?: number;
+  currency?: string;
+  [key: string]: unknown;
+}
+
+export async function connectFourBasedAccount(
+  input: ConnectFourBasedInput
+): Promise<ConnectFourBasedResponse> {
+  return request<ConnectFourBasedResponse>('/api/creators/connect', {
+    method: 'POST',
+    body: JSON.stringify({
+      accountId: input.accountId,
+      platform: '4based',
+      email: input.email,
+      password: input.password,
+      proxyUrl: input.proxyUrl,
+      ...(input.displayName ? { displayName: input.displayName } : {}),
+      ...(input.username ? { username: input.username } : {}),
+    }),
+  });
+}
+
+export async function reconnectFourBasedAccount(
+  creatorId: string,
+  input: { email: string; password: string; proxyUrl: string }
+): Promise<{ creator: Creator }> {
+  return request(`/api/creators/${creatorId}/4based/reconnect`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function listFourBasedChats(
+  creatorId: string,
+  options: { limit?: number; offset?: number } = {}
+): Promise<{ chats: FourBasedChat[]; providerUserId: string }> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.offset != null) params.set('offset', String(options.offset));
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/4based/chats${query ? `?${query}` : ''}`
+  );
+}
+
+export async function getFourBasedChat(
+  creatorId: string,
+  chatId: string
+): Promise<{ chat: FourBasedChat; providerUserId: string }> {
+  return request(`/api/creators/${creatorId}/4based/chats/${encodeURIComponent(chatId)}`);
+}
+
+export async function getFourBasedMessages(
+  creatorId: string,
+  chatId: string,
+  options: { limit?: number; offset?: number } = {}
+): Promise<{ messages: FourBasedMessage[]; providerUserId: string }> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.offset != null) params.set('offset', String(options.offset));
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/4based/chats/${encodeURIComponent(chatId)}/messages${
+      query ? `?${query}` : ''
+    }`
+  );
+}
+
+export async function sendFourBasedMessage(
+  creatorId: string,
+  chatId: string,
+  payload: {
+    message: string;
+    fileStackId?: string | null;
+    localId?: string;
+  }
+): Promise<{ message: FourBasedMessage; localId: string }> {
+  return request(
+    `/api/creators/${creatorId}/4based/chats/${encodeURIComponent(chatId)}/messages`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function sendFourBasedPpv(
+  creatorId: string,
+  chatId: string,
+  payload: {
+    message: string;
+    vaultId: string;
+    vaultGuid?: string;
+    priceCoins: number;
+    localId?: string;
+  }
+): Promise<{
+  message: FourBasedMessage;
+  fileStack: FourBasedFileStack;
+  localId: string;
+}> {
+  return request(
+    `/api/creators/${creatorId}/4based/chats/${encodeURIComponent(chatId)}/messages`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function listFourBasedVault(
+  creatorId: string,
+  fanId: string,
+  options: { limit?: number; offset?: number } = {}
+): Promise<{ items: FourBasedVaultItem[]; providerUserId: string }> {
+  const params = new URLSearchParams({ fanId });
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.offset != null) params.set('offset', String(options.offset));
+  return request(`/api/creators/${creatorId}/4based/vault?${params.toString()}`);
+}
+
+export async function getFourBasedCoinPackages(
+  creatorId: string
+): Promise<{ packages: FourBasedCoinPackage[] }> {
+  return request(`/api/creators/${creatorId}/4based/coin-packages`);
+}
+
+export async function getFourBasedUnread(
+  creatorId: string
+): Promise<{ unread: unknown }> {
+  return request(`/api/creators/${creatorId}/4based/unread`);
+}
+
+/** Build a media-proxy URL for use in <img>/<video src>. Includes DomX access token. */
+export function fourBasedMediaUrl(creatorId: string, path: string): string {
+  const token = getToken() || '';
+  const params = new URLSearchParams({
+    path,
+    access_token: token,
+  });
+  return `${API_URL}/api/creators/${creatorId}/4based/media?${params.toString()}`;
+}
+
+export function fourBasedPreviewPath(
+  providerUserId: string,
+  fileStackId: string,
+  size: string = '500x500.jpg'
+): string {
+  return `protected/${providerUserId}/${fileStackId}/preview/${size}`;
+}
+

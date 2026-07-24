@@ -18,6 +18,7 @@ import VerifySessionModal from '@/components/VerifySessionModal';
 import { useAuth } from '@/context/AuthContext';
 import { deleteCreator, getCreatorSession, getCreators, saveCreatorAvatarFromMaloum, type Creator } from '@/lib/api';
 import type { PlaywrightCookie } from '@/types/electron';
+import fourBasedIcon from '@/assets/4based_icon.ico';
 
 function platformLabel(platform: Creator['platform']): string {
   return platform === 'maloum' ? 'Maloum' : '4based';
@@ -263,7 +264,14 @@ export default function ManageCreators() {
                         />
                         <div>
                           <p className="font-medium">{creator.displayName}</p>
-                          <p className="text-xs text-gray-400">
+                          <p className="text-xs text-gray-400 inline-flex items-center gap-1.5">
+                            {creator.platform === '4based' && (
+                              <img
+                                src={fourBasedIcon}
+                                alt=""
+                                className="w-3.5 h-3.5 rounded"
+                              />
+                            )}
                             {platformLabel(creator.platform)}
                           </p>
                         </div>
@@ -303,11 +311,16 @@ export default function ManageCreators() {
                     {canManage && (
                       <td className="px-4 py-3 text-right">
                         <div className="flex items-center justify-end gap-1">
-                          {creator.connectionStatus === 'error' && (
+                          {(creator.connectionStatus === 'error' ||
+                            creator.platform === '4based') && (
                             <button
                               type="button"
                               className="p-1.5 text-gray-400 hover:text-brand-600 dark:hover:text-brand-400 rounded-md hover:bg-brand-50 dark:hover:bg-brand-900/20 transition-colors"
-                              title="Reconnect Maloum account"
+                              title={
+                                creator.platform === '4based'
+                                  ? 'Reconnect 4based account'
+                                  : 'Reconnect Maloum account'
+                              }
                               onClick={() => {
                                 setReconnectCreator(creator);
                                 setShowAddModal(true);
