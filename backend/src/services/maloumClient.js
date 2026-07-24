@@ -9,6 +9,10 @@ const STORAGE_KEY = 'sb-srswgacczfgjttwdpuia-auth-token';
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
 
+/** Locked to US residential proxy egress (not the operator's local TZ). */
+const MALOUM_CLIENT_TIMEZONE = 'America/New_York';
+const MALOUM_ACCEPT_LANGUAGE = 'en-US,en;q=0.9';
+
 const ALLOWED_MEDIA_HOSTS = new Set([
   'storage.googleapis.com',
   'maloum-prod-images.storage.googleapis.com',
@@ -92,18 +96,44 @@ function baseHeaders({ accessToken, timezone, extra = {} } = {}) {
     'user-agent': USER_AGENT,
     origin: APP_ORIGIN,
     referer: `${APP_ORIGIN}/`,
+    'accept-language': MALOUM_ACCEPT_LANGUAGE,
+    'x-timezone': timezone || MALOUM_CLIENT_TIMEZONE,
+    'sec-ch-ua':
+      '"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-site',
     ...extra,
   };
-
-  if (timezone) {
-    headers['x-timezone'] = timezone;
-  }
 
   if (accessToken) {
     headers.authorization = `Bearer ${accessToken}`;
   }
 
   return headers;
+}
+
+function isCloudflareBlocked(status, text, contentType) {
+  const body = typeof text === 'string' ? text : '';
+  const ct = typeof contentType === 'string' ? contentType.toLowerCase() : '';
+  const looksHtml = ct.includes('text/html') || /^\s*</.test(body);
+  const challenge =
+    /just a moment/i.test(body) ||
+    /cf-ray/i.test(body) ||
+    /cloudflare/i.test(body) ||
+    /checking your browser/i.test(body) ||
+    /attention required/i.test(body) ||
+    /enable javascript and cookies/i.test(body);
+
+  if (status === 403 && (looksHtml || challenge || !parseJsonSafe(body))) {
+    return true;
+  }
+  if (challenge && looksHtml) {
+    return true;
+  }
+  return false;
 }
 
 function parseJsonSafe(text) {
@@ -283,7 +313,7 @@ function authContext(creator) {
   return {
     accessToken,
     proxyUrl: resolveMaloumProxyUrl(proxyUrl),
-    timezone: creator.timezone || 'UTC',
+    timezone: MALOUM_CLIENT_TIMEZONE,
     providerUserId: creator.providerUserId || null,
   };
 }
@@ -605,22 +635,25 @@ async function fetchCurrentUser({ accessToken, proxyUrl, timezone }) {
 }
 
 /**
- * Server-side Maloum login via api.maloum.com through the required proxy.
+ * Server-side Maloum login via api.maloum.com through the required US residential proxy.
+ * On Cloudflare 403, falls back once to headless Playwright+stealth (same proxy).
  */
 async function login({
   usernameOrEmail,
   password,
   proxyUrl,
-  timezone = 'UTC',
 }) {
   if (!usernameOrEmail || !password) {
     throw new MaloumApiError('Email/username and password are required', 400);
   }
 
   const resolvedProxy = resolveMaloumProxyUrl(proxyUrl);
-  const dispatcher = createDispatcher(resolvedProxy);
+  const timezone = MALOUM_CLIENT_TIMEZONE;
   const identifier = String(usernameOrEmail).trim();
 
+  let session = null;
+
+  const dispatcher = createDispatcher(resolvedProxy);
   let response;
   try {
     response = await undiciFetch(`${API_BASE}/user-management/login`, {
@@ -637,25 +670,45 @@ async function login({
   }
 
   const text = await response.text();
+  const contentType = response.headers.get('content-type') || '';
   const parsed = parseJsonSafe(text);
 
   if (response.status === 401) {
     throw new WrongPasswordError('Password not correct');
   }
 
-  if (!response.ok) {
-    throw new MaloumApiError(
-      parsed?.message || `Login failed (${response.status})`,
+  if (response.ok) {
+    session = extractSessionTokens(parsed);
+    if (!session?.access_token || !session?.refresh_token) {
+      throw new MaloumApiError(
+        'Login response missing access or refresh token',
+        502,
+        parsed
+      );
+    }
+  } else if (isCloudflareBlocked(response.status, text, contentType)) {
+    console.warn(
+      '[maloumClient] undici login blocked by Cloudflare; trying Playwright bypass:',
       response.status,
-      parsed
+      contentType,
+      text.slice(0, 200)
     );
-  }
-
-  const session = extractSessionTokens(parsed);
-  if (!session?.access_token || !session?.refresh_token) {
+    const { loginWithBrowser } = require('./maloumLoginBrowser');
+    session = await loginWithBrowser({
+      usernameOrEmail: identifier,
+      password,
+      proxyUrl: resolvedProxy,
+    });
+  } else {
+    console.warn(
+      '[maloumClient] login failed:',
+      response.status,
+      contentType,
+      text.slice(0, 200)
+    );
     throw new MaloumApiError(
-      'Login response missing access or refresh token',
-      502,
+      parsed?.message || parsed?.error || `Login failed (${response.status})`,
+      response.status,
       parsed
     );
   }
@@ -724,6 +777,9 @@ module.exports = {
   fetchCurrentUser,
   avatarFromUser,
   buildSyntheticOrigins,
+  extractSessionTokens,
+  parseJsonSafe,
+  isCloudflareBlocked,
   listChats,
   getChat,
   getMessages,
@@ -745,4 +801,7 @@ module.exports = {
   API_BASE,
   APP_ORIGIN,
   STORAGE_KEY,
+  USER_AGENT,
+  MALOUM_CLIENT_TIMEZONE,
+  MALOUM_ACCEPT_LANGUAGE,
 };

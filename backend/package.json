@@ -7,7 +7,8 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "migrate": "node src/db/migrate.js",
-    "seed": "node src/db/seed.js"
+    "seed": "node src/db/seed.js",
+    "playwright:install": "playwright install chromium"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -20,6 +21,9 @@
     "jsonwebtoken": "^9.0.2",
     "openai": "^6.45.0",
     "pg": "^8.13.1",
+    "playwright": "^1.61.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "socket.io-client": "^4.8.3",
     "undici": "^8.9.0"
   },
