@@ -573,8 +573,27 @@ function openMessageProWindow() {
   return { opened: true, focused: false };
 }
 
+function closeMessageProWindow() {
+  const win = getMessageProWindow();
+  if (!win) {
+    destroyAllViews();
+    messageProWindow = null;
+    return { closed: false };
+  }
+
+  destroyAllViews();
+  try {
+    win.close();
+  } catch {
+    // Best-effort close.
+  }
+  messageProWindow = null;
+  return { closed: true };
+}
+
 module.exports = {
   openMessageProWindow,
+  closeMessageProWindow,
   showView,
   setBounds,
   hideActiveView,

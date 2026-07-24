@@ -50,6 +50,7 @@ const { initializeAppPaths } = require('./app-paths');
 initializeAppPaths();
 
 const creatorBrowser = require('./creatorBrowser');
+const messagePro = require('./messagePro');
 const { registerCreatorIpc } = require('./ipc/creator');
 const { registerMessageProIpc } = require('./ipc/messagePro');
 const {
@@ -86,7 +87,12 @@ function createWindow() {
 
   creatorBrowser.setMainWindow(win);
 
+  win.on('close', () => {
+    messagePro.closeMessageProWindow();
+  });
+
   win.on('closed', () => {
+    messagePro.closeMessageProWindow();
     creatorBrowser.setMainWindow(null);
     if (mainWindow === win) {
       mainWindow = null;
