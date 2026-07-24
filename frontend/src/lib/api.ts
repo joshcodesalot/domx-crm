@@ -860,6 +860,7 @@ export interface FourBasedFileStack {
   vault_file_stack_id?: string;
   width?: number;
   height?: number;
+  preview?: Record<string, string>;
   [key: string]: unknown;
 }
 

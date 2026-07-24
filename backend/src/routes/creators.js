@@ -27,6 +27,7 @@ const {
   connectCreatorById,
   disconnectCreator,
 } = require('../services/fourBasedSocket');
+const fourBasedMediaCache = require('../services/fourBasedMediaCache');
 const { randomUUID } = require('crypto');
 
 const router = express.Router();
@@ -2108,9 +2109,31 @@ router.get(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
+      const rangeHeader = req.headers.range || null;
+      const canUseDiskCache =
+        !rangeHeader && fourBasedMediaCache.isCacheablePath(mediaPath);
+
+      if (canUseDiskCache) {
+        const cached = await fourBasedMediaCache.readCache(id, mediaPath);
+        if (cached) {
+          res.setHeader('Content-Type', cached.contentType);
+          res.setHeader('Content-Length', String(cached.buffer.length));
+          res.setHeader(
+            'Cache-Control',
+            'private, max-age=86400, stale-while-revalidate=604800'
+          );
+          res.setHeader('X-DomX-Media-Cache', 'HIT');
+          res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+          if (cached.etag) {
+            res.setHeader('ETag', cached.etag);
+          }
+          return res.status(200).end(cached.buffer);
+        }
+      }
+
       const upstream = await fourBasedClient.fetchMedia(loaded.creator, {
         path: mediaPath,
-        rangeHeader: req.headers.range || null,
+        rangeHeader,
       });
 
       if (!upstream.ok && upstream.status !== 206) {
@@ -2119,24 +2142,67 @@ router.get(
 
       const passthrough = [
         'content-type',
-        'content-length',
         'content-range',
         'accept-ranges',
-        'cache-control',
         'etag',
         'last-modified',
       ];
+      // Only forward content-length when streaming; buffered cache path sets it after download.
+      if (!(canUseDiskCache && upstream.status === 200)) {
+        passthrough.push('content-length');
+      }
       for (const header of passthrough) {
         const value = upstream.headers.get(header);
         if (value) {
           res.setHeader(header, value);
         }
       }
+
+      // Prefer long-lived browser cache for previews; videos stay shorter.
+      if (canUseDiskCache) {
+        res.setHeader(
+          'Cache-Control',
+          'private, max-age=86400, stale-while-revalidate=604800'
+        );
+        res.setHeader('X-DomX-Media-Cache', 'MISS');
+      } else {
+        res.setHeader('Cache-Control', 'private, max-age=300');
+        res.setHeader('X-DomX-Media-Cache', 'BYPASS');
+      }
       res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
       res.status(upstream.status);
 
       if (!upstream.body) {
         return res.end();
+      }
+
+      // Buffer cacheable image bodies so we can store them; stream everything else.
+      if (canUseDiskCache && upstream.status === 200) {
+        const { Readable } = require('stream');
+        const nodeStream = Readable.fromWeb(upstream.body);
+        const chunks = [];
+        nodeStream.on('data', (chunk) => chunks.push(chunk));
+        nodeStream.on('error', (err) => {
+          console.warn('4based media stream error:', err.message);
+          if (!res.headersSent) {
+            res.status(502).end();
+          } else {
+            res.destroy(err);
+          }
+        });
+        nodeStream.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          if (!res.headersSent) {
+            res.setHeader('Content-Length', String(buffer.length));
+          }
+          res.end(buffer);
+          void fourBasedMediaCache.writeCache(id, mediaPath, {
+            buffer,
+            contentType: upstream.headers.get('content-type') || 'application/octet-stream',
+            etag: upstream.headers.get('etag') || null,
+          });
+        });
+        return;
       }
 
       const { Readable } = require('stream');

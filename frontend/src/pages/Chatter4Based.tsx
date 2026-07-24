@@ -113,19 +113,38 @@ function formatDuration(seconds?: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function formatSpent(salesVolume?: number): string | null {
-  if (typeof salesVolume !== 'number' || salesVolume === 0) return null;
+/**
+ * 4based stores sales_volume / PPV price in coins.
+ * Website display: (coins / payment_config.tax) / 100 with tax ≈ 1.21
+ * → equivalent to coins / 121 (e.g. 34484 → 284.99$, 1210 → $10.00).
+ */
+const COINS_PER_DOLLAR = 121;
+
+function coinsToDollars(coins: number): number {
+  if (!Number.isFinite(coins) || coins === 0) return 0;
+  return coins / COINS_PER_DOLLAR;
+}
+
+function formatSpent(salesVolumeCoins?: number): string | null {
+  if (typeof salesVolumeCoins !== 'number' || salesVolumeCoins === 0) return null;
+  const dollars = coinsToDollars(salesVolumeCoins);
   const rounded =
-    Math.abs(salesVolume) >= 100
-      ? salesVolume.toFixed(0)
-      : salesVolume.toFixed(2).replace(/\.?0+$/, '');
+    Math.abs(dollars) >= 100
+      ? dollars.toFixed(0)
+      : dollars.toFixed(2).replace(/\.?0+$/, '');
   return `${rounded}$`;
 }
 
-function spentBadgeClass(salesVolume?: number): string {
-  if (typeof salesVolume !== 'number') return 'bg-emerald-600 text-white';
-  if (salesVolume > 50000) return 'bg-amber-400 text-black';
-  if (salesVolume > 10000) return 'bg-slate-300 text-black';
+function formatPpvDollars(priceCoins?: number): string | null {
+  if (typeof priceCoins !== 'number' || priceCoins <= 0) return null;
+  return `$${coinsToDollars(priceCoins).toFixed(2)}`;
+}
+
+/** Badge tiers use raw coin amounts (same as 4based user-info-item). */
+function spentBadgeClass(salesVolumeCoins?: number): string {
+  if (typeof salesVolumeCoins !== 'number') return 'bg-emerald-600 text-white';
+  if (salesVolumeCoins > 50000) return 'bg-amber-400 text-black';
+  if (salesVolumeCoins > 10000) return 'bg-slate-300 text-black';
   return 'bg-emerald-600 text-white';
 }
 
@@ -150,23 +169,13 @@ function itemHasTag(item: FourBasedVaultItem, folder: string): boolean {
   return false;
 }
 
-/** Rough dollars -> coins using packages when available; else ~121 coins per $1 from HAR ($10 = 1210). */
+/** Dollars -> PPV coins. Prefer 121 (HAR / tax 1.21); packages are fan purchase rates (~100). */
 function dollarsToCoins(
   dollars: number,
-  packages: FourBasedCoinPackage[]
+  _packages: FourBasedCoinPackage[]
 ): number {
   if (!Number.isFinite(dollars) || dollars <= 0) return 0;
-  if (packages.length > 0) {
-    const withBoth = packages.filter(
-      (p) => typeof p.coins === 'number' && typeof p.price === 'number' && p.price > 0
-    );
-    if (withBoth.length > 0) {
-      const rates = withBoth.map((p) => (p.coins as number) / (p.price as number));
-      const avg = rates.reduce((a, b) => a + b, 0) / rates.length;
-      return Math.round(dollars * avg);
-    }
-  }
-  return Math.round(dollars * 121);
+  return Math.round(dollars * COINS_PER_DOLLAR);
 }
 
 function FanAvatar({
@@ -188,6 +197,8 @@ function FanAvatar({
         <img
           src={avatarUrl}
           alt=""
+          loading="lazy"
+          decoding="async"
           className={`${dim} rounded-full object-cover bg-gray-200 dark:bg-white/10`}
         />
       ) : (
@@ -235,11 +246,14 @@ export default function Chatter4Based() {
   const [vaultLoading, setVaultLoading] = useState(false);
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<FourBasedVaultItem | null>(null);
+  const [vaultPreviewPlaying, setVaultPreviewPlaying] = useState(false);
   const [selectedVaultItem, setSelectedVaultItem] = useState<FourBasedVaultItem | null>(
     null
   );
   const [ppvDollars, setPpvDollars] = useState('10');
   const [coinPackages, setCoinPackages] = useState<FourBasedCoinPackage[]>([]);
+  /** Message id currently streaming video (lazy — poster only until clicked). */
+  const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const selectedCreatorIdRef = useRef<string | null>(null);
@@ -417,6 +431,7 @@ export default function Chatter4Based() {
 
   useEffect(() => {
     if (!selectedCreatorId || !selectedChatId) return;
+    setPlayingMsgId(null);
     void loadMessages(selectedCreatorId, selectedChatId);
   }, [selectedCreatorId, selectedChatId, loadMessages]);
 
@@ -544,6 +559,7 @@ export default function Chatter4Based() {
     }
     setVaultOpen(true);
     setPreviewItem(null);
+    setVaultPreviewPlaying(false);
     setSelectedFolder(null);
 
     if (vaultFolders.length === 0) {
@@ -564,10 +580,11 @@ export default function Chatter4Based() {
   async function selectVaultFolder(folder: string | null) {
     setSelectedFolder(folder);
     setPreviewItem(null);
+    setVaultPreviewPlaying(false);
     await loadVaultItems(folder);
   }
 
-  function mediaSrcForVaultItem(item: FourBasedVaultItem, size = '500x500.jpg'): string | null {
+  function mediaSrcForVaultItem(item: FourBasedVaultItem, size = '200x200.jpg'): string | null {
     if (!selectedCreatorId || !providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
@@ -603,12 +620,56 @@ export default function Chatter4Based() {
     );
   }
 
-  function messageMediaUrl(msg: FourBasedMessage): string | null {
+  function messageMediaPath(msg: FourBasedMessage, size = '400x400.jpg'): string | null {
+    if (!providerUserId || !msg.file_stack?._id) return null;
+    const fs = msg.file_stack;
+    const preview = fs.preview as Record<string, string> | undefined;
+    const sizeKey = size.replace(/\.jpg$/i, '');
+    const preferred =
+      preview?.[sizeKey] ||
+      preview?.['400x400'] ||
+      preview?.['500x500'] ||
+      preview?.['340xxx'] ||
+      preview?.['200x200'];
+    if (typeof preferred === 'string' && preferred.includes('/protected/')) {
+      const idx = preferred.indexOf('/protected/');
+      return preferred.slice(idx + 1); // strip leading slash → protected/...
+    }
+    const vaultId = fs.vault_file_stack_id;
+    if (vaultId) {
+      return `protected/${providerUserId}/${fs._id}/v/${vaultId}/preview/${size}`;
+    }
+    return fourBasedPreviewPath(providerUserId, fs._id, size);
+  }
+
+  function messageMediaUrl(msg: FourBasedMessage, size = '400x400.jpg'): string | null {
+    if (!selectedCreatorId) return null;
+    const path = messageMediaPath(msg, size);
+    if (!path) return null;
+    return fourBasedMediaUrl(selectedCreatorId, path);
+  }
+
+  function messageVideoUrl(msg: FourBasedMessage): string | null {
     if (!selectedCreatorId || !providerUserId || !msg.file_stack?._id) return null;
+    const fs = msg.file_stack;
+    const vaultId = fs.vault_file_stack_id;
+    if (vaultId) {
+      return fourBasedMediaUrl(
+        selectedCreatorId,
+        `protected/${providerUserId}/${fs._id}/v/${vaultId}/file.mp4`
+      );
+    }
     return fourBasedMediaUrl(
       selectedCreatorId,
-      fourBasedPreviewPath(providerUserId, msg.file_stack._id, '500x500.jpg')
+      `protected/${providerUserId}/${fs._id}/file.mp4`
     );
+  }
+
+  function isMessageVideo(msg: FourBasedMessage): boolean {
+    const fs = msg.file_stack;
+    if (!fs) return false;
+    const type = String(fs.fileStackType || fs.type || '').toLowerCase();
+    return type.includes('video');
   }
 
   return (
@@ -826,11 +887,17 @@ export default function Chatter4Based() {
             )}
             {messages.map((msg) => {
               const mine = msg.user_id === providerUserId;
-              const mediaUrl = messageMediaUrl(msg);
+              const msgKey = String(msg._id || msg.local_id || '');
+              const mediaUrl = messageMediaUrl(msg, '400x400.jpg');
+              const isVideo = isMessageVideo(msg);
+              const videoUrl = isVideo ? messageVideoUrl(msg) : null;
+              const isPlaying = Boolean(isVideo && videoUrl && playingMsgId === msgKey);
               const price = msg.file_stack?.price;
+              const ppvLabel = formatPpvDollars(price);
+              const duration = msg.file_stack?.duration;
               return (
                 <div
-                  key={msg._id || msg.local_id}
+                  key={msgKey}
                   className={`flex ${mine ? 'justify-end' : 'justify-start'}`}
                 >
                   <div
@@ -840,21 +907,63 @@ export default function Chatter4Based() {
                         : 'bg-gray-100 dark:bg-white/10 text-gray-900 dark:text-gray-100'
                     }`}
                   >
-                    {mediaUrl && (
-                      <div className="mb-2 overflow-hidden rounded-lg">
-                        <img
-                          src={mediaUrl}
-                          alt=""
-                          className="max-h-48 w-full object-cover"
-                        />
-                        {typeof price === 'number' && price > 0 && (
-                          <p
-                            className={`text-xs mt-1 ${
-                              mine ? 'text-white/80' : 'text-amber-600'
-                            }`}
+                    {msg.file_stack && (mediaUrl || videoUrl) && (
+                      <div className="mb-2 relative overflow-hidden rounded-lg bg-black min-w-[200px]">
+                        {isPlaying ? (
+                          <video
+                            controls
+                            autoPlay
+                            playsInline
+                            preload="auto"
+                            poster={mediaUrl || undefined}
+                            src={videoUrl || undefined}
+                            className="max-h-56 w-full object-contain bg-black"
                           >
-                            PPV · {price} coins
-                          </p>
+                            <track kind="captions" />
+                          </video>
+                        ) : (
+                          <button
+                            type="button"
+                            className="relative block w-full text-left"
+                            onClick={() => {
+                              if (isVideo && videoUrl) {
+                                setPlayingMsgId(msgKey);
+                              }
+                            }}
+                            aria-label={isVideo ? 'Play video' : 'Media'}
+                          >
+                            {mediaUrl ? (
+                              <img
+                                src={mediaUrl}
+                                alt=""
+                                loading="lazy"
+                                decoding="async"
+                                className="max-h-56 w-full object-cover"
+                              />
+                            ) : (
+                              <div className="h-40 flex items-center justify-center bg-black/40">
+                                <Play className="w-10 h-10 text-white/80" />
+                              </div>
+                            )}
+                            {isVideo && (
+                              <span className="absolute inset-0 flex items-center justify-center bg-black/25">
+                                <Play className="w-12 h-12 text-white drop-shadow fill-white/20" />
+                              </span>
+                            )}
+                          </button>
+                        )}
+                        {typeof duration === 'number' && duration > 0 && !isPlaying && (
+                          <span className="absolute top-1.5 right-1.5 text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-white flex items-center gap-1 z-10 pointer-events-none">
+                            <Play className="w-2.5 h-2.5 fill-white" />
+                            {formatDuration(duration)}
+                          </span>
+                        )}
+                        {ppvLabel && !isPlaying && (
+                          <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none">
+                            <span className="px-3 py-1 rounded-full bg-white text-gray-900 text-sm font-semibold shadow-lg whitespace-nowrap">
+                              {ppvLabel}
+                            </span>
+                          </span>
                         )}
                       </div>
                     )}
@@ -875,10 +984,12 @@ export default function Chatter4Based() {
 
           {selectedVaultItem && (
             <div className="px-4 py-2 border-t border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/[0.03] flex items-center gap-3">
-              {mediaSrcForVaultItem(selectedVaultItem) && (
+              {mediaSrcForVaultItem(selectedVaultItem, '200x200.jpg') && (
                 <img
-                  src={mediaSrcForVaultItem(selectedVaultItem)!}
+                  src={mediaSrcForVaultItem(selectedVaultItem, '200x200.jpg')!}
                   alt=""
+                  loading="lazy"
+                  decoding="async"
                   className="w-12 h-12 rounded object-cover"
                 />
               )}
@@ -980,17 +1091,18 @@ export default function Chatter4Based() {
               <h3 className="font-semibold">Vault</h3>
               <button
                 type="button"
-                onClick={() => {
-                  setVaultOpen(false);
-                  setPreviewItem(null);
-                }}
-                className="p-1 text-gray-400 hover:text-gray-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+                  onClick={() => {
+                    setVaultOpen(false);
+                    setPreviewItem(null);
+                    setVaultPreviewPlaying(false);
+                  }}
+                  className="p-1 text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
 
-            {/* Folder bar */}
+              {/* Folder bar */}
             <div className="px-3 py-2 border-b border-gray-100 dark:border-white/10 overflow-x-auto flex gap-1.5 shrink-0">
               <button
                 type="button"
@@ -1031,19 +1143,49 @@ export default function Chatter4Based() {
                 </button>
                 <div className="flex justify-center bg-black/5 dark:bg-black/40 rounded-lg p-2 min-h-[240px]">
                   {isVideoItem(previewItem) ? (
-                    <video
-                      controls
-                      poster={fullMediaSrc(previewItem) || undefined}
-                      src={videoStreamSrc(previewItem) || undefined}
-                      className="max-h-[60vh] max-w-full rounded"
-                    >
-                      <track kind="captions" />
-                    </video>
+                    vaultPreviewPlaying ? (
+                      <video
+                        controls
+                        autoPlay
+                        playsInline
+                        poster={fullMediaSrc(previewItem) || undefined}
+                        src={videoStreamSrc(previewItem) || undefined}
+                        className="max-h-[60vh] max-w-full rounded"
+                      >
+                        <track kind="captions" />
+                      </video>
+                    ) : (
+                      <button
+                        type="button"
+                        className="relative max-h-[60vh] max-w-full"
+                        onClick={() => setVaultPreviewPlaying(true)}
+                        aria-label="Play video"
+                      >
+                        {fullMediaSrc(previewItem) ? (
+                          <img
+                            src={fullMediaSrc(previewItem)!}
+                            alt=""
+                            loading="lazy"
+                            decoding="async"
+                            className="max-h-[60vh] max-w-full rounded object-contain"
+                          />
+                        ) : (
+                          <div className="w-64 h-40 flex items-center justify-center rounded bg-black/40">
+                            <Play className="w-12 h-12 text-white" />
+                          </div>
+                        )}
+                        <span className="absolute inset-0 flex items-center justify-center bg-black/25 rounded">
+                          <Play className="w-14 h-14 text-white drop-shadow fill-white/20" />
+                        </span>
+                      </button>
+                    )
                   ) : (
                     fullMediaSrc(previewItem) && (
                       <img
                         src={fullMediaSrc(previewItem)!}
                         alt=""
+                        loading="lazy"
+                        decoding="async"
                         className="max-h-[60vh] max-w-full rounded object-contain"
                       />
                     )
@@ -1095,19 +1237,24 @@ export default function Chatter4Based() {
                 )}
                 <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
                   {vaultItems.map((item) => {
-                    const thumb = mediaSrcForVaultItem(item);
+                    const thumb = mediaSrcForVaultItem(item, '200x200.jpg');
                     const video = isVideoItem(item);
                     return (
                       <button
                         key={vaultItemId(item)}
                         type="button"
-                        onClick={() => setPreviewItem(item)}
+                        onClick={() => {
+                          setVaultPreviewPlaying(false);
+                          setPreviewItem(item);
+                        }}
                         className="relative aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-white/5 group"
                       >
                         {thumb ? (
                           <img
                             src={thumb}
                             alt=""
+                            loading="lazy"
+                            decoding="async"
                             className="w-full h-full object-cover"
                           />
                         ) : (
