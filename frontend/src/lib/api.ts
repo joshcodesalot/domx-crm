@@ -783,6 +783,22 @@ export async function createMessagingDashboardEntry(
   });
 }
 
+export async function getMessagingDashboardSenders(filters: {
+  creatorId: string;
+  chatId: string;
+  limit?: number;
+}): Promise<{ senders: Record<string, string> }> {
+  const params = new URLSearchParams();
+  params.set('creatorId', filters.creatorId);
+  params.set('chatId', filters.chatId);
+  if (filters.limit != null) {
+    params.set('limit', String(filters.limit));
+  }
+  return request<{ senders: Record<string, string> }>(
+    `/api/messaging-dashboard/senders?${params.toString()}`
+  );
+}
+
 export async function updateMessagingDashboardPurchased(
   maloumMessageId: string,
   purchased: boolean

@@ -3,6 +3,7 @@ const { randomUUID } = require('crypto');
 const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/authorize');
+const { userCanAccessCreator } = require('../services/creatorAccess');
 
 const { requireElectronServiceKey } = require('../middleware/electronServiceKey');
 
@@ -435,6 +436,54 @@ async function processMaloumSaleAndTipNotifications(creatorId, notifications) {
 
   return results;
 }
+
+router.get(
+  '/senders',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { creatorId, chatId, limit = '200' } = req.query;
+
+    if (!creatorId || !isValidUuid(String(creatorId))) {
+      return res.status(400).json({ error: 'Valid creatorId is required' });
+    }
+
+    if (!chatId || typeof chatId !== 'string' || !String(chatId).trim()) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+
+    const allowed = await userCanAccessCreator(req.user, String(creatorId));
+    if (!allowed) {
+      return res.status(403).json({ error: 'You do not have access to this creator' });
+    }
+
+    const parsedLimit = Math.min(
+      Math.max(Number.parseInt(String(limit), 10) || 200, 1),
+      500
+    );
+
+    const result = await pool.query(
+      `SELECT "maloumMessageId", "optimisticMessageId", "chatterName"
+       FROM messaging_dashboard_entries
+       WHERE "creatorId" = $1 AND "chatId" = $2
+       ORDER BY "sentAt" DESC
+       LIMIT $3`,
+      [creatorId, String(chatId), parsedLimit]
+    );
+
+    const senders = {};
+    for (const row of result.rows) {
+      if (row.maloumMessageId && row.chatterName) {
+        senders[row.maloumMessageId] = row.chatterName;
+      }
+      if (row.optimisticMessageId && row.chatterName) {
+        senders[row.optimisticMessageId] = row.chatterName;
+      }
+    }
+
+    res.json({ senders });
+  }
+);
 
 router.get(
   '/',

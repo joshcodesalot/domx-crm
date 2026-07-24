@@ -31,6 +31,7 @@ import {
   getFourBasedMessages,
   getFourBasedProfile,
   getFourBasedUser,
+  getMessagingDashboardSenders,
   listFourBasedChats,
   listFourBasedVault,
   sendFourBasedMessage,
@@ -345,6 +346,9 @@ export default function Chatter4Based() {
   const [messages, setMessages] = useState<FourBasedMessage[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [messageSenders, setMessageSenders] = useState<Record<string, string>>(
+    {}
+  );
 
   const [fanProfile, setFanProfile] = useState<FourBasedUserProfile | null>(null);
   const [fanProfileLoading, setFanProfileLoading] = useState(false);
@@ -461,6 +465,7 @@ export default function Chatter4Based() {
     setMessages([]);
     setMessagesError(null);
     setMessagesLoading(false);
+    setMessageSenders({});
     setDraft('');
     setSendError(null);
     setSelectedVaultItems([]);
@@ -620,10 +625,27 @@ export default function Chatter4Based() {
   useEffect(() => {
     if (!selectedCreatorId || !selectedChatId) return;
     setPlayingMsgId(null);
+    setMessageSenders({});
     setHistoryTranslations({});
     historyTranslationsRef.current = {};
     historyInFlightRef.current.clear();
     void loadMessages(selectedCreatorId, selectedChatId);
+    void getMessagingDashboardSenders({
+      creatorId: selectedCreatorId,
+      chatId: selectedChatId,
+      limit: 200,
+    })
+      .then((result) => {
+        if (
+          selectedCreatorIdRef.current === selectedCreatorId &&
+          selectedChatIdRef.current === selectedChatId
+        ) {
+          setMessageSenders(result.senders || {});
+        }
+      })
+      .catch(() => {
+        // best-effort
+      });
   }, [selectedCreatorId, selectedChatId, loadMessages]);
 
   useEffect(() => {
@@ -806,6 +828,13 @@ export default function Chatter4Based() {
           messageToSend ||
           (vaultForLog[0] ? vaultForLog[0].description || '' : '') ||
           englishDraft;
+        const chatterName = user.name;
+        const dashboardMessageId = `4based:${sentMessage._id}`;
+        setMessageSenders((prev) => ({
+          ...prev,
+          [dashboardMessageId]: chatterName,
+          [localId]: chatterName,
+        }));
         void createMessagingDashboardEntry({
           id: crypto.randomUUID(),
           creatorId: selectedCreatorId,
@@ -813,12 +842,12 @@ export default function Chatter4Based() {
           creatorUsername: selectedCreator?.username,
           creatorAvatarUrl: selectedCreator?.avatarUrl,
           chatterId: user.id,
-          chatterName: user.name,
+          chatterName,
           chatterEmail: user.email,
           chatId: selectedChatId,
           fanId: fan.id || null,
           fanUsername: fan.name || null,
-          maloumMessageId: `4based:${sentMessage._id}`,
+          maloumMessageId: dashboardMessageId,
           optimisticMessageId: localId,
           contentType: hasMedia ? 'chat_product' : 'text',
           englishMessage: englishDraft || actualSent || null,
@@ -1284,6 +1313,13 @@ export default function Chatter4Based() {
             {messages.map((msg) => {
               const mine = msg.user_id === providerUserId;
               const msgKey = String(msg._id || msg.local_id || '');
+              const localKey =
+                typeof msg.local_id === 'string' ? msg.local_id : '';
+              const sentBy = mine
+                ? messageSenders[`4based:${msg._id}`] ||
+                  (localKey ? messageSenders[localKey] : undefined) ||
+                  (msgKey ? messageSenders[msgKey] : undefined)
+                : undefined;
               const mediaUrl = messageMediaUrl(msg, '400x400.jpg');
               const isVideo = isMessageVideo(msg);
               const videoUrl = isVideo ? messageVideoUrl(msg) : null;
@@ -1389,6 +1425,15 @@ export default function Chatter4Based() {
                     >
                       {formatTime(msg.created_at)}
                     </p>
+                    {sentBy && (
+                      <p
+                        className={`text-[10px] mt-0.5 ${
+                          mine ? 'text-white/55' : 'text-gray-400'
+                        }`}
+                      >
+                        Sent by {sentBy}
+                      </p>
+                    )}
                   </div>
                 </div>
               );

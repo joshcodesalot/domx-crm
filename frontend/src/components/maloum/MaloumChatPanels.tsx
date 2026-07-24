@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Bell,
   Check,
   Image as ImageIcon,
   Loader2,
+  MessageSquare,
+  Play,
   RefreshCw,
   Send,
   X,
+  type LucideIcon,
 } from 'lucide-react';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import {
   createMessagingDashboardEntry,
   getMaloumChat,
   getMaloumMessages,
+  getMessagingDashboardSenders,
   listMaloumChats,
   listMaloumVaultFolders,
   listMaloumVaultMedia,
@@ -43,6 +48,38 @@ function readStoredBoolean(key: string, defaultValue: boolean): boolean {
 
 function emitTranslationSettings() {
   window.dispatchEvent(new Event(TRANSLATION_SETTINGS_EVENT));
+}
+
+function UnreadBadge({
+  icon: Icon,
+  count,
+  label,
+}: {
+  icon: LucideIcon;
+  count: number;
+  label: string;
+}) {
+  const hasUnread = count > 0;
+  const badgeClass = hasUnread
+    ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+    : 'bg-gray-100 text-gray-600 dark:bg-white/5 dark:text-gray-400';
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ${badgeClass}`}
+      title={label}
+    >
+      <Icon className="w-3 h-3 shrink-0" aria-hidden />
+      <span>{count > 99 ? '99+' : count}</span>
+    </span>
+  );
+}
+
+function formatDuration(seconds?: number): string {
+  if (!seconds || seconds <= 0) return '';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
 async function translateTextToEnglish(text: string): Promise<string | null> {
@@ -455,6 +492,9 @@ export function MaloumChatThread({
   );
   const [ppvPrice, setPpvPrice] = useState('5');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [messageSenders, setMessageSenders] = useState<Record<string, string>>(
+    {}
+  );
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const currency =
@@ -501,6 +541,19 @@ export function MaloumChatThread({
     [creatorId, chatId]
   );
 
+  const loadSenders = useCallback(async () => {
+    try {
+      const result = await getMessagingDashboardSenders({
+        creatorId,
+        chatId,
+        limit: 200,
+      });
+      setMessageSenders(result.senders || {});
+    } catch {
+      // best-effort
+    }
+  }, [creatorId, chatId]);
+
   useEffect(() => {
     setChat(initialChat);
     setMessages([]);
@@ -508,15 +561,17 @@ export function MaloumChatThread({
     setSendError(null);
     setSelectedVaultItems([]);
     setVaultOpen(false);
+    setMessageSenders({});
     setHistoryTranslations({});
     historyTranslationsRef.current = {};
     historyInFlightRef.current.clear();
     void loadMessages();
+    void loadSenders();
     const timer = window.setInterval(() => {
       void loadMessages();
     }, POLL_MS);
     return () => window.clearInterval(timer);
-  }, [chatId, creatorId, initialChat, loadMessages]);
+  }, [chatId, creatorId, initialChat, loadMessages, loadSenders]);
 
   useEffect(() => {
     historyTranslationsRef.current = historyTranslations;
@@ -724,6 +779,12 @@ export function MaloumChatThread({
         const videoCount = vaultItemsSelected.filter((item) =>
           isVideoAsset(item.media?.type)
         ).length;
+        const chatterName = user.name;
+        setMessageSenders((prev) => ({
+          ...prev,
+          [messageId]: chatterName,
+          [optimisticMessageId]: chatterName,
+        }));
         void createMessagingDashboardEntry({
           id: crypto.randomUUID(),
           creatorId,
@@ -731,7 +792,7 @@ export function MaloumChatThread({
           creatorUsername: creator.username,
           creatorAvatarUrl: creator.avatarUrl,
           chatterId: user.id,
-          chatterName: user.name,
+          chatterName,
           chatterEmail: user.email,
           chatId,
           fanId: partnerId(chat),
@@ -825,7 +886,8 @@ export function MaloumChatThread({
             type="button"
             onClick={onClose}
             className="p-1.5 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5"
-            title="Close"
+            title="Close conversation"
+            aria-label="Close conversation"
           >
             <X className="w-4 h-4" />
           </button>
@@ -855,6 +917,15 @@ export function MaloumChatThread({
           const assets = messageMediaAssets(msg);
           const text = messageText(msg);
           const msgKey = String(msg._id || '');
+          const optimisticKey =
+            typeof msg.optimisticMessageId === 'string'
+              ? msg.optimisticMessageId
+              : '';
+          const sentBy =
+            mine && msgKey
+              ? messageSenders[msgKey] ||
+                (optimisticKey ? messageSenders[optimisticKey] : undefined)
+              : undefined;
           const historyEn =
             autoTranslateHistory && msgKey && text.trim()
               ? historyTranslations[`${msgKey}::${text.trim()}`]
@@ -925,6 +996,15 @@ export function MaloumChatThread({
                 >
                   {formatRelativeTime(msg.sentAt) || ''}
                 </p>
+                {sentBy && (
+                  <p
+                    className={`text-[10px] mt-0.5 ${
+                      mine ? 'text-white/60' : 'text-gray-400'
+                    }`}
+                  >
+                    Sent by {sentBy}
+                  </p>
+                )}
               </div>
             </div>
           );
@@ -1050,21 +1130,21 @@ export function MaloumChatThread({
       </div>
 
       {vaultOpen && (
-        <div className="absolute inset-0 z-20 flex">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <button
             type="button"
-            className="flex-1 bg-black/40"
             aria-label="Close vault"
+            className="absolute inset-0 bg-black/50"
             onClick={() => setVaultOpen(false)}
           />
-          <div className="w-full max-w-md h-full bg-white dark:bg-[#0a0a0a] border-l border-gray-200 dark:border-white/10 flex flex-col shadow-xl">
-            <div className="h-14 px-4 border-b border-gray-200 dark:border-white/10 flex items-center justify-between gap-2">
-              <span className="text-sm font-medium">
+          <div className="relative bg-white dark:bg-[#111] rounded-xl shadow-xl w-full max-w-4xl max-h-[85vh] flex flex-col border border-gray-200 dark:border-white/10">
+            <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-white/10 gap-2">
+              <h3 className="font-semibold">
                 Vault
                 {selectedVaultItems.length > 0
                   ? ` · ${selectedVaultItems.length} selected`
                   : ''}
-              </span>
+              </h3>
               <div className="flex items-center gap-1">
                 {selectedVaultItems.length > 0 && (
                   <button
@@ -1085,102 +1165,102 @@ export function MaloumChatThread({
                 <button
                   type="button"
                   onClick={() => setVaultOpen(false)}
-                  className="p-1.5 rounded-md text-gray-400 hover:text-gray-700"
+                  className="p-1 text-gray-400 hover:text-gray-600"
                   aria-label="Close vault"
                 >
-                  <X className="w-4 h-4" />
+                  <X className="w-5 h-5" />
                 </button>
               </div>
             </div>
-            <div className="flex-1 min-h-0 flex">
-              <div className="w-36 border-r border-gray-200 dark:border-white/10 overflow-y-auto">
-                {vaultFolders.map((folder) => {
-                  const thumb = folder.mostRecentMediaThumbnails?.[0];
-                  const thumbSrc = thumb
-                    ? maloumMediaUrl(creatorId, {
-                        uploadId: thumb.uploadId,
-                        variant: 'thumbnail',
-                        url: thumb.url,
-                      })
-                    : null;
+
+            <div className="px-3 py-2 border-b border-gray-100 dark:border-white/10 overflow-x-auto flex gap-1.5 shrink-0">
+              {vaultFolders.map((folder) => (
+                <button
+                  key={folder._id}
+                  type="button"
+                  onClick={() => setSelectedFolderId(folder._id)}
+                  className={`shrink-0 px-3 py-1.5 text-xs rounded-full border transition-colors max-w-[180px] truncate ${
+                    selectedFolderId === folder._id
+                      ? 'bg-brand-600 text-white border-brand-600'
+                      : 'border-gray-200 dark:border-white/10 hover:bg-gray-50 dark:hover:bg-white/5'
+                  }`}
+                  title={folder.name || 'Folder'}
+                >
+                  {folder.name || 'Folder'}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              {vaultLoading && (
+                <div className="flex justify-center py-12">
+                  <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
+                </div>
+              )}
+              {vaultError && (
+                <p className="text-sm text-red-600 dark:text-red-400">{vaultError}</p>
+              )}
+              {!vaultLoading && !vaultError && vaultItems.length === 0 && (
+                <p className="text-sm text-gray-500">
+                  {selectedFolderId ? 'No media in this folder.' : 'Vault is empty.'}
+                </p>
+              )}
+              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
+                {vaultItems.map((item) => {
+                  const uploadId = vaultUploadId(item);
+                  const src = maloumMediaUrl(creatorId, {
+                    uploadId,
+                    variant: 'thumbnail',
+                    url: item.thumbnail?.url || item.media?.url,
+                  });
+                  const selected = selectedVaultItems.some(
+                    (entry) => vaultUploadId(entry) === uploadId
+                  );
+                  const video = isVideoAsset(item.media?.type);
+                  const durationSec =
+                    typeof item.media?.length === 'number'
+                      ? item.media.length
+                      : undefined;
+                  const durationLabel = formatDuration(durationSec);
                   return (
                     <button
-                      key={folder._id}
+                      key={uploadId || src}
                       type="button"
-                      onClick={() => setSelectedFolderId(folder._id)}
-                      className={`w-full text-left px-2 py-2 border-b border-gray-100 dark:border-white/5 ${
-                        selectedFolderId === folder._id
-                          ? 'bg-brand-50 dark:bg-brand-900/20'
-                          : 'hover:bg-gray-50 dark:hover:bg-white/5'
+                      onClick={() => toggleVaultItem(item)}
+                      className={`relative aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-white/5 group border-2 ${
+                        selected ? 'border-brand-500' : 'border-transparent'
                       }`}
                     >
-                      {thumbSrc ? (
-                        <img
-                          src={thumbSrc}
-                          alt=""
-                          className="w-full aspect-square object-cover rounded mb-1"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div className="w-full aspect-square rounded bg-gray-100 dark:bg-white/5 mb-1" />
-                      )}
-                      <p className="text-[11px] truncate">{folder.name || 'Folder'}</p>
-                      <p className="text-[10px] text-gray-400">
-                        {(folder.pictureCount || 0) + (folder.videoCount || 0)} items
-                      </p>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex-1 overflow-y-auto p-2">
-                {vaultLoading && (
-                  <p className="text-xs text-gray-500 p-2">Loading…</p>
-                )}
-                {vaultError && (
-                  <p className="text-xs text-red-600 dark:text-red-400 p-2">{vaultError}</p>
-                )}
-                <div className="grid grid-cols-3 gap-2">
-                  {vaultItems.map((item) => {
-                    const uploadId = vaultUploadId(item);
-                    const src = maloumMediaUrl(creatorId, {
-                      uploadId,
-                      variant: 'thumbnail',
-                      url: item.thumbnail?.url || item.media?.url,
-                    });
-                    const selected = selectedVaultItems.some(
-                      (entry) => vaultUploadId(entry) === uploadId
-                    );
-                    return (
-                      <button
-                        key={uploadId || src}
-                        type="button"
-                        onClick={() => toggleVaultItem(item)}
-                        className={`relative aspect-square rounded-lg overflow-hidden border-2 ${
-                          selected
-                            ? 'border-brand-500'
-                            : 'border-transparent hover:border-gray-300'
-                        }`}
-                      >
+                      {src ? (
                         <img
                           src={src}
                           alt=""
                           className="w-full h-full object-cover"
                           loading="lazy"
                         />
-                        {selected && (
-                          <span className="absolute top-1 right-1 w-5 h-5 rounded-full bg-brand-600 text-white flex items-center justify-center">
-                            <Check className="w-3 h-3" />
-                          </span>
-                        )}
-                        {isVideoAsset(item.media?.type) && (
-                          <span className="absolute bottom-1 left-1 text-[10px] px-1 rounded bg-black/70 text-white">
-                            Video
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-gray-400">
+                          <ImageIcon className="w-6 h-6" />
+                        </div>
+                      )}
+                      {selected && (
+                        <span className="absolute top-1 right-1 w-5 h-5 rounded-full bg-brand-600 text-white flex items-center justify-center z-10">
+                          <Check className="w-3 h-3" />
+                        </span>
+                      )}
+                      {video && (
+                        <span className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/30">
+                          <Play className="w-8 h-8 text-white drop-shadow" />
+                        </span>
+                      )}
+                      {video && durationLabel && (
+                        <span className="absolute bottom-1 right-1 text-[10px] px-1 rounded bg-black/70 text-white">
+                          {durationLabel}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -1312,15 +1392,18 @@ export function MaloumSingleCreatorChat({
                 </div>
                 <div className="min-w-0 flex-1">
                   <span className="text-sm truncate block">{creator.displayName}</span>
-                  {(unread > 0 || notificationUnread > 0) && (
-                    <span className="text-[10px] text-red-600 dark:text-red-400 block">
-                      {unread > 0 ? `${unread} unread` : null}
-                      {unread > 0 && notificationUnread > 0 ? ' · ' : null}
-                      {notificationUnread > 0
-                        ? `${notificationUnread} notif${notificationUnread === 1 ? '' : 's'}`
-                        : null}
-                    </span>
-                  )}
+                  <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                    <UnreadBadge
+                      icon={MessageSquare}
+                      count={unread}
+                      label="Unread messages"
+                    />
+                    <UnreadBadge
+                      icon={Bell}
+                      count={notificationUnread}
+                      label="Unread notifications"
+                    />
+                  </div>
                 </div>
               </button>
             );
@@ -1357,6 +1440,10 @@ export function MaloumSingleCreatorChat({
             creator={selectedCreator}
             chatId={selectedChatId}
             initialChat={selectedChat}
+            onClose={() => {
+              setSelectedChatId(null);
+              setSelectedChat(null);
+            }}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-gray-500">
