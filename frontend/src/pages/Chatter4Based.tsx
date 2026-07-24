@@ -49,7 +49,7 @@ const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
 const MAX_TRANSLATION_HISTORY = 8;
-const BADGE_POLL_INTERVAL_MS = 20_000;
+const BADGE_POLL_INTERVAL_MS = 30_000;
 
 type CreatorUnreadCounts = { messages: number; notifications: number };
 
@@ -499,27 +499,21 @@ export default function Chatter4Based() {
 
   const refreshCreatorBadges = useCallback(async (creatorIds: string[]) => {
     if (creatorIds.length === 0) return;
-    const results = await Promise.allSettled(
-      creatorIds.map(async (creatorId) => {
+    // Serialize to avoid burning concurrent ISP proxy sessions.
+    const updates: Record<string, CreatorUnreadCounts> = {};
+    for (const creatorId of creatorIds) {
+      try {
         const badges = await getFourBasedBadges(creatorId);
-        return {
-          creatorId,
+        updates[creatorId] = {
           messages: Number(badges.messages) || 0,
           notifications: Number(badges.notifications) || 0,
         };
-      })
-    );
-    setBadgeCountsByCreatorId((prev) => {
-      const next = { ...prev };
-      for (const result of results) {
-        if (result.status !== 'fulfilled') continue;
-        next[result.value.creatorId] = {
-          messages: result.value.messages,
-          notifications: result.value.notifications,
-        };
+      } catch {
+        // Best-effort; leave previous counts for this creator
       }
-      return next;
-    });
+    }
+    if (Object.keys(updates).length === 0) return;
+    setBadgeCountsByCreatorId((prev) => ({ ...prev, ...updates }));
   }, []);
 
   useEffect(() => {
@@ -714,20 +708,19 @@ export default function Chatter4Based() {
     });
   }, [onSyncEvent, selectedCreatorId, selectedChatId, loadChats, loadMessages, refreshCreatorBadges]);
 
-  // Silent 5s refresh — keeps going even when panel is hidden (never unloads)
+  // Silent 5s refresh — chats/messages only (badges poll separately to spare proxy sessions)
   useEffect(() => {
     const timer = window.setInterval(() => {
       const creatorId = selectedCreatorIdRef.current;
       if (!creatorId) return;
       void loadChats(creatorId, true);
-      void refreshCreatorBadges([creatorId]);
       const chatId = selectedChatIdRef.current;
       if (chatId) {
         void loadMessages(creatorId, chatId, true);
       }
     }, 5000);
     return () => window.clearInterval(timer);
-  }, [loadChats, loadMessages, refreshCreatorBadges]);
+  }, [loadChats, loadMessages]);
 
   async function handleSendText() {
     if (!selectedCreatorId || !selectedChatId || sending || translatingOutgoing) return;
