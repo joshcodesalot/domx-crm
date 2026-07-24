@@ -12,9 +12,12 @@ import {
 } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import ToggleSwitch from '@/components/ToggleSwitch';
+import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import {
+  createMessagingDashboardEntry,
   fourBasedMediaUrl,
   fourBasedPreviewPath,
   getCreators,
@@ -27,6 +30,7 @@ import {
   listFourBasedVault,
   sendFourBasedMessage,
   sendFourBasedPpv,
+  translateToGerman,
   type Creator,
   type FourBasedChat,
   type FourBasedChatUser,
@@ -34,7 +38,80 @@ import {
   type FourBasedMessage,
   type FourBasedUserProfile,
   type FourBasedVaultItem,
+  type TranslateHistoryItem,
 } from '@/lib/api';
+
+const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
+const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
+const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
+const MAX_TRANSLATION_HISTORY = 8;
+
+function readStoredBoolean(key: string, defaultValue: boolean): boolean {
+  const stored = localStorage.getItem(key);
+  if (stored === 'true') return true;
+  if (stored === 'false') return false;
+  return defaultValue;
+}
+
+async function translateTextToEnglish(text: string): Promise<string | null> {
+  if (!text.trim()) return null;
+  const response = await fetch(HISTORY_TRANSLATE_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      q: text,
+      source: 'de',
+      target: 'en',
+      format: 'text',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error('Translation API failed with status ' + response.status);
+  }
+  const data = (await response.json()) as { translatedText?: string };
+  return data?.translatedText?.trim() || null;
+}
+
+function parseFourBasedMessageTime(value?: string): number | null {
+  if (!value) return null;
+  const date = new Date(value.includes('T') ? value : value.replace(' ', 'T') + 'Z');
+  const ms = date.getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function computeFourBasedResponseTime(
+  messages: FourBasedMessage[],
+  providerUserId: string | null
+): { responseTimeSeconds: number | null; previousFanMessageAt: string | null } {
+  if (!providerUserId) {
+    return { responseTimeSeconds: null, previousFanMessageAt: null };
+  }
+
+  let latestFanAt: number | null = null;
+  let latestCreatorAt: number | null = null;
+
+  for (const msg of messages) {
+    const at = parseFourBasedMessageTime(msg.created_at);
+    if (at == null) continue;
+    if (msg.user_id === providerUserId) {
+      if (latestCreatorAt == null || at > latestCreatorAt) latestCreatorAt = at;
+    } else if (msg.user_id) {
+      if (latestFanAt == null || at > latestFanAt) latestFanAt = at;
+    }
+  }
+
+  if (latestFanAt == null) {
+    return { responseTimeSeconds: null, previousFanMessageAt: null };
+  }
+  if (latestCreatorAt != null && latestFanAt <= latestCreatorAt) {
+    return { responseTimeSeconds: null, previousFanMessageAt: null };
+  }
+
+  return {
+    responseTimeSeconds: Math.max(0, Math.floor((Date.now() - latestFanAt) / 1000)),
+    previousFanMessageAt: new Date(latestFanAt).toISOString(),
+  };
+}
 
 type FanInfo = {
   id: string;
@@ -217,6 +294,7 @@ function FanAvatar({
 
 export default function Chatter4Based() {
   const { onSyncEvent } = useStaffSync();
+  const { user } = useAuth();
 
   const [creators, setCreators] = useState<Creator[]>([]);
   const [creatorsLoading, setCreatorsLoading] = useState(true);
@@ -238,6 +316,20 @@ export default function Chatter4Based() {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [translatingOutgoing, setTranslatingOutgoing] = useState(false);
+
+  const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
+    readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
+  );
+  const [autoTranslateHistory, setAutoTranslateHistory] = useState(() =>
+    readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true)
+  );
+  /** Cache key: `${messageId}::${text}` → English translation */
+  const [historyTranslations, setHistoryTranslations] = useState<
+    Record<string, string>
+  >({});
+  const historyTranslationsRef = useRef<Record<string, string>>({});
+  const historyInFlightRef = useRef<Set<string>>(new Set());
 
   const [vaultOpen, setVaultOpen] = useState(false);
   const [vaultItems, setVaultItems] = useState<FourBasedVaultItem[]>([]);
@@ -313,6 +405,37 @@ export default function Chatter4Based() {
   useEffect(() => {
     selectedChatIdRef.current = selectedChatId;
   }, [selectedChatId]);
+
+  useEffect(() => {
+    historyTranslationsRef.current = historyTranslations;
+  }, [historyTranslations]);
+
+  const handleAutoTranslateOutgoingChange = useCallback((enabled: boolean) => {
+    setAutoTranslateOutgoing(enabled);
+    localStorage.setItem(AUTO_TRANSLATE_OUTGOING_KEY, String(enabled));
+  }, []);
+
+  const handleAutoTranslateHistoryChange = useCallback((enabled: boolean) => {
+    setAutoTranslateHistory(enabled);
+    localStorage.setItem(AUTO_TRANSLATE_HISTORY_KEY, String(enabled));
+  }, []);
+
+  const closeOpenThread = useCallback(() => {
+    setSelectedChatId(null);
+    setMessages([]);
+    setMessagesError(null);
+    setMessagesLoading(false);
+    setDraft('');
+    setSendError(null);
+    setSelectedVaultItem(null);
+    setPlayingMsgId(null);
+    setFanProfile(null);
+    setVaultOpen(false);
+    setPreviewItem(null);
+    setHistoryTranslations({});
+    historyTranslationsRef.current = {};
+    historyInFlightRef.current.clear();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -432,8 +555,56 @@ export default function Chatter4Based() {
   useEffect(() => {
     if (!selectedCreatorId || !selectedChatId) return;
     setPlayingMsgId(null);
+    setHistoryTranslations({});
+    historyTranslationsRef.current = {};
+    historyInFlightRef.current.clear();
     void loadMessages(selectedCreatorId, selectedChatId);
   }, [selectedCreatorId, selectedChatId, loadMessages]);
+
+  useEffect(() => {
+    if (!autoTranslateHistory) return;
+    const pending: Array<{ key: string; text: string }> = [];
+    for (const msg of messages) {
+      const text = typeof msg.message === 'string' ? msg.message.trim() : '';
+      if (!text) continue;
+      const msgKey = String(msg._id || msg.local_id || '');
+      if (!msgKey) continue;
+      const cacheKey = `${msgKey}::${text}`;
+      if (historyTranslationsRef.current[cacheKey]) continue;
+      if (historyInFlightRef.current.has(cacheKey)) continue;
+      pending.push({ key: cacheKey, text });
+    }
+    if (pending.length === 0) return;
+
+    let cancelled = false;
+    for (const item of pending) {
+      historyInFlightRef.current.add(item.key);
+    }
+
+    void (async () => {
+      const updates: Record<string, string> = {};
+      await Promise.all(
+        pending.map(async (item) => {
+          try {
+            const translated = await translateTextToEnglish(item.text);
+            if (translated && !cancelled) {
+              updates[item.key] = translated;
+            }
+          } catch {
+            // Best-effort; leave bubble without overlay on failure
+          } finally {
+            historyInFlightRef.current.delete(item.key);
+          }
+        })
+      );
+      if (cancelled || Object.keys(updates).length === 0) return;
+      setHistoryTranslations((prev) => ({ ...prev, ...updates }));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [messages, autoTranslateHistory]);
 
   useEffect(() => {
     if (!selectedCreatorId || !fan.id) {
@@ -487,33 +658,112 @@ export default function Chatter4Based() {
   }, [loadChats, loadMessages]);
 
   async function handleSendText() {
-    if (!selectedCreatorId || !selectedChatId || sending) return;
+    if (!selectedCreatorId || !selectedChatId || sending || translatingOutgoing) return;
     const text = draft.trim();
     if (!text && !selectedVaultItem) return;
 
     setSending(true);
     setSendError(null);
     const localId = crypto.randomUUID();
+    const englishDraft = text;
+    const vaultForLog = selectedVaultItem;
+    const dollarsForLog = Number(ppvDollars) || 0;
+    const responseSnapshot = computeFourBasedResponseTime(messages, providerUserId);
 
     try {
-      if (selectedVaultItem) {
-        const vaultId = vaultItemId(selectedVaultItem);
-        const dollars = Number(ppvDollars) || 0;
-        await sendFourBasedPpv(selectedCreatorId, selectedChatId, {
-          message: text || selectedVaultItem.description || '',
+      let messageToSend = text;
+
+      if (autoTranslateOutgoing && text) {
+        setTranslatingOutgoing(true);
+        try {
+          const history: TranslateHistoryItem[] = messages
+            .filter((m) => typeof m.message === 'string' && m.message.trim())
+            .slice(-MAX_TRANSLATION_HISTORY)
+            .map((m) => ({
+              role: m.user_id === providerUserId ? 'assistant' : 'user',
+              content: m.message!.trim(),
+            }));
+          messageToSend = await translateToGerman(text, history);
+        } catch (err) {
+          setSendError(
+            err instanceof Error ? err.message : 'Translation failed. Message was not sent.'
+          );
+          return;
+        } finally {
+          setTranslatingOutgoing(false);
+        }
+      }
+
+      let sentMessage: FourBasedMessage | null = null;
+
+      if (vaultForLog) {
+        const vaultId = vaultItemId(vaultForLog);
+        const dollars = dollarsForLog;
+        const result = await sendFourBasedPpv(selectedCreatorId, selectedChatId, {
+          message: messageToSend || vaultForLog.description || '',
           vaultId,
-          vaultGuid: vaultItemGuid(selectedVaultItem),
+          vaultGuid: vaultItemGuid(vaultForLog),
           priceCoins: dollars > 0 ? priceCoins : 0,
           localId,
         });
+        sentMessage = result.message;
         setSelectedVaultItem(null);
         setPpvDollars('10');
       } else {
-        await sendFourBasedMessage(selectedCreatorId, selectedChatId, {
-          message: text,
+        const result = await sendFourBasedMessage(selectedCreatorId, selectedChatId, {
+          message: messageToSend,
           localId,
         });
+        sentMessage = result.message;
       }
+
+      if (user?.id && sentMessage?._id) {
+        const isVideo = isVideoItem(vaultForLog);
+        const hasMedia = Boolean(vaultForLog);
+        const actualSent =
+          messageToSend ||
+          (vaultForLog ? vaultForLog.description || '' : '') ||
+          englishDraft;
+        void createMessagingDashboardEntry({
+          id: crypto.randomUUID(),
+          creatorId: selectedCreatorId,
+          creatorName: selectedCreator?.displayName,
+          creatorUsername: selectedCreator?.username,
+          creatorAvatarUrl: selectedCreator?.avatarUrl,
+          chatterId: user.id,
+          chatterName: user.name,
+          chatterEmail: user.email,
+          chatId: selectedChatId,
+          fanId: fan.id || null,
+          fanUsername: fan.name || null,
+          maloumMessageId: `4based:${sentMessage._id}`,
+          optimisticMessageId: localId,
+          contentType: hasMedia ? 'chat_product' : 'text',
+          englishMessage: englishDraft || actualSent || null,
+          germanTranslatedMessage: actualSent || null,
+          actualSentText: actualSent || null,
+          priceNet: vaultForLog && dollarsForLog > 0 ? dollarsForLog : null,
+          currency: 'USD',
+          purchased: false,
+          mediaCount: hasMedia ? 1 : 0,
+          pictureCount: hasMedia && !isVideo ? 1 : 0,
+          videoCount: hasMedia && isVideo ? 1 : 0,
+          mediaJson: hasMedia
+            ? [
+                {
+                  mediaId: vaultItemId(vaultForLog!),
+                  type: isVideo ? 'video' : 'image',
+                },
+              ]
+            : null,
+          previousFanMessageAt: responseSnapshot.previousFanMessageAt,
+          responseTimeSeconds: responseSnapshot.responseTimeSeconds,
+          sentAt: sentMessage.created_at || new Date().toISOString(),
+        }).catch(() => {
+          // Persistence failures are non-blocking for the chatter UI.
+        });
+      }
+
       setDraft('');
       await loadMessages(selectedCreatorId, selectedChatId, true);
       await loadChats(selectedCreatorId, true);
@@ -521,6 +771,7 @@ export default function Chatter4Based() {
       setSendError(err instanceof Error ? err.message : 'Failed to send');
     } finally {
       setSending(false);
+      setTranslatingOutgoing(false);
     }
   }
 
@@ -713,6 +964,41 @@ export default function Chatter4Based() {
               </button>
             ))}
           </div>
+          <div className="shrink-0 border-t border-gray-200 dark:border-white/10 p-3 space-y-3 bg-white dark:bg-[#0a0a0a]">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Translation
+            </p>
+            <label className="flex items-start gap-3 cursor-pointer">
+              <ToggleSwitch
+                checked={autoTranslateOutgoing}
+                onChange={handleAutoTranslateOutgoingChange}
+                aria-label="Auto-translate outgoing messages"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-gray-900 dark:text-gray-100">
+                  Auto-translate outgoing
+                </span>
+                <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Translate messages to German before sending
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 cursor-pointer">
+              <ToggleSwitch
+                checked={autoTranslateHistory}
+                onChange={handleAutoTranslateHistoryChange}
+                aria-label="Auto-translate chat history"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-gray-900 dark:text-gray-100">
+                  Auto-translate chat history
+                </span>
+                <span className="block text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Show English translations under messages
+                </span>
+              </span>
+            </label>
+          </div>
         </aside>
 
         {/* Conversations */}
@@ -870,6 +1156,15 @@ export default function Chatter4Based() {
                           : 'Offline'}
                   </p>
                 </div>
+                <button
+                  type="button"
+                  onClick={closeOpenThread}
+                  className="p-1.5 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 shrink-0"
+                  title="Close conversation"
+                  aria-label="Close conversation"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </>
             ) : (
               <span className="text-sm text-gray-500">Select a conversation</span>
@@ -895,6 +1190,11 @@ export default function Chatter4Based() {
               const price = msg.file_stack?.price;
               const ppvLabel = formatPpvDollars(price);
               const duration = msg.file_stack?.duration;
+              const msgText = typeof msg.message === 'string' ? msg.message.trim() : '';
+              const historyEn =
+                autoTranslateHistory && msgKey && msgText
+                  ? historyTranslations[`${msgKey}::${msgText}`]
+                  : undefined;
               return (
                 <div
                   key={msgKey}
@@ -967,7 +1267,20 @@ export default function Chatter4Based() {
                         )}
                       </div>
                     )}
-                    {msg.message && <p className="whitespace-pre-wrap break-words">{msg.message}</p>}
+                    {msg.message && (
+                      <p className="whitespace-pre-wrap break-words">{msg.message}</p>
+                    )}
+                    {historyEn && (
+                      <p
+                        className={`mt-1.5 pt-1.5 border-t text-xs whitespace-pre-wrap break-words ${
+                          mine
+                            ? 'border-white/25 text-white/80'
+                            : 'border-gray-200 dark:border-white/10 text-gray-500 dark:text-gray-400'
+                        }`}
+                      >
+                        {historyEn}
+                      </p>
+                    )}
                     <p
                       className={`text-[10px] mt-1 ${
                         mine ? 'text-white/60' : 'text-gray-400'
@@ -1027,6 +1340,12 @@ export default function Chatter4Based() {
             <p className="px-4 text-xs text-red-600 dark:text-red-400">{sendError}</p>
           )}
 
+          {translatingOutgoing && (
+            <p className="px-4 text-xs text-gray-500 dark:text-gray-400">
+              Translating to German…
+            </p>
+          )}
+
           <div className="p-3 border-t border-gray-200 dark:border-white/10 flex items-end gap-2">
             <button
               type="button"
@@ -1046,7 +1365,7 @@ export default function Chatter4Based() {
                   void handleSendText();
                 }
               }}
-              disabled={!selectedChatId || sending}
+              disabled={!selectedChatId || sending || translatingOutgoing}
               rows={2}
               placeholder={
                 selectedChatId ? 'Type a message…' : 'Select a conversation to chat'
@@ -1059,12 +1378,13 @@ export default function Chatter4Based() {
               disabled={
                 !selectedChatId ||
                 sending ||
+                translatingOutgoing ||
                 (!draft.trim() && !selectedVaultItem)
               }
               className="p-2.5 rounded-lg bg-brand-600 text-white hover:bg-brand-500 disabled:opacity-40"
               title="Send"
             >
-              {sending ? (
+              {sending || translatingOutgoing ? (
                 <Loader2 className="w-5 h-5 animate-spin" />
               ) : (
                 <Send className="w-5 h-5" />

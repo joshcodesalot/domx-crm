@@ -11,6 +11,7 @@ export interface MessagingDashboardEntry {
   creatorName: string;
   creatorUsername: string | null;
   creatorAvatarUrl: string | null;
+  platform?: 'maloum' | '4based' | null;
   chatterId: string;
   chatterName: string;
   chatterEmail: string | null;

@@ -218,6 +218,7 @@ export interface MessagingDashboardEntry {
   creatorName: string;
   creatorUsername: string | null;
   creatorAvatarUrl: string | null;
+  platform: 'maloum' | '4based' | null;
   chatterId: string;
   chatterName: string;
   chatterEmail: string | null;
@@ -726,6 +727,7 @@ export async function getMessagingDashboard(filters: {
   endDate?: string;
   chatterId?: string;
   creatorId?: string;
+  platform?: 'maloum' | '4based';
   purchased?: boolean;
   page?: number;
   limit?: number;
@@ -746,6 +748,10 @@ export async function getMessagingDashboard(filters: {
 
   if (filters.creatorId) {
     params.set('creatorId', filters.creatorId);
+  }
+
+  if (filters.platform) {
+    params.set('platform', filters.platform);
   }
 
   if (typeof filters.purchased === 'boolean') {
@@ -1084,5 +1090,25 @@ export function fourBasedPreviewPath(
   size: string = '500x500.jpg'
 ): string {
   return `protected/${providerUserId}/${fileStackId}/preview/${size}`;
+}
+
+export interface TranslateHistoryItem {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export async function translateToGerman(
+  text: string,
+  history: TranslateHistoryItem[] = []
+): Promise<string> {
+  const result = await request<{ translatedText: string }>('/api/translate-to-german', {
+    method: 'POST',
+    body: JSON.stringify({ text, history }),
+  });
+  const translated = result.translatedText?.trim();
+  if (!translated) {
+    throw new Error('Translation returned empty text');
+  }
+  return translated;
 }
 

@@ -46,6 +46,12 @@ function purchasedBadgeClass(purchased: boolean): string {
 function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
   const sentTime = formatSentTime(entry.sentAt);
   const mediaLabel = formatMediaLabel(entry);
+  const platformLabel =
+    entry.platform === '4based'
+      ? '4based'
+      : entry.platform === 'maloum'
+        ? 'Maloum'
+        : null;
 
   return (
     <tr className="border-b border-gray-100 dark:border-white/5 hover:bg-gray-50/60 dark:hover:bg-white/[0.02]">
@@ -66,6 +72,11 @@ function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
             {entry.creatorUsername ? (
               <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
                 @{entry.creatorUsername}
+              </div>
+            ) : null}
+            {platformLabel ? (
+              <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                {platformLabel}
               </div>
             ) : null}
           </div>
@@ -125,6 +136,7 @@ export default function MessagingDashboard() {
   const [startDate, setStartDate] = useState(defaultRange.startDate);
   const [endDate, setEndDate] = useState(defaultRange.endDate);
   const [chatterId, setChatterId] = useState('');
+  const [platform, setPlatform] = useState('');
   const [creatorId, setCreatorId] = useState('');
   const [purchased, setPurchased] = useState('');
   const [page, setPage] = useState(1);
@@ -142,6 +154,11 @@ export default function MessagingDashboard() {
   const [error, setError] = useState<string | null>(null);
 
   const dateRangeLabel = formatDateRangeLabel(startDate, endDate);
+
+  const filteredCreators = useMemo(() => {
+    if (platform !== 'maloum' && platform !== '4based') return creators;
+    return creators.filter((creator) => creator.platform === platform);
+  }, [creators, platform]);
 
   const loadFilterOptions = useCallback(async () => {
     try {
@@ -169,6 +186,8 @@ export default function MessagingDashboard() {
           endDate,
           chatterId: chatterId || undefined,
           creatorId: creatorId || undefined,
+          platform:
+            platform === 'maloum' || platform === '4based' ? platform : undefined,
           purchased:
             purchased === 'true' ? true : purchased === 'false' ? false : undefined,
           page,
@@ -187,7 +206,7 @@ export default function MessagingDashboard() {
         setRefreshing(false);
       }
     },
-    [startDate, endDate, chatterId, creatorId, purchased, page, limit]
+    [startDate, endDate, chatterId, creatorId, platform, purchased, page, limit]
   );
 
   useEffect(() => {
@@ -218,11 +237,21 @@ export default function MessagingDashboard() {
     };
   }, [loadEntries]);
 
+  useEffect(() => {
+    if (!creatorId) return;
+    const stillValid = filteredCreators.some((creator) => creator.id === creatorId);
+    if (!stillValid) {
+      setCreatorId('');
+      setPage(1);
+    }
+  }, [creatorId, filteredCreators]);
+
   function handleResetFilters() {
     const range = getDefaultMessagingDashboardDateRange();
     setStartDate(range.startDate);
     setEndDate(range.endDate);
     setChatterId('');
+    setPlatform('');
     setCreatorId('');
     setPurchased('');
     setPage(1);
@@ -283,7 +312,25 @@ export default function MessagingDashboard() {
             </button>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <label className="space-y-1">
+              <span className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Platform
+              </span>
+              <select
+                value={platform}
+                onChange={(event) => {
+                  setPlatform(event.target.value);
+                  setPage(1);
+                }}
+                className={selectClassName}
+              >
+                <option value="">All</option>
+                <option value="maloum">Maloum</option>
+                <option value="4based">4based</option>
+              </select>
+            </label>
+
             <label className="space-y-1">
               <span className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                 Sender (Chatter)
@@ -318,7 +365,7 @@ export default function MessagingDashboard() {
                 className={selectClassName}
               >
                 <option value="">All</option>
-                {creators.map((creator) => (
+                {filteredCreators.map((creator) => (
                   <option key={creator.id} value={creator.id}>
                     {creator.displayName}
                   </option>

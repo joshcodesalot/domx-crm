@@ -20,6 +20,7 @@ function toDashboardEntry(row) {
     creatorName: row.creatorName,
     creatorUsername: row.creatorUsername,
     creatorAvatarUrl: row.creatorAvatarUrl,
+    platform: row.platform || null,
     chatterId: row.chatterId,
     chatterName: row.chatterName,
     chatterEmail: row.chatterEmail,
@@ -84,6 +85,7 @@ router.get(
       endDate,
       chatterId,
       creatorId,
+      platform,
       purchased,
       page = '1',
       limit = '20',
@@ -98,7 +100,7 @@ router.get(
       if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
         return res.status(400).json({ error: 'Invalid startDate' });
       }
-      conditions.push(`"sentAt"::date >= $${paramIndex}::date`);
+      conditions.push(`m."sentAt"::date >= $${paramIndex}::date`);
       values.push(dateValue);
       paramIndex += 1;
     }
@@ -108,7 +110,7 @@ router.get(
       if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
         return res.status(400).json({ error: 'Invalid endDate' });
       }
-      conditions.push(`"sentAt"::date <= $${paramIndex}::date`);
+      conditions.push(`m."sentAt"::date <= $${paramIndex}::date`);
       values.push(dateValue);
       paramIndex += 1;
     }
@@ -117,7 +119,7 @@ router.get(
       if (!isValidUuid(String(chatterId))) {
         return res.status(400).json({ error: 'Invalid chatterId' });
       }
-      conditions.push(`"chatterId" = $${paramIndex}`);
+      conditions.push(`m."chatterId" = $${paramIndex}`);
       values.push(chatterId);
       paramIndex += 1;
     }
@@ -126,13 +128,21 @@ router.get(
       if (!isValidUuid(String(creatorId))) {
         return res.status(400).json({ error: 'Invalid creatorId' });
       }
-      conditions.push(`"creatorId" = $${paramIndex}`);
+      conditions.push(`m."creatorId" = $${paramIndex}`);
       values.push(creatorId);
       paramIndex += 1;
     }
 
+    if (platform === 'maloum' || platform === '4based') {
+      conditions.push(`c.platform = $${paramIndex}`);
+      values.push(platform);
+      paramIndex += 1;
+    } else if (platform != null && String(platform).trim() !== '') {
+      return res.status(400).json({ error: 'Invalid platform' });
+    }
+
     if (purchased === 'true' || purchased === 'false') {
-      conditions.push(`purchased = $${paramIndex}`);
+      conditions.push(`m.purchased = $${paramIndex}`);
       values.push(purchased === 'true');
       paramIndex += 1;
     }
@@ -143,12 +153,13 @@ router.get(
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const salesWhereClause = whereClause
-      ? `${whereClause} AND purchased = true AND "priceNet" IS NOT NULL`
-      : `WHERE purchased = true AND "priceNet" IS NOT NULL`;
+      ? `${whereClause} AND m.purchased = true AND m."priceNet" IS NOT NULL`
+      : `WHERE m.purchased = true AND m."priceNet" IS NOT NULL`;
 
     const countResult = await pool.query(
       `SELECT COUNT(*)::int AS total
-       FROM messaging_dashboard_entries
+       FROM messaging_dashboard_entries m
+       JOIN creators c ON c.id = m."creatorId"
        ${whereClause}`,
       values
     );
@@ -157,13 +168,16 @@ router.get(
 
     const dataResult = await pool.query(
       `SELECT m.*,
+              c.platform AS platform,
               COALESCE(sales."chatterSalesTotal", 0) AS "chatterSalesTotal"
        FROM messaging_dashboard_entries m
+       JOIN creators c ON c.id = m."creatorId"
        LEFT JOIN (
-         SELECT "chatterId", SUM("priceNet") AS "chatterSalesTotal"
-         FROM messaging_dashboard_entries
+         SELECT m."chatterId", SUM(m."priceNet") AS "chatterSalesTotal"
+         FROM messaging_dashboard_entries m
+         JOIN creators c ON c.id = m."creatorId"
          ${salesWhereClause}
-         GROUP BY "chatterId"
+         GROUP BY m."chatterId"
        ) sales ON sales."chatterId" = m."chatterId"
        ${whereClause}
        ORDER BY m."sentAt" DESC
