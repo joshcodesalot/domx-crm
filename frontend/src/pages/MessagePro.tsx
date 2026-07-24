@@ -47,6 +47,10 @@ async function waitForBounds(
   return getBrowserBounds(element);
 }
 
+function isOpenableCreator(creator: Creator): boolean {
+  return creator.platform === 'maloum' && Boolean(creator.accountId);
+}
+
 export default function MessagePro() {
   const [creators, setCreators] = useState<Creator[]>([]);
   const [workspaces, setWorkspaces] = useState<CreatorWorkspace[]>([]);
@@ -61,6 +65,7 @@ export default function MessagePro() {
   const workspacesRef = useRef<CreatorWorkspace[]>([]);
   const resizeFrameRef = useRef<number | null>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const didAutoOpenRef = useRef(false);
 
   const isElectron = Boolean(window.electronAPI?.isElectron);
 
@@ -77,20 +82,21 @@ export default function MessagePro() {
     [workspaces, activeAccountId]
   );
 
+  const openableCreators = useMemo(
+    () => creators.filter(isOpenableCreator),
+    [creators]
+  );
+
   const availableCreators = useMemo(() => {
     const openIds = new Set(
       workspaces
         .map((workspace) => workspace.creator.accountId)
         .filter((id): id is string => Boolean(id))
     );
-    return creators.filter(
-      (creator) =>
-        creator.platform === 'maloum' &&
-        creator.accountId &&
-        creator.connectionStatus === 'connected' &&
-        !openIds.has(creator.accountId)
+    return openableCreators.filter(
+      (creator) => creator.accountId && !openIds.has(creator.accountId)
     );
-  }, [creators, workspaces]);
+  }, [openableCreators, workspaces]);
 
   const syncBounds = useCallback(() => {
     if (!window.electronAPI?.setMessageProBounds || !activeAccountIdRef.current) {
@@ -146,6 +152,28 @@ export default function MessagePro() {
     }
   }, [isElectron]);
 
+  const openCreator = useCallback((creator: Creator) => {
+    if (!creator.accountId) {
+      return;
+    }
+
+    setWorkspaces((prev) => {
+      if (prev.some((workspace) => workspace.creator.accountId === creator.accountId)) {
+        return prev;
+      }
+      return [
+        ...prev,
+        {
+          creator,
+          fanTabs: [],
+          activeTabId: HOME_TAB_ID,
+        },
+      ];
+    });
+    setActiveAccountId(creator.accountId);
+    setPickerOpen(false);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -157,7 +185,23 @@ export default function MessagePro() {
         if (cancelled) {
           return;
         }
-        setCreators(list.filter((creator) => creator.platform === 'maloum'));
+        const maloumCreators = list.filter((creator) => creator.platform === 'maloum');
+        setCreators(maloumCreators);
+
+        if (!didAutoOpenRef.current) {
+          didAutoOpenRef.current = true;
+          const openable = maloumCreators.filter(isOpenableCreator);
+          if (openable.length > 0) {
+            setWorkspaces(
+              openable.map((creator) => ({
+                creator,
+                fanTabs: [],
+                activeTabId: HOME_TAB_ID,
+              }))
+            );
+            setActiveAccountId(openable[0].accountId);
+          }
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load creators');
@@ -215,14 +259,26 @@ export default function MessagePro() {
     const onWindowResize = () => scheduleSyncBounds();
     window.addEventListener('resize', onWindowResize);
 
+    const host = hostRef.current;
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined' && host
+        ? new ResizeObserver(() => {
+            scheduleSyncBounds();
+          })
+        : null;
+    if (host && resizeObserver) {
+      resizeObserver.observe(host);
+    }
+
     return () => {
       unsubscribe();
       window.removeEventListener('resize', onWindowResize);
+      resizeObserver?.disconnect();
       if (resizeFrameRef.current !== null) {
         cancelAnimationFrame(resizeFrameRef.current);
       }
     };
-  }, [isElectron, scheduleSyncBounds]);
+  }, [isElectron, scheduleSyncBounds, activeAccountId]);
 
   useEffect(() => {
     if (!isElectron || !window.electronAPI?.onMessageProOpenFanTab) {
@@ -293,28 +349,6 @@ export default function MessagePro() {
     };
   }, [pickerOpen]);
 
-  function addCreator(creator: Creator) {
-    if (!creator.accountId) {
-      return;
-    }
-
-    setWorkspaces((prev) => {
-      if (prev.some((workspace) => workspace.creator.accountId === creator.accountId)) {
-        return prev;
-      }
-      return [
-        ...prev,
-        {
-          creator,
-          fanTabs: [],
-          activeTabId: HOME_TAB_ID,
-        },
-      ];
-    });
-    setActiveAccountId(creator.accountId);
-    setPickerOpen(false);
-  }
-
   async function closeCreatorTab(accountId: string, event?: ReactMouseEvent) {
     event?.stopPropagation();
 
@@ -375,7 +409,7 @@ export default function MessagePro() {
   }
 
   return (
-    <div className="bg-white dark:bg-[#0a0a0a] text-gray-900 dark:text-gray-100 min-h-screen flex flex-col antialiased">
+    <div className="bg-white dark:bg-[#0a0a0a] text-gray-900 dark:text-gray-100 h-screen flex flex-col antialiased overflow-hidden">
       <header className="h-12 shrink-0 border-b border-gray-200 dark:border-white/10 flex items-center justify-between px-3 gap-3">
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <span className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 shrink-0">
@@ -440,14 +474,16 @@ export default function MessagePro() {
                 <div className="absolute left-0 top-full mt-2 z-50 w-72 max-h-80 overflow-y-auto rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-xl py-1">
                   {availableCreators.length === 0 ? (
                     <p className="px-3 py-2 text-sm text-gray-500 dark:text-gray-400">
-                      No more connected creators to add.
+                      {openableCreators.length === 0
+                        ? 'No Maloum creators available.'
+                        : 'All creators are already open.'}
                     </p>
                   ) : (
                     availableCreators.map((creator) => (
                       <button
                         key={creator.id}
                         type="button"
-                        onClick={() => addCreator(creator)}
+                        onClick={() => openCreator(creator)}
                         className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
                       >
                         <CreatorAvatar
@@ -532,7 +568,7 @@ export default function MessagePro() {
       ) : null}
 
       {(loading || error) && (
-        <div className="px-4 py-2 text-sm border-b border-gray-200 dark:border-white/10">
+        <div className="px-4 py-2 text-sm border-b border-gray-200 dark:border-white/10 shrink-0">
           {loading && (
             <p className="text-gray-500 dark:text-gray-400">Loading creators...</p>
           )}
@@ -540,34 +576,96 @@ export default function MessagePro() {
         </div>
       )}
 
-      <div className="relative flex-1 min-h-0">
-        <div ref={hostRef} className="absolute inset-0" />
-        {!activeWorkspace && !loading && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center p-6 pointer-events-none">
-            <div className="w-14 h-14 rounded-2xl bg-blue-500/10 text-blue-500 flex items-center justify-center">
-              <Plus className="w-7 h-7" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-700 dark:text-gray-200">
-                Add a creator to get started
+      <div className="relative flex-1 min-h-0 flex">
+        <aside className="w-64 shrink-0 border-r border-gray-200 dark:border-white/10 flex flex-col bg-gray-50/60 dark:bg-white/[0.02] z-10">
+          <div className="h-10 px-3 border-b border-gray-200 dark:border-white/10 flex items-center justify-between shrink-0">
+            <span className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Creators
+            </span>
+            <span className="text-[11px] text-gray-400">{openableCreators.length}</span>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+            {loading && (
+              <p className="text-sm text-gray-500 dark:text-gray-400 p-2">Loading...</p>
+            )}
+            {!loading && openableCreators.length === 0 && (
+              <p className="text-sm text-gray-500 dark:text-gray-400 p-2">
+                No Maloum creators found. Connect creators in DomX first.
               </p>
-              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-sm">
-                Open Home to browse the inbox, then use the open-in-tab button on a fan
-                conversation to pin it under this creator.
-              </p>
+            )}
+            {openableCreators.map((creator) => {
+              const accountId = creator.accountId!;
+              const isOpen = workspaces.some(
+                (workspace) => workspace.creator.accountId === accountId
+              );
+              const isActive = accountId === activeAccountId;
+              return (
+                <button
+                  key={creator.id}
+                  type="button"
+                  onClick={() => {
+                    if (isOpen) {
+                      selectCreator(accountId);
+                    } else {
+                      openCreator(creator);
+                    }
+                  }}
+                  className={`w-full flex items-center gap-3 p-2.5 rounded-lg text-left transition-colors border ${
+                    isActive
+                      ? 'bg-brand-50 dark:bg-brand-900/20 border-brand-200 dark:border-brand-800/40'
+                      : 'border-transparent hover:bg-white dark:hover:bg-white/5'
+                  }`}
+                >
+                  <CreatorAvatar
+                    avatarUrl={creator.avatarUrl}
+                    displayName={creator.displayName}
+                    className="w-9 h-9 rounded-full object-cover shrink-0"
+                    initialsClassName="w-9 h-9 rounded-full bg-orange-100 flex items-center justify-center shrink-0 text-orange-600 font-bold text-sm"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">{creator.displayName}</p>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                      {isOpen ? (isActive ? 'Active' : 'Open') : 'Click to open'}
+                      {creator.connectionStatus !== 'connected'
+                        ? ` · ${creator.connectionStatus}`
+                        : ''}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </aside>
+
+        <div className="relative flex-1 min-w-0 min-h-0">
+          <div ref={hostRef} className="absolute inset-0" />
+          {!activeWorkspace && !loading && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center p-6 pointer-events-none">
+              <div className="w-14 h-14 rounded-2xl bg-blue-500/10 text-blue-500 flex items-center justify-center">
+                <Plus className="w-7 h-7" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-700 dark:text-gray-200">
+                  Select a creator from the list
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 max-w-sm">
+                  Home shows the inbox. Use the open-in-tab button on a fan chat to pin it
+                  under this creator.
+                </p>
+              </div>
             </div>
-          </div>
-        )}
-        {viewLoading && activeWorkspace && (
-          <div className="absolute inset-0 flex items-center justify-center bg-white/70 dark:bg-black/40 text-sm text-gray-500 dark:text-gray-300 pointer-events-none">
-            Loading Maloum...
-          </div>
-        )}
-        {!isElectron && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-amber-700 dark:text-amber-300 p-6 text-center">
-            Message Pro requires the DomX desktop app.
-          </div>
-        )}
+          )}
+          {viewLoading && activeWorkspace && (
+            <div className="absolute inset-0 flex items-center justify-center bg-white/70 dark:bg-black/40 text-sm text-gray-500 dark:text-gray-300 pointer-events-none">
+              Loading Maloum...
+            </div>
+          )}
+          {!isElectron && (
+            <div className="absolute inset-0 flex items-center justify-center text-sm text-amber-700 dark:text-amber-300 p-6 text-center">
+              Message Pro requires the DomX desktop app.
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
