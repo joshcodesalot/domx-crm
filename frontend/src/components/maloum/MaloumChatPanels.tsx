@@ -7,6 +7,7 @@ import {
   type UIEvent,
 } from 'react';
 import {
+  Banknote,
   Bell,
   Box,
   Check,
@@ -566,7 +567,9 @@ export function MaloumChatList({
               ? 'PPV'
               : chat.lastRelevantMessage?.type === 'media'
                 ? 'Media'
-                : '—');
+                : chat.lastRelevantMessage?.type === 'tip'
+                  ? 'Tip'
+                  : '—');
           return (
             <button
               key={chat._id}
@@ -1383,10 +1386,34 @@ export function MaloumChatThread({
               : typeof msg.content?.priceNet === 'number'
                 ? msg.content.priceNet
                 : null;
+          const priceGross =
+            typeof msg.content?.price?.gross === 'number'
+              ? msg.content.price.gross
+              : null;
           const priceCurrency =
             typeof msg.content?.price?.currency === 'string'
               ? msg.content.price.currency
               : 'EUR';
+          const isTip =
+            msg.content?.type === 'tip' ||
+            (priceNet != null && !isPpv && !text && assets.length === 0) ||
+            (priceGross != null && !isPpv && !text && assets.length === 0);
+          const tipAmount = priceNet ?? priceGross;
+          const tipLabel =
+            isTip && tipAmount != null
+              ? (() => {
+                  try {
+                    return new Intl.NumberFormat(undefined, {
+                      style: 'currency',
+                      currency: priceCurrency,
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    }).format(tipAmount);
+                  } catch {
+                    return `${tipAmount} ${priceCurrency}`;
+                  }
+                })()
+              : null;
           const ppvLabel =
             isPpv && priceNet != null
               ? formatSpend(priceNet, priceCurrency)
@@ -1420,7 +1447,17 @@ export function MaloumChatThread({
                     </button>
                   </div>
                 )}
-                {assets.length > 0 || isPpv ? (
+                {isTip ? (
+                  <div className="rounded-2xl px-4 py-3 shadow-lg bg-zinc-900 border border-emerald-500/30 text-white chat-bubble-in min-w-[140px]">
+                    <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-300/90 uppercase tracking-wide">
+                      <Banknote className="w-3.5 h-3.5" />
+                      <span>Tip</span>
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold tracking-tight">
+                      {tipLabel || 'Tip'}
+                    </div>
+                  </div>
+                ) : assets.length > 0 || isPpv ? (
                   <div
                     className={`rounded-2xl p-1.5 shadow-lg relative overflow-hidden ${
                       mine
