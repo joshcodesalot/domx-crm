@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -60,6 +61,9 @@ type MaloumMediaPreview = {
 };
 
 const POLL_MS = 20_000;
+const MESSAGE_PAGE_LIMIT = 30;
+const NEAR_BOTTOM_PX = 120;
+const NEAR_TOP_PX = 80;
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
@@ -421,6 +425,41 @@ export function messageText(msg: MaloumMessage): string {
   return msg.content?.text || '';
 }
 
+function maloumMessageId(msg: MaloumMessage): string {
+  return String(msg._id || '');
+}
+
+function mergeMaloumMessages(
+  prev: MaloumMessage[],
+  incoming: MaloumMessage[]
+): MaloumMessage[] {
+  if (prev.length === 0) return incoming;
+  const byId = new Map<string, MaloumMessage>();
+  for (const msg of prev) {
+    const id = maloumMessageId(msg);
+    if (id) byId.set(id, msg);
+  }
+  for (const msg of incoming) {
+    const id = maloumMessageId(msg);
+    if (id) byId.set(id, msg);
+  }
+  const order: string[] = [];
+  const seen = new Set<string>();
+  for (const msg of prev) {
+    const id = maloumMessageId(msg);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    order.push(id);
+  }
+  for (const msg of incoming) {
+    const id = maloumMessageId(msg);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    order.push(id);
+  }
+  return order.map((id) => byId.get(id)!).filter(Boolean);
+}
+
 export function messageMediaAssets(msg: MaloumMessage): Array<{
   uploadId?: string;
   thumbUrl?: string;
@@ -662,6 +701,7 @@ export function MaloumChatThread({
   const [messages, setMessages] = useState<MaloumMessage[]>([]);
   const [messagesNext, setMessagesNext] = useState<string | null>(null);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
 
   const [draft, setDraft] = useState('');
@@ -679,6 +719,13 @@ export function MaloumChatThread({
   >({});
   const historyTranslationsRef = useRef<Record<string, string>>({});
   const historyInFlightRef = useRef<Set<string>>(new Set());
+  const [manualTranslateOnlyIds, setManualTranslateOnlyIds] = useState<
+    Set<string>
+  >(() => new Set());
+  const manualTranslateOnlyIdsRef = useRef<Set<string>>(new Set());
+  const [translatingMessageKeys, setTranslatingMessageKeys] = useState<
+    Set<string>
+  >(() => new Set());
 
   const [vaultOpen, setVaultOpen] = useState(false);
   const [vaultFolders, setVaultFolders] = useState<MaloumVaultFolder[]>([]);
@@ -714,6 +761,11 @@ export function MaloumChatThread({
   const fanPanelUserOverrideRef = useRef(localStorage.getItem(FAN_PANEL_OPEN_KEY) != null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const loadingOlderRef = useRef(false);
+  const nearBottomRef = useRef(true);
+  const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
+  const messagesNextRef = useRef<string | null>(null);
   const loadingMoreFoldersRef = useRef(false);
   const loadingMoreMediaRef = useRef(false);
   const vaultFoldersNextRef = useRef<number | null>(null);
@@ -722,17 +774,24 @@ export function MaloumChatThread({
   const currency = 'EUR';
 
   const loadMessages = useCallback(
-    async (opts?: { append?: boolean; next?: string | null }) => {
+    async (opts?: { append?: boolean; next?: string | null; silent?: boolean }) => {
       const append = Boolean(opts?.append);
-      if (!append) setMessagesLoading(true);
-      setMessagesError(null);
+      const silent = Boolean(opts?.silent);
+      if (append) {
+        if (loadingOlderRef.current) return;
+        loadingOlderRef.current = true;
+        setLoadingOlder(true);
+      } else if (!silent) {
+        setMessagesLoading(true);
+      }
+      if (!silent) setMessagesError(null);
       try {
         const [chatResult, msgResult] = await Promise.all([
-          append
+          append || silent
             ? Promise.resolve(null)
             : getMaloumChat(creatorId, chatId).catch(() => null),
           getMaloumMessages(creatorId, chatId, {
-            limit: 30,
+            limit: MESSAGE_PAGE_LIMIT,
             next: opts?.next || undefined,
           }),
         ]);
@@ -747,14 +806,59 @@ export function MaloumChatThread({
         const incoming = msgResult.messages || [];
         // API returns newest-first; reverse for chronological display
         const chronological = [...incoming].reverse();
-        setMessages((prev) =>
-          append ? [...chronological, ...prev] : chronological
-        );
-        setMessagesNext(msgResult.next || null);
+        if (append) {
+          const scrollEl = messagesScrollRef.current;
+          if (scrollEl) {
+            preserveScrollRef.current = {
+              height: scrollEl.scrollHeight,
+              top: scrollEl.scrollTop,
+            };
+          }
+          const olderIds = chronological
+            .map(maloumMessageId)
+            .filter(Boolean);
+          if (olderIds.length > 0) {
+            setManualTranslateOnlyIds((prev) => {
+              const next = new Set(prev);
+              for (const id of olderIds) next.add(id);
+              manualTranslateOnlyIdsRef.current = next;
+              return next;
+            });
+          }
+          setMessages((prev) => {
+            const existing = new Set(prev.map(maloumMessageId).filter(Boolean));
+            const fresh = chronological.filter((msg) => {
+              const id = maloumMessageId(msg);
+              return id && !existing.has(id);
+            });
+            return fresh.length > 0 ? [...fresh, ...prev] : prev;
+          });
+        } else {
+          setMessages((prev) =>
+            prev.length > 0 && manualTranslateOnlyIdsRef.current.size > 0
+              ? mergeMaloumMessages(prev, chronological)
+              : chronological
+          );
+        }
+        const nextCursor = msgResult.next || null;
+        // Keep the oldest-page cursor when a live refresh merges into already-loaded history.
+        if (append || manualTranslateOnlyIdsRef.current.size === 0) {
+          messagesNextRef.current = nextCursor;
+          setMessagesNext(nextCursor);
+        }
       } catch (err) {
-        setMessagesError(err instanceof Error ? err.message : 'Failed to load messages');
+        if (!silent) {
+          setMessagesError(
+            err instanceof Error ? err.message : 'Failed to load messages'
+          );
+        }
       } finally {
-        setMessagesLoading(false);
+        if (append) {
+          loadingOlderRef.current = false;
+          setLoadingOlder(false);
+        } else if (!silent) {
+          setMessagesLoading(false);
+        }
       }
     },
     [creatorId, chatId]
@@ -776,6 +880,8 @@ export function MaloumChatThread({
   useEffect(() => {
     setChat(initialChat);
     setMessages([]);
+    setMessagesNext(null);
+    messagesNextRef.current = null;
     setDraft('');
     setSendError(null);
     setSelectedVaultItems([]);
@@ -787,10 +893,15 @@ export function MaloumChatThread({
     setHistoryTranslations({});
     historyTranslationsRef.current = {};
     historyInFlightRef.current.clear();
+    setManualTranslateOnlyIds(new Set());
+    manualTranslateOnlyIdsRef.current = new Set();
+    setTranslatingMessageKeys(new Set());
+    nearBottomRef.current = true;
+    preserveScrollRef.current = null;
     void loadMessages();
     void loadSenders();
     const timer = window.setInterval(() => {
-      void loadMessages();
+      void loadMessages({ silent: true });
     }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [chatId, creatorId, initialChat, loadMessages, loadSenders]);
@@ -853,18 +964,81 @@ export function MaloumChatThread({
     emitTranslationSettings();
   }, []);
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const updateNearBottom = useCallback((el: HTMLDivElement) => {
+    nearBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
   }, []);
 
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const el = messagesScrollRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior });
+      nearBottomRef.current = true;
+      return;
+    }
+    messagesEndRef.current?.scrollIntoView({ behavior });
+    nearBottomRef.current = true;
+  }, []);
+
+  useLayoutEffect(() => {
+    const preserved = preserveScrollRef.current;
+    const el = messagesScrollRef.current;
+    if (!preserved || !el) return;
+    el.scrollTop = preserved.top + (el.scrollHeight - preserved.height);
+    preserveScrollRef.current = null;
+    updateNearBottom(el);
+  }, [messages, updateNearBottom]);
+
   useEffect(() => {
-    scrollToBottom();
+    if (loadingOlderRef.current || preserveScrollRef.current) return;
+    if (!nearBottomRef.current) return;
+    scrollToBottom('smooth');
   }, [messages.length, scrollToBottom]);
 
   useEffect(() => {
+    if (!autoTranslateHistory) return;
+    if (loadingOlderRef.current || preserveScrollRef.current) return;
+    if (!nearBottomRef.current) return;
     if (Object.keys(historyTranslations).length === 0) return;
-    scrollToBottom();
-  }, [historyTranslations, scrollToBottom]);
+    scrollToBottom('smooth');
+  }, [historyTranslations, autoTranslateHistory, scrollToBottom]);
+
+  const translateMessage = useCallback(async (msgKey: string, text: string) => {
+    const trimmed = text.trim();
+    if (!msgKey || !trimmed) return;
+    const cacheKey = `${msgKey}::${trimmed}`;
+    if (historyTranslationsRef.current[cacheKey]) return;
+    if (historyInFlightRef.current.has(cacheKey)) return;
+    historyInFlightRef.current.add(cacheKey);
+    setTranslatingMessageKeys((prev) => new Set(prev).add(cacheKey));
+    try {
+      const translated = await translateTextToEnglish(trimmed);
+      if (translated) {
+        setHistoryTranslations((prev) => ({ ...prev, [cacheKey]: translated }));
+      }
+    } catch {
+      // Best-effort
+    } finally {
+      historyInFlightRef.current.delete(cacheKey);
+      setTranslatingMessageKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(cacheKey);
+        return next;
+      });
+    }
+  }, []);
+
+  const handleMessagesScroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      const el = event.currentTarget;
+      updateNearBottom(el);
+      if (el.scrollTop > NEAR_TOP_PX) return;
+      if (!messagesNextRef.current) return;
+      if (loadingOlderRef.current) return;
+      void loadMessages({ append: true, next: messagesNextRef.current });
+    },
+    [loadMessages, updateNearBottom]
+  );
 
   useEffect(() => {
     if (!autoTranslateHistory) return;
@@ -872,8 +1046,9 @@ export function MaloumChatThread({
     for (const msg of messages) {
       const text = messageText(msg).trim();
       if (!text) continue;
-      const msgKey = String(msg._id || '');
+      const msgKey = maloumMessageId(msg);
       if (!msgKey) continue;
+      if (manualTranslateOnlyIdsRef.current.has(msgKey)) continue;
       const cacheKey = `${msgKey}::${text}`;
       if (historyTranslationsRef.current[cacheKey]) continue;
       if (historyInFlightRef.current.has(cacheKey)) continue;
@@ -1335,15 +1510,24 @@ export function MaloumChatThread({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 min-h-0 relative z-10 scroll-smooth animate-fade-in">
-        {messagesNext && (
-          <button
-            type="button"
-            onClick={() => void loadMessages({ append: true, next: messagesNext })}
-            className="mx-auto block text-xs text-maloum-500 hover:underline"
-          >
-            Load older messages
-          </button>
+      <div
+        ref={messagesScrollRef}
+        onScroll={handleMessagesScroll}
+        className="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 min-h-0 relative z-10 scroll-smooth animate-fade-in"
+      >
+        {(loadingOlder || (messagesNext && messages.length > 0)) && (
+          <div className="flex justify-center py-1">
+            {loadingOlder ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-zinc-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Loading older messages…
+              </span>
+            ) : (
+              <span className="text-[11px] text-gray-400 dark:text-zinc-600">
+                Scroll up for older messages
+              </span>
+            )}
+          </div>
         )}
         {messagesLoading && messages.length === 0 && (
           <p className="text-xs text-gray-500 dark:text-zinc-500 text-center py-8">Loading messages…</p>
@@ -1360,7 +1544,7 @@ export function MaloumChatThread({
           );
           const assets = messageMediaAssets(msg);
           const text = messageText(msg);
-          const msgKey = String(msg._id || '');
+          const msgKey = maloumMessageId(msg);
           const canDelete = mine && isPersistedMaloumMessageId(msgKey);
           const deleting = deletingMessageId === msgKey;
           const optimisticKey =
@@ -1372,10 +1556,20 @@ export function MaloumChatThread({
               ? messageSenders[msgKey] ||
                 (optimisticKey ? messageSenders[optimisticKey] : undefined)
               : undefined;
+          const trimmedText = text.trim();
+          const cacheKey =
+            msgKey && trimmedText ? `${msgKey}::${trimmedText}` : '';
           const historyEn =
-            autoTranslateHistory && msgKey && text.trim()
-              ? historyTranslations[`${msgKey}::${text.trim()}`]
+            autoTranslateHistory && cacheKey
+              ? historyTranslations[cacheKey]
               : undefined;
+          const translatingThis =
+            Boolean(cacheKey) && translatingMessageKeys.has(cacheKey);
+          const showManualTranslate =
+            autoTranslateHistory &&
+            Boolean(msgKey && trimmedText) &&
+            !historyEn &&
+            manualTranslateOnlyIds.has(msgKey);
           const isPpv = msg.content?.type === 'chat_product';
           const isFreeMedia =
             !isPpv &&
@@ -1559,6 +1753,28 @@ export function MaloumChatThread({
                     )}
                     <span className="whitespace-pre-wrap break-words">{historyEn}</span>
                   </div>
+                )}
+
+                {showManualTranslate && (
+                  <button
+                    type="button"
+                    onClick={() => void translateMessage(msgKey, trimmedText)}
+                    disabled={translatingThis}
+                    className={`mt-1.5 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium transition-colors disabled:opacity-50 ${
+                      mine
+                        ? 'text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800'
+                        : 'text-gray-500 dark:text-zinc-400 hover:bg-gray-100 dark:hover:bg-zinc-800'
+                    }`}
+                    title="Translate to English"
+                    aria-label="Translate message to English"
+                  >
+                    {translatingThis ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Languages className="w-3 h-3" />
+                    )}
+                    Translate
+                  </button>
                 )}
 
                 <div

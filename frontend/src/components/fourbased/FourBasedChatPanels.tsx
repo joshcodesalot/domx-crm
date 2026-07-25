@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -74,6 +75,9 @@ const FAN_PANEL_OPEN_KEY = 'domx-4based-fan-panel';
 const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
 const MAX_TRANSLATION_HISTORY = 8;
 const POLL_MS = 20_000;
+const MESSAGE_PAGE_LIMIT = 40;
+const NEAR_BOTTOM_PX = 120;
+const NEAR_TOP_PX = 80;
 const THREAD_WIDE_BREAKPOINT = 1000;
 
 const INBOX_FILTERS: Array<{ id: FourBasedChatFilter | 'all'; label: string }> = [
@@ -453,6 +457,41 @@ function isPersistedFourBasedMessageId(id?: string | null): boolean {
   if (!id) return false;
   if (id.startsWith('temp-') || id.startsWith('optimistic-')) return false;
   return /^[a-f0-9]{24}$/i.test(id);
+}
+
+function fourBasedMessageId(msg: FourBasedMessage): string {
+  return String(msg._id || msg.local_id || '');
+}
+
+function mergeFourBasedMessages(
+  prev: FourBasedMessage[],
+  incoming: FourBasedMessage[]
+): FourBasedMessage[] {
+  if (prev.length === 0) return incoming;
+  const byId = new Map<string, FourBasedMessage>();
+  for (const msg of prev) {
+    const id = fourBasedMessageId(msg);
+    if (id) byId.set(id, msg);
+  }
+  for (const msg of incoming) {
+    const id = fourBasedMessageId(msg);
+    if (id) byId.set(id, msg);
+  }
+  const order: string[] = [];
+  const seen = new Set<string>();
+  for (const msg of prev) {
+    const id = fourBasedMessageId(msg);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    order.push(id);
+  }
+  for (const msg of incoming) {
+    const id = fourBasedMessageId(msg);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    order.push(id);
+  }
+  return order.map((id) => byId.get(id)!).filter(Boolean);
 }
 
 function isDeletedFourBasedMessage(
@@ -985,7 +1024,9 @@ export function FourBasedChatThread({
     creator.accountId || null
   );
   const [messages, setMessages] = useState<FourBasedMessage[]>([]);
+  const [messagesHasMore, setMessagesHasMore] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>({});
 
@@ -1009,6 +1050,13 @@ export function FourBasedChatThread({
   >({});
   const historyTranslationsRef = useRef<Record<string, string>>({});
   const historyInFlightRef = useRef<Set<string>>(new Set());
+  const [manualTranslateOnlyIds, setManualTranslateOnlyIds] = useState<
+    Set<string>
+  >(() => new Set());
+  const manualTranslateOnlyIdsRef = useRef<Set<string>>(new Set());
+  const [translatingMessageKeys, setTranslatingMessageKeys] = useState<
+    Set<string>
+  >(() => new Set());
 
   const [vaultOpen, setVaultOpen] = useState(false);
   const [vaultItems, setVaultItems] = useState<FourBasedVaultItem[]>([]);
@@ -1049,6 +1097,12 @@ export function FourBasedChatThread({
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const loadingOlderRef = useRef(false);
+  const nearBottomRef = useRef(true);
+  const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
+  const messagesOffsetRef = useRef(0);
+  const messagesHasMoreRef = useRef(false);
   const threadRootRef = useRef<HTMLDivElement | null>(null);
   const [threadWide, setThreadWide] = useState(true);
   const [fanPanelOpen, setFanPanelOpen] = useState(() =>
@@ -1157,14 +1211,25 @@ export function FourBasedChatThread({
   }, []);
 
   const loadMessages = useCallback(
-    async (silent = false) => {
+    async (opts?: { append?: boolean; offset?: number; silent?: boolean } | boolean) => {
+      // Back-compat: loadMessages(true) means silent refresh of the latest page.
+      const normalized =
+        typeof opts === 'boolean' ? { silent: opts } : opts || {};
+      const append = Boolean(normalized.append);
+      const silent = Boolean(normalized.silent);
       const key = `${creatorId}:${chatId}`;
-      if (!silent) {
+
+      if (append) {
+        if (loadingOlderRef.current) return;
+        loadingOlderRef.current = true;
+        setLoadingOlder(true);
+      } else if (!silent) {
         setMessagesLoading(true);
         setMessagesError(null);
       }
+
       try {
-        if (!silent) {
+        if (!append && !silent) {
           const chatResult = await getFourBasedChat(creatorId, chatId).catch(
             () => null
           );
@@ -1174,25 +1239,82 @@ export function FourBasedChatThread({
             setProviderUserId(chatResult.providerUserId);
           }
         }
-        const result = await getFourBasedMessages(creatorId, chatId, { limit: 40 });
+        const offset = append
+          ? normalized.offset ?? messagesOffsetRef.current
+          : 0;
+        const result = await getFourBasedMessages(creatorId, chatId, {
+          limit: MESSAGE_PAGE_LIMIT,
+          offset,
+        });
         if (threadKeyRef.current !== key) return;
         const list = Array.isArray(result.messages) ? result.messages : [];
         // API returns newest first
         const chronological = [...list].reverse();
-        setMessages(chronological);
-        syncSoldPpvToChatLog(chronological);
+
+        if (append) {
+          const scrollEl = messagesScrollRef.current;
+          if (scrollEl) {
+            preserveScrollRef.current = {
+              height: scrollEl.scrollHeight,
+              top: scrollEl.scrollTop,
+            };
+          }
+          const olderIds = chronological
+            .map(fourBasedMessageId)
+            .filter(Boolean);
+          if (olderIds.length > 0) {
+            setManualTranslateOnlyIds((prev) => {
+              const next = new Set(prev);
+              for (const id of olderIds) next.add(id);
+              manualTranslateOnlyIdsRef.current = next;
+              return next;
+            });
+          }
+          setMessages((prev) => {
+            const existing = new Set(
+              prev.map(fourBasedMessageId).filter(Boolean)
+            );
+            const fresh = chronological.filter((msg) => {
+              const id = fourBasedMessageId(msg);
+              return id && !existing.has(id);
+            });
+            return fresh.length > 0 ? [...fresh, ...prev] : prev;
+          });
+          const nextOffset = offset + list.length;
+          messagesOffsetRef.current = nextOffset;
+          const hasMore = list.length >= MESSAGE_PAGE_LIMIT;
+          messagesHasMoreRef.current = hasMore;
+          setMessagesHasMore(hasMore);
+        } else {
+          setMessages((prev) =>
+            prev.length > 0 && manualTranslateOnlyIdsRef.current.size > 0
+              ? mergeFourBasedMessages(prev, chronological)
+              : chronological
+          );
+          syncSoldPpvToChatLog(chronological);
+          if (manualTranslateOnlyIdsRef.current.size === 0) {
+            messagesOffsetRef.current = list.length;
+            const hasMore = list.length >= MESSAGE_PAGE_LIMIT;
+            messagesHasMoreRef.current = hasMore;
+            setMessagesHasMore(hasMore);
+          }
+        }
+
         if (result.providerUserId) {
           setProviderUserId(result.providerUserId);
         }
       } catch (err) {
-        if (!silent && threadKeyRef.current === key) {
+        if (!silent && !append && threadKeyRef.current === key) {
           setMessagesError(
             err instanceof Error ? err.message : 'Failed to load messages'
           );
           setMessages([]);
         }
       } finally {
-        if (!silent && threadKeyRef.current === key) {
+        if (append) {
+          loadingOlderRef.current = false;
+          setLoadingOlder(false);
+        } else if (!silent && threadKeyRef.current === key) {
           setMessagesLoading(false);
         }
       }
@@ -1224,6 +1346,9 @@ export function FourBasedChatThread({
   useEffect(() => {
     setChat(initialChat);
     setMessages([]);
+    messagesOffsetRef.current = 0;
+    setMessagesHasMore(false);
+    messagesHasMoreRef.current = false;
     setMessageSenders({});
     setFanProfile(null);
     setDraft('');
@@ -1240,6 +1365,11 @@ export function FourBasedChatThread({
     setHistoryTranslations({});
     historyTranslationsRef.current = {};
     historyInFlightRef.current.clear();
+    setManualTranslateOnlyIds(new Set());
+    manualTranslateOnlyIdsRef.current = new Set();
+    setTranslatingMessageKeys(new Set());
+    nearBottomRef.current = true;
+    preserveScrollRef.current = null;
     void loadMessages();
     void getMessagingDashboardSenders({ creatorId, chatId, limit: 200 })
       .then((result) => {
@@ -1253,7 +1383,7 @@ export function FourBasedChatThread({
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void loadMessages(true);
+      void loadMessages({ silent: true });
     }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [loadMessages]);
@@ -1262,7 +1392,7 @@ export function FourBasedChatThread({
     return onSyncEvent((event) => {
       if (event.type !== '4based:event') return;
       if (event.creatorId !== creatorId) return;
-      void loadMessages(true);
+      void loadMessages({ silent: true });
     });
   }, [onSyncEvent, creatorId, loadMessages]);
 
@@ -1300,6 +1430,85 @@ export function FourBasedChatThread({
     void loadFanProfile(fan.id);
   }, [fan.id, loadFanProfile]);
 
+  const updateNearBottom = useCallback((el: HTMLDivElement) => {
+    nearBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+  }, []);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const el = messagesScrollRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior });
+      nearBottomRef.current = true;
+      return;
+    }
+    messagesEndRef.current?.scrollIntoView({ behavior });
+    nearBottomRef.current = true;
+  }, []);
+
+  useLayoutEffect(() => {
+    const preserved = preserveScrollRef.current;
+    const el = messagesScrollRef.current;
+    if (!preserved || !el) return;
+    el.scrollTop = preserved.top + (el.scrollHeight - preserved.height);
+    preserveScrollRef.current = null;
+    updateNearBottom(el);
+  }, [messages, updateNearBottom]);
+
+  useEffect(() => {
+    if (loadingOlderRef.current || preserveScrollRef.current) return;
+    if (!nearBottomRef.current) return;
+    scrollToBottom('smooth');
+  }, [messages.length, scrollToBottom]);
+
+  useEffect(() => {
+    if (!autoTranslateHistory) return;
+    if (loadingOlderRef.current || preserveScrollRef.current) return;
+    if (!nearBottomRef.current) return;
+    if (Object.keys(historyTranslations).length === 0) return;
+    scrollToBottom('smooth');
+  }, [historyTranslations, autoTranslateHistory, scrollToBottom]);
+
+  const translateMessage = useCallback(async (msgKey: string, text: string) => {
+    const trimmed = text.trim();
+    if (!msgKey || !trimmed) return;
+    const cacheKey = `${msgKey}::${trimmed}`;
+    if (historyTranslationsRef.current[cacheKey]) return;
+    if (historyInFlightRef.current.has(cacheKey)) return;
+    historyInFlightRef.current.add(cacheKey);
+    setTranslatingMessageKeys((prev) => new Set(prev).add(cacheKey));
+    try {
+      const translated = await translateTextToEnglish(trimmed);
+      if (translated) {
+        setHistoryTranslations((prev) => ({ ...prev, [cacheKey]: translated }));
+      }
+    } catch {
+      // Best-effort
+    } finally {
+      historyInFlightRef.current.delete(cacheKey);
+      setTranslatingMessageKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(cacheKey);
+        return next;
+      });
+    }
+  }, []);
+
+  const handleMessagesScroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      const el = event.currentTarget;
+      updateNearBottom(el);
+      if (el.scrollTop > NEAR_TOP_PX) return;
+      if (!messagesHasMoreRef.current) return;
+      if (loadingOlderRef.current) return;
+      void loadMessages({
+        append: true,
+        offset: messagesOffsetRef.current,
+      });
+    },
+    [loadMessages, updateNearBottom]
+  );
+
   useEffect(() => {
     if (!autoTranslateHistory) return;
     const pending: Array<{ key: string; text: string }> = [];
@@ -1307,8 +1516,9 @@ export function FourBasedChatThread({
       if (isDeletedFourBasedMessage(msg)) continue;
       const text = typeof msg.message === 'string' ? msg.message.trim() : '';
       if (!text) continue;
-      const msgKey = String(msg._id || msg.local_id || '');
+      const msgKey = fourBasedMessageId(msg);
       if (!msgKey) continue;
+      if (manualTranslateOnlyIdsRef.current.has(msgKey)) continue;
       const cacheKey = `${msgKey}::${text}`;
       if (historyTranslationsRef.current[cacheKey]) continue;
       if (historyInFlightRef.current.has(cacheKey)) continue;
@@ -1345,19 +1555,6 @@ export function FourBasedChatThread({
       cancelled = true;
     };
   }, [messages, autoTranslateHistory]);
-
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages.length, scrollToBottom]);
-
-  useEffect(() => {
-    if (Object.keys(historyTranslations).length === 0) return;
-    scrollToBottom();
-  }, [historyTranslations, scrollToBottom]);
 
   function toggleVaultItem(item: FourBasedVaultItem) {
     const id = vaultItemId(item);
@@ -1945,7 +2142,25 @@ export function FourBasedChatThread({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 min-h-0 relative z-10 scroll-smooth animate-fade-in">
+      <div
+        ref={messagesScrollRef}
+        onScroll={handleMessagesScroll}
+        className="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 min-h-0 relative z-10 scroll-smooth animate-fade-in"
+      >
+        {(loadingOlder || (messagesHasMore && messages.length > 0)) && (
+          <div className="flex justify-center py-1">
+            {loadingOlder ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-zinc-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Loading older messages…
+              </span>
+            ) : (
+              <span className="text-[11px] text-gray-400 dark:text-zinc-600">
+                Scroll up for older messages
+              </span>
+            )}
+          </div>
+        )}
         {messagesLoading && messages.length === 0 && (
           <div className="flex justify-center py-8">
             <Loader2 className="w-5 h-5 animate-spin text-gray-500 dark:text-zinc-400" />
@@ -1955,7 +2170,7 @@ export function FourBasedChatThread({
         {deleteError && <p className="text-sm text-red-400">{deleteError}</p>}
         {messages.map((msg) => {
           const mine = msg.user_id === providerUserId;
-          const msgKey = String(msg._id || msg.local_id || '');
+          const msgKey = fourBasedMessageId(msg);
           const deleted = isDeletedFourBasedMessage(msg);
           const canDelete =
             mine && !deleted && isPersistedFourBasedMessageId(msg._id);
@@ -1982,10 +2197,20 @@ export function FourBasedChatThread({
           const duration = msg.file_stack?.duration;
           const msgText =
             deleted || typeof msg.message !== 'string' ? '' : msg.message.trim();
+          const cacheKey =
+            msgKey && msgText ? `${msgKey}::${msgText}` : '';
           const historyEn =
-            !deleted && autoTranslateHistory && msgKey && msgText
-              ? historyTranslations[`${msgKey}::${msgText}`]
+            !deleted && autoTranslateHistory && cacheKey
+              ? historyTranslations[cacheKey]
               : undefined;
+          const translatingThis =
+            Boolean(cacheKey) && translatingMessageKeys.has(cacheKey);
+          const showManualTranslate =
+            !deleted &&
+            autoTranslateHistory &&
+            Boolean(msgKey && msgText) &&
+            !historyEn &&
+            manualTranslateOnlyIds.has(msgKey);
           const hasMedia = Boolean(!deleted && msg.file_stack && (mediaUrl || videoUrl));
           return (
             <div
@@ -2145,6 +2370,28 @@ export function FourBasedChatThread({
                     )}
                     <span className="whitespace-pre-wrap break-words">{historyEn}</span>
                   </div>
+                )}
+
+                {showManualTranslate && (
+                  <button
+                    type="button"
+                    onClick={() => void translateMessage(msgKey, msgText)}
+                    disabled={translatingThis}
+                    className={`mt-1.5 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium transition-colors disabled:opacity-50 ${
+                      mine
+                        ? 'text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800'
+                        : 'text-gray-500 dark:text-zinc-400 hover:bg-gray-100 dark:hover:bg-zinc-800'
+                    }`}
+                    title="Translate to English"
+                    aria-label="Translate message to English"
+                  >
+                    {translatingThis ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Languages className="w-3 h-3" />
+                    )}
+                    Translate
+                  </button>
                 )}
 
                 <div
