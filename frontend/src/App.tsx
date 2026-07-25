@@ -15,6 +15,7 @@ import ManageStaff from '@/pages/ManageStaff';
 import ChatterMaloum from '@/pages/ChatterMaloum';
 import Chatter4Based from '@/pages/Chatter4Based';
 import MaloumMassMessage from '@/pages/MaloumMassMessage';
+import MaloumNotifications from '@/pages/MaloumNotifications';
 import MessagePro from '@/pages/MessagePro';
 import MessagingDashboard from '@/pages/MessagingDashboard';
 
@@ -160,6 +161,10 @@ function AppRoutes() {
                 <Route path="/chatter/4based" element={null} />
                 {/* Placeholder — real panel is mounted by PersistentMessageProPanel */}
                 <Route path="/message-pro" element={null} />
+                <Route
+                  path="/chatter/maloum/notifications"
+                  element={<MaloumNotifications />}
+                />
               </Route>
               <Route element={<PermissionRoute permission="mass_messages.send" />}>
                 <Route path="/chatter/maloum/mass-message" element={<MaloumMassMessage />} />

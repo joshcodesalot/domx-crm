@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   BarChart2,
+  Bell,
   LayoutGrid,
   LogOut,
   Megaphone,
@@ -65,7 +66,9 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       ? 'text-gray-900 dark:text-white'
       : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors';
 
-  async function handleMaloumNavigate(view: 'chat' | 'message-pro' | 'mass-message') {
+  async function handleMaloumNavigate(
+    view: 'chat' | 'message-pro' | 'mass-message' | 'notifications'
+  ) {
     setMaloumMenuOpen(false);
     if (view === 'message-pro') {
       if (window.electronAPI?.openMessageProWindow) {
@@ -81,6 +84,10 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     }
     if (view === 'mass-message') {
       navigate('/chatter/maloum/mass-message');
+      return;
+    }
+    if (view === 'notifications') {
+      navigate('/chatter/maloum/notifications');
       return;
     }
     navigate('/chatter');
@@ -149,6 +156,15 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 >
                   <MessageSquare className="w-4 h-4 shrink-0" />
                   Chat
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => void handleMaloumNavigate('notifications')}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                >
+                  <Bell className="w-4 h-4 shrink-0" />
+                  Notifications
                 </button>
                 <button
                   type="button"

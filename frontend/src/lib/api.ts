@@ -1323,11 +1323,25 @@ export async function getMaloumBadges(
   return request(`/api/creators/${creatorId}/maloum/badges`);
 }
 
+export interface MaloumNotification {
+  _id: string;
+  forUserId?: string;
+  type?: string;
+  isRead?: boolean;
+  createdAt?: string;
+  fanId?: string;
+  fanUsername?: string | null;
+  fanNickname?: string | null;
+  net?: number;
+  messageId?: string;
+  [key: string]: unknown;
+}
+
 export async function getMaloumNotifications(
   creatorId: string,
   options: { limit?: number; next?: string } = {}
 ): Promise<{
-  notifications: Array<Record<string, unknown>>;
+  notifications: MaloumNotification[];
   next: string | null;
   providerUserId: string | null;
 }> {
