@@ -673,8 +673,10 @@ export function MaloumChatThread({
 
   const [vaultOpen, setVaultOpen] = useState(false);
   const [vaultFolders, setVaultFolders] = useState<MaloumVaultFolder[]>([]);
+  const [vaultFoldersNext, setVaultFoldersNext] = useState<number | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [vaultItems, setVaultItems] = useState<MaloumVaultMediaItem[]>([]);
+  const [vaultMediaNext, setVaultMediaNext] = useState<number | null>(null);
   const [vaultLoading, setVaultLoading] = useState(false);
   const [loadingMoreFolders, setLoadingMoreFolders] = useState(false);
   const [loadingMoreMedia, setLoadingMoreMedia] = useState(false);
@@ -896,6 +898,7 @@ export function MaloumChatThread({
             ? result.next
             : null;
         vaultFoldersNextRef.current = next;
+        setVaultFoldersNext(next);
         setVaultFolders((prev) =>
           append ? mergeVaultFolders(prev, folders) : folders
         );
@@ -915,6 +918,12 @@ export function MaloumChatThread({
     },
     [creatorId]
   );
+
+  const loadMoreVaultFolders = useCallback(() => {
+    const next = vaultFoldersNextRef.current;
+    if (next == null) return;
+    void loadVaultFolders({ append: true, next });
+  }, [loadVaultFolders]);
 
   const vaultFanId = partnerId(chat) || undefined;
 
@@ -937,6 +946,7 @@ export function MaloumChatThread({
         setVaultLoading(true);
         setVaultItems([]);
         vaultMediaNextRef.current = null;
+        setVaultMediaNext(null);
       }
       setVaultError(null);
       try {
@@ -951,6 +961,7 @@ export function MaloumChatThread({
             ? result.next
             : null;
         vaultMediaNextRef.current = next;
+        setVaultMediaNext(next);
         setVaultItems((prev) =>
           append ? mergeVaultMediaItems(prev, items) : items
         );
@@ -968,11 +979,18 @@ export function MaloumChatThread({
     [creatorId, selectedFolderId, vaultFanId]
   );
 
+  const loadMoreVaultMedia = useCallback(() => {
+    const next = vaultMediaNextRef.current;
+    if (next == null) return;
+    void loadVaultMedia({ append: true, next });
+  }, [loadVaultMedia]);
+
   const openVault = useCallback(async () => {
     setVaultOpen(true);
     setVaultTypeFilter('all');
     setVaultFolders([]);
     vaultFoldersNextRef.current = null;
+    setVaultFoldersNext(null);
     await loadVaultFolders();
   }, [loadVaultFolders]);
 
@@ -1667,10 +1685,15 @@ export function MaloumChatThread({
                     );
                   })}
                 </ul>
-                {loadingMoreFolders && (
-                  <div className="flex justify-center py-3">
-                    <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
-                  </div>
+                {vaultFoldersNext != null && (
+                  <button
+                    type="button"
+                    onClick={loadMoreVaultFolders}
+                    disabled={loadingMoreFolders}
+                    className="w-full mt-2 py-2 text-xs font-medium text-domx-600 dark:text-domx-400 hover:underline disabled:opacity-40"
+                  >
+                    {loadingMoreFolders ? 'Loading…' : 'Load more'}
+                  </button>
                 )}
               </div>
 
@@ -1697,10 +1720,15 @@ export function MaloumChatThread({
                       </button>
                     );
                   })}
-                  {loadingMoreFolders && (
-                    <span className="shrink-0 self-center">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-gray-400" />
-                    </span>
+                  {vaultFoldersNext != null && (
+                    <button
+                      type="button"
+                      onClick={loadMoreVaultFolders}
+                      disabled={loadingMoreFolders}
+                      className="shrink-0 self-center px-3 py-1.5 text-xs font-medium text-domx-600 dark:text-domx-400 hover:underline disabled:opacity-40 whitespace-nowrap"
+                    >
+                      {loadingMoreFolders ? 'Loading…' : 'Load more'}
+                    </button>
                   )}
                 </div>
                 <div className="p-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0">
@@ -1832,10 +1860,15 @@ export function MaloumChatThread({
                       );
                     })}
                   </div>
-                  {loadingMoreMedia && (
-                    <div className="flex justify-center py-4">
-                      <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
-                    </div>
+                  {vaultMediaNext != null && (
+                    <button
+                      type="button"
+                      onClick={loadMoreVaultMedia}
+                      disabled={loadingMoreMedia}
+                      className="w-full mt-4 py-2.5 text-sm font-medium text-domx-600 dark:text-domx-400 hover:underline disabled:opacity-40"
+                    >
+                      {loadingMoreMedia ? 'Loading…' : 'Load more'}
+                    </button>
                   )}
                 </div>
               </div>

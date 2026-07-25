@@ -216,8 +216,10 @@ export default function MaloumMassMessage() {
 
   const [vaultOpen, setVaultOpen] = useState(false);
   const [vaultFolders, setVaultFolders] = useState<MaloumVaultFolder[]>([]);
+  const [vaultFoldersNext, setVaultFoldersNext] = useState<number | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [vaultItems, setVaultItems] = useState<MaloumVaultMediaItem[]>([]);
+  const [vaultMediaNext, setVaultMediaNext] = useState<number | null>(null);
   const [vaultLoading, setVaultLoading] = useState(false);
   const [loadingMoreFolders, setLoadingMoreFolders] = useState(false);
   const [loadingMoreMedia, setLoadingMoreMedia] = useState(false);
@@ -330,6 +332,8 @@ export default function MaloumMassMessage() {
     setVaultItems([]);
     vaultFoldersNextRef.current = null;
     vaultMediaNextRef.current = null;
+    setVaultFoldersNext(null);
+    setVaultMediaNext(null);
     setVaultOpen(false);
     setPpvPrice('');
     setSendError(null);
@@ -368,6 +372,7 @@ export default function MaloumMassMessage() {
             ? result.next
             : null;
         vaultFoldersNextRef.current = next;
+        setVaultFoldersNext(next);
         setVaultFolders((prev) =>
           append ? mergeVaultFolders(prev, folders) : folders
         );
@@ -387,6 +392,12 @@ export default function MaloumMassMessage() {
     },
     [selectedCreatorId]
   );
+
+  const loadMoreVaultFolders = useCallback(() => {
+    const next = vaultFoldersNextRef.current;
+    if (next == null) return;
+    void loadVaultFolders({ append: true, next });
+  }, [loadVaultFolders]);
 
   const loadVaultMedia = useCallback(
     async (opts?: { append?: boolean; next?: number | null; folderId?: string }) => {
@@ -408,6 +419,7 @@ export default function MaloumMassMessage() {
         setVaultLoading(true);
         setVaultItems([]);
         vaultMediaNextRef.current = null;
+        setVaultMediaNext(null);
       }
       setVaultError(null);
       try {
@@ -421,6 +433,7 @@ export default function MaloumMassMessage() {
             ? result.next
             : null;
         vaultMediaNextRef.current = next;
+        setVaultMediaNext(next);
         setVaultItems((prev) =>
           append ? mergeVaultMediaItems(prev, items) : items
         );
@@ -438,12 +451,19 @@ export default function MaloumMassMessage() {
     [selectedCreatorId, selectedFolderId]
   );
 
+  const loadMoreVaultMedia = useCallback(() => {
+    const next = vaultMediaNextRef.current;
+    if (next == null) return;
+    void loadVaultMedia({ append: true, next });
+  }, [loadVaultMedia]);
+
   const openVault = useCallback(async () => {
     if (!selectedCreatorId) return;
     setVaultOpen(true);
     setVaultTypeFilter('all');
     setVaultFolders([]);
     vaultFoldersNextRef.current = null;
+    setVaultFoldersNext(null);
     await loadVaultFolders();
   }, [selectedCreatorId, loadVaultFolders]);
 
@@ -1084,10 +1104,15 @@ export default function MaloumMassMessage() {
                     );
                   })}
                 </ul>
-                {loadingMoreFolders && (
-                  <div className="flex justify-center py-3">
-                    <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
-                  </div>
+                {vaultFoldersNext != null && (
+                  <button
+                    type="button"
+                    onClick={loadMoreVaultFolders}
+                    disabled={loadingMoreFolders}
+                    className="w-full mt-2 py-2 text-xs font-medium text-domx-600 dark:text-domx-400 hover:underline disabled:opacity-40"
+                  >
+                    {loadingMoreFolders ? 'Loading…' : 'Load more'}
+                  </button>
                 )}
               </div>
               <div className="flex-1 flex flex-col min-w-0">
@@ -1168,10 +1193,15 @@ export default function MaloumMassMessage() {
                       );
                     })}
                   </div>
-                  {loadingMoreMedia && (
-                    <div className="flex justify-center py-4">
-                      <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
-                    </div>
+                  {vaultMediaNext != null && (
+                    <button
+                      type="button"
+                      onClick={loadMoreVaultMedia}
+                      disabled={loadingMoreMedia}
+                      className="w-full mt-4 py-2.5 text-sm font-medium text-domx-600 dark:text-domx-400 hover:underline disabled:opacity-40"
+                    >
+                      {loadingMoreMedia ? 'Loading…' : 'Load more'}
+                    </button>
                   )}
                 </div>
               </div>
