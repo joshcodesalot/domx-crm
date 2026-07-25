@@ -1010,6 +1010,7 @@ export interface FourBasedLastMessage {
   user_id?: string;
   created_at?: string;
   file_stack?: FourBasedFileStack | null;
+  deleted_user_ids?: string[];
   [key: string]: unknown;
 }
 
@@ -1040,6 +1041,8 @@ export interface FourBasedFileStack {
   width?: number;
   height?: number;
   preview?: Record<string, string>;
+  /** Fan user ids who purchased this PPV stack. */
+  user_paid?: string[];
   [key: string]: unknown;
 }
 
@@ -1056,6 +1059,7 @@ export interface FourBasedMessage {
   file_stack_id?: string | null;
   file_stack?: FourBasedFileStack | null;
   tip?: unknown;
+  deleted_user_ids?: string[];
   [key: string]: unknown;
 }
 
@@ -1197,6 +1201,19 @@ export async function sendFourBasedMessage(
     {
       method: 'POST',
       body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function deleteFourBasedMessage(
+  creatorId: string,
+  chatId: string,
+  messageId: string
+): Promise<{ ok: boolean; message?: FourBasedMessage }> {
+  return request(
+    `/api/creators/${creatorId}/4based/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`,
+    {
+      method: 'DELETE',
     }
   );
 }

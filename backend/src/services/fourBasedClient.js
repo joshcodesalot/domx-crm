@@ -504,6 +504,28 @@ async function sendMessage(creator, chatId, { message, fileStackId, localId } = 
   return result.data;
 }
 
+async function deleteMessage(creator, chatId, messageId) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  if (!chatId) {
+    throw new FourBasedApiError('chatId is required', 400);
+  }
+  if (!messageId) {
+    throw new FourBasedApiError('messageId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'PUT',
+    url:
+      `${REST_BASE}/user/${providerUserId}/chat/${encodeURIComponent(chatId)}` +
+      `/delete-message-for-users-in-chat`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+    body: { id: String(messageId) },
+  });
+  return result.data;
+}
+
 async function getUser(creator, userId) {
   const { token, resource, cookies, proxyUrl } = authContext(creator);
   if (!userId) {
@@ -754,6 +776,7 @@ module.exports = {
   sendTyping,
   sendText,
   sendMessage,
+  deleteMessage,
   getUser,
   listVault,
   getCoinPackages,

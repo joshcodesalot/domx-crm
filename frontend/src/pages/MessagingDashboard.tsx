@@ -11,11 +11,12 @@ import {
   type User,
 } from '@/lib/api';
 import {
-  formatEuro,
   formatMediaLabel,
+  formatMoney,
   formatResponseTime,
   formatSentTime,
   getDefaultMessagingDashboardDateRange,
+  resolveDashboardCurrency,
 } from '@/lib/messagingDashboardFormat';
 
 const inputClassName =
@@ -46,6 +47,7 @@ function purchasedBadgeClass(purchased: boolean): string {
 function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
   const sentTime = formatSentTime(entry.sentAt);
   const mediaLabel = formatMediaLabel(entry);
+  const moneyCurrency = resolveDashboardCurrency(entry.currency, entry.platform);
   const platformLabel =
     entry.platform === '4based'
       ? '4based'
@@ -57,7 +59,7 @@ function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
     <tr className="border-b border-gray-100 dark:border-white/5 hover:bg-gray-50/60 dark:hover:bg-white/[0.02]">
       <td className="px-4 py-3 align-top whitespace-nowrap">{entry.chatterName}</td>
       <td className="px-4 py-3 align-top whitespace-nowrap">
-        {formatEuro(entry.chatterSalesTotal)}
+        {formatMoney(entry.chatterSalesTotal, moneyCurrency)}
       </td>
       <td className="px-4 py-3 align-top">
         <div className="flex items-center gap-2 min-w-[160px]">
@@ -100,7 +102,7 @@ function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
         <div className="text-xs text-gray-500 dark:text-gray-400">{sentTime.date}</div>
       </td>
       <td className="px-4 py-3 align-top whitespace-nowrap">
-        {formatEuro(entry.priceNet)}
+        {formatMoney(entry.priceNet, moneyCurrency)}
       </td>
       <td className="px-4 py-3 align-top">
         <span

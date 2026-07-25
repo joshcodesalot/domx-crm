@@ -443,7 +443,8 @@ const FOURBASED_COINS_PER_DOLLAR = 121;
 function fourBasedCoinsToDollars(coins) {
   const n = Number(coins);
   if (!Number.isFinite(n) || n === 0) return null;
-  return n / FOURBASED_COINS_PER_DOLLAR;
+  // 4based activity ledger often signs tip/sale credits as negative.
+  return Math.abs(n) / FOURBASED_COINS_PER_DOLLAR;
 }
 
 function activityAmountDollars(entry) {
@@ -747,12 +748,26 @@ router.get(
 
     for (const row of result.rows) {
       const priceNet = row.priceNet != null ? Number(row.priceNet) : null;
+      const messageId =
+        typeof row.maloumMessageId === 'string' ? row.maloumMessageId : '';
+      const chatId = typeof row.chatId === 'string' ? row.chatId : '';
+      const isFourBased =
+        messageId.startsWith('4based') || chatId.startsWith('4based');
+      const currency =
+        row.currency === 'USD' || row.currency === 'EUR'
+          ? row.currency
+          : isFourBased
+            ? 'USD'
+            : 'EUR';
+      const absPriceNet =
+        priceNet != null && Number.isFinite(priceNet) ? Math.abs(priceNet) : priceNet;
+
       if (row.contentType === 'tip') {
         tips.push({
           id: row.id,
           maloumMessageId: row.maloumMessageId,
-          priceNet,
-          currency: row.currency || 'EUR',
+          priceNet: absPriceNet,
+          currency,
           sentAt: row.sentAt,
           fanId: row.fanId,
           fanUsername: row.fanUsername,
@@ -763,8 +778,8 @@ router.get(
       const entry = {
         id: row.id,
         maloumMessageId: row.maloumMessageId,
-        priceNet,
-        currency: row.currency || 'EUR',
+        priceNet: absPriceNet,
+        currency,
         purchased: Boolean(row.purchased),
         mediaCount: row.mediaCount != null ? Number(row.mediaCount) : 0,
         pictureCount: row.pictureCount != null ? Number(row.pictureCount) : 0,
@@ -776,12 +791,12 @@ router.get(
 
       if (entry.purchased) {
         unlockedCount += 1;
-        if (priceNet != null && Number.isFinite(priceNet)) {
-          if (highestPrice == null || priceNet > highestPrice) {
-            highestPrice = priceNet;
+        if (absPriceNet != null && Number.isFinite(absPriceNet)) {
+          if (highestPrice == null || absPriceNet > highestPrice) {
+            highestPrice = absPriceNet;
           }
-          if (lowestPrice == null || priceNet < lowestPrice) {
-            lowestPrice = priceNet;
+          if (lowestPrice == null || absPriceNet < lowestPrice) {
+            lowestPrice = absPriceNet;
           }
         }
       }
@@ -951,12 +966,12 @@ router.get(
        FROM messaging_dashboard_entries m
        JOIN creators c ON c.id = m."creatorId"
        LEFT JOIN (
-         SELECT m."chatterId", SUM(m."priceNet") AS "chatterSalesTotal"
+         SELECT m."chatterId", c.platform, SUM(ABS(m."priceNet")) AS "chatterSalesTotal"
          FROM messaging_dashboard_entries m
          JOIN creators c ON c.id = m."creatorId"
          ${salesWhereClause}
-         GROUP BY m."chatterId"
-       ) sales ON sales."chatterId" = m."chatterId"
+         GROUP BY m."chatterId", c.platform
+       ) sales ON sales."chatterId" = m."chatterId" AND sales.platform = c.platform
        ${whereClause}
        ORDER BY m."sentAt" DESC
        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,

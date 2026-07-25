@@ -2771,6 +2771,46 @@ router.post(
   }
 );
 
+router.delete(
+  '/:id/4based/chats/:chatId/messages/:messageId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, chatId, messageId } = req.params;
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+    if (!messageId) {
+      return res.status(400).json({ error: 'messageId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const message = await fourBasedClient.deleteMessage(
+        loaded.creator,
+        chatId,
+        messageId
+      );
+      return res.json({ ok: true, message });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Delete 4based message error:');
+    }
+  }
+);
+
 router.get(
   '/:id/4based/profile',
   authenticate,

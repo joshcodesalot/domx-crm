@@ -7,8 +7,10 @@ import {
   type UIEvent,
 } from 'react';
 import {
+  Ban,
   Box,
   Check,
+  Eye,
   Image as ImageIcon,
   Languages,
   Loader2,
@@ -18,6 +20,7 @@ import {
   RefreshCw,
   Send,
   ShieldCheck,
+  Trash2,
   Video,
   X,
   type LucideIcon,
@@ -28,6 +31,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import {
   createMessagingDashboardEntry,
+  deleteFourBasedMessage,
   fourBasedMediaUrl,
   fourBasedPreviewPath,
   getFourBasedChat,
@@ -41,10 +45,12 @@ import {
   sendFourBasedMessage,
   sendFourBasedPpv,
   translateToGerman,
+  updateMessagingDashboardPurchased,
   type Creator,
   type FourBasedChat,
   type FourBasedChatUser,
   type FourBasedCoinPackage,
+  type FourBasedLastMessage,
   type FourBasedMessage,
   type FourBasedUserProfile,
   type FourBasedVaultItem,
@@ -58,6 +64,7 @@ const MAX_TRANSLATION_HISTORY = 8;
 const POLL_MS = 5000;
 
 export const TRANSLATION_SETTINGS_EVENT = 'domx-translation-settings';
+export const FOURBASED_MESSAGE_DELETED_EVENT = 'domx-4based-message-deleted';
 
 function readStoredBoolean(key: string, defaultValue: boolean): boolean {
   const stored = localStorage.getItem(key);
@@ -349,12 +356,31 @@ function formatDuration(seconds?: number): string {
  * 4based stores sales_volume / PPV price in coins.
  * Website display: (coins / payment_config.tax) / 100 with tax ≈ 1.21
  * → equivalent to coins / 121 (e.g. 34484 → 284.99$, 1210 → $10.00).
+ *
+ * Chatter input is native-style provision P (not creator net, not fan checkout):
+ * - API coins = P × 121
+ * - You receive = P × 70%
+ * - Fan pays = P × 1.21 (tax handled by 4based)
  */
 const COINS_PER_DOLLAR = 121;
+const CREATOR_SHARE = 0.7;
+const FAN_TAX = 1.21;
 
 function coinsToDollars(coins: number): number {
   if (!Number.isFinite(coins) || coins === 0) return 0;
   return coins / COINS_PER_DOLLAR;
+}
+
+function formatUsdAmount(dollars: number): string {
+  if (!Number.isFinite(dollars)) return '0.00';
+  return dollars.toFixed(2);
+}
+
+function isFourBasedPpvSold(
+  fileStack: FourBasedMessage['file_stack'] | null | undefined
+): boolean {
+  const paid = fileStack?.user_paid;
+  return Array.isArray(paid) && paid.length > 0;
 }
 
 /** 4based is USD-only in the chatter UI. */
@@ -387,66 +413,34 @@ function isVideoItem(item: FourBasedVaultItem | null | undefined): boolean {
   return type.includes('video');
 }
 
-function isHttpsMediaUrl(url: unknown): url is string {
-  return typeof url === 'string' && /^https:\/\//i.test(url);
+function isPersistedFourBasedMessageId(id?: string | null): boolean {
+  if (!id) return false;
+  if (id.startsWith('temp-') || id.startsWith('optimistic-')) return false;
+  return /^[a-f0-9]{24}$/i.test(id);
 }
 
-const VAULT_PREVIEW_THUMB_KEYS = [
-  '200x200',
-  '400x400',
-  '500x500',
-  '340xxx',
-  '200xxx',
-  '100x100',
-  '80x80',
-] as const;
-
-const VAULT_PREVIEW_LARGE_KEYS = [
-  '900xxx',
-  '1200xxx',
-  'xxx1080',
-  '660xxx',
-  '500x500',
-  '400x400',
-  '340xxx',
-  '200x200',
-] as const;
-
-function vaultPreviewUrl(
-  item: FourBasedVaultItem,
-  keys: readonly string[]
-): string | null {
-  const preview = item.preview;
-  if (!preview || typeof preview !== 'object') return null;
-  for (const key of keys) {
-    const url = preview[key];
-    if (isHttpsMediaUrl(url)) return url;
-  }
-  for (const url of Object.values(preview)) {
-    if (isHttpsMediaUrl(url)) return url;
-  }
-  return null;
+function isDeletedFourBasedMessage(
+  msg: Pick<FourBasedMessage, 'deleted_user_ids'> | FourBasedLastMessage | null | undefined
+): boolean {
+  return Array.isArray(msg?.deleted_user_ids) && msg.deleted_user_ids.length > 0;
 }
 
-function vaultDirectThumbUrl(item: FourBasedVaultItem): string | null {
-  return vaultPreviewUrl(item, VAULT_PREVIEW_THUMB_KEYS);
+function lastMessagePreview(chat: FourBasedChat): string {
+  const last = chat.last_message;
+  if (!last) return '—';
+  if (isDeletedFourBasedMessage(last)) return 'Message deleted';
+  const text = typeof last.message === 'string' ? last.message.trim() : '';
+  return text || '—';
 }
 
-function vaultDirectLargeUrl(item: FourBasedVaultItem): string | null {
-  return vaultPreviewUrl(item, VAULT_PREVIEW_LARGE_KEYS);
-}
-
-function vaultDirectVideoUrl(item: FourBasedVaultItem): string | null {
-  const sources = item.source;
-  if (Array.isArray(sources)) {
-    for (const url of sources) {
-      if (isHttpsMediaUrl(url)) return url;
-    }
-  }
-  if (isHttpsMediaUrl(item.video_thumbnail_source)) {
-    return item.video_thumbnail_source;
-  }
-  return null;
+function emitFourBasedMessageDeleted(detail: {
+  creatorId: string;
+  chatId: string;
+  message: FourBasedMessage;
+}) {
+  window.dispatchEvent(
+    new CustomEvent(FOURBASED_MESSAGE_DELETED_EVENT, { detail })
+  );
 }
 
 const VAULT_PAGE_SIZE = 60;
@@ -585,6 +579,39 @@ export function FourBasedChatList({
     });
   }, [onSyncEvent, creatorId, loadChats]);
 
+  useEffect(() => {
+    const onDeleted = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        creatorId: string;
+        chatId: string;
+        message: FourBasedMessage;
+      }>).detail;
+      if (!detail || detail.creatorId !== creatorId) return;
+      setChats((prev) =>
+        prev.map((chat) => {
+          if (chat._id !== detail.chatId) return chat;
+          const lastId = chat.last_message?._id;
+          if (lastId && lastId !== detail.message._id) return chat;
+          return {
+            ...chat,
+            last_message: {
+              ...(chat.last_message || {}),
+              _id: detail.message._id,
+              message: detail.message.message,
+              user_id: detail.message.user_id,
+              created_at: detail.message.created_at,
+              file_stack: null,
+              deleted_user_ids: detail.message.deleted_user_ids || ['deleted'],
+            },
+          };
+        })
+      );
+    };
+    window.addEventListener(FOURBASED_MESSAGE_DELETED_EVENT, onDeleted);
+    return () =>
+      window.removeEventListener(FOURBASED_MESSAGE_DELETED_EVENT, onDeleted);
+  }, [creatorId]);
+
   const sortedChats = useMemo(() => {
     return [...chats].sort((a, b) => {
       const pinA = a.is_pinned ? 1 : 0;
@@ -694,8 +721,21 @@ export function FourBasedChatList({
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <p className="text-xs text-gray-500 dark:text-zinc-400 truncate flex-1">
-                      {chat.last_message?.message || '—'}
+                    <p
+                      className={`text-xs truncate flex-1 ${
+                        isDeletedFourBasedMessage(chat.last_message)
+                          ? 'italic text-gray-400 dark:text-zinc-500'
+                          : 'text-gray-500 dark:text-zinc-400'
+                      }`}
+                    >
+                      {isDeletedFourBasedMessage(chat.last_message) ? (
+                        <span className="inline-flex items-center gap-1">
+                          <Ban className="w-3 h-3 shrink-0" />
+                          Message deleted
+                        </span>
+                      ) : (
+                        lastMessagePreview(chat)
+                      )}
                     </p>
                     {spent && (
                       <span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
@@ -793,24 +833,61 @@ export function FourBasedChatThread({
     []
   );
   const vaultLoadingMoreRef = useRef(false);
-  const [ppvDollars, setPpvDollars] = useState('10');
+  /** Empty = free (Maloum-style). Dollars string when priced. */
+  const [ppvDollars, setPpvDollars] = useState('');
+  const [priceModalOpen, setPriceModalOpen] = useState(false);
+  const [priceDraft, setPriceDraft] = useState('');
+  /** Vault item id marked as unlocked teaser/preview (paid multi only). */
+  const [teaserVaultId, setTeaserVaultId] = useState<string | null>(null);
   const [coinPackages, setCoinPackages] = useState<FourBasedCoinPackage[]>([]);
   /** Message id currently streaming video (lazy — poster only until clicked). */
   const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const threadKeyRef = useRef(`${creatorId}:${chatId}`);
+  /** Message ids already PATCHed to purchased=true for chat-log sync. */
+  const purchasedSyncedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     threadKeyRef.current = `${creatorId}:${chatId}`;
+    purchasedSyncedRef.current.clear();
   }, [creatorId, chatId]);
+
+  function syncSoldPpvToChatLog(messagesList: FourBasedMessage[]) {
+    for (const msg of messagesList) {
+      const id = msg._id;
+      if (!isPersistedFourBasedMessageId(id)) continue;
+      const price = msg.file_stack?.price;
+      if (typeof price !== 'number' || price <= 0) continue;
+      if (!isFourBasedPpvSold(msg.file_stack)) continue;
+      if (purchasedSyncedRef.current.has(id)) continue;
+      purchasedSyncedRef.current.add(id);
+      void updateMessagingDashboardPurchased(`4based:${id}`, true).catch(() => {
+        purchasedSyncedRef.current.delete(id);
+      });
+    }
+  }
 
   const fan = useMemo(
     () => (chat ? fanFromChat(chat, providerUserId) : EMPTY_FAN),
     [chat, providerUserId]
   );
 
-  const priceCoins = dollarsToCoins(Number(ppvDollars) || 0, coinPackages);
+  const ppvDollarsNum = Number(ppvDollars);
+  const hasPpvPrice = Number.isFinite(ppvDollarsNum) && ppvDollarsNum > 0;
+  const priceCoins = hasPpvPrice
+    ? dollarsToCoins(ppvDollarsNum, coinPackages)
+    : 0;
+
+  function clearMediaAttachments() {
+    setSelectedVaultItems([]);
+    setPpvDollars('');
+    setPriceDraft('');
+    setPriceModalOpen(false);
+    setTeaserVaultId(null);
+  }
 
   const fanIsOnline =
     fanProfile?.is_online != null ? Boolean(fanProfile.is_online) : fan.isOnline;
@@ -857,7 +934,9 @@ export function FourBasedChatThread({
         if (threadKeyRef.current !== key) return;
         const list = Array.isArray(result.messages) ? result.messages : [];
         // API returns newest first
-        setMessages([...list].reverse());
+        const chronological = [...list].reverse();
+        setMessages(chronological);
+        syncSoldPpvToChatLog(chronological);
         if (result.providerUserId) {
           setProviderUserId(result.providerUserId);
         }
@@ -905,8 +984,7 @@ export function FourBasedChatThread({
     setFanProfile(null);
     setDraft('');
     setSendError(null);
-    setSelectedVaultItems([]);
-    setPpvDollars('10');
+    clearMediaAttachments();
     setPlayingMsgId(null);
     setVaultOpen(false);
     setPreviewItem(null);
@@ -979,6 +1057,7 @@ export function FourBasedChatThread({
     if (!autoTranslateHistory) return;
     const pending: Array<{ key: string; text: string }> = [];
     for (const msg of messages) {
+      if (isDeletedFourBasedMessage(msg)) continue;
       const text = typeof msg.message === 'string' ? msg.message.trim() : '';
       if (!text) continue;
       const msgKey = String(msg._id || msg.local_id || '');
@@ -1039,10 +1118,89 @@ export function FourBasedChatThread({
     setSelectedVaultItems((prev) => {
       const exists = prev.some((entry) => vaultItemId(entry) === id);
       if (exists) {
-        return prev.filter((entry) => vaultItemId(entry) !== id);
+        const next = prev.filter((entry) => vaultItemId(entry) !== id);
+        if (teaserVaultId === id) setTeaserVaultId(null);
+        if (next.length === 0) {
+          setPpvDollars('');
+          setPriceDraft('');
+          setPriceModalOpen(false);
+          setTeaserVaultId(null);
+        }
+        return next;
       }
       return [...prev, item];
     });
+  }
+
+  function setVaultItemAsTeaser(itemId: string) {
+    if (!hasPpvPrice || selectedVaultItems.length < 2) return;
+    setTeaserVaultId((prev) => (prev === itemId ? null : itemId));
+  }
+
+  function buildVaultSendEntries(items: FourBasedVaultItem[]) {
+    const canTease =
+      hasPpvPrice && items.length >= 2 && Boolean(teaserVaultId);
+    const teaserId = canTease ? teaserVaultId : null;
+    const ordered =
+      teaserId && items.some((item) => vaultItemId(item) === teaserId)
+        ? [
+            ...items.filter((item) => vaultItemId(item) === teaserId),
+            ...items.filter((item) => vaultItemId(item) !== teaserId),
+          ]
+        : items;
+    return ordered.map((item, index) => ({
+      id: vaultItemId(item),
+      guid: vaultItemGuid(item),
+      position: index,
+      is_teaser: Boolean(teaserId && vaultItemId(item) === teaserId),
+    }));
+  }
+
+  async function handleDeleteMessage(messageId: string) {
+    if (!isPersistedFourBasedMessageId(messageId) || deletingMessageId) return;
+    if (!window.confirm('Delete this message?')) return;
+    setDeletingMessageId(messageId);
+    setDeleteError(null);
+    try {
+      const result = await deleteFourBasedMessage(creatorId, chatId, messageId);
+      const deletedIds =
+        Array.isArray(result.message?.deleted_user_ids) &&
+        result.message.deleted_user_ids.length > 0
+          ? result.message.deleted_user_ids
+          : [providerUserId, fan.id].filter(Boolean) as string[];
+      const updated: FourBasedMessage = {
+        ...(result.message || {}),
+        _id: result.message?._id || messageId,
+        deleted_user_ids: deletedIds,
+        file_stack: null,
+        file_stack_id: null,
+      };
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m._id !== messageId) return m;
+          return {
+            ...m,
+            ...updated,
+            deleted_user_ids: deletedIds,
+            file_stack: null,
+            file_stack_id: null,
+          };
+        })
+      );
+      emitFourBasedMessageDeleted({
+        creatorId,
+        chatId,
+        message: {
+          ...updated,
+          created_at: updated.created_at || messages.find((m) => m._id === messageId)?.created_at,
+          user_id: updated.user_id || providerUserId || undefined,
+        },
+      });
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete message');
+    } finally {
+      setDeletingMessageId(null);
+    }
   }
 
   async function handleSendText() {
@@ -1055,7 +1213,9 @@ export function FourBasedChatThread({
     const localId = crypto.randomUUID();
     const englishDraft = text;
     const vaultForLog = selectedVaultItems;
-    const dollarsForLog = Number(ppvDollars) || 0;
+    const dollarsForLog = hasPpvPrice ? ppvDollarsNum : 0;
+    const coinsForLog = dollarsForLog > 0 ? priceCoins : 0;
+    const vaultEntries = buildVaultSendEntries(vaultForLog);
     const responseSnapshot = computeFourBasedResponseTime(messages, providerUserId);
 
     try {
@@ -1085,21 +1245,16 @@ export function FourBasedChatThread({
       let sentMessage: FourBasedMessage | null = null;
 
       if (vaultForLog.length > 0) {
-        const dollars = dollarsForLog;
+        // HAR: free media with no caption uses a single space as message body
+        const mediaMessage = messageToSend || (dollarsForLog > 0 ? '' : ' ');
         const result = await sendFourBasedPpv(creatorId, chatId, {
-          message: messageToSend || vaultForLog[0]?.description || '',
-          vaults: vaultForLog.map((item, index) => ({
-            id: vaultItemId(item),
-            guid: vaultItemGuid(item),
-            position: index,
-            is_teaser: false,
-          })),
-          priceCoins: dollars > 0 ? priceCoins : 0,
+          message: mediaMessage,
+          vaults: vaultEntries,
+          priceCoins: coinsForLog,
           localId,
         });
         sentMessage = result.message;
-        setSelectedVaultItems([]);
-        setPpvDollars('10');
+        clearMediaAttachments();
       } else {
         const result = await sendFourBasedMessage(creatorId, chatId, {
           message: messageToSend,
@@ -1137,7 +1292,11 @@ export function FourBasedChatThread({
           fanUsername: fan.name || null,
           maloumMessageId: dashboardMessageId,
           optimisticMessageId: localId,
-          contentType: hasMedia ? 'chat_product' : 'text',
+          contentType: hasMedia
+            ? dollarsForLog > 0
+              ? 'chat_product'
+              : 'media'
+            : 'text',
           englishMessage: englishDraft || actualSent || null,
           germanTranslatedMessage: actualSent || null,
           actualSentText: actualSent || null,
@@ -1334,21 +1493,20 @@ export function FourBasedChatThread({
     loadMoreVaultItems();
   }
 
-  function mediaSrcForVaultItem(item: FourBasedVaultItem): string | null {
-    const direct = vaultDirectThumbUrl(item);
-    if (direct) return direct;
+  function mediaSrcForVaultItem(
+    item: FourBasedVaultItem,
+    size = '200x200.jpg'
+  ): string | null {
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
     return fourBasedMediaUrl(
       creatorId,
-      fourBasedPreviewPath(providerUserId, id, '200x200.jpg')
+      fourBasedPreviewPath(providerUserId, id, size)
     );
   }
 
   function fullMediaSrc(item: FourBasedVaultItem): string | null {
-    const direct = vaultDirectLargeUrl(item);
-    if (direct) return direct;
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
@@ -1359,8 +1517,6 @@ export function FourBasedChatThread({
   }
 
   function videoStreamSrc(item: FourBasedVaultItem): string | null {
-    const direct = vaultDirectVideoUrl(item);
-    if (direct) return direct;
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
@@ -1509,39 +1665,80 @@ export function FourBasedChatThread({
           </div>
         )}
         {messagesError && <p className="text-sm text-red-400">{messagesError}</p>}
+        {deleteError && <p className="text-sm text-red-400">{deleteError}</p>}
         {messages.map((msg) => {
           const mine = msg.user_id === providerUserId;
           const msgKey = String(msg._id || msg.local_id || '');
+          const deleted = isDeletedFourBasedMessage(msg);
+          const canDelete =
+            mine && !deleted && isPersistedFourBasedMessageId(msg._id);
+          const deleting = deletingMessageId === msg._id;
           const localKey = typeof msg.local_id === 'string' ? msg.local_id : '';
           const sentBy = mine
             ? messageSenders[`4based:${msg._id}`] ||
               (localKey ? messageSenders[localKey] : undefined) ||
               (msgKey ? messageSenders[msgKey] : undefined)
             : undefined;
-          const mediaUrl = messageMediaUrl(msg, '400x400.jpg');
-          const isVideo = isMessageVideo(msg);
+          const mediaUrl = deleted ? null : messageMediaUrl(msg, '400x400.jpg');
+          const isVideo = !deleted && isMessageVideo(msg);
           const videoUrl = isVideo ? messageVideoUrl(msg) : null;
           const isPlaying = Boolean(isVideo && videoUrl && playingMsgId === msgKey);
-          const price = msg.file_stack?.price;
+          const price = deleted ? undefined : msg.file_stack?.price;
           const ppvLabel = formatPpvDollars(price);
+          const isSold = Boolean(ppvLabel && isFourBasedPpvSold(msg.file_stack));
+          const isFreeMedia = Boolean(
+            !deleted &&
+              msg.file_stack &&
+              (typeof price !== 'number' || price <= 0)
+          );
           const duration = msg.file_stack?.duration;
-          const msgText = typeof msg.message === 'string' ? msg.message.trim() : '';
+          const msgText =
+            deleted || typeof msg.message !== 'string' ? '' : msg.message.trim();
           const historyEn =
-            autoTranslateHistory && msgKey && msgText
+            !deleted && autoTranslateHistory && msgKey && msgText
               ? historyTranslations[`${msgKey}::${msgText}`]
               : undefined;
-          const hasMedia = Boolean(msg.file_stack && (mediaUrl || videoUrl));
+          const hasMedia = Boolean(!deleted && msg.file_stack && (mediaUrl || videoUrl));
           return (
             <div
               key={msgKey}
-              className={`flex animate-slide-up ${mine ? 'justify-end' : 'justify-start'}`}
+              className={`group/msg flex animate-slide-up ${mine ? 'justify-end' : 'justify-start'}`}
             >
               <div
                 className={`max-w-[85%] md:max-w-[70%] flex flex-col ${
                   mine ? 'items-end' : 'items-start'
                 }`}
               >
-                {hasMedia || ppvLabel ? (
+                {canDelete && (
+                  <div className={`mb-1 flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteMessage(msg._id)}
+                      disabled={deleting}
+                      className="opacity-0 group-hover/msg:opacity-100 focus:opacity-100 p-1 rounded-md text-gray-500 dark:text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
+                      title="Delete message"
+                      aria-label="Delete message"
+                    >
+                      {deleting ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </div>
+                )}
+                {deleted ? (
+                  <div
+                    className={`rounded-2xl px-4 py-3 text-sm shadow-sm backdrop-blur-sm italic flex items-center gap-2 ${
+                      mine
+                        ? 'bg-4based-600/70 text-white/90 chat-bubble-out'
+                        : 'bg-gray-100/80 dark:bg-zinc-800/80 border border-gray-200 dark:border-zinc-700/50 text-gray-500 dark:text-zinc-400 chat-bubble-in'
+                    }`}
+                  >
+                    <Ban className="w-4 h-4 shrink-0 opacity-80" />
+                    <span>Message deleted</span>
+                  </div>
+                ) : hasMedia || ppvLabel ? (
                   <div
                     className={`rounded-2xl p-1.5 shadow-lg relative overflow-hidden ${
                       mine
@@ -1549,11 +1746,19 @@ export function FourBasedChatThread({
                         : 'bg-gray-100/80 dark:bg-zinc-800/80 border border-gray-200 dark:border-zinc-700/50 text-gray-800 dark:text-zinc-200 chat-bubble-in'
                     }`}
                   >
-                    {ppvLabel && !isPlaying && (
-                      <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-black/35 dark:bg-black/60 backdrop-blur border border-gray-200 dark:border-white/10 text-[10px] font-bold tracking-widest text-emerald-400 flex items-center gap-1">
+                    {isSold && ppvLabel && !isPlaying ? (
+                      <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-emerald-600/90 backdrop-blur border border-emerald-400/40 text-[10px] font-bold tracking-widest text-white flex items-center gap-1">
+                        <Check className="w-3 h-3" /> Sold · {ppvLabel}
+                      </div>
+                    ) : ppvLabel && !isPlaying ? (
+                      <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-black/35 dark:bg-black/60 backdrop-blur border border-gray-200 dark:border-white/10 text-[10px] font-bold tracking-widest text-amber-300 flex items-center gap-1">
                         <Lock className="w-3 h-3" /> PPV · {ppvLabel}
                       </div>
-                    )}
+                    ) : isFreeMedia && hasMedia && !isPlaying ? (
+                      <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-black/35 dark:bg-black/60 backdrop-blur border border-gray-200 dark:border-white/10 text-[10px] font-bold tracking-widest text-zinc-300 flex items-center gap-1">
+                        Free
+                      </div>
+                    ) : null}
                     {hasMedia && (
                       <div className="mb-2 relative overflow-hidden rounded-xl bg-gray-900 dark:bg-black min-w-[200px]">
                         {isPlaying ? (
@@ -1666,71 +1871,127 @@ export function FourBasedChatThread({
 
       <div className="border-t border-gray-200 dark:border-zinc-800/80 bg-white dark:bg-zinc-950 p-4 shrink-0 relative z-10 shadow-[0_-10px_40px_rgba(0,0,0,0.3)]">
         {selectedVaultItems.length > 0 && (
-          <div className="flex items-center gap-4 mb-3 px-1 animate-fade-in">
-            <div className="flex gap-2 max-w-[40%] overflow-x-auto">
+          <div className="flex items-center gap-3 mb-3 px-1 animate-fade-in">
+            <div className="flex gap-2 max-w-[45%] overflow-x-auto">
               {selectedVaultItems.map((item) => {
                 const thumb = mediaSrcForVaultItem(item);
                 const id = vaultItemId(item);
+                const isTeaser = teaserVaultId === id;
+                const canSetTeaser =
+                  hasPpvPrice && selectedVaultItems.length >= 2;
                 return (
-                  <button
+                  <div
                     key={id}
-                    type="button"
-                    onClick={() => toggleVaultItem(item)}
-                    className="w-12 h-12 rounded-lg relative group overflow-hidden border border-gray-300 dark:border-zinc-700 shrink-0"
-                    title="Remove"
+                    className={`relative w-12 h-12 rounded-lg overflow-hidden border shrink-0 ${
+                      isTeaser
+                        ? 'border-domx-500 ring-1 ring-domx-500/40'
+                        : 'border-gray-300 dark:border-zinc-700'
+                    }`}
                   >
-                    {thumb ? (
-                      <img
-                        src={thumb}
-                        alt=""
-                        loading="lazy"
-                        decoding="async"
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className="w-full h-full bg-gray-100 dark:bg-zinc-800" />
+                    <button
+                      type="button"
+                      onClick={() => toggleVaultItem(item)}
+                      className="absolute inset-0 group"
+                      title="Remove"
+                    >
+                      {thumb ? (
+                        <img
+                          src={thumb}
+                          alt=""
+                          loading="lazy"
+                          decoding="async"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full bg-gray-100 dark:bg-zinc-800" />
+                      )}
+                      <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/35 dark:bg-black/60 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                        <X className="w-3 h-3" />
+                      </span>
+                    </button>
+                    {canSetTeaser && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setVaultItemAsTeaser(id);
+                        }}
+                        className={`absolute bottom-0 inset-x-0 text-[8px] font-bold py-0.5 flex items-center justify-center gap-0.5 ${
+                          isTeaser
+                            ? 'bg-domx-600 text-white'
+                            : 'bg-black/50 text-white/90 hover:bg-black/70'
+                        }`}
+                        title={
+                          isTeaser
+                            ? 'Clear preview (teaser)'
+                            : 'Set as free preview for fan'
+                        }
+                      >
+                        <Eye className="w-2.5 h-2.5" />
+                        {isTeaser ? 'Preview' : 'Set'}
+                      </button>
                     )}
-                    <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/35 dark:bg-black/60 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                      <X className="w-3 h-3" />
-                    </span>
-                  </button>
+                    {isVideoItem(item) && !canSetTeaser && (
+                      <span className="absolute bottom-0.5 left-0.5 pointer-events-none">
+                        <Play className="w-3 h-3 text-white drop-shadow" />
+                      </span>
+                    )}
+                  </div>
                 );
               })}
             </div>
-            <div className="h-8 w-px bg-gray-100 dark:bg-zinc-800" />
-            <div className="flex items-center gap-3">
-              <div className="flex flex-col">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-0.5">
-                  PPV Price
-                </label>
-                <div className="relative">
-                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-zinc-400 text-xs">
-                    $
-                  </span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={ppvDollars}
-                    onChange={(e) => setPpvDollars(e.target.value)}
-                    className="w-20 pl-6 pr-2 py-1 rounded-md border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm text-gray-900 dark:text-white focus:border-domx-500 focus:outline-none transition-colors"
-                  />
+            <div className="ml-auto flex items-center gap-2 shrink-0">
+              {hasPpvPrice ? (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPriceDraft(ppvDollars);
+                      setPriceModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-domx-500/40 bg-domx-600/10 text-sm font-semibold text-domx-600 dark:text-domx-400 hover:bg-domx-600/20 transition-colors"
+                    title={`Provision $${ppvDollars} · you ~$${formatUsdAmount(ppvDollarsNum * CREATOR_SHARE)} · fan ~$${formatUsdAmount(ppvDollarsNum * FAN_TAX)}`}
+                  >
+                    <Lock className="w-3.5 h-3.5" />${ppvDollars}
+                    <span className="text-[10px] font-normal text-gray-500 dark:text-zinc-500">
+                      · you ${formatUsdAmount(ppvDollarsNum * CREATOR_SHARE)}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPpvDollars('');
+                      setPriceDraft('');
+                      setTeaserVaultId(null);
+                    }}
+                    className="p-1 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white"
+                    aria-label="Remove price"
+                    title="Remove price (send free)"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-              </div>
-              <span className="text-xs text-gray-500 dark:text-zinc-400 mt-4">
-                {selectedVaultItems.length} item
-                {selectedVaultItems.length === 1 ? '' : 's'} · ≈ {priceCoins} coins
-              </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPriceDraft('');
+                    setPriceModalOpen(true);
+                  }}
+                  className="text-sm font-medium text-domx-600 dark:text-domx-400 hover:text-domx-500 dark:hover:text-domx-300 transition-colors whitespace-nowrap"
+                >
+                  Add price for your media +
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={clearMediaAttachments}
+                className="p-1 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white"
+                aria-label="Clear attachment"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setSelectedVaultItems([])}
-              className="p-1 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white ml-auto"
-              aria-label="Clear attachment"
-            >
-              <X className="w-4 h-4" />
-            </button>
           </div>
         )}
 
@@ -1824,7 +2085,7 @@ export function FourBasedChatThread({
                 {selectedVaultItems.length > 0 && (
                   <button
                     type="button"
-                    onClick={() => setSelectedVaultItems([])}
+                    onClick={clearMediaAttachments}
                     className="px-3 py-2 text-sm text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white transition-colors"
                   >
                     Clear Selection
@@ -1892,7 +2153,6 @@ export function FourBasedChatThread({
                             alt=""
                             loading="lazy"
                             decoding="async"
-                            referrerPolicy="no-referrer"
                             className="max-h-[60vh] max-w-full rounded object-contain"
                           />
                         ) : (
@@ -1912,7 +2172,6 @@ export function FourBasedChatThread({
                         alt=""
                         loading="lazy"
                         decoding="async"
-                        referrerPolicy="no-referrer"
                         className="max-h-[60vh] max-w-full rounded object-contain"
                       />
                     )
@@ -1923,29 +2182,16 @@ export function FourBasedChatThread({
                     type="button"
                     onClick={() => {
                       toggleVaultItem(previewItem);
-                      setPpvDollars('0');
                       setPreviewItem(null);
-                    }}
-                    className="px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800"
-                  >
-                    Toggle free attach
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const id = vaultItemId(previewItem);
-                      setSelectedVaultItems((prev) => {
-                        if (prev.some((entry) => vaultItemId(entry) === id)) {
-                          return prev;
-                        }
-                        return [...prev, previewItem];
-                      });
-                      setPpvDollars('10');
-                      setPreviewItem(null);
+                      setVaultPreviewPlaying(false);
                     }}
                     className="px-3 py-2 text-sm rounded-lg bg-domx-600 text-white hover:bg-domx-500"
                   >
-                    Add as PPV
+                    {selectedVaultItems.some(
+                      (entry) => vaultItemId(entry) === vaultItemId(previewItem)
+                    )
+                      ? 'Remove from selection'
+                      : 'Attach'}
                   </button>
                 </div>
               </div>
@@ -2093,7 +2339,6 @@ export function FourBasedChatThread({
                               alt=""
                               loading="lazy"
                               decoding="async"
-                              referrerPolicy="no-referrer"
                               className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
                             />
                           ) : (
@@ -2145,6 +2390,100 @@ export function FourBasedChatThread({
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {priceModalOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in">
+          <button
+            type="button"
+            aria-label="Close media price"
+            className="absolute inset-0 bg-black/40 dark:bg-black/70 backdrop-blur-sm"
+            onClick={() => setPriceModalOpen(false)}
+          />
+          <div className="relative w-full max-w-sm rounded-2xl bg-white dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 shadow-2xl p-6 animate-slide-up">
+            <button
+              type="button"
+              onClick={() => setPriceModalOpen(false)}
+              className="absolute top-4 right-4 p-1 text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+              aria-label="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <h3 className="text-center text-lg font-bold text-gray-800 dark:text-white mb-2">
+              Media price
+            </h3>
+            <p className="text-center text-xs text-gray-500 dark:text-zinc-500 mb-6">
+              Set provision (before tax). Tax is paid by the fan via 4based.
+            </p>
+            <div className="flex items-center gap-3 border-b border-gray-200 dark:border-zinc-700 pb-3 mb-4">
+              <span className="text-2xl font-medium text-gray-700 dark:text-zinc-300">
+                $
+              </span>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                autoFocus
+                value={priceDraft}
+                onChange={(e) => setPriceDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const provision = Number(priceDraft);
+                    if (Number.isFinite(provision) && provision > 0) {
+                      setPpvDollars(String(provision));
+                      setPriceModalOpen(false);
+                    }
+                  }
+                }}
+                placeholder="0.00"
+                className="flex-1 bg-transparent text-2xl text-gray-900 dark:text-white placeholder:text-gray-300 dark:placeholder:text-zinc-600 focus:outline-none"
+              />
+            </div>
+            {Number.isFinite(Number(priceDraft)) && Number(priceDraft) > 0 ? (
+              <div className="mb-5 space-y-2 text-sm text-gray-600 dark:text-zinc-400">
+                <div className="flex justify-between gap-3">
+                  <span>Your share (70%)</span>
+                  <span className="font-semibold text-gray-900 dark:text-white tabular-nums">
+                    ${formatUsdAmount(Number(priceDraft) * CREATOR_SHARE)}
+                  </span>
+                </div>
+                <p className="text-[11px] text-gray-500 dark:text-zinc-500">
+                  ${formatUsdAmount(Number(priceDraft))} × 70% = $
+                  {formatUsdAmount(Number(priceDraft) * CREATOR_SHARE)}
+                </p>
+                <div className="flex justify-between gap-3 pt-1 border-t border-gray-100 dark:border-zinc-800">
+                  <span>User pays (+21% tax)</span>
+                  <span className="font-semibold text-gray-900 dark:text-white tabular-nums">
+                    ${formatUsdAmount(Number(priceDraft) * FAN_TAX)}
+                  </span>
+                </div>
+                <p className="text-[11px] text-gray-500 dark:text-zinc-500">
+                  ${formatUsdAmount(Number(priceDraft))} + $
+                  {formatUsdAmount(Number(priceDraft) * (FAN_TAX - 1))} = $
+                  {formatUsdAmount(Number(priceDraft) * FAN_TAX)}
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-gray-500 dark:text-zinc-500 mb-5 text-center">
+                Leave unset to send free
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                const provision = Number(priceDraft);
+                if (!Number.isFinite(provision) || provision <= 0) return;
+                setPpvDollars(String(provision));
+                setPriceModalOpen(false);
+              }}
+              disabled={!Number.isFinite(Number(priceDraft)) || Number(priceDraft) <= 0}
+              className="w-full py-3 rounded-xl bg-orange-500 hover:bg-orange-400 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-base transition-colors"
+            >
+              Set price
+            </button>
           </div>
         </div>
       )}

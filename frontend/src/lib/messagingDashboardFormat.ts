@@ -121,15 +121,36 @@ export function formatResponseTime(seconds: number | null | undefined): string {
   return `${minutes}m ${String(remainingSeconds).padStart(2, '0')}s`;
 }
 
-export function formatEuro(amount: number | null | undefined): string {
+export function resolveDashboardCurrency(
+  currency?: string | null,
+  platform?: 'maloum' | '4based' | null
+): 'EUR' | 'USD' {
+  const normalized = typeof currency === 'string' ? currency.trim().toUpperCase() : '';
+  if (normalized === 'USD' || normalized === 'EUR') {
+    return normalized;
+  }
+  return platform === '4based' ? 'USD' : 'EUR';
+}
+
+/** Maloum = EUR, 4based = USD. */
+export function formatMoney(
+  amount: number | null | undefined,
+  currency: string = 'EUR'
+): string {
   if (amount == null) {
     return '--';
   }
 
-  return new Intl.NumberFormat('de-DE', {
+  const code = currency.trim().toUpperCase() === 'USD' ? 'USD' : 'EUR';
+  return new Intl.NumberFormat(code === 'USD' ? 'en-US' : 'de-DE', {
     style: 'currency',
-    currency: 'EUR',
+    currency: code,
   }).format(amount);
+}
+
+/** @deprecated Prefer formatMoney — kept for Maloum EUR call sites. */
+export function formatEuro(amount: number | null | undefined): string {
+  return formatMoney(amount, 'EUR');
 }
 
 export function formatSentTime(date: string | Date): { time: string; date: string } {
