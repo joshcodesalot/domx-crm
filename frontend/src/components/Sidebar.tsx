@@ -117,10 +117,16 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     navigate('/chatter');
   }
 
-  async function handleFourBasedNavigate(view: 'chat' | 'message-pro') {
+  async function handleFourBasedNavigate(
+    view: 'chat' | 'message-pro' | 'notifications'
+  ) {
     setFourBasedMenuOpen(false);
     if (view === 'message-pro') {
       await openMessagePro('4based');
+      return;
+    }
+    if (view === 'notifications') {
+      navigate('/chatter/4based/notifications');
       return;
     }
     navigate('/chatter/4based');
@@ -271,6 +277,15 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 >
                   <MessageSquare className="w-4 h-4 shrink-0" />
                   Chat
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => void handleFourBasedNavigate('notifications')}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                >
+                  <Bell className="w-4 h-4 shrink-0" />
+                  Notifications
                 </button>
                 <button
                   type="button"

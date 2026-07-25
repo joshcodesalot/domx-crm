@@ -355,6 +355,40 @@ async function getBadges(creator) {
   };
 }
 
+async function listActivities(creator, { offset = 0, limit = 20, types } = {}) {
+  const { token, resource, cookies, proxyUrl } = authContext(creator);
+  const sort = encodeURIComponent(JSON.stringify({ created_at: 'desc' }));
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  let url =
+    `${REST_BASE}/activity?offset=${safeOffset}&limit=${safeLimit}&sort=${sort}`;
+  if (typeof types === 'string' && types.trim()) {
+    url += `&types=${encodeURIComponent(types.trim())}`;
+  } else if (Array.isArray(types) && types.length > 0) {
+    url += `&types=${encodeURIComponent(types.join(','))}`;
+  }
+  const result = await requestJson({
+    url,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  return result.data;
+}
+
+async function resetActivities(creator) {
+  const { token, resource, cookies, proxyUrl } = authContext(creator);
+  const result = await requestJson({
+    url: `${REST_BASE}/activity/reset`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  return result.data;
+}
+
 async function getChat(creator, chatId) {
   const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
   const result = await requestJson({
@@ -691,6 +725,8 @@ module.exports = {
   listChats,
   getUnread,
   getBadges,
+  listActivities,
+  resetActivities,
   getChat,
   getMessages,
   markReceived,

@@ -437,6 +437,239 @@ async function processMaloumSaleAndTipNotifications(creatorId, notifications) {
   return results;
 }
 
+/** 4based coin amounts → USD (same divisor as chat UI: coins / 121). */
+const FOURBASED_COINS_PER_DOLLAR = 121;
+
+function fourBasedCoinsToDollars(coins) {
+  const n = Number(coins);
+  if (!Number.isFinite(n) || n === 0) return null;
+  return n / FOURBASED_COINS_PER_DOLLAR;
+}
+
+function activityAmountDollars(entry) {
+  const amount = entry?.process?.amount ?? entry?.process?.value ?? entry?.amount;
+  return fourBasedCoinsToDollars(amount);
+}
+
+function activityCreatedAt(entry) {
+  const raw = entry?.created_at || entry?.createdAt || null;
+  if (!raw) return null;
+  const normalized = typeof raw === 'string' ? raw.replace(' ', 'T') : raw;
+  return Number.isNaN(Date.parse(normalized)) ? null : new Date(normalized).toISOString();
+}
+
+async function logFourBasedSale({
+  creatorId,
+  fanId = null,
+  fanUsername = null,
+  maloumMessageId,
+  priceNet = null,
+  notificationId = null,
+  createdAt = null,
+} = {}) {
+  if (!creatorId || !isValidUuid(creatorId)) {
+    return {
+      updated: false,
+      reason: 'creatorId_required',
+      maloumMessageId: maloumMessageId || null,
+      notificationId,
+    };
+  }
+
+  if (!maloumMessageId || typeof maloumMessageId !== 'string') {
+    return {
+      updated: false,
+      reason: 'maloumMessageId_required',
+      maloumMessageId: maloumMessageId || null,
+      notificationId,
+    };
+  }
+
+  const existing = await pool.query(
+    `SELECT *
+     FROM messaging_dashboard_entries
+     WHERE "maloumMessageId" = $1`,
+    [maloumMessageId]
+  );
+
+  if (existing.rows.length > 0) {
+    return {
+      updated: false,
+      reason: 'already_logged',
+      entry: toDashboardEntry({
+        ...existing.rows[0],
+        chatterSalesTotal: null,
+      }),
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  const enriched = await enrichCreatorFields(creatorId);
+  if (!enriched) {
+    return {
+      updated: false,
+      reason: 'creator_not_found',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  const tipContext = await resolveTipContext(creatorId, fanId);
+  if (!tipContext) {
+    return {
+      updated: false,
+      reason: 'no_chatter_context',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  const parsedPriceNet = parsePriceNet(priceNet);
+  const sentAt =
+    createdAt && !Number.isNaN(Date.parse(createdAt))
+      ? new Date(createdAt).toISOString()
+      : new Date().toISOString();
+
+  const chatId = fanId ? `4based-sale:${fanId}` : tipContext.chatId;
+
+  const result = await pool.query(
+    `INSERT INTO messaging_dashboard_entries (
+      id,
+      "creatorId",
+      "creatorName",
+      "creatorUsername",
+      "creatorAvatarUrl",
+      "chatterId",
+      "chatterName",
+      "chatterEmail",
+      "chatId",
+      "fanId",
+      "fanUsername",
+      "maloumMessageId",
+      "optimisticMessageId",
+      "contentType",
+      "englishMessage",
+      "germanTranslatedMessage",
+      "actualSentText",
+      "priceNet",
+      currency,
+      purchased,
+      "mediaCount",
+      "pictureCount",
+      "videoCount",
+      "mediaJson",
+      "previousFanMessageAt",
+      "responseTimeSeconds",
+      "sentAt"
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+      $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+      $21, $22, $23, $24, $25, $26, $27
+    )
+    ON CONFLICT ("maloumMessageId") DO NOTHING
+    RETURNING *`,
+    [
+      randomUUID(),
+      creatorId,
+      enriched.creatorName,
+      enriched.creatorUsername,
+      enriched.creatorAvatarUrl,
+      tipContext.chatterId,
+      tipContext.chatterName,
+      tipContext.chatterEmail,
+      chatId,
+      fanId,
+      fanUsername,
+      maloumMessageId,
+      null,
+      'chat_product',
+      null,
+      null,
+      null,
+      parsedPriceNet,
+      'USD',
+      true,
+      0,
+      0,
+      0,
+      null,
+      null,
+      null,
+      sentAt,
+    ]
+  );
+
+  if (result.rows.length === 0) {
+    return {
+      updated: false,
+      reason: 'already_logged',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  return {
+    updated: true,
+    entry: toDashboardEntry({
+      ...result.rows[0],
+      chatterSalesTotal: null,
+    }),
+    notificationId,
+  };
+}
+
+async function processFourBasedSaleAndTipNotifications(creatorId, activities) {
+  const list = Array.isArray(activities) ? activities : [];
+  const results = [];
+
+  for (const entry of list) {
+    const type = entry?.type ? String(entry.type) : null;
+    const activityId = entry?._id || entry?.id ? String(entry._id || entry.id) : null;
+    if (!activityId || !type) continue;
+
+    const fanId = entry?.user_id || entry?.user?._id
+      ? String(entry.user_id || entry.user._id)
+      : null;
+    const fanUsername =
+      typeof entry?.user?.name === 'string' && entry.user.name.trim()
+        ? entry.user.name.trim()
+        : null;
+    const priceNet = activityAmountDollars(entry);
+    const createdAt = activityCreatedAt(entry);
+
+    if (type === 'tip') {
+      const result = await logTip({
+        creatorId,
+        fanId,
+        fanUsername,
+        maloumMessageId: `4based-tip:${activityId}`,
+        priceNet,
+        notificationId: activityId,
+        createdAt,
+        currency: 'USD',
+      });
+      results.push({ type, ...result });
+      continue;
+    }
+
+    if (type === 'sale') {
+      const result = await logFourBasedSale({
+        creatorId,
+        fanId,
+        fanUsername,
+        maloumMessageId: `4based-sale:${activityId}`,
+        priceNet,
+        notificationId: activityId,
+        createdAt,
+      });
+      results.push({ type, ...result });
+    }
+  }
+
+  return results;
+}
+
 router.get(
   '/fan-stats',
   authenticate,
@@ -1032,3 +1265,5 @@ module.exports = router;
 module.exports.unlockSaleByMessageId = unlockSaleByMessageId;
 module.exports.logTip = logTip;
 module.exports.processMaloumSaleAndTipNotifications = processMaloumSaleAndTipNotifications;
+module.exports.processFourBasedSaleAndTipNotifications =
+  processFourBasedSaleAndTipNotifications;

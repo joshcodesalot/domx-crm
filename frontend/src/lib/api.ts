@@ -1271,6 +1271,88 @@ export async function getFourBasedBadges(
   return request(`/api/creators/${creatorId}/4based/badges`);
 }
 
+export interface FourBasedActivityUser {
+  _id?: string;
+  name?: string;
+  is_online?: boolean;
+  avatar?: {
+    preview?: Record<string, string>;
+  };
+  [key: string]: unknown;
+}
+
+export interface FourBasedActivity {
+  _id: string;
+  type?: string;
+  status?: string;
+  for_user_id?: string;
+  user_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  file_stack_id?: string | null;
+  file_stack?: FourBasedFileStack | null;
+  user?: FourBasedActivityUser | null;
+  process?: { amount?: number; value?: number; [key: string]: unknown } | null;
+  [key: string]: unknown;
+}
+
+export async function getFourBasedActivities(
+  creatorId: string,
+  options: { offset?: number; limit?: number; types?: string } = {}
+): Promise<{
+  activities: FourBasedActivity[];
+  offset: number;
+  limit: number;
+  providerUserId: string | null;
+}> {
+  const params = new URLSearchParams();
+  if (options.offset != null) params.set('offset', String(options.offset));
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.types) params.set('types', options.types);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/4based/activities${query ? `?${query}` : ''}`
+  );
+}
+
+export async function resetFourBasedActivities(
+  creatorId: string
+): Promise<{ ok: boolean }> {
+  return request(`/api/creators/${creatorId}/4based/activities/reset`, {
+    method: 'POST',
+  });
+}
+
+function isFourBasedPublicPreviewUrl(url?: string | null): url is string {
+  return Boolean(
+    url &&
+      /^https:\/\/media-public\.4based\.com\//i.test(url)
+  );
+}
+
+/** Pick a public CDN preview URL from activity/file_stack.preview — never the DomX media proxy. */
+export function fourBasedPublicPreviewUrl(
+  fileStack:
+    | FourBasedFileStack
+    | { preview?: Record<string, string> | null }
+    | null
+    | undefined,
+  preferredSizes: string[] = ['100x100', '200x200', '80x80', '50x50', '500x500']
+): string | null {
+  const preview = fileStack?.preview;
+  if (!preview || typeof preview !== 'object') return null;
+
+  for (const size of preferredSizes) {
+    const withExt = preview[`${size}.jpg`] || preview[size];
+    if (isFourBasedPublicPreviewUrl(withExt)) return withExt;
+  }
+
+  for (const value of Object.values(preview)) {
+    if (isFourBasedPublicPreviewUrl(value)) return value;
+  }
+  return null;
+}
+
 /** Build a media-proxy URL for use in <img>/<video src>. Includes DomX access token. */
 export function fourBasedMediaUrl(creatorId: string, path: string): string {
   const token = getToken() || '';

@@ -2510,10 +2510,103 @@ router.get(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      const badges = await fourBasedClient.getBadges(loaded.creator);
+      const [badges, activitiesPayload] = await Promise.all([
+        fourBasedClient.getBadges(loaded.creator),
+        fourBasedClient.listActivities(loaded.creator, { offset: 0, limit: 50 }),
+      ]);
+
+      const activities = Array.isArray(activitiesPayload) ? activitiesPayload : [];
+      try {
+        await messagingDashboard.processFourBasedSaleAndTipNotifications(id, activities);
+      } catch (err) {
+        console.warn('4based sale/tip sync failed:', err.message);
+      }
+
       res.json(badges);
     } catch (err) {
       return handleFourBasedError(res, err, 'Get 4based badges error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/activities',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 20, 100);
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const types =
+        typeof req.query.types === 'string' && req.query.types.trim()
+          ? req.query.types.trim()
+          : undefined;
+
+      const payload = await fourBasedClient.listActivities(loaded.creator, {
+        offset,
+        limit,
+        types,
+      });
+      const activities = Array.isArray(payload) ? payload : [];
+
+      try {
+        await messagingDashboard.processFourBasedSaleAndTipNotifications(id, activities);
+      } catch (err) {
+        console.warn('4based sale/tip sync failed:', err.message);
+      }
+
+      res.json({
+        activities,
+        offset,
+        limit,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'List 4based activities error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/4based/activities/reset',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      await fourBasedClient.resetActivities(loaded.creator);
+      res.json({ ok: true });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Reset 4based activities error:');
     }
   }
 );

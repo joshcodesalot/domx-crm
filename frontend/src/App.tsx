@@ -16,6 +16,7 @@ import ChatterMaloum from '@/pages/ChatterMaloum';
 import Chatter4Based from '@/pages/Chatter4Based';
 import MaloumMassMessage from '@/pages/MaloumMassMessage';
 import MaloumNotifications from '@/pages/MaloumNotifications';
+import FourBasedNotifications from '@/pages/FourBasedNotifications';
 import MessagePro from '@/pages/MessagePro';
 import MessagePro4Based from '@/pages/MessagePro4Based';
 import MessagingDashboard from '@/pages/MessagingDashboard';
@@ -206,6 +207,10 @@ function AppRoutes() {
                 <Route
                   path="/chatter/maloum/notifications"
                   element={<MaloumNotifications />}
+                />
+                <Route
+                  path="/chatter/4based/notifications"
+                  element={<FourBasedNotifications />}
                 />
               </Route>
               <Route element={<PermissionRoute permission="mass_messages.send" />}>
