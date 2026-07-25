@@ -1436,6 +1436,116 @@ export async function sendMaloumPpv(
   return sendMaloumMessage(creatorId, chatId, payload);
 }
 
+export interface MaloumChatListItem {
+  _id: string;
+  name?: string;
+  isManaged?: boolean;
+  totalMemberCount?: number;
+  [key: string]: unknown;
+}
+
+export interface MaloumBroadcastMedia {
+  _id?: string;
+  type?: string;
+  url?: string;
+  thumbnailUrl?: string;
+  width?: number;
+  height?: number;
+  [key: string]: unknown;
+}
+
+export interface MaloumBroadcastContent {
+  text?: string;
+  media?: MaloumBroadcastMedia[];
+  price?: number;
+  [key: string]: unknown;
+}
+
+export interface MaloumBroadcast {
+  _id: string;
+  processedAt?: string;
+  content?: MaloumBroadcastContent;
+  recipientCount?: number;
+  viewerCount?: number;
+  buyerCount?: number;
+  isRevoked?: boolean;
+  isSending?: boolean;
+  includeFromLists?: MaloumChatListItem[];
+  excludeFromLists?: MaloumChatListItem[];
+  [key: string]: unknown;
+}
+
+export async function listMaloumBroadcasts(
+  creatorId: string,
+  options: { limit?: number; next?: string; filter?: string } = {}
+): Promise<{
+  broadcasts: MaloumBroadcast[];
+  next: string | null;
+  providerUserId: string | null;
+}> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.next) params.set('next', options.next);
+  if (options.filter) params.set('filter', options.filter);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/broadcasts${query ? `?${query}` : ''}`
+  );
+}
+
+export async function sendMaloumBroadcast(
+  creatorId: string,
+  payload: {
+    includeFromLists: string[];
+    excludeFromLists?: string[];
+    text?: string;
+    message?: string;
+    media?: Array<{
+      mediaId: string;
+      type?: string;
+      width?: number;
+      height?: number;
+    }>;
+    priceNet?: number;
+    price?: number;
+  }
+): Promise<{ ok: boolean }> {
+  return request(`/api/creators/${creatorId}/maloum/broadcasts`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function revokeMaloumBroadcast(
+  creatorId: string,
+  broadcastId: string
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/maloum/broadcasts/${encodeURIComponent(broadcastId)}/revoke`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }
+  );
+}
+
+export async function listMaloumChatLists(
+  creatorId: string,
+  options: { limit?: number; next?: string } = {}
+): Promise<{
+  lists: MaloumChatListItem[];
+  next: string | null;
+  providerUserId: string | null;
+}> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.next) params.set('next', options.next);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/chat-lists${query ? `?${query}` : ''}`
+  );
+}
+
 export async function listMaloumVaultFolders(
   creatorId: string,
   options: { query?: string; limit?: number; next?: number } = {}

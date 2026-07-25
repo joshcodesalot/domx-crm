@@ -20,6 +20,7 @@ const PERMISSIONS = [
   { slug: 'staff.assign_role', name: 'Assign Roles', category: 'Staff', description: 'Change staff role assignments' },
   { slug: 'roles.view', name: 'View Roles', category: 'RBAC', description: 'View roles and permission matrix' },
   { slug: 'roles.manage', name: 'Manage Roles', category: 'RBAC', description: 'Edit role permissions' },
+  { slug: 'mass_messages.send', name: 'Send Mass Messages', category: 'App', description: 'Send and manage Maloum mass messages (Managers and above)' },
 ];
 
 const DEFAULT_MATRIX = {
@@ -27,11 +28,13 @@ const DEFAULT_MATRIX = {
     'dashboard.view', 'analytics.view', 'creators.view', 'creators.manage',
     'staff.view', 'staff.create', 'staff.edit', 'staff.deactivate', 'staff.delete', 'staff.assign_role',
     'roles.view', 'roles.manage',
+    'mass_messages.send',
   ],
   manager: [
     'dashboard.view', 'analytics.view', 'creators.view', 'creators.manage',
     'staff.view', 'staff.create', 'staff.edit', 'staff.deactivate', 'staff.delete', 'staff.assign_role',
     'roles.view',
+    'mass_messages.send',
   ],
   team_leader: [
     'dashboard.view', 'analytics.view', 'creators.view',

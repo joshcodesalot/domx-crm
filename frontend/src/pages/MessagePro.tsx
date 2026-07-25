@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Home, Plus, X } from 'lucide-react';
+import { Home, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ThemeToggle from '@/components/ThemeToggle';
 import {
@@ -7,6 +7,7 @@ import {
   MaloumChatThread,
   partnerName,
 } from '@/components/maloum/MaloumChatPanels';
+import { useStaffSync } from '@/context/StaffSyncContext';
 import { getCreators, type Creator, type MaloumChat } from '@/lib/api';
 
 const HOME_TAB_ID = 'home';
@@ -29,10 +30,10 @@ function isOpenableCreator(creator: Creator): boolean {
 }
 
 export default function MessagePro() {
+  const { onSyncEvent } = useStaffSync();
   const [creators, setCreators] = useState<Creator[]>([]);
   const [workspaces, setWorkspaces] = useState<CreatorWorkspace[]>([]);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,66 +42,62 @@ export default function MessagePro() {
     [creators]
   );
 
-  const availableCreators = useMemo(() => {
-    const openIds = new Set(workspaces.map((w) => w.creator.id));
-    return openableCreators.filter((c) => !openIds.has(c.id));
-  }, [openableCreators, workspaces]);
-
   const activeWorkspace = useMemo(
     () => workspaces.find((w) => w.creator.id === activeAccountId) || null,
     [workspaces, activeAccountId]
   );
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const { creators: list } = await getCreators();
-        if (cancelled) return;
-        setCreators(list.filter((c) => c.platform === 'maloum'));
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load creators');
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+  const loadCreators = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { creators: list } = await getCreators();
+      setCreators(list.filter((c) => c.platform === 'maloum'));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load creators');
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  const openCreator = useCallback((creator: Creator) => {
+  useEffect(() => {
+    void loadCreators();
+  }, [loadCreators]);
+
+  useEffect(() => {
+    return onSyncEvent((event) => {
+      if (
+        event.type === 'creator:access-granted' ||
+        event.type === 'creator:access-revoked'
+      ) {
+        void loadCreators();
+      }
+    });
+  }, [onSyncEvent, loadCreators]);
+
+  useEffect(() => {
     setWorkspaces((prev) => {
-      if (prev.some((w) => w.creator.id === creator.id)) return prev;
-      return [
-        ...prev,
-        {
+      const prevById = new Map(prev.map((w) => [w.creator.id, w]));
+      return openableCreators.map((creator) => {
+        const existing = prevById.get(creator.id);
+        if (existing) {
+          return { ...existing, creator };
+        }
+        return {
           creator,
           fanTabs: [],
           activeTabId: HOME_TAB_ID,
-        },
-      ];
-    });
-    setActiveAccountId(creator.id);
-    setPickerOpen(false);
-  }, []);
-
-  const closeCreator = useCallback(
-    (creatorId: string) => {
-      setWorkspaces((prev) => {
-        const remaining = prev.filter((w) => w.creator.id !== creatorId);
-        if (activeAccountId === creatorId) {
-          setActiveAccountId(remaining[0]?.creator.id || null);
-        }
-        return remaining;
+        };
       });
-    },
-    [activeAccountId]
-  );
+    });
+
+    setActiveAccountId((prev) => {
+      if (prev && openableCreators.some((c) => c.id === prev)) {
+        return prev;
+      }
+      return openableCreators[0]?.id || null;
+    });
+  }, [openableCreators]);
 
   const openFanTab = useCallback(
     (creatorId: string, chat: MaloumChat) => {
@@ -181,76 +178,28 @@ export default function MessagePro() {
             const creatorId = workspace.creator.id;
             const active = creatorId === activeAccountId;
             return (
-              <div
+              <button
                 key={creatorId}
-                className={`flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg border shrink-0 ${
+                type="button"
+                onClick={() => setActiveAccountId(creatorId)}
+                className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border shrink-0 min-w-0 ${
                   active
                     ? 'border-brand-300 bg-brand-50 dark:border-brand-800 dark:bg-brand-900/20'
                     : 'border-gray-200 dark:border-white/10'
                 }`}
               >
-                <button
-                  type="button"
-                  onClick={() => setActiveAccountId(creatorId)}
-                  className="flex items-center gap-1.5 min-w-0"
-                >
-                  <CreatorAvatar
-                    avatarUrl={workspace.creator.avatarUrl}
-                    displayName={workspace.creator.displayName}
-                    className="w-6 h-6 rounded-full object-cover"
-                    initialsClassName="w-6 h-6 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-[10px] font-medium"
-                  />
-                  <span className="text-xs font-medium truncate max-w-[100px]">
-                    {workspace.creator.displayName}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => closeCreator(creatorId)}
-                  className="p-0.5 rounded text-gray-400 hover:text-gray-700"
-                  title="Close creator"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
+                <CreatorAvatar
+                  avatarUrl={workspace.creator.avatarUrl}
+                  displayName={workspace.creator.displayName}
+                  className="w-6 h-6 rounded-full object-cover"
+                  initialsClassName="w-6 h-6 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-[10px] font-medium"
+                />
+                <span className="text-xs font-medium truncate max-w-[100px]">
+                  {workspace.creator.displayName}
+                </span>
+              </button>
             );
           })}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setPickerOpen((open) => !open)}
-              className="p-1.5 rounded-lg border border-dashed border-gray-300 dark:border-white/20 text-gray-500 hover:text-gray-800 dark:hover:text-gray-200"
-              title="Add creator"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-            {pickerOpen && (
-              <div className="absolute left-0 top-full mt-1 z-30 w-64 max-h-72 overflow-y-auto rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1">
-                {availableCreators.length === 0 ? (
-                  <p className="text-xs text-gray-500 dark:text-gray-400 px-3 py-2">
-                    {loading ? 'Loading…' : 'No more Maloum creators available'}
-                  </p>
-                ) : (
-                  availableCreators.map((creator) => (
-                    <button
-                      key={creator.id}
-                      type="button"
-                      onClick={() => openCreator(creator)}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50 dark:hover:bg-white/5"
-                    >
-                      <CreatorAvatar
-                        avatarUrl={creator.avatarUrl}
-                        displayName={creator.displayName}
-                        className="w-7 h-7 rounded-full object-cover"
-                        initialsClassName="w-7 h-7 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-xs"
-                      />
-                      <span className="truncate">{creator.displayName}</span>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
         </div>
         <ThemeToggle />
       </header>
@@ -265,7 +214,7 @@ export default function MessagePro() {
         <div className="flex-1 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
           {loading
             ? 'Loading…'
-            : 'Open a Maloum creator to start messaging'}
+            : 'No Maloum creators assigned to you'}
         </div>
       ) : (
         <>

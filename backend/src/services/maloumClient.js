@@ -640,6 +640,112 @@ async function sendPpv(creator, chatId, {
   });
 }
 
+async function listSentBroadcasts(creator, { limit = 15, next, filter = 'ALL' } = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const result = await requestJson({
+    method: 'GET',
+    path: `/broadcasts/sent${buildQuery({ limit, filter, next })}`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function revokeBroadcast(creator, broadcastId) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!broadcastId) {
+    throw new MaloumApiError('broadcastId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'POST',
+    path: `/broadcasts/${encodeURIComponent(broadcastId)}/revoke`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function listChatLists(creator, { limit = 25, next } = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const result = await requestJson({
+    method: 'GET',
+    path: `/chat-lists${buildQuery({ limit, next })}`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function sendBroadcast(creator, {
+  includeFromLists = [],
+  excludeFromLists = [],
+  text = '',
+  media = [],
+  price = 0,
+} = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+
+  const include = Array.isArray(includeFromLists)
+    ? includeFromLists.map(String).filter(Boolean)
+    : [];
+  if (include.length === 0) {
+    throw new MaloumApiError('includeFromLists is required', 400);
+  }
+
+  const exclude = Array.isArray(excludeFromLists)
+    ? excludeFromLists.map(String).filter(Boolean)
+    : [];
+
+  const caption = typeof text === 'string' ? text.trim() : '';
+  const normalizedMedia = Array.isArray(media)
+    ? media.map((item) => ({
+        mediaId: item.mediaId || item.uploadId,
+        type: item.type || 'picture',
+        width: item.width,
+        height: item.height,
+      }))
+    : [];
+
+  for (const item of normalizedMedia) {
+    if (!item.mediaId) {
+      throw new MaloumApiError('mediaId is required for each media item', 400);
+    }
+  }
+
+  if (!caption && normalizedMedia.length === 0) {
+    throw new MaloumApiError('text or media is required', 400);
+  }
+
+  const content = {};
+  if (caption) content.text = caption;
+  if (normalizedMedia.length > 0) content.media = normalizedMedia;
+
+  const priceNum = Number(price) || 0;
+  if (priceNum > 0) {
+    if (normalizedMedia.length === 0) {
+      throw new MaloumApiError('media is required for PPV mass messages', 400);
+    }
+    content.price = priceNum;
+  }
+
+  const result = await requestJson({
+    method: 'POST',
+    path: '/broadcasts',
+    proxyUrl,
+    accessToken,
+    timezone,
+    body: {
+      includeFromLists: include,
+      excludeFromLists: exclude,
+      content,
+    },
+  });
+  return result.data;
+}
+
 async function listVaultFolders(creator, { query = '', limit = 15, next } = {}) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
@@ -999,6 +1105,10 @@ module.exports = {
   sendText,
   sendMedia,
   sendPpv,
+  listSentBroadcasts,
+  revokeBroadcast,
+  listChatLists,
+  sendBroadcast,
   listVaultFolders,
   getVaultFolder,
   listVaultMedia,
