@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type UIEvent,
+} from 'react';
 import {
   Box,
   Check,
@@ -22,6 +29,7 @@ import maloumIcon from '@/assets/maloum_icon.png';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import {
   formatRelativeTime,
+  friendlyVaultFolderName,
   isVideoAsset,
   vaultDirectUrl,
   vaultUploadId,
@@ -69,11 +77,115 @@ function broadcastThumbUrl(
   return null;
 }
 
-function listLabel(list: MaloumChatListItem): string {
-  const name = (list.name || '').trim() || 'Untitled list';
+/** Maloum managed lists arrive as opaque codes like __0h7fd89v__; show native labels. */
+const MANAGED_LIST_LABELS_BY_NAME: Record<string, string> = {
+  __0h7fd89v__: 'All free followers and subscribers',
+  __9a5ju9d3__: 'All free followers',
+  __x0y89z7l__: 'All subscribers',
+};
+
+const MANAGED_LIST_LABELS_BY_ORDER = [
+  'All free followers and subscribers',
+  'All free followers',
+  'All subscribers',
+] as const;
+
+function isManagedListCode(name: string): boolean {
+  return /^__[\w]+__$/.test(name);
+}
+
+function isManagedChatList(list: MaloumChatListItem): boolean {
+  const name = (list.name || '').trim();
+  return Boolean(list.isManaged) || isManagedListCode(name);
+}
+
+/** Rank among managed lists in API order (0, 1, 2…) — works across creators whose codes differ. */
+function buildManagedListRanks(lists: MaloumChatListItem[]): Map<string, number> {
+  const ranks = new Map<string, number>();
+  let index = 0;
+  for (const list of lists) {
+    if (!isManagedChatList(list)) continue;
+    ranks.set(list._id, index);
+    index += 1;
+  }
+  return ranks;
+}
+
+function friendlyListName(
+  list: MaloumChatListItem,
+  managedRanks?: Map<string, number>
+): string {
+  const raw = (list.name || '').trim();
+  if (raw && MANAGED_LIST_LABELS_BY_NAME[raw]) {
+    return MANAGED_LIST_LABELS_BY_NAME[raw];
+  }
+  if (isManagedChatList(list)) {
+    const rank = managedRanks?.get(list._id);
+    if (rank != null && rank >= 0 && rank < MANAGED_LIST_LABELS_BY_ORDER.length) {
+      return MANAGED_LIST_LABELS_BY_ORDER[rank];
+    }
+    if (raw && isManagedListCode(raw)) {
+      // Single managed list shown without siblings (e.g. sent-broadcast summary)
+      return MANAGED_LIST_LABELS_BY_NAME[raw] || 'Managed list';
+    }
+  }
+  return raw || 'Untitled list';
+}
+
+function listLabel(
+  list: MaloumChatListItem,
+  managedRanks?: Map<string, number>
+): string {
+  const name = friendlyListName(list, managedRanks);
   const count =
     typeof list.totalMemberCount === 'number' ? ` (${list.totalMemberCount})` : '';
   return `${name}${count}`;
+}
+
+function nearScrollEnd(
+  target: HTMLElement,
+  thresholdPx = 80,
+  axis: 'vertical' | 'horizontal' = 'vertical'
+): boolean {
+  if (axis === 'horizontal') {
+    const remaining =
+      target.scrollWidth - target.scrollLeft - target.clientWidth;
+    return remaining <= thresholdPx;
+  }
+  const remaining =
+    target.scrollHeight - target.scrollTop - target.clientHeight;
+  return remaining <= thresholdPx;
+}
+
+function mergeVaultFolders(
+  prev: MaloumVaultFolder[],
+  incoming: MaloumVaultFolder[]
+): MaloumVaultFolder[] {
+  const seen = new Set(prev.map((f) => f._id));
+  const next = [...prev];
+  for (const folder of incoming) {
+    if (!folder?._id || seen.has(folder._id)) continue;
+    seen.add(folder._id);
+    next.push(folder);
+  }
+  return next;
+}
+
+function mergeVaultMediaItems(
+  prev: MaloumVaultMediaItem[],
+  incoming: MaloumVaultMediaItem[]
+): MaloumVaultMediaItem[] {
+  const seen = new Set(
+    prev.map((item) => vaultUploadId(item)).filter(Boolean) as string[]
+  );
+  const next = [...prev];
+  for (const item of incoming) {
+    const id = vaultUploadId(item);
+    if (id && seen.has(id)) continue;
+    if (id) seen.add(id);
+    next.push(item);
+  }
+  return next;
 }
 
 export default function MaloumMassMessage() {
@@ -107,6 +219,8 @@ export default function MaloumMassMessage() {
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [vaultItems, setVaultItems] = useState<MaloumVaultMediaItem[]>([]);
   const [vaultLoading, setVaultLoading] = useState(false);
+  const [loadingMoreFolders, setLoadingMoreFolders] = useState(false);
+  const [loadingMoreMedia, setLoadingMoreMedia] = useState(false);
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [selectedVaultItems, setSelectedVaultItems] = useState<MaloumVaultMediaItem[]>(
     []
@@ -117,6 +231,11 @@ export default function MaloumMassMessage() {
   const [ppvPrice, setPpvPrice] = useState('');
   const [priceModalOpen, setPriceModalOpen] = useState(false);
   const [priceDraft, setPriceDraft] = useState('');
+
+  const loadingMoreFoldersRef = useRef(false);
+  const loadingMoreMediaRef = useRef(false);
+  const vaultFoldersNextRef = useRef<number | null>(null);
+  const vaultMediaNextRef = useRef<number | null>(null);
 
   const selectedCreator = useMemo(
     () => creators.find((c) => c.id === selectedCreatorId) || null,
@@ -206,6 +325,12 @@ export default function MaloumMassMessage() {
     setExcludeIds([]);
     setDraft('');
     setSelectedVaultItems([]);
+    setSelectedFolderId(null);
+    setVaultFolders([]);
+    setVaultItems([]);
+    vaultFoldersNextRef.current = null;
+    vaultMediaNextRef.current = null;
+    setVaultOpen(false);
     setPpvPrice('');
     setSendError(null);
     if (selectedCreatorId) {
@@ -214,48 +339,138 @@ export default function MaloumMassMessage() {
     }
   }, [selectedCreatorId, loadBroadcasts, loadChatLists]);
 
+  const loadVaultFolders = useCallback(
+    async (opts?: { append?: boolean; next?: number | null }) => {
+      if (!selectedCreatorId) return;
+      const append = Boolean(opts?.append);
+      if (append) {
+        if (
+          loadingMoreFoldersRef.current ||
+          opts?.next == null ||
+          !Number.isFinite(opts.next)
+        ) {
+          return;
+        }
+        loadingMoreFoldersRef.current = true;
+        setLoadingMoreFolders(true);
+      } else {
+        setVaultLoading(true);
+      }
+      setVaultError(null);
+      try {
+        const result = await listMaloumVaultFolders(selectedCreatorId, {
+          limit: 15,
+          next: append && opts?.next != null ? opts.next : undefined,
+        });
+        const folders = result.folders || [];
+        const next =
+          typeof result.next === 'number' && Number.isFinite(result.next)
+            ? result.next
+            : null;
+        vaultFoldersNextRef.current = next;
+        setVaultFolders((prev) =>
+          append ? mergeVaultFolders(prev, folders) : folders
+        );
+        if (!append) {
+          setSelectedFolderId((prev) => prev || folders[0]?._id || null);
+        }
+      } catch (err) {
+        setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
+      } finally {
+        if (append) {
+          loadingMoreFoldersRef.current = false;
+          setLoadingMoreFolders(false);
+        } else {
+          setVaultLoading(false);
+        }
+      }
+    },
+    [selectedCreatorId]
+  );
+
+  const loadVaultMedia = useCallback(
+    async (opts?: { append?: boolean; next?: number | null; folderId?: string }) => {
+      if (!selectedCreatorId) return;
+      const folderId = opts?.folderId || selectedFolderId;
+      if (!folderId) return;
+      const append = Boolean(opts?.append);
+      if (append) {
+        if (
+          loadingMoreMediaRef.current ||
+          opts?.next == null ||
+          !Number.isFinite(opts.next)
+        ) {
+          return;
+        }
+        loadingMoreMediaRef.current = true;
+        setLoadingMoreMedia(true);
+      } else {
+        setVaultLoading(true);
+        setVaultItems([]);
+        vaultMediaNextRef.current = null;
+      }
+      setVaultError(null);
+      try {
+        const result = await listMaloumVaultMedia(selectedCreatorId, folderId, {
+          limit: 50,
+          next: append && opts?.next != null ? opts.next : undefined,
+        });
+        const items = result.items || [];
+        const next =
+          typeof result.next === 'number' && Number.isFinite(result.next)
+            ? result.next
+            : null;
+        vaultMediaNextRef.current = next;
+        setVaultItems((prev) =>
+          append ? mergeVaultMediaItems(prev, items) : items
+        );
+      } catch (err) {
+        setVaultError(err instanceof Error ? err.message : 'Failed to load media');
+      } finally {
+        if (append) {
+          loadingMoreMediaRef.current = false;
+          setLoadingMoreMedia(false);
+        } else {
+          setVaultLoading(false);
+        }
+      }
+    },
+    [selectedCreatorId, selectedFolderId]
+  );
+
   const openVault = useCallback(async () => {
     if (!selectedCreatorId) return;
     setVaultOpen(true);
     setVaultTypeFilter('all');
-    setVaultLoading(true);
-    setVaultError(null);
-    try {
-      const result = await listMaloumVaultFolders(selectedCreatorId, { limit: 30 });
-      setVaultFolders(result.folders || []);
-      if (!selectedFolderId && result.folders?.[0]?._id) {
-        setSelectedFolderId(result.folders[0]._id);
-      }
-    } catch (err) {
-      setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
-    } finally {
-      setVaultLoading(false);
-    }
-  }, [selectedCreatorId, selectedFolderId]);
+    setVaultFolders([]);
+    vaultFoldersNextRef.current = null;
+    await loadVaultFolders();
+  }, [selectedCreatorId, loadVaultFolders]);
 
   useEffect(() => {
     if (!vaultOpen || !selectedFolderId || !selectedCreatorId) return;
-    let cancelled = false;
-    (async () => {
-      setVaultLoading(true);
-      setVaultError(null);
-      try {
-        const result = await listMaloumVaultMedia(selectedCreatorId, selectedFolderId, {
-          limit: 50,
-        });
-        if (!cancelled) setVaultItems(result.items || []);
-      } catch (err) {
-        if (!cancelled) {
-          setVaultError(err instanceof Error ? err.message : 'Failed to load media');
-        }
-      } finally {
-        if (!cancelled) setVaultLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [vaultOpen, selectedFolderId, selectedCreatorId]);
+    void loadVaultMedia({ folderId: selectedFolderId });
+  }, [vaultOpen, selectedFolderId, selectedCreatorId, loadVaultMedia]);
+
+  const handleVaultFoldersScroll = useCallback(
+    (event: UIEvent<HTMLElement>, axis: 'vertical' | 'horizontal' = 'vertical') => {
+      if (!nearScrollEnd(event.currentTarget, 80, axis)) return;
+      const next = vaultFoldersNextRef.current;
+      if (next == null) return;
+      void loadVaultFolders({ append: true, next });
+    },
+    [loadVaultFolders]
+  );
+
+  const handleVaultMediaScroll = useCallback(
+    (event: UIEvent<HTMLElement>) => {
+      if (!nearScrollEnd(event.currentTarget)) return;
+      const next = vaultMediaNextRef.current;
+      if (next == null) return;
+      void loadVaultMedia({ append: true, next });
+    },
+    [loadVaultMedia]
+  );
 
   const filteredVaultItems = useMemo(() => {
     if (vaultTypeFilter === 'all') return vaultItems;
@@ -551,9 +766,14 @@ export default function MaloumMassMessage() {
                         {(broadcast.includeFromLists?.length || 0) > 0 && (
                           <p className="mt-1 text-[11px] text-gray-500 dark:text-zinc-500 truncate">
                             Include:{' '}
-                            {broadcast.includeFromLists
-                              ?.map((l) => l.name || l._id)
-                              .join(', ')}
+                            {(() => {
+                              const ranks = buildManagedListRanks(
+                                broadcast.includeFromLists || []
+                              );
+                              return broadcast.includeFromLists
+                                ?.map((l) => friendlyListName(l, ranks))
+                                .join(', ');
+                            })()}
                           </p>
                         )}
                       </div>
@@ -830,13 +1050,17 @@ export default function MaloumMassMessage() {
               </div>
             </div>
             <div className="flex flex-1 overflow-hidden min-h-0">
-              <div className="w-48 sm:w-56 border-r border-gray-200 dark:border-zinc-800/60 p-3 overflow-y-auto hidden md:block shrink-0">
+              <div
+                className="w-48 sm:w-56 border-r border-gray-200 dark:border-zinc-800/60 p-3 overflow-y-auto hidden md:block shrink-0"
+                onScroll={(e) => handleVaultFoldersScroll(e, 'vertical')}
+              >
                 <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 mb-3 px-2">
                   Folders
                 </h4>
                 <ul className="space-y-1">
                   {vaultFolders.map((folder) => {
                     const active = selectedFolderId === folder._id;
+                    const folderLabel = friendlyVaultFolderName(folder);
                     return (
                       <li key={folder._id}>
                         <button
@@ -847,18 +1071,24 @@ export default function MaloumMassMessage() {
                               ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
                               : 'hover:bg-gray-100 dark:hover:bg-zinc-800/50 text-gray-500'
                           }`}
+                          title={folderLabel}
                         >
                           {active ? (
                             <FolderOpen className="w-4 h-4 text-domx-400 shrink-0" />
                           ) : (
                             <Folder className="w-4 h-4 shrink-0" />
                           )}
-                          <span className="truncate">{folder.name || 'Folder'}</span>
+                          <span className="truncate">{folderLabel}</span>
                         </button>
                       </li>
                     );
                   })}
                 </ul>
+                {loadingMoreFolders && (
+                  <div className="flex justify-center py-3">
+                    <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                  </div>
+                )}
               </div>
               <div className="flex-1 flex flex-col min-w-0">
                 <div className="p-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0">
@@ -883,8 +1113,11 @@ export default function MaloumMassMessage() {
                     </button>
                   ))}
                 </div>
-                <div className="flex-1 overflow-y-auto p-4">
-                  {vaultLoading && (
+                <div
+                  className="flex-1 overflow-y-auto p-4"
+                  onScroll={handleVaultMediaScroll}
+                >
+                  {vaultLoading && vaultItems.length === 0 && (
                     <div className="flex justify-center py-12">
                       <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
                     </div>
@@ -935,6 +1168,11 @@ export default function MaloumMassMessage() {
                       );
                     })}
                   </div>
+                  {loadingMoreMedia && (
+                    <div className="flex justify-center py-4">
+                      <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1024,6 +1262,8 @@ function ListPicker({
   onToggle: (id: string) => void;
   onLoadMore?: () => void;
 }) {
+  const managedRanks = useMemo(() => buildManagedListRanks(lists), [lists]);
+
   return (
     <div className="rounded-xl border border-gray-200 dark:border-zinc-800 overflow-hidden flex flex-col max-h-40">
       <div className="px-3 py-2 border-b border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900/50 flex items-center justify-between">
@@ -1042,6 +1282,7 @@ function ListPicker({
         {lists.map((list) => {
           const selected = selectedIds.includes(list._id);
           const disabled = disabledIds.includes(list._id);
+          const label = listLabel(list, managedRanks);
           return (
             <button
               key={`${title}-${list._id}`}
@@ -1055,7 +1296,7 @@ function ListPicker({
                     ? 'opacity-40 cursor-not-allowed text-gray-400'
                     : 'hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300'
               }`}
-              title={listLabel(list)}
+              title={label}
             >
               <span
                 className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${
@@ -1066,7 +1307,7 @@ function ListPicker({
               >
                 {selected && <Check className="w-2.5 h-2.5" />}
               </span>
-              <span className="truncate">{listLabel(list)}</span>
+              <span className="truncate">{label}</span>
             </button>
           );
         })}
