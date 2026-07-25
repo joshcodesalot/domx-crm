@@ -5,6 +5,7 @@ import { useStaffSync } from '@/context/StaffSyncContext';
 import { getCreators, getMaloumBadges, type Creator } from '@/lib/api';
 
 const BADGE_POLL_MS = 30_000;
+const CREATOR_POLL_MS = 15_000;
 
 export default function ChatterMaloum() {
   const { onSyncEvent } = useStaffSync();
@@ -18,17 +19,35 @@ export default function ChatterMaloum() {
     Record<string, number>
   >({});
 
-  const loadCreators = useCallback(async () => {
-    setCreatorsLoading(true);
+  const loadCreators = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
+    if (!silent) setCreatorsLoading(true);
     try {
       const { creators: list } = await getCreators();
       const maloum = list.filter((c) => c.platform === 'maloum');
       setCreators(maloum);
-      setSelectedCreatorId((prev) => prev || maloum[0]?.id || null);
+      setSelectedCreatorId((prev) => {
+        if (prev && maloum.some((c) => c.id === prev)) return prev;
+        return maloum[0]?.id || null;
+      });
+      setUnreadByCreatorId((prev) => {
+        const next: Record<string, number> = {};
+        for (const creator of maloum) {
+          if (prev[creator.id] != null) next[creator.id] = prev[creator.id];
+        }
+        return next;
+      });
+      setNotificationUnreadByCreatorId((prev) => {
+        const next: Record<string, number> = {};
+        for (const creator of maloum) {
+          if (prev[creator.id] != null) next[creator.id] = prev[creator.id];
+        }
+        return next;
+      });
     } catch {
-      setCreators([]);
+      if (!silent) setCreators([]);
     } finally {
-      setCreatorsLoading(false);
+      if (!silent) setCreatorsLoading(false);
     }
   }, []);
 
@@ -58,6 +77,13 @@ export default function ChatterMaloum() {
   }, [loadCreators]);
 
   useEffect(() => {
+    const timer = window.setInterval(() => {
+      void loadCreators({ silent: true });
+    }, CREATOR_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [loadCreators]);
+
+  useEffect(() => {
     const ids = creators.map((c) => c.id);
     void refreshBadges(ids);
     const timer = window.setInterval(() => {
@@ -67,8 +93,13 @@ export default function ChatterMaloum() {
   }, [creators, refreshBadges]);
 
   useEffect(() => {
-    return onSyncEvent(() => {
-      void loadCreators();
+    return onSyncEvent((event) => {
+      if (
+        event.type === 'creator:access-granted' ||
+        event.type === 'creator:access-revoked'
+      ) {
+        void loadCreators({ silent: true });
+      }
     });
   }, [onSyncEvent, loadCreators]);
 

@@ -459,6 +459,38 @@ router.put(
 
         await client.query('COMMIT');
 
+        const changedIds = [...new Set([...toAdd, ...toRemove])];
+        let creatorMetaById = new Map();
+        if (changedIds.length > 0) {
+          const metaResult = await pool.query(
+            `SELECT id, "displayName", "accountId" FROM creators WHERE id = ANY($1::uuid[])`,
+            [changedIds]
+          );
+          creatorMetaById = new Map(metaResult.rows.map((row) => [row.id, row]));
+        }
+
+        for (const creatorId of toAdd) {
+          const creator = creatorMetaById.get(creatorId);
+          if (!creator) continue;
+          emitToUser(id, {
+            type: 'creator:access-granted',
+            creatorId: creator.id,
+            accountId: creator.accountId || null,
+            displayName: creator.displayName,
+          });
+        }
+
+        for (const creatorId of toRemove) {
+          const creator = creatorMetaById.get(creatorId);
+          if (!creator) continue;
+          emitToUser(id, {
+            type: 'creator:access-revoked',
+            creatorId: creator.id,
+            accountId: creator.accountId || null,
+            displayName: creator.displayName,
+          });
+        }
+
         const result = await pool.query(
           `SELECT c.id, c."displayName", c.username, c.platform, c."connectionStatus",
                   c."avatarUrl", c."avatarSource", a."assignedAt"

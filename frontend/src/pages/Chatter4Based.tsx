@@ -58,6 +58,7 @@ const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
 const MAX_TRANSLATION_HISTORY = 8;
 const BADGE_POLL_INTERVAL_MS = 30_000;
+const CREATOR_POLL_INTERVAL_MS = 15_000;
 
 type CreatorUnreadCounts = { messages: number; notifications: number };
 
@@ -479,30 +480,45 @@ export default function Chatter4Based() {
     historyInFlightRef.current.clear();
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      setCreatorsLoading(true);
-      try {
-        const { creators: list } = await getCreators();
-        if (cancelled) return;
-        const fourBased = list.filter((c) => c.platform === '4based');
-        setCreators(fourBased);
-        if (fourBased.length > 0) {
-          setSelectedCreatorId((prev) => prev || fourBased[0].id);
+  const loadCreators = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
+    if (!silent) setCreatorsLoading(true);
+    try {
+      const { creators: list } = await getCreators();
+      const fourBased = list.filter((c) => c.platform === '4based');
+      setCreators(fourBased);
+      setSelectedCreatorId((prev) => {
+        if (prev && fourBased.some((c) => c.id === prev)) return prev;
+        return fourBased[0]?.id || null;
+      });
+      setBadgeCountsByCreatorId((prev) => {
+        const next: Record<string, CreatorUnreadCounts> = {};
+        for (const creator of fourBased) {
+          if (prev[creator.id]) next[creator.id] = prev[creator.id];
         }
-      } catch (err) {
-        if (!cancelled) {
-          setChatsError(err instanceof Error ? err.message : 'Failed to load creators');
-        }
-      } finally {
-        if (!cancelled) setCreatorsLoading(false);
+        return next;
+      });
+    } catch (err) {
+      if (!silent) {
+        setChatsError(err instanceof Error ? err.message : 'Failed to load creators');
+        setCreators([]);
+        setSelectedCreatorId(null);
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    } finally {
+      if (!silent) setCreatorsLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadCreators();
+  }, [loadCreators]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void loadCreators({ silent: true });
+    }, CREATOR_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [loadCreators]);
 
   const refreshCreatorBadges = useCallback(async (creatorIds: string[]) => {
     if (creatorIds.length === 0) return;
@@ -556,7 +572,18 @@ export default function Chatter4Based() {
   }, []);
 
   useEffect(() => {
-    if (!selectedCreatorId) return;
+    if (!selectedCreatorId) {
+      setSelectedChatId(null);
+      setChats([]);
+      setMessages([]);
+      setFanProfile(null);
+      setSelectedVaultItems([]);
+      setVaultFolders([]);
+      setSelectedFolder(null);
+      setProviderUserId(null);
+      setCoinPackages([]);
+      return;
+    }
     setSelectedChatId(null);
     setMessages([]);
     setFanProfile(null);
@@ -716,12 +743,28 @@ export default function Chatter4Based() {
     };
   }, [selectedCreatorId, fan.id]);
 
-  useEffect(() => {
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages.length, scrollToBottom]);
+
+  useEffect(() => {
+    if (Object.keys(historyTranslations).length === 0) return;
+    scrollToBottom();
+  }, [historyTranslations, scrollToBottom]);
 
   useEffect(() => {
     return onSyncEvent((event) => {
+      if (
+        event.type === 'creator:access-granted' ||
+        event.type === 'creator:access-revoked'
+      ) {
+        void loadCreators({ silent: true });
+        return;
+      }
       if (event.type !== '4based:event') return;
       if (!selectedCreatorId || event.creatorId !== selectedCreatorId) return;
       void loadChats(selectedCreatorId, true);
@@ -730,7 +773,15 @@ export default function Chatter4Based() {
         void loadMessages(selectedCreatorId, selectedChatId, true);
       }
     });
-  }, [onSyncEvent, selectedCreatorId, selectedChatId, loadChats, loadMessages, refreshCreatorBadges]);
+  }, [
+    onSyncEvent,
+    selectedCreatorId,
+    selectedChatId,
+    loadCreators,
+    loadChats,
+    loadMessages,
+    refreshCreatorBadges,
+  ]);
 
   // Silent 5s refresh — chats/messages only (badges poll separately to spare proxy sessions)
   useEffect(() => {
@@ -877,6 +928,9 @@ export default function Chatter4Based() {
       setDraft('');
       await loadMessages(selectedCreatorId, selectedChatId, true);
       await loadChats(selectedCreatorId, true);
+      requestAnimationFrame(() => {
+        scrollToBottom();
+      });
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Failed to send');
     } finally {
@@ -1052,7 +1106,6 @@ export default function Chatter4Based() {
           <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center gap-2">
             <img src={fourBasedIcon} alt="" className="w-5 h-5 rounded" />
             <span className="text-sm font-semibold text-gray-900 dark:text-white">4based</span>
-            <span className="w-2 h-2 rounded-sm bg-4based-500 ml-0.5" />
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-1.5 animate-fade-in">
             {creatorsLoading && (
@@ -1080,17 +1133,12 @@ export default function Chatter4Based() {
                     : 'hover:bg-gray-100 dark:hover:bg-zinc-800/30 border border-transparent'
                 }`}
               >
-                <div className="relative shrink-0">
-                  <CreatorAvatar
-                    avatarUrl={creator.avatarUrl}
-                    displayName={creator.displayName}
-                    className="w-10 h-10 rounded-full object-cover shadow-md"
-                    initialsClassName="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center text-sm font-bold text-white shadow-md"
-                  />
-                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-4based-500 border-2 border-gray-200 dark:border-zinc-900 rounded-sm flex items-center justify-center text-[7px] font-bold text-white">
-                    4B
-                  </div>
-                </div>
+                <CreatorAvatar
+                  avatarUrl={creator.avatarUrl}
+                  displayName={creator.displayName}
+                  className="w-10 h-10 rounded-full object-cover shadow-md shrink-0"
+                  initialsClassName="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center text-sm font-bold text-white shadow-md"
+                />
                 <div className="min-w-0 flex-1">
                   <span
                     className={`text-sm truncate block transition-colors ${

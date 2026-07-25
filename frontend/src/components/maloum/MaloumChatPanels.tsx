@@ -850,9 +850,18 @@ export function MaloumChatThread({
     emitTranslationSettings();
   }, []);
 
-  useEffect(() => {
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages.length, scrollToBottom]);
+
+  useEffect(() => {
+    if (Object.keys(historyTranslations).length === 0) return;
+    scrollToBottom();
+  }, [historyTranslations, scrollToBottom]);
 
   useEffect(() => {
     if (!autoTranslateHistory) return;
@@ -1194,6 +1203,9 @@ export function MaloumChatThread({
       setPriceModalOpen(false);
       setPriceDraft('');
       await loadMessages();
+      requestAnimationFrame(() => {
+        scrollToBottom();
+      });
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Failed to send');
     } finally {
@@ -1216,6 +1228,7 @@ export function MaloumChatThread({
     chat,
     currency,
     loadMessages,
+    scrollToBottom,
   ]);
 
   const handleDeleteMessage = useCallback(
