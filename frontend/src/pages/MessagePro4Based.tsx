@@ -2,32 +2,29 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bell, Home, MessageSquare, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ThemeToggle from '@/components/ThemeToggle';
-import ToggleSwitch from '@/components/ToggleSwitch';
 import {
-  MaloumChatList,
-  MaloumChatThread,
+  FourBasedChatList,
+  FourBasedChatThread,
+  FourBasedTranslationToggles,
   UnreadBadge,
   partnerName,
-} from '@/components/maloum/MaloumChatPanels';
+} from '@/components/fourbased/FourBasedChatPanels';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import {
   getCreators,
-  getMaloumBadges,
+  getFourBasedBadges,
   type Creator,
-  type MaloumChat,
+  type FourBasedChat,
 } from '@/lib/api';
 
 const HOME_TAB_ID = 'home';
-const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
-const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
-const TRANSLATION_SETTINGS_EVENT = 'domx-translation-settings';
 const BADGE_POLL_MS = 30_000;
 
 interface FanTab {
   chatId: string;
   displayName: string;
   avatarUrl: string | null;
-  chat?: MaloumChat | null;
+  chat?: FourBasedChat | null;
 }
 
 interface CreatorWorkspace {
@@ -36,39 +33,21 @@ interface CreatorWorkspace {
   activeTabId: string;
 }
 
-function readStoredBoolean(key: string, defaultValue: boolean): boolean {
-  const stored = localStorage.getItem(key);
-  if (stored === 'true') return true;
-  if (stored === 'false') return false;
-  return defaultValue;
-}
-
-function emitTranslationSettings() {
-  window.dispatchEvent(new Event(TRANSLATION_SETTINGS_EVENT));
-}
+type CreatorUnreadCounts = { messages: number; notifications: number };
 
 function isOpenableCreator(creator: Creator): boolean {
-  return creator.platform === 'maloum' && Boolean(creator.accountId || creator.id);
+  return creator.platform === '4based' && Boolean(creator.accountId || creator.id);
 }
 
-export default function MessagePro() {
+export default function MessagePro4Based() {
   const { onSyncEvent } = useStaffSync();
   const [creators, setCreators] = useState<Creator[]>([]);
   const [workspaces, setWorkspaces] = useState<CreatorWorkspace[]>([]);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
-    readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
-  );
-  const [autoTranslateHistory, setAutoTranslateHistory] = useState(() =>
-    readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true)
-  );
-  const [unreadByCreatorId, setUnreadByCreatorId] = useState<Record<string, number>>(
-    {}
-  );
-  const [notificationUnreadByCreatorId, setNotificationUnreadByCreatorId] = useState<
-    Record<string, number>
+  const [badgeCountsByCreatorId, setBadgeCountsByCreatorId] = useState<
+    Record<string, CreatorUnreadCounts>
   >({});
 
   const openableCreators = useMemo(
@@ -86,7 +65,7 @@ export default function MessagePro() {
     setError(null);
     try {
       const { creators: list } = await getCreators();
-      setCreators(list.filter((c) => c.platform === 'maloum'));
+      setCreators(list.filter((c) => c.platform === '4based'));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load creators');
     } finally {
@@ -94,28 +73,23 @@ export default function MessagePro() {
     }
   }, []);
 
-  const refreshBadges = useCallback(async (creatorIds: string[]) => {
+  const refreshCreatorBadges = useCallback(async (creatorIds: string[]) => {
     if (creatorIds.length === 0) return;
-    const messageUpdates: Record<string, number> = {};
-    const notificationUpdates: Record<string, number> = {};
-    for (const id of creatorIds) {
+    // Serialize to avoid burning concurrent ISP proxy sessions.
+    const updates: Record<string, CreatorUnreadCounts> = {};
+    for (const creatorId of creatorIds) {
       try {
-        const result = await getMaloumBadges(id);
-        messageUpdates[id] = Number(result.messages) || 0;
-        notificationUpdates[id] = Number(result.notifications) || 0;
+        const badges = await getFourBasedBadges(creatorId);
+        updates[creatorId] = {
+          messages: Number(badges.messages) || 0,
+          notifications: Number(badges.notifications) || 0,
+        };
       } catch {
         // best-effort
       }
     }
-    if (Object.keys(messageUpdates).length > 0) {
-      setUnreadByCreatorId((prev) => ({ ...prev, ...messageUpdates }));
-    }
-    if (Object.keys(notificationUpdates).length > 0) {
-      setNotificationUnreadByCreatorId((prev) => ({
-        ...prev,
-        ...notificationUpdates,
-      }));
-    }
+    if (Object.keys(updates).length === 0) return;
+    setBadgeCountsByCreatorId((prev) => ({ ...prev, ...updates }));
   }, []);
 
   useEffect(() => {
@@ -132,15 +106,6 @@ export default function MessagePro() {
       }
     });
   }, [onSyncEvent, loadCreators]);
-
-  useEffect(() => {
-    function sync() {
-      setAutoTranslateOutgoing(readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true));
-      setAutoTranslateHistory(readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true));
-    }
-    window.addEventListener(TRANSLATION_SETTINGS_EVENT, sync);
-    return () => window.removeEventListener(TRANSLATION_SETTINGS_EVENT, sync);
-  }, []);
 
   useEffect(() => {
     setWorkspaces((prev) => {
@@ -165,17 +130,10 @@ export default function MessagePro() {
       return openableCreators[0]?.id || null;
     });
 
-    setUnreadByCreatorId((prev) => {
-      const next: Record<string, number> = {};
+    setBadgeCountsByCreatorId((prev) => {
+      const next: Record<string, CreatorUnreadCounts> = {};
       for (const creator of openableCreators) {
-        if (prev[creator.id] != null) next[creator.id] = prev[creator.id];
-      }
-      return next;
-    });
-    setNotificationUnreadByCreatorId((prev) => {
-      const next: Record<string, number> = {};
-      for (const creator of openableCreators) {
-        if (prev[creator.id] != null) next[creator.id] = prev[creator.id];
+        if (prev[creator.id]) next[creator.id] = prev[creator.id];
       }
       return next;
     });
@@ -183,53 +141,38 @@ export default function MessagePro() {
 
   useEffect(() => {
     const ids = openableCreators.map((c) => c.id);
-    void refreshBadges(ids);
+    void refreshCreatorBadges(ids);
     const timer = window.setInterval(() => {
-      void refreshBadges(ids);
+      void refreshCreatorBadges(ids);
     }, BADGE_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [openableCreators, refreshBadges]);
+  }, [openableCreators, refreshCreatorBadges]);
 
-  const handleAutoTranslateOutgoingChange = useCallback((enabled: boolean) => {
-    setAutoTranslateOutgoing(enabled);
-    localStorage.setItem(AUTO_TRANSLATE_OUTGOING_KEY, String(enabled));
-    emitTranslationSettings();
+  const openFanTab = useCallback((creatorId: string, chat: FourBasedChat) => {
+    setWorkspaces((prev) =>
+      prev.map((workspace) => {
+        if (workspace.creator.id !== creatorId) return workspace;
+        const exists = workspace.fanTabs.some((tab) => tab.chatId === chat._id);
+        const fanTabs = exists
+          ? workspace.fanTabs
+          : [
+              ...workspace.fanTabs,
+              {
+                chatId: chat._id,
+                displayName: partnerName(chat),
+                avatarUrl: null,
+                chat,
+              },
+            ];
+        return {
+          ...workspace,
+          fanTabs,
+          activeTabId: chat._id,
+        };
+      })
+    );
+    setActiveAccountId(creatorId);
   }, []);
-
-  const handleAutoTranslateHistoryChange = useCallback((enabled: boolean) => {
-    setAutoTranslateHistory(enabled);
-    localStorage.setItem(AUTO_TRANSLATE_HISTORY_KEY, String(enabled));
-    emitTranslationSettings();
-  }, []);
-
-  const openFanTab = useCallback(
-    (creatorId: string, chat: MaloumChat) => {
-      setWorkspaces((prev) =>
-        prev.map((workspace) => {
-          if (workspace.creator.id !== creatorId) return workspace;
-          const exists = workspace.fanTabs.some((tab) => tab.chatId === chat._id);
-          const fanTabs = exists
-            ? workspace.fanTabs
-            : [
-                ...workspace.fanTabs,
-                {
-                  chatId: chat._id,
-                  displayName: partnerName(chat),
-                  avatarUrl: null,
-                  chat,
-                },
-              ];
-          return {
-            ...workspace,
-            fanTabs,
-            activeTabId: chat._id,
-          };
-        })
-      );
-      setActiveAccountId(creatorId);
-    },
-    []
-  );
 
   const closeFanTab = useCallback((creatorId: string, chatId: string) => {
     setWorkspaces((prev) =>
@@ -270,8 +213,10 @@ export default function MessagePro() {
           {workspaces.map((workspace) => {
             const creatorId = workspace.creator.id;
             const active = creatorId === activeAccountId;
-            const messagesUnread = unreadByCreatorId[creatorId] || 0;
-            const notificationsUnread = notificationUnreadByCreatorId[creatorId] || 0;
+            const unread = badgeCountsByCreatorId[creatorId] || {
+              messages: 0,
+              notifications: 0,
+            };
             return (
               <button
                 key={creatorId}
@@ -279,7 +224,7 @@ export default function MessagePro() {
                 onClick={() => setActiveAccountId(creatorId)}
                 className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border shrink-0 min-w-0 ${
                   active
-                    ? 'border-brand-300 bg-brand-50 dark:border-brand-800 dark:bg-brand-900/20'
+                    ? 'border-4based-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-900/20'
                     : 'border-gray-200 dark:border-white/10'
                 }`}
               >
@@ -295,14 +240,13 @@ export default function MessagePro() {
                 <span className="inline-flex items-center gap-1.5 shrink-0">
                   <UnreadBadge
                     icon={MessageSquare}
-                    count={messagesUnread}
+                    count={unread.messages}
                     label="Unread messages"
                   />
                   <UnreadBadge
                     icon={Bell}
-                    count={notificationsUnread}
+                    count={unread.notifications}
                     label="Unread notifications"
-                    accentClass="text-gray-500 dark:text-zinc-400"
                   />
                 </span>
               </button>
@@ -310,26 +254,7 @@ export default function MessagePro() {
           })}
         </div>
         <div className="flex items-center gap-3 shrink-0">
-          <label className="inline-flex items-center gap-1.5 cursor-pointer">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-400 whitespace-nowrap">
-              Translate Outgoing
-            </span>
-            <ToggleSwitch
-              checked={autoTranslateOutgoing}
-              onChange={handleAutoTranslateOutgoingChange}
-              aria-label="Translate outgoing messages"
-            />
-          </label>
-          <label className="inline-flex items-center gap-1.5 cursor-pointer">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-400 whitespace-nowrap">
-              Translate History
-            </span>
-            <ToggleSwitch
-              checked={autoTranslateHistory}
-              onChange={handleAutoTranslateHistoryChange}
-              aria-label="Translate chat history"
-            />
-          </label>
+          <FourBasedTranslationToggles compact />
           <ThemeToggle />
         </div>
       </header>
@@ -342,9 +267,7 @@ export default function MessagePro() {
 
       {!activeWorkspace ? (
         <div className="flex-1 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
-          {loading
-            ? 'Loading…'
-            : 'No Maloum creators assigned to you'}
+          {loading ? 'Loading…' : 'No 4based creators assigned to you'}
         </div>
       ) : (
         <>
@@ -354,7 +277,7 @@ export default function MessagePro() {
               onClick={() => setActiveTab(activeWorkspace.creator.id, HOME_TAB_ID)}
               className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs shrink-0 ${
                 activeWorkspace.activeTabId === HOME_TAB_ID
-                  ? 'bg-brand-50 text-brand-700 dark:bg-brand-900/20 dark:text-brand-300'
+                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
                   : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5'
               }`}
             >
@@ -368,7 +291,7 @@ export default function MessagePro() {
                   key={tab.chatId}
                   className={`inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md text-xs shrink-0 ${
                     active
-                      ? 'bg-brand-50 text-brand-700 dark:bg-brand-900/20 dark:text-brand-300'
+                      ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300'
                       : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-white/5'
                   }`}
                 >
@@ -397,15 +320,18 @@ export default function MessagePro() {
 
           <div className="flex-1 min-h-0">
             {activeWorkspace.activeTabId === HOME_TAB_ID ? (
-              <MaloumChatList
+              <FourBasedChatList
                 creatorId={activeWorkspace.creator.id}
                 onSelectChat={(chat) =>
                   openFanTab(activeWorkspace.creator.id, chat)
                 }
                 openActionLabel="Open tab"
+                onRefreshExtra={() => {
+                  void refreshCreatorBadges([activeWorkspace.creator.id]);
+                }}
               />
             ) : activeFanTab ? (
-              <MaloumChatThread
+              <FourBasedChatThread
                 creator={activeWorkspace.creator}
                 chatId={activeFanTab.chatId}
                 initialChat={activeFanTab.chat || null}

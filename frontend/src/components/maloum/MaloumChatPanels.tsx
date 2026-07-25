@@ -78,7 +78,7 @@ function emitTranslationSettings() {
   window.dispatchEvent(new Event(TRANSLATION_SETTINGS_EVENT));
 }
 
-function UnreadBadge({
+export function UnreadBadge({
   icon: Icon,
   count,
   label,

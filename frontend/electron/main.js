@@ -76,7 +76,9 @@ function registerMaloumSessionIpc() {
 }
 
 function registerMessageProIpc() {
-  ipcMain.handle('messagepro:open-window', async () => openMessageProWindow());
+  ipcMain.handle('messagepro:open-window', async (_event, platform) =>
+    openMessageProWindow(platform || 'maloum')
+  );
 }
 
 function createWindow() {

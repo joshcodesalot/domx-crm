@@ -24,9 +24,15 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   const { user, logout, hasPermission } = useAuth();
   const navigate = useNavigate();
   const [maloumMenuOpen, setMaloumMenuOpen] = useState(false);
+  const [fourBasedMenuOpen, setFourBasedMenuOpen] = useState(false);
   const maloumMenuRef = useRef<HTMLDivElement>(null);
-  const isFourBasedChatter =
-    typeof window !== 'undefined' && window.location.hash.includes('/chatter/4based');
+  const fourBasedMenuRef = useRef<HTMLDivElement>(null);
+  const hash =
+    typeof window !== 'undefined' ? window.location.hash : '';
+  const isFourBasedActive =
+    hash.includes('/chatter/4based') || hash.includes('/message-pro/4based');
+  const isMaloumActive =
+    activePage === 'chatter' && !isFourBasedActive;
 
   async function handleLogout() {
     await logout();
@@ -34,19 +40,32 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   }
 
   useEffect(() => {
-    if (!maloumMenuOpen) {
+    if (!maloumMenuOpen && !fourBasedMenuOpen) {
       return;
     }
 
     function handlePointerDown(event: MouseEvent) {
-      if (!maloumMenuRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (
+        maloumMenuOpen &&
+        maloumMenuRef.current &&
+        !maloumMenuRef.current.contains(target)
+      ) {
         setMaloumMenuOpen(false);
+      }
+      if (
+        fourBasedMenuOpen &&
+        fourBasedMenuRef.current &&
+        !fourBasedMenuRef.current.contains(target)
+      ) {
+        setFourBasedMenuOpen(false);
       }
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         setMaloumMenuOpen(false);
+        setFourBasedMenuOpen(false);
       }
     }
 
@@ -57,7 +76,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [maloumMenuOpen]);
+  }, [maloumMenuOpen, fourBasedMenuOpen]);
 
   const initial = user?.name?.charAt(0).toUpperCase() || 'U';
 
@@ -66,20 +85,25 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       ? 'text-gray-900 dark:text-white'
       : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors';
 
+  async function openMessagePro(platform: 'maloum' | '4based') {
+    const route = platform === '4based' ? '/message-pro/4based' : '/message-pro';
+    if (window.electronAPI?.openMessageProWindow) {
+      try {
+        await window.electronAPI.openMessageProWindow(platform);
+        return;
+      } catch {
+        // Fall through to in-app navigation
+      }
+    }
+    navigate(route);
+  }
+
   async function handleMaloumNavigate(
     view: 'chat' | 'message-pro' | 'mass-message' | 'notifications'
   ) {
     setMaloumMenuOpen(false);
     if (view === 'message-pro') {
-      if (window.electronAPI?.openMessageProWindow) {
-        try {
-          await window.electronAPI.openMessageProWindow();
-          return;
-        } catch {
-          // Fall through to in-app navigation
-        }
-      }
-      navigate('/message-pro');
+      await openMessagePro('maloum');
       return;
     }
     if (view === 'mass-message') {
@@ -91,6 +115,15 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       return;
     }
     navigate('/chatter');
+  }
+
+  async function handleFourBasedNavigate(view: 'chat' | 'message-pro') {
+    setFourBasedMenuOpen(false);
+    if (view === 'message-pro') {
+      await openMessagePro('4based');
+      return;
+    }
+    navigate('/chatter/4based');
   }
 
   return (
@@ -126,8 +159,15 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
           <div ref={maloumMenuRef} className="relative">
             <button
               type="button"
-              onClick={() => setMaloumMenuOpen((open) => !open)}
-              className={`${navClass('chatter')} group`}
+              onClick={() => {
+                setFourBasedMenuOpen(false);
+                setMaloumMenuOpen((open) => !open);
+              }}
+              className={`${
+                isMaloumActive
+                  ? 'text-gray-900 dark:text-white'
+                  : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
+              } group`}
               title="Maloum"
               aria-haspopup="menu"
               aria-expanded={maloumMenuOpen}
@@ -136,7 +176,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 src={maloumIcon}
                 alt=""
                 className={`w-5 h-5 rounded object-cover transition-opacity ${
-                  activePage === 'chatter'
+                  isMaloumActive
                     ? 'opacity-100'
                     : 'opacity-50 group-hover:opacity-100'
                 }`}
@@ -151,7 +191,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 <button
                   type="button"
                   role="menuitem"
-                  onClick={() => handleMaloumNavigate('chat')}
+                  onClick={() => void handleMaloumNavigate('chat')}
                   className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
                 >
                   <MessageSquare className="w-4 h-4 shrink-0" />
@@ -191,26 +231,59 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
           </div>
         )}
         {hasPermission('creators.view') && (
-          <button
-            type="button"
-            onClick={() => navigate('/chatter/4based')}
-            className={`${
-              isFourBasedChatter
-                ? 'text-gray-900 dark:text-white'
-                : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
-            } group`}
-            title="4based Chatter"
-          >
-            <img
-              src={fourBasedIcon}
-              alt=""
-              className={`w-5 h-5 rounded object-cover transition-opacity ${
-                isFourBasedChatter
-                  ? 'opacity-100'
-                  : 'opacity-50 group-hover:opacity-100'
-              }`}
-            />
-          </button>
+          <div ref={fourBasedMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setMaloumMenuOpen(false);
+                setFourBasedMenuOpen((open) => !open);
+              }}
+              className={`${
+                isFourBasedActive
+                  ? 'text-gray-900 dark:text-white'
+                  : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
+              } group`}
+              title="4based"
+              aria-haspopup="menu"
+              aria-expanded={fourBasedMenuOpen}
+            >
+              <img
+                src={fourBasedIcon}
+                alt=""
+                className={`w-5 h-5 rounded object-cover transition-opacity ${
+                  isFourBasedActive
+                    ? 'opacity-100'
+                    : 'opacity-50 group-hover:opacity-100'
+                }`}
+              />
+            </button>
+
+            {fourBasedMenuOpen && (
+              <div
+                role="menu"
+                className="absolute left-full top-1/2 -translate-y-1/2 ml-3 z-50 min-w-[160px] rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => void handleFourBasedNavigate('chat')}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                >
+                  <MessageSquare className="w-4 h-4 shrink-0" />
+                  Chat
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => void handleFourBasedNavigate('message-pro')}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                >
+                  <PanelsTopLeft className="w-4 h-4 shrink-0" />
+                  Message Pro
+                </button>
+              </div>
+            )}
+          </div>
         )}
         {hasPermission('creators.manage') && (
           <button

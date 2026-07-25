@@ -4,31 +4,51 @@ const { applyWebContentsGuards } = require('./webContentsGuards');
 
 const isDev = !app.isPackaged;
 
-let messageProWindow = null;
+/** @type {Map<string, import('electron').BrowserWindow>} */
+const windowsByRoute = new Map();
 
-function getMessageProWindow() {
-  return messageProWindow && !messageProWindow.isDestroyed() ? messageProWindow : null;
+function normalizePlatform(platform) {
+  return platform === '4based' ? '4based' : 'maloum';
 }
 
-function getAppLoadTarget() {
+function routeForPlatform(platform) {
+  return normalizePlatform(platform) === '4based'
+    ? '/message-pro/4based'
+    : '/message-pro';
+}
+
+function titleForPlatform(platform) {
+  return normalizePlatform(platform) === '4based'
+    ? 'DomX Message Pro (4based)'
+    : 'DomX Message Pro';
+}
+
+function getMessageProWindow(platform = 'maloum') {
+  const route = routeForPlatform(platform);
+  const win = windowsByRoute.get(route);
+  return win && !win.isDestroyed() ? win : null;
+}
+
+function getAppLoadTarget(route) {
   if (isDev) {
-    return { type: 'url', value: 'http://localhost:5173/#/message-pro' };
+    return { type: 'url', value: `http://localhost:5173/#${route}` };
   }
   return {
     type: 'file',
     value: path.join(__dirname, '../dist/index.html'),
-    hash: '/message-pro',
+    hash: route,
   };
 }
 
-function openMessageProWindow() {
-  const existing = getMessageProWindow();
+function openMessageProWindow(platform = 'maloum') {
+  const route = routeForPlatform(platform);
+  const existing = getMessageProWindow(platform);
   if (existing) {
     if (existing.isMinimized()) {
       existing.restore();
     }
     existing.focus();
-    return { opened: true, focused: true };
+    return { opened: true, focused: true, route };
   }
 
   const win = new BrowserWindow({
@@ -36,7 +56,7 @@ function openMessageProWindow() {
     height: 900,
     minWidth: 1100,
     minHeight: 700,
-    title: 'DomX Message Pro',
+    title: titleForPlatform(platform),
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -46,42 +66,59 @@ function openMessageProWindow() {
   });
 
   applyWebContentsGuards(win.webContents);
-  messageProWindow = win;
+  windowsByRoute.set(route, win);
 
   win.once('ready-to-show', () => {
     win.show();
   });
 
   win.on('closed', () => {
-    if (messageProWindow === win) {
-      messageProWindow = null;
+    const current = windowsByRoute.get(route);
+    if (current === win) {
+      windowsByRoute.delete(route);
     }
   });
 
-  const target = getAppLoadTarget();
+  const target = getAppLoadTarget(route);
   if (target.type === 'url') {
     void win.loadURL(target.value);
   } else {
     void win.loadFile(target.value, { hash: target.hash });
   }
 
-  return { opened: true, focused: false };
+  return { opened: true, focused: false, route };
 }
 
-function closeMessageProWindow() {
-  const win = getMessageProWindow();
-  if (!win) {
-    messageProWindow = null;
-    return { closed: false };
+function closeMessageProWindow(platform) {
+  if (platform) {
+    const win = getMessageProWindow(platform);
+    if (!win) {
+      return { closed: false };
+    }
+    try {
+      win.close();
+    } catch {
+      // Best-effort close.
+    }
+    windowsByRoute.delete(routeForPlatform(platform));
+    return { closed: true };
   }
 
-  try {
-    win.close();
-  } catch {
-    // Best-effort close.
+  let closedAny = false;
+  for (const [route, win] of windowsByRoute.entries()) {
+    if (!win || win.isDestroyed()) {
+      windowsByRoute.delete(route);
+      continue;
+    }
+    try {
+      win.close();
+      closedAny = true;
+    } catch {
+      // Best-effort close.
+    }
   }
-  messageProWindow = null;
-  return { closed: true };
+  windowsByRoute.clear();
+  return { closed: closedAny };
 }
 
 module.exports = {

@@ -66,7 +66,9 @@ export interface ElectronAPI {
     imported: number;
     failed: number;
   }>;
-  openMessageProWindow?: () => Promise<{ opened: boolean; focused?: boolean }>;
+  openMessageProWindow?: (
+    platform?: 'maloum' | '4based'
+  ) => Promise<{ opened: boolean; focused?: boolean; route?: string }>;
   onUpdaterChecking: (callback: (state: UpdaterState) => void) => () => void;
   onUpdaterBlocked: (callback: (state: UpdaterState) => void) => () => void;
   onUpdaterAvailable: (callback: (state: UpdaterState) => void) => () => void;

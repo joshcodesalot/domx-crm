@@ -17,6 +17,7 @@ import Chatter4Based from '@/pages/Chatter4Based';
 import MaloumMassMessage from '@/pages/MaloumMassMessage';
 import MaloumNotifications from '@/pages/MaloumNotifications';
 import MessagePro from '@/pages/MessagePro';
+import MessagePro4Based from '@/pages/MessagePro4Based';
 import MessagingDashboard from '@/pages/MessagingDashboard';
 
 /**
@@ -134,6 +135,44 @@ function PersistentMessageProPanel() {
   );
 }
 
+/**
+ * Keeps 4based Message Pro workspaces mounted after first visit.
+ */
+function PersistentMessagePro4BasedPanel() {
+  const location = useLocation();
+  const { isAuthenticated, hasPermission } = useAuth();
+  const [everOpened, setEverOpened] = useState(false);
+
+  const isActive = location.pathname === '/message-pro/4based';
+  const canView = isAuthenticated && hasPermission('creators.view');
+
+  useEffect(() => {
+    if (isActive && canView) {
+      setEverOpened(true);
+    }
+  }, [isActive, canView]);
+
+  useEffect(() => {
+    if (!canView) {
+      setEverOpened(false);
+    }
+  }, [canView]);
+
+  if (!everOpened || !canView) {
+    return null;
+  }
+
+  return (
+    <div
+      className={isActive ? 'contents' : 'hidden'}
+      aria-hidden={!isActive}
+      style={isActive ? undefined : { display: 'none' }}
+    >
+      <MessagePro4Based />
+    </div>
+  );
+}
+
 function AppRoutes() {
   return (
     <HashRouter>
@@ -141,6 +180,7 @@ function AppRoutes() {
         <PersistentFourBasedPanel />
         <PersistentMaloumPanel />
         <PersistentMessageProPanel />
+        <PersistentMessagePro4BasedPanel />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/setup" element={<SetupOwner />} />
@@ -161,6 +201,8 @@ function AppRoutes() {
                 <Route path="/chatter/4based" element={null} />
                 {/* Placeholder — real panel is mounted by PersistentMessageProPanel */}
                 <Route path="/message-pro" element={null} />
+                {/* Placeholder — real panel is mounted by PersistentMessagePro4BasedPanel */}
+                <Route path="/message-pro/4based" element={null} />
                 <Route
                   path="/chatter/maloum/notifications"
                   element={<MaloumNotifications />}
