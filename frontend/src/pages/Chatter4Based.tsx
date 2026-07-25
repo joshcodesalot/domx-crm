@@ -219,7 +219,6 @@ export default function Chatter4Based() {
         <aside className="w-80 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-[#F7F8FA] dark:bg-[#0a0a0c] glass-panel">
           {selectedCreatorId ? (
             <FourBasedChatList
-              key={selectedCreatorId}
               creatorId={selectedCreatorId}
               creatorName={selectedCreator?.displayName}
               selectedChatId={selectedChatId}
@@ -241,7 +240,6 @@ export default function Chatter4Based() {
         {/* Thread */}
         {selectedCreator && selectedChatId ? (
           <FourBasedChatThread
-            key={`${selectedCreator.id}:${selectedChatId}`}
             creator={selectedCreator}
             chatId={selectedChatId}
             initialChat={selectedChat}

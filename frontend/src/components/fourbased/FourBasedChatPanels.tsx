@@ -576,6 +576,15 @@ export function FourBasedChatList({
     creatorIdRef.current = creatorId;
   }, [creatorId]);
 
+  // Reset 4based-only UI state when switching creators so filters don't leak.
+  useEffect(() => {
+    setInboxFilter('all');
+    setSelectedListId(null);
+    setListsOpen(false);
+    setPinningChatId(null);
+    setChatsError(null);
+  }, [creatorId]);
+
   const loadChats = useCallback(
     async (silent = false) => {
       if (!silent) {
@@ -609,9 +618,8 @@ export function FourBasedChatList({
     [creatorId, inboxFilter, selectedListId]
   );
 
+  // Refresh in place on creator/filter change (no wipe) — matches Maloum.
   useEffect(() => {
-    setChats([]);
-    setProviderUserId(null);
     void loadChats();
   }, [loadChats]);
 
