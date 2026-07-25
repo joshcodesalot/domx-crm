@@ -799,6 +799,55 @@ export async function getMessagingDashboardSenders(filters: {
   );
 }
 
+export interface MaloumFanPpvEntry {
+  id: string;
+  maloumMessageId: string | null;
+  priceNet: number | null;
+  currency: string;
+  purchased: boolean;
+  mediaCount: number;
+  pictureCount: number;
+  videoCount: number;
+  mediaJson: unknown;
+  sentAt: string;
+}
+
+export interface MaloumFanTipEntry {
+  id: string;
+  maloumMessageId: string | null;
+  priceNet: number | null;
+  currency: string;
+  sentAt: string;
+  fanId: string | null;
+  fanUsername: string | null;
+}
+
+export interface MaloumFanStats {
+  ppv: {
+    sent: number;
+    unlocked: number;
+    ratePercent: number;
+    highestPrice: number | null;
+    lowestPrice: number | null;
+  };
+  ppvEntries: MaloumFanPpvEntry[];
+  tips: MaloumFanTipEntry[];
+}
+
+export async function getMaloumFanStats(filters: {
+  creatorId: string;
+  chatId?: string;
+  fanId?: string;
+}): Promise<MaloumFanStats> {
+  const params = new URLSearchParams();
+  params.set('creatorId', filters.creatorId);
+  if (filters.chatId) params.set('chatId', filters.chatId);
+  if (filters.fanId) params.set('fanId', filters.fanId);
+  return request<MaloumFanStats>(
+    `/api/messaging-dashboard/fan-stats?${params.toString()}`
+  );
+}
+
 export async function updateMessagingDashboardPurchased(
   maloumMessageId: string,
   purchased: boolean
@@ -1225,6 +1274,7 @@ export interface MaloumChatPartner {
   _id?: string;
   username?: string;
   nickname?: string;
+  notes?: string;
   isCreator?: boolean;
   isTrusted?: boolean;
   totalSpendForCreator?: number;
@@ -1557,6 +1607,61 @@ export async function listMaloumChatLists(
   const query = params.toString();
   return request(
     `/api/creators/${creatorId}/maloum/chat-lists${query ? `?${query}` : ''}`
+  );
+}
+
+export async function getMaloumFanAssignedLists(
+  creatorId: string,
+  memberId: string
+): Promise<{ lists: MaloumChatListItem[]; providerUserId: string | null }> {
+  return request(
+    `/api/creators/${creatorId}/maloum/chat-lists/members/${encodeURIComponent(memberId)}/assigned`
+  );
+}
+
+export async function setMaloumFanAssignedLists(
+  creatorId: string,
+  memberId: string,
+  chatListIds: string[]
+): Promise<{
+  ok: boolean;
+  lists: MaloumChatListItem[];
+  providerUserId: string | null;
+}> {
+  return request(
+    `/api/creators/${creatorId}/maloum/chat-lists/members/${encodeURIComponent(memberId)}/assigned`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ chatListIds }),
+    }
+  );
+}
+
+export async function updateMaloumFanNickname(
+  creatorId: string,
+  chatId: string,
+  nickname: string
+): Promise<{ ok: boolean; chat: MaloumChat; providerUserId: string | null }> {
+  return request(
+    `/api/creators/${creatorId}/maloum/chats/${encodeURIComponent(chatId)}/faninfo/nickname`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ nickname }),
+    }
+  );
+}
+
+export async function updateMaloumFanNotes(
+  creatorId: string,
+  chatId: string,
+  notes: string
+): Promise<{ ok: boolean; chat: MaloumChat; providerUserId: string | null }> {
+  return request(
+    `/api/creators/${creatorId}/maloum/chats/${encodeURIComponent(chatId)}/faninfo/notes`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ notes }),
+    }
   );
 }
 

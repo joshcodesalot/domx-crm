@@ -17,6 +17,8 @@ import {
   Loader2,
   Lock,
   MessageSquare,
+  PanelRight,
+  PanelRightClose,
   Play,
   RefreshCw,
   Send,
@@ -27,6 +29,7 @@ import {
 } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
+import MaloumFanPanel from '@/components/maloum/MaloumFanPanel';
 import maloumIcon from '@/assets/maloum_icon.png';
 import {
   createMessagingDashboardEntry,
@@ -60,6 +63,8 @@ const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
 const MAX_TRANSLATION_HISTORY = 8;
 const TRANSLATION_SETTINGS_EVENT = 'domx-translation-settings';
+const FAN_PANEL_OPEN_KEY = 'domx-maloum-fan-panel';
+const FAN_PANEL_WIDE_BREAKPOINT = 1000;
 
 function readStoredBoolean(key: string, defaultValue: boolean): boolean {
   const stored = localStorage.getItem(key);
@@ -331,7 +336,7 @@ export function partnerAvatarUrl(
   return isHttpsMediaUrl(url) ? url : null;
 }
 
-function PartnerAvatar({
+export function PartnerAvatar({
   partner,
   name,
   className = 'w-10 h-10',
@@ -697,6 +702,13 @@ export function MaloumChatThread({
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  const threadRootRef = useRef<HTMLDivElement | null>(null);
+  const [threadWide, setThreadWide] = useState(true);
+  const [fanPanelOpen, setFanPanelOpen] = useState(() =>
+    readStoredBoolean(FAN_PANEL_OPEN_KEY, true)
+  );
+  const fanPanelUserOverrideRef = useRef(localStorage.getItem(FAN_PANEL_OPEN_KEY) != null);
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const loadingMoreFoldersRef = useRef(false);
   const loadingMoreMediaRef = useRef(false);
@@ -778,6 +790,39 @@ export function MaloumChatThread({
     }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [chatId, creatorId, initialChat, loadMessages, loadSenders]);
+
+  useEffect(() => {
+    const el = threadRootRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const applyWidth = (width: number) => {
+      const wide = width >= FAN_PANEL_WIDE_BREAKPOINT;
+      setThreadWide(wide);
+      if (!fanPanelUserOverrideRef.current) {
+        setFanPanelOpen(wide);
+      }
+    };
+    applyWidth(el.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      applyWidth(entry.contentRect.width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const toggleFanPanel = useCallback(() => {
+    setFanPanelOpen((prev) => {
+      const next = !prev;
+      fanPanelUserOverrideRef.current = true;
+      localStorage.setItem(FAN_PANEL_OPEN_KEY, String(next));
+      return next;
+    });
+  }, []);
+
+  const handleChatUpdated = useCallback((nextChat: MaloumChat) => {
+    setChat(nextChat);
+  }, []);
 
   useEffect(() => {
     historyTranslationsRef.current = historyTranslations;
@@ -1206,8 +1251,10 @@ export function MaloumChatThread({
 
   return (
     <div
-      className={`flex flex-col h-full min-h-0 relative chatter-thread-bg ${className}`}
+      ref={threadRootRef}
+      className={`flex h-full min-h-0 relative ${className}`}
     >
+      <div className="flex flex-col flex-1 min-w-0 min-h-0 relative chatter-thread-bg">
       <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95 z-0 pointer-events-none" />
 
       <div className="h-16 px-4 md:px-6 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 shrink-0 relative z-10 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-md">
@@ -1238,6 +1285,24 @@ export function MaloumChatThread({
             title="Refresh"
           >
             <RefreshCw className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={toggleFanPanel}
+            className={`p-2 rounded-lg transition-all border ${
+              fanPanelOpen
+                ? 'text-orange-500 bg-orange-500/10 border-orange-500/30'
+                : 'text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 border-transparent hover:border-gray-300 dark:hover:border-zinc-700'
+            }`}
+            title={fanPanelOpen ? 'Hide fan info' : 'Show fan info'}
+            aria-label={fanPanelOpen ? 'Hide fan info' : 'Show fan info'}
+            aria-pressed={fanPanelOpen}
+          >
+            {fanPanelOpen ? (
+              <PanelRightClose className="w-4 h-4" />
+            ) : (
+              <PanelRight className="w-4 h-4" />
+            )}
           </button>
           {onClose && (
             <button
@@ -1980,6 +2045,36 @@ export function MaloumChatThread({
             <X className="w-5 h-5" />
           </button>
         </div>
+      )}
+      </div>
+
+      {fanPanelOpen && threadWide && (
+        <MaloumFanPanel
+          creatorId={creatorId}
+          chatId={chatId}
+          chat={chat}
+          onChatUpdated={handleChatUpdated}
+          className="w-72 shrink-0"
+        />
+      )}
+
+      {fanPanelOpen && !threadWide && (
+        <>
+          <button
+            type="button"
+            className="absolute inset-0 z-20 bg-black/40 animate-fade-in"
+            aria-label="Close fan info"
+            onClick={toggleFanPanel}
+          />
+          <MaloumFanPanel
+            creatorId={creatorId}
+            chatId={chatId}
+            chat={chat}
+            onChatUpdated={handleChatUpdated}
+            onClose={toggleFanPanel}
+            className="absolute right-0 top-0 bottom-0 w-72 z-30 shadow-2xl animate-slide-up"
+          />
+        </>
       )}
     </div>
   );

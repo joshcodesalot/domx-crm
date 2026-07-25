@@ -438,6 +438,141 @@ async function processMaloumSaleAndTipNotifications(creatorId, notifications) {
 }
 
 router.get(
+  '/fan-stats',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { creatorId, chatId, fanId } = req.query;
+
+    if (!creatorId || !isValidUuid(String(creatorId))) {
+      return res.status(400).json({ error: 'Valid creatorId is required' });
+    }
+
+    const chatIdValue =
+      typeof chatId === 'string' && chatId.trim() ? chatId.trim() : null;
+    const fanIdValue =
+      typeof fanId === 'string' && fanId.trim() ? fanId.trim() : null;
+
+    if (!chatIdValue && !fanIdValue) {
+      return res.status(400).json({ error: 'chatId or fanId is required' });
+    }
+
+    const allowed = await userCanAccessCreator(req.user, String(creatorId));
+    if (!allowed) {
+      return res.status(403).json({ error: 'You do not have access to this creator' });
+    }
+
+    const conditions = ['"creatorId" = $1'];
+    const values = [String(creatorId)];
+    let paramIndex = 2;
+
+    if (chatIdValue && fanIdValue) {
+      conditions.push(`("chatId" = $${paramIndex} OR "fanId" = $${paramIndex + 1})`);
+      values.push(chatIdValue, fanIdValue);
+      paramIndex += 2;
+    } else if (chatIdValue) {
+      conditions.push(`"chatId" = $${paramIndex}`);
+      values.push(chatIdValue);
+      paramIndex += 1;
+    } else {
+      conditions.push(`"fanId" = $${paramIndex}`);
+      values.push(fanIdValue);
+      paramIndex += 1;
+    }
+
+    const whereClause = conditions.join(' AND ');
+
+    const result = await pool.query(
+      `SELECT
+         id,
+         "maloumMessageId",
+         "contentType",
+         "priceNet",
+         currency,
+         purchased,
+         "mediaCount",
+         "pictureCount",
+         "videoCount",
+         "mediaJson",
+         "sentAt",
+         "fanId",
+         "fanUsername",
+         "chatId"
+       FROM messaging_dashboard_entries
+       WHERE ${whereClause}
+         AND "contentType" IN ('chat_product', 'tip')
+       ORDER BY "sentAt" DESC
+       LIMIT 500`,
+      values
+    );
+
+    const ppvEntries = [];
+    const tips = [];
+    let unlockedCount = 0;
+    let highestPrice = null;
+    let lowestPrice = null;
+
+    for (const row of result.rows) {
+      const priceNet = row.priceNet != null ? Number(row.priceNet) : null;
+      if (row.contentType === 'tip') {
+        tips.push({
+          id: row.id,
+          maloumMessageId: row.maloumMessageId,
+          priceNet,
+          currency: row.currency || 'EUR',
+          sentAt: row.sentAt,
+          fanId: row.fanId,
+          fanUsername: row.fanUsername,
+        });
+        continue;
+      }
+
+      const entry = {
+        id: row.id,
+        maloumMessageId: row.maloumMessageId,
+        priceNet,
+        currency: row.currency || 'EUR',
+        purchased: Boolean(row.purchased),
+        mediaCount: row.mediaCount != null ? Number(row.mediaCount) : 0,
+        pictureCount: row.pictureCount != null ? Number(row.pictureCount) : 0,
+        videoCount: row.videoCount != null ? Number(row.videoCount) : 0,
+        mediaJson: row.mediaJson,
+        sentAt: row.sentAt,
+      };
+      ppvEntries.push(entry);
+
+      if (entry.purchased) {
+        unlockedCount += 1;
+        if (priceNet != null && Number.isFinite(priceNet)) {
+          if (highestPrice == null || priceNet > highestPrice) {
+            highestPrice = priceNet;
+          }
+          if (lowestPrice == null || priceNet < lowestPrice) {
+            lowestPrice = priceNet;
+          }
+        }
+      }
+    }
+
+    const sentCount = ppvEntries.length;
+    const ratePercent =
+      sentCount > 0 ? Math.round((unlockedCount / sentCount) * 100) : 0;
+
+    res.json({
+      ppv: {
+        sent: sentCount,
+        unlocked: unlockedCount,
+        ratePercent,
+        highestPrice,
+        lowestPrice,
+      },
+      ppvEntries,
+      tips,
+    });
+  }
+);
+
+router.get(
   '/senders',
   authenticate,
   requirePermission('creators.view'),

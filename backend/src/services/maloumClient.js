@@ -679,6 +679,72 @@ async function listChatLists(creator, { limit = 25, next } = {}) {
   return result.data;
 }
 
+async function updateFanNickname(creator, chatId, nickname) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!chatId) {
+    throw new MaloumApiError('chatId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'PATCH',
+    path: `/chats/${encodeURIComponent(chatId)}/faninfo/nickname`,
+    proxyUrl,
+    accessToken,
+    timezone,
+    body: { nickname: typeof nickname === 'string' ? nickname : '' },
+  });
+  return result.data;
+}
+
+async function updateFanNotes(creator, chatId, notes) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!chatId) {
+    throw new MaloumApiError('chatId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'PATCH',
+    path: `/chats/${encodeURIComponent(chatId)}/faninfo/notes`,
+    proxyUrl,
+    accessToken,
+    timezone,
+    body: { notes: typeof notes === 'string' ? notes : '' },
+  });
+  return result.data;
+}
+
+async function getMemberChatLists(creator, memberId) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!memberId) {
+    throw new MaloumApiError('memberId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'GET',
+    path: `/chat-lists/members/${encodeURIComponent(memberId)}/assigned`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function setMemberChatLists(creator, memberId, chatListIds = []) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!memberId) {
+    throw new MaloumApiError('memberId is required', 400);
+  }
+  const ids = Array.isArray(chatListIds)
+    ? chatListIds.map(String).filter(Boolean)
+    : [];
+  const result = await requestJson({
+    method: 'POST',
+    path: `/chat-lists/members/${encodeURIComponent(memberId)}/assigned`,
+    proxyUrl,
+    accessToken,
+    timezone,
+    body: { chatListIds: ids },
+  });
+  return result.data;
+}
+
 async function sendBroadcast(creator, {
   includeFromLists = [],
   excludeFromLists = [],
@@ -1108,6 +1174,10 @@ module.exports = {
   listSentBroadcasts,
   revokeBroadcast,
   listChatLists,
+  updateFanNickname,
+  updateFanNotes,
+  getMemberChatLists,
+  setMemberChatLists,
   sendBroadcast,
   listVaultFolders,
   getVaultFolder,

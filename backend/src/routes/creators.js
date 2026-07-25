@@ -3574,7 +3574,7 @@ router.post(
 router.get(
   '/:id/maloum/chat-lists',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('creators.view'),
   async (req, res) => {
     const { id } = req.params;
     if (!isValidUuid(id)) {
@@ -3612,6 +3612,157 @@ router.get(
       });
     } catch (err) {
       return handleMaloumError(res, err, 'List Maloum chat lists error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/chat-lists/members/:memberId/assigned',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, memberId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!memberId) {
+      return res.status(400).json({ error: 'memberId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const lists = await maloumClient.getMemberChatLists(loaded.creator, memberId);
+      res.json({
+        lists: Array.isArray(lists) ? lists : [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Get Maloum member chat lists error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/maloum/chat-lists/members/:memberId/assigned',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, memberId } = req.params;
+    const { chatListIds } = req.body || {};
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!memberId) {
+      return res.status(400).json({ error: 'memberId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      await maloumClient.setMemberChatLists(
+        loaded.creator,
+        memberId,
+        Array.isArray(chatListIds) ? chatListIds : []
+      );
+      const lists = await maloumClient.getMemberChatLists(loaded.creator, memberId);
+      res.json({
+        ok: true,
+        lists: Array.isArray(lists) ? lists : [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Set Maloum member chat lists error:');
+    }
+  }
+);
+
+router.patch(
+  '/:id/maloum/chats/:chatId/faninfo/nickname',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, chatId } = req.params;
+    const { nickname } = req.body || {};
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+    if (typeof nickname !== 'string') {
+      return res.status(400).json({ error: 'nickname must be a string' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      await maloumClient.updateFanNickname(loaded.creator, chatId, nickname);
+      const chat = await maloumClient.getChat(loaded.creator, chatId);
+      res.json({ ok: true, chat, providerUserId: loaded.creator.providerUserId });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Update Maloum fan nickname error:');
+    }
+  }
+);
+
+router.patch(
+  '/:id/maloum/chats/:chatId/faninfo/notes',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, chatId } = req.params;
+    const { notes } = req.body || {};
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+    if (typeof notes !== 'string') {
+      return res.status(400).json({ error: 'notes must be a string' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      await maloumClient.updateFanNotes(loaded.creator, chatId, notes);
+      const chat = await maloumClient.getChat(loaded.creator, chatId);
+      res.json({ ok: true, chat, providerUserId: loaded.creator.providerUserId });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Update Maloum fan notes error:');
     }
   }
 );
