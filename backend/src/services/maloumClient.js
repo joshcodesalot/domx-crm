@@ -543,6 +543,27 @@ async function sendMessage(creator, chatId, { content, optimisticMessageId } = {
   return result.data;
 }
 
+async function deleteMessage(creator, chatId, messageId, { deleteTextOnly = false } = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!chatId) {
+    throw new MaloumApiError('chatId is required', 400);
+  }
+  if (!messageId) {
+    throw new MaloumApiError('messageId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'POST',
+    path: `/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`,
+    proxyUrl,
+    accessToken,
+    timezone,
+    body: {
+      deleteTextOnly: Boolean(deleteTextOnly),
+    },
+  });
+  return result.data;
+}
+
 async function sendText(creator, chatId, { text, optimisticMessageId } = {}) {
   if (typeof text !== 'string' || !text.trim()) {
     throw new MaloumApiError('text is required', 400);
@@ -975,6 +996,7 @@ module.exports = {
   countUnreadNotificationsFromList,
   normalizeListData,
   sendMessage,
+  deleteMessage,
   sendText,
   sendMedia,
   sendPpv,

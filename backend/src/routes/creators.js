@@ -3327,6 +3327,45 @@ router.get(
 );
 
 router.post(
+  '/:id/maloum/chats/:chatId/messages/:messageId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, chatId, messageId } = req.params;
+    const { deleteTextOnly } = req.body || {};
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+    if (!messageId) {
+      return res.status(400).json({ error: 'messageId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      await maloumClient.deleteMessage(loaded.creator, chatId, messageId, {
+        deleteTextOnly: Boolean(deleteTextOnly),
+      });
+      return res.json({ ok: true });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Delete Maloum message error:');
+    }
+  }
+);
+
+router.post(
   '/:id/maloum/chats/:chatId/messages',
   authenticate,
   requirePermission('creators.view'),

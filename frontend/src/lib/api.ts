@@ -1209,6 +1209,18 @@ export function fourBasedPreviewPath(
 
 /* ─── Maloum chat / vault API ─────────────────────────────────────────── */
 
+export interface MaloumMediaAsset {
+  uploadId?: string;
+  mediaId?: string;
+  uploadStatus?: string;
+  type?: string;
+  url?: string;
+  width?: number;
+  height?: number;
+  length?: number;
+  [key: string]: unknown;
+}
+
 export interface MaloumChatPartner {
   _id?: string;
   username?: string;
@@ -1217,6 +1229,8 @@ export interface MaloumChatPartner {
   isTrusted?: boolean;
   totalSpendForCreator?: number;
   chatAccessSettings?: unknown;
+  profilePicture?: MaloumMediaAsset;
+  profilePictureThumbnail?: MaloumMediaAsset;
   [key: string]: unknown;
 }
 
@@ -1242,18 +1256,6 @@ export interface MaloumChat {
   hasMediaGallery?: boolean;
   chatPartnerBlockedByCurrentUser?: boolean;
   currentUserBlockedByChatPartner?: boolean;
-  [key: string]: unknown;
-}
-
-export interface MaloumMediaAsset {
-  uploadId?: string;
-  mediaId?: string;
-  uploadStatus?: string;
-  type?: string;
-  url?: string;
-  width?: number;
-  height?: number;
-  length?: number;
   [key: string]: unknown;
 }
 
@@ -1390,6 +1392,23 @@ export async function sendMaloumMessage(
     {
       method: 'POST',
       body: JSON.stringify(payload),
+    }
+  );
+}
+
+export async function deleteMaloumMessage(
+  creatorId: string,
+  chatId: string,
+  messageId: string,
+  options: { deleteTextOnly?: boolean } = {}
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/maloum/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        deleteTextOnly: Boolean(options.deleteTextOnly),
+      }),
     }
   );
 }

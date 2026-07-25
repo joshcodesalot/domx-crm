@@ -13,6 +13,7 @@ import {
   Play,
   RefreshCw,
   Send,
+  Trash2,
   Video,
   X,
   type LucideIcon,
@@ -22,6 +23,7 @@ import ToggleSwitch from '@/components/ToggleSwitch';
 import maloumIcon from '@/assets/maloum_icon.png';
 import {
   createMessagingDashboardEntry,
+  deleteMaloumMessage,
   getMaloumChat,
   getMaloumMessages,
   getMessagingDashboardSenders,
@@ -32,6 +34,7 @@ import {
   translateToGerman,
   type Creator,
   type MaloumChat,
+  type MaloumChatPartner,
   type MaloumMessage,
   type MaloumVaultFolder,
   type MaloumVaultMediaItem,
@@ -249,6 +252,54 @@ export function isHttpsMediaUrl(url?: string | null): url is string {
   return Boolean(url && /^https?:\/\//i.test(url));
 }
 
+export function partnerAvatarUrl(
+  partner?: MaloumChatPartner | null
+): string | null {
+  const url =
+    partner?.profilePictureThumbnail?.url || partner?.profilePicture?.url;
+  return isHttpsMediaUrl(url) ? url : null;
+}
+
+function PartnerAvatar({
+  partner,
+  name,
+  className = 'w-10 h-10',
+}: {
+  partner?: MaloumChatPartner | null;
+  name: string;
+  className?: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  const avatarUrl = partnerAvatarUrl(partner);
+  const initial = (name || '?').charAt(0).toUpperCase();
+  const showImage = Boolean(avatarUrl) && !failed;
+
+  if (showImage && avatarUrl) {
+    return (
+      <img
+        src={avatarUrl}
+        alt=""
+        className={`${className} rounded-full object-cover border border-zinc-700 shrink-0 bg-zinc-800`}
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <div
+      className={`${className} rounded-full bg-zinc-800 flex items-center justify-center text-sm font-medium border border-zinc-700 shrink-0 text-zinc-300`}
+    >
+      {initial}
+    </div>
+  );
+}
+
+function isPersistedMaloumMessageId(id?: string | null): boolean {
+  if (!id) return false;
+  if (id.startsWith('temp-') || id.startsWith('optimistic-')) return false;
+  return /^[a-f0-9]{24}$/i.test(id);
+}
+
 export function isMediaDeliveryEmbed(url: string): boolean {
   try {
     return new URL(url).hostname.includes('mediadelivery.net');
@@ -269,6 +320,23 @@ export function previewKindFor(
 export function vaultDirectUrl(item: MaloumVaultMediaItem): string | null {
   const url = item.thumbnail?.url || item.media?.url;
   return isHttpsMediaUrl(url) ? url : null;
+}
+
+/** Full/playable URL for vault preview (prefer media over thumbnail). */
+export function vaultPreviewUrl(item: MaloumVaultMediaItem): string | null {
+  const url = item.media?.url || item.thumbnail?.url;
+  return isHttpsMediaUrl(url) ? url : null;
+}
+
+export function vaultPreviewFromItem(
+  item: MaloumVaultMediaItem
+): MaloumMediaPreview | null {
+  const url = vaultPreviewUrl(item);
+  if (!url) return null;
+  return {
+    url,
+    kind: previewKindFor(url, item.media?.type || item.thumbnail?.type),
+  };
 }
 
 export function messageText(msg: MaloumMessage): string {
@@ -434,9 +502,7 @@ export function MaloumChatList({
               }`}
             >
               <div className="flex items-start gap-3">
-                <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-sm font-medium border border-zinc-700 shrink-0 text-zinc-300">
-                  {name.charAt(0).toUpperCase()}
-                </div>
+                <PartnerAvatar partner={chat.chatPartner} name={name} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between min-w-0 mb-0.5">
                     <span
@@ -551,6 +617,8 @@ export function MaloumChatThread({
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>(
     {}
   );
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   /** Maloum is EUR-only in the chatter UI. */
@@ -909,9 +977,28 @@ export function MaloumChatThread({
     loadMessages,
   ]);
 
+  const handleDeleteMessage = useCallback(
+    async (messageId: string) => {
+      if (!isPersistedMaloumMessageId(messageId) || deletingMessageId) return;
+      if (!window.confirm('Delete this message?')) return;
+      setDeletingMessageId(messageId);
+      setDeleteError(null);
+      try {
+        await deleteMaloumMessage(creatorId, chatId, messageId, {
+          deleteTextOnly: false,
+        });
+        setMessages((prev) => prev.filter((m) => m._id !== messageId));
+      } catch (err) {
+        setDeleteError(err instanceof Error ? err.message : 'Failed to delete message');
+      } finally {
+        setDeletingMessageId(null);
+      }
+    },
+    [creatorId, chatId, deletingMessageId]
+  );
+
   const title = partnerName(chat);
   const spend = formatSpend(chat?.chatPartner?.totalSpendForCreator, 'EUR');
-  const initials = (title || '?').slice(0, 2).toUpperCase();
   const currencySymbol = '€';
 
   const filteredVaultItems = useMemo(() => {
@@ -931,9 +1018,7 @@ export function MaloumChatThread({
       <div className="h-16 px-4 md:px-6 border-b border-zinc-800/60 flex items-center justify-between gap-3 shrink-0 relative z-10 bg-zinc-950/80 backdrop-blur-md">
         <div className="flex items-center gap-4 min-w-0">
           <div className="relative shrink-0 hidden sm:block">
-            <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-sm font-medium border border-zinc-700 text-zinc-300">
-              {initials}
-            </div>
+            <PartnerAvatar partner={chat?.chatPartner} name={title} />
             <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-green-500 border-2 border-zinc-950" />
           </div>
           <div className="min-w-0">
@@ -989,6 +1074,9 @@ export function MaloumChatThread({
         {messagesError && (
           <p className="text-xs text-red-400">{messagesError}</p>
         )}
+        {deleteError && (
+          <p className="text-xs text-red-400">{deleteError}</p>
+        )}
         {messages.map((msg) => {
           const mine = Boolean(
             providerUserId && msg.senderId && msg.senderId === providerUserId
@@ -996,6 +1084,8 @@ export function MaloumChatThread({
           const assets = messageMediaAssets(msg);
           const text = messageText(msg);
           const msgKey = String(msg._id || '');
+          const canDelete = mine && isPersistedMaloumMessageId(msgKey);
+          const deleting = deletingMessageId === msgKey;
           const optimisticKey =
             typeof msg.optimisticMessageId === 'string'
               ? msg.optimisticMessageId
@@ -1017,13 +1107,31 @@ export function MaloumChatThread({
           return (
             <div
               key={msg._id}
-              className={`flex animate-slide-up ${mine ? 'justify-end' : 'justify-start'}`}
+              className={`group/msg flex animate-slide-up ${mine ? 'justify-end' : 'justify-start'}`}
             >
               <div
                 className={`max-w-[85%] md:max-w-[70%] flex flex-col ${
                   mine ? 'items-end' : 'items-start'
                 }`}
               >
+                {canDelete && (
+                  <div className={`mb-1 flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteMessage(msgKey)}
+                      disabled={deleting}
+                      className="opacity-0 group-hover/msg:opacity-100 focus:opacity-100 p-1 rounded-md text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
+                      title="Delete message"
+                      aria-label="Delete message"
+                    >
+                      {deleting ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </div>
+                )}
                 {assets.length > 0 || isPpv ? (
                   <div
                     className={`rounded-2xl p-1.5 shadow-lg relative overflow-hidden ${
@@ -1429,47 +1537,70 @@ export function MaloumChatThread({
                           ? item.media.length
                           : undefined;
                       const durationLabel = formatDuration(durationSec);
+                      const openPreview = () => {
+                        const next = vaultPreviewFromItem(item);
+                        if (next) setPreview(next);
+                      };
                       return (
-                        <button
+                        <div
                           key={uploadId || src || 'vault-item'}
-                          type="button"
-                          onClick={() => toggleVaultItem(item)}
                           className={`relative aspect-square rounded-xl overflow-hidden group transition-all ${
                             selected
                               ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-zinc-950'
                               : 'border border-zinc-800 hover:border-zinc-600'
                           }`}
+                          title="Click to select · double-click to preview"
                         >
-                          {src ? (
-                            <img
-                              src={src}
-                              alt=""
-                              className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
-                              loading="lazy"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-500">
-                              <ImageIcon className="w-6 h-6" />
-                            </div>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => toggleVaultItem(item)}
+                            onDoubleClick={(e) => {
+                              e.preventDefault();
+                              openPreview();
+                            }}
+                            className="absolute inset-0 w-full h-full text-left"
+                            aria-label={video ? 'Select video' : 'Select image'}
+                          >
+                            {src ? (
+                              <img
+                                src={src}
+                                alt=""
+                                className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-500">
+                                <ImageIcon className="w-6 h-6" />
+                              </div>
+                            )}
+                          </button>
                           {selected && (
-                            <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center z-10 shadow-lg">
+                            <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center z-10 shadow-lg pointer-events-none">
                               <Check className="w-3.5 h-3.5" />
                             </span>
                           )}
                           {video && (
-                            <span className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/10 transition-colors">
-                              <span className="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center text-white/90">
+                            <div className="absolute inset-0 z-[5] flex items-center justify-center bg-black/20 group-hover:bg-black/10 transition-colors pointer-events-none">
+                              <button
+                                type="button"
+                                aria-label="Play video"
+                                className="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center text-white/90 pointer-events-auto hover:bg-black/70 transition-colors"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  openPreview();
+                                }}
+                              >
                                 <Play className="w-5 h-5 ml-0.5" />
-                              </span>
-                            </span>
+                              </button>
+                            </div>
                           )}
                           {video && durationLabel && (
-                            <span className="absolute bottom-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white backdrop-blur">
+                            <span className="absolute bottom-2 right-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white backdrop-blur pointer-events-none">
                               {durationLabel}
                             </span>
                           )}
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -1481,7 +1612,7 @@ export function MaloumChatThread({
       )}
 
       {preview && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-6 animate-fade-in">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-6 animate-fade-in">
           <button
             type="button"
             className="absolute inset-0"
