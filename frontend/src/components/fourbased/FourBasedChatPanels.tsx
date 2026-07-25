@@ -73,7 +73,7 @@ const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const FAN_PANEL_OPEN_KEY = 'domx-4based-fan-panel';
 const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
 const MAX_TRANSLATION_HISTORY = 8;
-const POLL_MS = 5000;
+const POLL_MS = 20_000;
 const THREAD_WIDE_BREAKPOINT = 1000;
 
 const INBOX_FILTERS: Array<{ id: FourBasedChatFilter | 'all'; label: string }> = [
