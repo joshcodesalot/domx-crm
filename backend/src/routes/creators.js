@@ -2868,15 +2868,28 @@ router.get(
 
       const limit = Math.min(Number(req.query.limit) || 60, 120);
       const offset = Math.max(Number(req.query.offset) || 0, 0);
-      const tag =
-        typeof req.query.tag === 'string' && req.query.tag.trim()
-          ? req.query.tag.trim()
+      const folder =
+        typeof req.query.folder === 'string' && req.query.folder.trim()
+          ? req.query.folder.trim()
           : undefined;
+      const fileType =
+        req.query.fileType === 'image' || req.query.fileType === 'video'
+          ? req.query.fileType
+          : undefined;
+      let sold;
+      if (req.query.sold === 'true') sold = true;
+      else if (req.query.sold === 'false') sold = false;
+      let sent;
+      if (req.query.sent === 'true') sent = true;
+      else if (req.query.sent === 'false') sent = false;
       const vault = await fourBasedClient.listVault(loaded.creator, {
         fanId,
         limit,
         offset,
-        tag,
+        folder,
+        fileType,
+        sold,
+        sent,
       });
       res.json({
         items: Array.isArray(vault) ? vault : vault?.items || vault || [],

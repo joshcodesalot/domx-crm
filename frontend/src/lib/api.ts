@@ -1076,6 +1076,9 @@ export interface FourBasedVaultItem {
   status?: string;
   name?: string;
   tag?: string[] | string;
+  belongs_to_folders?: string[];
+  preview?: Record<string, string>;
+  source?: string[];
   collection?: unknown[];
   [key: string]: unknown;
 }
@@ -1231,12 +1234,22 @@ export async function sendFourBasedPpv(
 export async function listFourBasedVault(
   creatorId: string,
   fanId: string,
-  options: { limit?: number; offset?: number; tag?: string } = {}
+  options: {
+    limit?: number;
+    offset?: number;
+    folder?: string;
+    fileType?: 'image' | 'video';
+    sold?: boolean;
+    sent?: boolean;
+  } = {}
 ): Promise<{ items: FourBasedVaultItem[]; providerUserId: string }> {
   const params = new URLSearchParams({ fanId });
   if (options.limit != null) params.set('limit', String(options.limit));
   if (options.offset != null) params.set('offset', String(options.offset));
-  if (options.tag) params.set('tag', options.tag);
+  if (options.folder) params.set('folder', options.folder);
+  if (options.fileType) params.set('fileType', options.fileType);
+  if (options.sold != null) params.set('sold', options.sold ? 'true' : 'false');
+  if (options.sent != null) params.set('sent', options.sent ? 'true' : 'false');
   return request(`/api/creators/${creatorId}/4based/vault?${params.toString()}`);
 }
 

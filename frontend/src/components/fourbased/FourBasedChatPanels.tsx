@@ -1,9 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type UIEvent,
+} from 'react';
 import {
   Box,
   Check,
-  Folder,
-  FolderOpen,
   Image as ImageIcon,
   Languages,
   Loader2,
@@ -382,12 +387,77 @@ function isVideoItem(item: FourBasedVaultItem | null | undefined): boolean {
   return type.includes('video');
 }
 
-function itemHasTag(item: FourBasedVaultItem, folder: string): boolean {
-  const tag = item.tag;
-  if (Array.isArray(tag)) return tag.includes(folder);
-  if (typeof tag === 'string') return tag === folder;
-  return false;
+function isHttpsMediaUrl(url: unknown): url is string {
+  return typeof url === 'string' && /^https:\/\//i.test(url);
 }
+
+const VAULT_PREVIEW_THUMB_KEYS = [
+  '200x200',
+  '400x400',
+  '500x500',
+  '340xxx',
+  '200xxx',
+  '100x100',
+  '80x80',
+] as const;
+
+const VAULT_PREVIEW_LARGE_KEYS = [
+  '900xxx',
+  '1200xxx',
+  'xxx1080',
+  '660xxx',
+  '500x500',
+  '400x400',
+  '340xxx',
+  '200x200',
+] as const;
+
+function vaultPreviewUrl(
+  item: FourBasedVaultItem,
+  keys: readonly string[]
+): string | null {
+  const preview = item.preview;
+  if (!preview || typeof preview !== 'object') return null;
+  for (const key of keys) {
+    const url = preview[key];
+    if (isHttpsMediaUrl(url)) return url;
+  }
+  for (const url of Object.values(preview)) {
+    if (isHttpsMediaUrl(url)) return url;
+  }
+  return null;
+}
+
+function vaultDirectThumbUrl(item: FourBasedVaultItem): string | null {
+  return vaultPreviewUrl(item, VAULT_PREVIEW_THUMB_KEYS);
+}
+
+function vaultDirectLargeUrl(item: FourBasedVaultItem): string | null {
+  return vaultPreviewUrl(item, VAULT_PREVIEW_LARGE_KEYS);
+}
+
+function vaultDirectVideoUrl(item: FourBasedVaultItem): string | null {
+  const sources = item.source;
+  if (Array.isArray(sources)) {
+    for (const url of sources) {
+      if (isHttpsMediaUrl(url)) return url;
+    }
+  }
+  if (isHttpsMediaUrl(item.video_thumbnail_source)) {
+    return item.video_thumbnail_source;
+  }
+  return null;
+}
+
+const VAULT_PAGE_SIZE = 60;
+
+type VaultCategoryFilter =
+  | 'all'
+  | 'image'
+  | 'video'
+  | 'not_purchased'
+  | 'purchased';
+type VaultSentFilter = 'all' | 'sent' | 'not_sent';
 
 /** Dollars -> PPV coins. Prefer 121 (HAR / tax 1.21); packages are fan purchase rates (~100). */
 function dollarsToCoins(
@@ -709,16 +779,20 @@ export function FourBasedChatThread({
   const [vaultItems, setVaultItems] = useState<FourBasedVaultItem[]>([]);
   const [vaultFolders, setVaultFolders] = useState<string[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
-  const [vaultTypeFilter, setVaultTypeFilter] = useState<'all' | 'image' | 'video'>(
-    'all'
-  );
+  const [vaultCategoryFilter, setVaultCategoryFilter] =
+    useState<VaultCategoryFilter>('all');
+  const [vaultSentFilter, setVaultSentFilter] = useState<VaultSentFilter>('all');
+  const [vaultOffset, setVaultOffset] = useState(0);
+  const [vaultHasMore, setVaultHasMore] = useState(false);
   const [vaultLoading, setVaultLoading] = useState(false);
+  const [vaultLoadingMore, setVaultLoadingMore] = useState(false);
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<FourBasedVaultItem | null>(null);
   const [vaultPreviewPlaying, setVaultPreviewPlaying] = useState(false);
   const [selectedVaultItems, setSelectedVaultItems] = useState<FourBasedVaultItem[]>(
     []
   );
+  const vaultLoadingMoreRef = useRef(false);
   const [ppvDollars, setPpvDollars] = useState('10');
   const [coinPackages, setCoinPackages] = useState<FourBasedCoinPackage[]>([]);
   /** Message id currently streaming video (lazy — poster only until clicked). */
@@ -1100,30 +1174,99 @@ export function FourBasedChatThread({
     }
   }
 
-  async function loadVaultItems(folder: string | null) {
+  function buildVaultListOptions(filters: {
+    folder: string | null;
+    category: VaultCategoryFilter;
+    sent: VaultSentFilter;
+    offset?: number;
+  }) {
+    const options: {
+      limit: number;
+      offset: number;
+      folder?: string;
+      fileType?: 'image' | 'video';
+      sold?: boolean;
+      sent?: boolean;
+    } = {
+      limit: VAULT_PAGE_SIZE,
+      offset: filters.offset ?? 0,
+    };
+    if (filters.folder) options.folder = filters.folder;
+    if (filters.category === 'image' || filters.category === 'video') {
+      options.fileType = filters.category;
+    } else if (filters.category === 'purchased') {
+      options.sold = true;
+    } else if (filters.category === 'not_purchased') {
+      options.sold = false;
+    }
+    if (filters.sent === 'sent') options.sent = true;
+    else if (filters.sent === 'not_sent') options.sent = false;
+    return options;
+  }
+
+  async function loadVaultItems(options?: {
+    folder?: string | null;
+    category?: VaultCategoryFilter;
+    sent?: VaultSentFilter;
+    append?: boolean;
+    offset?: number;
+  }) {
     if (!fan.id) return;
-    setVaultLoading(true);
-    setVaultError(null);
+    const folder = options?.folder !== undefined ? options.folder : selectedFolder;
+    const category =
+      options?.category !== undefined ? options.category : vaultCategoryFilter;
+    const sent = options?.sent !== undefined ? options.sent : vaultSentFilter;
+    const append = Boolean(options?.append);
+    const offset = options?.offset ?? 0;
+
+    if (append) {
+      if (vaultLoadingMoreRef.current || !vaultHasMore) return;
+      vaultLoadingMoreRef.current = true;
+      setVaultLoadingMore(true);
+    } else {
+      setVaultLoading(true);
+      setVaultError(null);
+    }
+
     try {
-      const result = await listFourBasedVault(creatorId, fan.id, {
-        limit: 60,
-        ...(folder ? { tag: folder } : {}),
-      });
-      let items = Array.isArray(result.items) ? result.items : [];
-      // Client-side fallback if server ignored the tag filter
-      if (folder && items.length > 0 && items.every((it) => !itemHasTag(it, folder))) {
-        // Keep server result as-is when tags are empty (common); trust server filter
-      } else if (folder) {
-        const tagged = items.filter((it) => itemHasTag(it, folder));
-        if (tagged.length > 0) items = tagged;
+      const result = await listFourBasedVault(
+        creatorId,
+        fan.id,
+        buildVaultListOptions({ folder, category, sent, offset })
+      );
+      const items = Array.isArray(result.items) ? result.items : [];
+      if (append) {
+        setVaultItems((prev) => {
+          const seen = new Set(prev.map((item) => vaultItemId(item)).filter(Boolean));
+          const merged = [...prev];
+          for (const item of items) {
+            const id = vaultItemId(item);
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            merged.push(item);
+          }
+          return merged;
+        });
+      } else {
+        setVaultItems(items);
       }
-      setVaultItems(items);
+      setVaultOffset(offset + items.length);
+      setVaultHasMore(items.length >= VAULT_PAGE_SIZE);
       if (result.providerUserId) setProviderUserId(result.providerUserId);
     } catch (err) {
       setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
-      setVaultItems([]);
+      if (!append) {
+        setVaultItems([]);
+        setVaultOffset(0);
+        setVaultHasMore(false);
+      }
     } finally {
-      setVaultLoading(false);
+      if (append) {
+        vaultLoadingMoreRef.current = false;
+        setVaultLoadingMore(false);
+      } else {
+        setVaultLoading(false);
+      }
     }
   }
 
@@ -1137,7 +1280,10 @@ export function FourBasedChatThread({
     setPreviewItem(null);
     setVaultPreviewPlaying(false);
     setSelectedFolder(null);
-    setVaultTypeFilter('all');
+    setVaultCategoryFilter('all');
+    setVaultSentFilter('all');
+    setVaultOffset(0);
+    setVaultHasMore(false);
 
     if (vaultFolders.length === 0) {
       try {
@@ -1151,39 +1297,61 @@ export function FourBasedChatThread({
       }
     }
 
-    await loadVaultItems(null);
+    await loadVaultItems({
+      folder: null,
+      category: 'all',
+      sent: 'all',
+      offset: 0,
+    });
   }
 
-  async function selectVaultFolder(folder: string | null) {
-    setSelectedFolder(folder);
+  async function applyVaultFilters(next: {
+    folder?: string | null;
+    category?: VaultCategoryFilter;
+    sent?: VaultSentFilter;
+  }) {
+    const folder = next.folder !== undefined ? next.folder : selectedFolder;
+    const category =
+      next.category !== undefined ? next.category : vaultCategoryFilter;
+    const sent = next.sent !== undefined ? next.sent : vaultSentFilter;
+    if (next.folder !== undefined) setSelectedFolder(next.folder);
+    if (next.category !== undefined) setVaultCategoryFilter(next.category);
+    if (next.sent !== undefined) setVaultSentFilter(next.sent);
     setPreviewItem(null);
     setVaultPreviewPlaying(false);
-    await loadVaultItems(folder);
+    setVaultOffset(0);
+    setVaultHasMore(false);
+    await loadVaultItems({ folder, category, sent, offset: 0 });
   }
 
-  function mediaSrcForVaultItem(
-    item: FourBasedVaultItem,
-    size = '200x200.jpg'
-  ): string | null {
+  function loadMoreVaultItems() {
+    void loadVaultItems({ append: true, offset: vaultOffset });
+  }
+
+  function handleVaultMediaScroll(e: UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > 240) return;
+    loadMoreVaultItems();
+  }
+
+  function mediaSrcForVaultItem(item: FourBasedVaultItem): string | null {
+    const direct = vaultDirectThumbUrl(item);
+    if (direct) return direct;
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
     return fourBasedMediaUrl(
       creatorId,
-      fourBasedPreviewPath(providerUserId, id, size)
+      fourBasedPreviewPath(providerUserId, id, '200x200.jpg')
     );
   }
 
   function fullMediaSrc(item: FourBasedVaultItem): string | null {
+    const direct = vaultDirectLargeUrl(item);
+    if (direct) return direct;
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
-    if (isVideoItem(item)) {
-      return fourBasedMediaUrl(
-        creatorId,
-        `protected/${providerUserId}/${id}/preview/900xxx.jpg`
-      );
-    }
     return fourBasedMediaUrl(
       creatorId,
       fourBasedPreviewPath(providerUserId, id, '900xxx.jpg')
@@ -1191,6 +1359,8 @@ export function FourBasedChatThread({
   }
 
   function videoStreamSrc(item: FourBasedVaultItem): string | null {
+    const direct = vaultDirectVideoUrl(item);
+    if (direct) return direct;
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
@@ -1253,14 +1423,6 @@ export function FourBasedChatThread({
     const type = String(fs.fileStackType || fs.type || '').toLowerCase();
     return type.includes('video');
   }
-
-  const filteredVaultItems = useMemo(() => {
-    if (vaultTypeFilter === 'all') return vaultItems;
-    return vaultItems.filter((item) => {
-      const video = isVideoItem(item);
-      return vaultTypeFilter === 'video' ? video : !video;
-    });
-  }, [vaultItems, vaultTypeFilter]);
 
   const spent = formatSpent(chat?.sales_volume);
 
@@ -1507,7 +1669,7 @@ export function FourBasedChatThread({
           <div className="flex items-center gap-4 mb-3 px-1 animate-fade-in">
             <div className="flex gap-2 max-w-[40%] overflow-x-auto">
               {selectedVaultItems.map((item) => {
-                const thumb = mediaSrcForVaultItem(item, '200x200.jpg');
+                const thumb = mediaSrcForVaultItem(item);
                 const id = vaultItemId(item);
                 return (
                   <button
@@ -1523,6 +1685,7 @@ export function FourBasedChatThread({
                         alt=""
                         loading="lazy"
                         decoding="async"
+                        referrerPolicy="no-referrer"
                         className="w-full h-full object-cover"
                       />
                     ) : (
@@ -1729,6 +1892,7 @@ export function FourBasedChatThread({
                             alt=""
                             loading="lazy"
                             decoding="async"
+                            referrerPolicy="no-referrer"
                             className="max-h-[60vh] max-w-full rounded object-contain"
                           />
                         ) : (
@@ -1748,6 +1912,7 @@ export function FourBasedChatThread({
                         alt=""
                         loading="lazy"
                         decoding="async"
+                        referrerPolicy="no-referrer"
                         className="max-h-[60vh] max-w-full rounded object-contain"
                       />
                     )
@@ -1785,101 +1950,25 @@ export function FourBasedChatThread({
                 </div>
               </div>
             ) : (
-              <div className="flex flex-1 overflow-hidden min-h-0">
-                <div className="w-48 sm:w-56 border-r border-gray-200 dark:border-zinc-800/60 bg-gray-100/40 dark:bg-zinc-900/20 p-3 overflow-y-auto hidden md:block shrink-0">
-                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-3 px-2">
-                    Folders
-                  </h4>
-                  <ul className="space-y-1">
-                    <li>
-                      <button
-                        type="button"
-                        onClick={() => void selectVaultFolder(null)}
-                        className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${
-                          selectedFolder === null
-                            ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
-                            : 'hover:bg-gray-100 dark:hover:bg-zinc-800/50 text-gray-500 dark:text-zinc-400 hover:text-gray-800 dark:hover:text-zinc-200'
-                        }`}
-                      >
-                        {selectedFolder === null ? (
-                          <FolderOpen className="w-4 h-4 text-domx-400 shrink-0" />
-                        ) : (
-                          <Folder className="w-4 h-4 shrink-0" />
-                        )}
-                        All Media
-                      </button>
-                    </li>
-                    {vaultFolders.map((folder) => {
-                      const active = selectedFolder === folder;
-                      return (
-                        <li key={folder}>
-                          <button
-                            type="button"
-                            onClick={() => void selectVaultFolder(folder)}
-                            className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 truncate ${
-                              active
-                                ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
-                                : 'hover:bg-gray-100 dark:hover:bg-zinc-800/50 text-gray-500 dark:text-zinc-400 hover:text-gray-800 dark:hover:text-zinc-200'
-                            }`}
-                            title={folder}
-                          >
-                            {active ? (
-                              <FolderOpen className="w-4 h-4 text-domx-400 shrink-0" />
-                            ) : (
-                              <Folder className="w-4 h-4 shrink-0" />
-                            )}
-                            <span className="truncate">{folder}</span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-
-                <div className="flex-1 flex flex-col min-w-0">
-                  <div className="p-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0 md:hidden">
-                    <button
-                      type="button"
-                      onClick={() => void selectVaultFolder(null)}
-                      className={`shrink-0 px-3 py-1.5 text-xs rounded-full border transition-colors ${
-                        selectedFolder === null
-                          ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
-                          : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 border-gray-200 dark:border-zinc-800'
-                      }`}
-                    >
-                      All
-                    </button>
-                    {vaultFolders.map((folder) => (
-                      <button
-                        key={folder}
-                        type="button"
-                        onClick={() => void selectVaultFolder(folder)}
-                        className={`shrink-0 px-3 py-1.5 text-xs rounded-full border transition-colors max-w-[160px] truncate ${
-                          selectedFolder === folder
-                            ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
-                            : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 border-gray-200 dark:border-zinc-800'
-                        }`}
-                        title={folder}
-                      >
-                        {folder}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="p-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0">
+              <div className="flex flex-1 flex-col overflow-hidden min-h-0">
+                <div className="shrink-0 border-b border-gray-200 dark:border-zinc-800/60 space-y-2 p-3">
+                  <div className="flex gap-2 overflow-x-auto">
                     {(
                       [
-                        { id: 'all' as const, label: 'All Types' },
-                        { id: 'image' as const, label: 'Images', icon: ImageIcon },
+                        { id: 'all' as const, label: 'All' },
                         { id: 'video' as const, label: 'Videos', icon: Video },
+                        { id: 'image' as const, label: 'Images', icon: ImageIcon },
+                        { id: 'not_purchased' as const, label: 'Not Purchased' },
+                        { id: 'purchased' as const, label: 'Purchased' },
                       ] as const
                     ).map((chip) => {
-                      const active = vaultTypeFilter === chip.id;
+                      const active = vaultCategoryFilter === chip.id;
                       const Icon = 'icon' in chip ? chip.icon : null;
                       return (
                         <button
                           key={chip.id}
                           type="button"
-                          onClick={() => setVaultTypeFilter(chip.id)}
+                          onClick={() => void applyVaultFilters({ category: chip.id })}
                           className={`px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors flex items-center gap-1.5 ${
                             active
                               ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
@@ -1892,80 +1981,167 @@ export function FourBasedChatThread({
                       );
                     })}
                   </div>
-
-                  <div className="flex-1 overflow-y-auto p-4">
-                    {vaultLoading && (
-                      <div className="flex justify-center py-12">
-                        <Loader2 className="w-6 h-6 animate-spin text-gray-500 dark:text-zinc-400" />
-                      </div>
-                    )}
-                    {vaultError && <p className="text-sm text-red-400">{vaultError}</p>}
-                    {!vaultLoading && !vaultError && filteredVaultItems.length === 0 && (
-                      <p className="text-sm text-gray-500 dark:text-zinc-500">
-                        {selectedFolder
-                          ? `No media in “${selectedFolder}”.`
-                          : 'Vault is empty.'}
-                      </p>
-                    )}
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                      {filteredVaultItems.map((item) => {
-                        const thumb = mediaSrcForVaultItem(item, '200x200.jpg');
-                        const video = isVideoItem(item);
-                        const id = vaultItemId(item);
-                        const selected = selectedVaultItems.some(
-                          (entry) => vaultItemId(entry) === id
-                        );
-                        return (
-                          <button
-                            key={id}
-                            type="button"
-                            onClick={() => toggleVaultItem(item)}
-                            onDoubleClick={() => {
-                              setVaultPreviewPlaying(false);
-                              setPreviewItem(item);
-                            }}
-                            className={`relative aspect-square rounded-xl overflow-hidden group transition-all ${
-                              selected
-                                ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
-                                : 'border border-gray-200 dark:border-zinc-800 hover:border-gray-400 dark:hover:border-zinc-600'
-                            }`}
-                            title="Click to select · double-click to preview"
-                          >
-                            {thumb ? (
-                              <img
-                                src={thumb}
-                                alt=""
-                                loading="lazy"
-                                decoding="async"
-                                className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center bg-white dark:bg-zinc-900 text-gray-500 dark:text-zinc-500">
-                                <ImageIcon className="w-6 h-6" />
-                              </div>
-                            )}
-                            {selected && (
-                              <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center z-10 shadow-lg">
-                                <Check className="w-3.5 h-3.5" />
-                              </span>
-                            )}
-                            {video && (
-                              <span className="absolute inset-0 flex items-center justify-center bg-black/5 dark:bg-black/20 group-hover:bg-black/5 dark:group-hover:bg-black/10 transition-colors">
-                                <span className="w-10 h-10 rounded-full bg-black/30 dark:bg-black/50 backdrop-blur flex items-center justify-center text-white/90">
-                                  <Play className="w-5 h-5 ml-0.5" />
-                                </span>
-                              </span>
-                            )}
-                            {video && item.duration != null && (
-                              <span className="absolute bottom-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/20 dark:bg-black/70 text-white backdrop-blur">
-                                {formatDuration(Number(item.duration))}
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
+                  <div className="flex gap-2 overflow-x-auto">
+                    {(
+                      [
+                        { id: 'all' as const, label: 'All' },
+                        { id: 'sent' as const, label: 'Sent' },
+                        { id: 'not_sent' as const, label: 'Not Sent' },
+                      ] as const
+                    ).map((chip) => {
+                      const active = vaultSentFilter === chip.id;
+                      return (
+                        <button
+                          key={chip.id}
+                          type="button"
+                          onClick={() => void applyVaultFilters({ sent: chip.id })}
+                          className={`px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors ${
+                            active
+                              ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                              : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
+                          }`}
+                        >
+                          {chip.label}
+                        </button>
+                      );
+                    })}
                   </div>
+                  <div className="flex gap-2 overflow-x-auto">
+                    <button
+                      type="button"
+                      onClick={() => void applyVaultFilters({ folder: null })}
+                      className={`shrink-0 px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors ${
+                        selectedFolder === null
+                          ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                          : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
+                      }`}
+                    >
+                      All
+                    </button>
+                    {vaultFolders.map((folder) => {
+                      const active = selectedFolder === folder;
+                      return (
+                        <button
+                          key={folder}
+                          type="button"
+                          onClick={() => void applyVaultFilters({ folder })}
+                          className={`shrink-0 px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors max-w-[200px] truncate ${
+                            active
+                              ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                              : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
+                          }`}
+                          title={folder}
+                        >
+                          {folder}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div
+                  className="flex-1 overflow-y-auto p-4"
+                  onScroll={handleVaultMediaScroll}
+                >
+                  {vaultLoading && vaultItems.length === 0 && (
+                    <div className="flex justify-center py-12">
+                      <Loader2 className="w-6 h-6 animate-spin text-gray-500 dark:text-zinc-400" />
+                    </div>
+                  )}
+                  {vaultError && <p className="text-sm text-red-400">{vaultError}</p>}
+                  {!vaultLoading && !vaultError && vaultItems.length === 0 && (
+                    <p className="text-sm text-gray-500 dark:text-zinc-500">
+                      {selectedFolder
+                        ? `No media in “${selectedFolder}”.`
+                        : 'Vault is empty.'}
+                    </p>
+                  )}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                    {vaultItems.map((item) => {
+                      const thumb = mediaSrcForVaultItem(item);
+                      const video = isVideoItem(item);
+                      const id = vaultItemId(item);
+                      const selected = selectedVaultItems.some(
+                        (entry) => vaultItemId(entry) === id
+                      );
+                      return (
+                        <div
+                          key={id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => toggleVaultItem(item)}
+                          onDoubleClick={() => {
+                            setVaultPreviewPlaying(false);
+                            setPreviewItem(item);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              toggleVaultItem(item);
+                            }
+                          }}
+                          className={`relative aspect-square rounded-xl overflow-hidden group transition-all cursor-pointer ${
+                            selected
+                              ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
+                              : 'border border-gray-200 dark:border-zinc-800 hover:border-gray-400 dark:hover:border-zinc-600'
+                          }`}
+                          title="Click to select · play to preview video · double-click to preview"
+                        >
+                          {thumb ? (
+                            <img
+                              src={thumb}
+                              alt=""
+                              loading="lazy"
+                              decoding="async"
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-white dark:bg-zinc-900 text-gray-500 dark:text-zinc-500">
+                              <ImageIcon className="w-6 h-6" />
+                            </div>
+                          )}
+                          {selected && (
+                            <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center z-10 shadow-lg">
+                              <Check className="w-3.5 h-3.5" />
+                            </span>
+                          )}
+                          {video && (
+                            <>
+                              <span className="absolute inset-0 bg-black/5 dark:bg-black/20 group-hover:bg-black/5 dark:group-hover:bg-black/10 transition-colors pointer-events-none" />
+                              <button
+                                type="button"
+                                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/30 dark:bg-black/50 backdrop-blur flex items-center justify-center text-white/90 z-[5] hover:bg-black/50 dark:hover:bg-black/70 transition-colors"
+                                aria-label="Play video"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPreviewItem(item);
+                                  setVaultPreviewPlaying(true);
+                                }}
+                              >
+                                <Play className="w-5 h-5 ml-0.5" />
+                              </button>
+                            </>
+                          )}
+                          {video && item.duration != null && (
+                            <span className="absolute bottom-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/20 dark:bg-black/70 text-white backdrop-blur z-10 pointer-events-none">
+                              {formatDuration(Number(item.duration))}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {vaultHasMore && (
+                    <button
+                      type="button"
+                      onClick={loadMoreVaultItems}
+                      disabled={vaultLoadingMore}
+                      className="w-full mt-4 py-2.5 text-sm font-medium text-domx-600 dark:text-domx-400 hover:underline disabled:opacity-40"
+                    >
+                      {vaultLoadingMore ? 'Loading…' : 'Load more'}
+                    </button>
+                  )}
                 </div>
               </div>
             )}

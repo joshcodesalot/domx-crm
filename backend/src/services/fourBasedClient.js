@@ -519,7 +519,18 @@ async function getUser(creator, userId) {
   return result.data;
 }
 
-async function listVault(creator, { fanId, limit = 60, offset = 0, tag } = {}) {
+async function listVault(
+  creator,
+  {
+    fanId,
+    limit = 60,
+    offset = 0,
+    folder,
+    fileType,
+    sold,
+    sent,
+  } = {}
+) {
   const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
   if (!fanId) {
     throw new FourBasedApiError('fanId is required to list vault', 400);
@@ -529,8 +540,17 @@ async function listVault(creator, { fanId, limit = 60, offset = 0, tag } = {}) {
     `${REST_BASE}/user/${providerUserId}/vault` +
     `?offset=${offset}&limit=${limit}&sort=${sort}` +
     `&with_source=true&buyer_user_id=${encodeURIComponent(fanId)}`;
-  if (typeof tag === 'string' && tag.trim()) {
-    url += `&tag=${encodeURIComponent(tag.trim())}`;
+  if (typeof folder === 'string' && folder.trim()) {
+    url += `&belongs_to_folders=${encodeURIComponent(folder.trim())}`;
+  }
+  if (fileType === 'image' || fileType === 'video') {
+    url += `&file_type=${encodeURIComponent(fileType)}`;
+  }
+  if (sold === true || sold === false) {
+    url += `&sold=${sold ? 'true' : 'false'}`;
+  }
+  if (sent === true || sent === false) {
+    url += `&sent=${sent ? 'true' : 'false'}`;
   }
   const result = await requestJson({
     url,
