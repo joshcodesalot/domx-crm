@@ -86,9 +86,7 @@ function UnreadBadge({
       title={label}
     >
       <Icon className="w-3 h-3 shrink-0" aria-hidden />
-      <span>
-        {count > 99 ? '99+' : count} {hasUnread ? 'new' : ''}
-      </span>
+      <span>{count > 99 ? '99+' : count}</span>
     </span>
   );
 }

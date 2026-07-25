@@ -17,6 +17,7 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
+import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import maloumIcon from '@/assets/maloum_icon.png';
 import {
@@ -27,7 +28,6 @@ import {
   listMaloumChats,
   listMaloumVaultFolders,
   listMaloumVaultMedia,
-  maloumMediaUrl,
   sendMaloumMessage,
   translateToGerman,
   type Creator,
@@ -38,6 +38,11 @@ import {
   type TranslateHistoryItem,
 } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+
+type MaloumMediaPreview = {
+  url: string;
+  kind: 'picture' | 'video' | 'embed';
+};
 
 const POLL_MS = 20_000;
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
@@ -78,9 +83,7 @@ function UnreadBadge({
       title={label}
     >
       <Icon className="w-3 h-3 shrink-0" aria-hidden />
-      <span>
-        {count > 99 ? '99+' : count} {hasUnread ? 'new' : ''}
-      </span>
+      <span>{count > 99 ? '99+' : count}</span>
     </span>
   );
 }
@@ -242,39 +245,76 @@ export function isVideoAsset(type?: string | null): boolean {
   return String(type || '').toLowerCase() === 'video';
 }
 
+export function isHttpsMediaUrl(url?: string | null): url is string {
+  return Boolean(url && /^https?:\/\//i.test(url));
+}
+
+export function isMediaDeliveryEmbed(url: string): boolean {
+  try {
+    return new URL(url).hostname.includes('mediadelivery.net');
+  } catch {
+    return false;
+  }
+}
+
+export function previewKindFor(
+  url: string,
+  type?: string | null
+): MaloumMediaPreview['kind'] {
+  if (isMediaDeliveryEmbed(url)) return 'embed';
+  if (isVideoAsset(type)) return 'video';
+  return 'picture';
+}
+
+export function vaultDirectUrl(item: MaloumVaultMediaItem): string | null {
+  const url = item.thumbnail?.url || item.media?.url;
+  return isHttpsMediaUrl(url) ? url : null;
+}
+
 export function messageText(msg: MaloumMessage): string {
   return msg.content?.text || '';
 }
 
 export function messageMediaAssets(msg: MaloumMessage): Array<{
   uploadId?: string;
-  url?: string;
+  thumbUrl?: string;
+  fullUrl?: string;
   type?: string;
   width?: number;
   height?: number;
-  isThumb?: boolean;
 }> {
   const content = msg.content;
   if (!content) return [];
   const thumbs = Array.isArray(content.thumbnails) ? content.thumbnails : [];
   const media = Array.isArray(content.media) ? content.media : [];
-  if (thumbs.length > 0) {
-    return thumbs.map((t) => ({
-      uploadId: t.uploadId || t.mediaId,
-      url: t.url,
-      type: t.type,
-      width: t.width,
-      height: t.height,
-      isThumb: true,
-    }));
+  const mediaById = new Map<string, (typeof media)[number]>();
+  for (const m of media) {
+    const id = m.uploadId || m.mediaId;
+    if (id) mediaById.set(String(id), m);
   }
+
+  if (thumbs.length > 0) {
+    return thumbs.map((t) => {
+      const uploadId = t.uploadId || t.mediaId;
+      const full = uploadId ? mediaById.get(String(uploadId)) : undefined;
+      return {
+        uploadId,
+        thumbUrl: t.url,
+        fullUrl: full?.url || t.url,
+        type: full?.type || t.type,
+        width: full?.width ?? t.width,
+        height: full?.height ?? t.height,
+      };
+    });
+  }
+
   return media.map((m) => ({
     uploadId: m.uploadId || m.mediaId,
-    url: m.url,
+    thumbUrl: m.url,
+    fullUrl: m.url,
     type: m.type,
     width: m.width,
     height: m.height,
-    isThumb: false,
   }));
 }
 
@@ -507,7 +547,7 @@ export function MaloumChatThread({
     'all'
   );
   const [ppvPrice, setPpvPrice] = useState('5');
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [preview, setPreview] = useState<MaloumMediaPreview | null>(null);
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>(
     {}
   );
@@ -1000,29 +1040,46 @@ export function MaloumChatThread({
                     {assets.length > 0 && (
                       <div className="flex flex-wrap gap-1 mb-2">
                         {assets.map((asset, idx) => {
-                          const src = maloumMediaUrl(creatorId, {
-                            uploadId: asset.uploadId,
-                            variant: 'thumbnail',
-                            url: asset.url,
-                          });
-                          const fullSrc = maloumMediaUrl(creatorId, {
-                            uploadId: asset.uploadId,
-                            variant: 'full',
-                            url: asset.url,
-                          });
+                          const thumbSrc =
+                            (isHttpsMediaUrl(asset.thumbUrl) && asset.thumbUrl) ||
+                            (isHttpsMediaUrl(asset.fullUrl) && asset.fullUrl) ||
+                            null;
+                          const fullSrc =
+                            (isHttpsMediaUrl(asset.fullUrl) && asset.fullUrl) ||
+                            thumbSrc;
+                          const video = isVideoAsset(asset.type);
                           return (
                             <button
                               key={`${msg._id}-${asset.uploadId || idx}`}
                               type="button"
-                              onClick={() => setPreviewUrl(fullSrc)}
+                              onClick={() => {
+                                if (!fullSrc) return;
+                                setPreview({
+                                  url: fullSrc,
+                                  kind: previewKindFor(fullSrc, asset.type),
+                                });
+                              }}
                               className="w-32 h-32 md:w-40 md:h-40 rounded-xl relative overflow-hidden group"
                             >
-                              <img
-                                src={src}
-                                alt=""
-                                className="w-full h-full object-cover bg-black/20 group-hover:scale-105 transition-transform duration-500"
-                                loading="lazy"
-                              />
+                              {thumbSrc ? (
+                                <img
+                                  src={thumbSrc}
+                                  alt=""
+                                  className="w-full h-full object-cover bg-black/20 group-hover:scale-105 transition-transform duration-500"
+                                  loading="lazy"
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-500">
+                                  <ImageIcon className="w-6 h-6" />
+                                </div>
+                              )}
+                              {video && (
+                                <span className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/10 transition-colors">
+                                  <span className="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center text-white/90">
+                                    <Play className="w-5 h-5 ml-0.5" />
+                                  </span>
+                                </span>
+                              )}
                             </button>
                           );
                         })}
@@ -1090,20 +1147,22 @@ export function MaloumChatThread({
             <div className="flex gap-2 max-w-[40%] overflow-x-auto">
               {selectedVaultItems.map((item) => {
                 const uploadId = vaultUploadId(item);
-                const src = maloumMediaUrl(creatorId, {
-                  uploadId,
-                  variant: 'thumbnail',
-                  url: item.thumbnail?.url || item.media?.url,
-                });
+                const src = vaultDirectUrl(item);
                 return (
                   <button
-                    key={uploadId || src}
+                    key={uploadId || src || 'vault-chip'}
                     type="button"
                     onClick={() => toggleVaultItem(item)}
                     className="w-12 h-12 rounded-lg relative group overflow-hidden border border-zinc-700 shrink-0"
                     title="Remove"
                   >
-                    <img src={src} alt="" className="w-full h-full object-cover" />
+                    {src ? (
+                      <img src={src} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-500">
+                        <ImageIcon className="w-4 h-4" />
+                      </div>
+                    )}
                     <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/60 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                       <X className="w-3 h-3" />
                     </span>
@@ -1360,11 +1419,7 @@ export function MaloumChatThread({
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
                     {filteredVaultItems.map((item) => {
                       const uploadId = vaultUploadId(item);
-                      const src = maloumMediaUrl(creatorId, {
-                        uploadId,
-                        variant: 'thumbnail',
-                        url: item.thumbnail?.url || item.media?.url,
-                      });
+                      const src = vaultDirectUrl(item);
                       const selected = selectedVaultItems.some(
                         (entry) => vaultUploadId(entry) === uploadId
                       );
@@ -1376,7 +1431,7 @@ export function MaloumChatThread({
                       const durationLabel = formatDuration(durationSec);
                       return (
                         <button
-                          key={uploadId || src}
+                          key={uploadId || src || 'vault-item'}
                           type="button"
                           onClick={() => toggleVaultItem(item)}
                           className={`relative aspect-square rounded-xl overflow-hidden group transition-all ${
@@ -1425,22 +1480,42 @@ export function MaloumChatThread({
         </div>
       )}
 
-      {previewUrl && (
+      {preview && (
         <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 p-6 animate-fade-in">
           <button
             type="button"
             className="absolute inset-0"
             aria-label="Close preview"
-            onClick={() => setPreviewUrl(null)}
+            onClick={() => setPreview(null)}
           />
-          <img
-            src={previewUrl}
-            alt=""
-            className="relative z-10 max-w-full max-h-full rounded-lg object-contain animate-slide-up"
-          />
+          {preview.kind === 'embed' ? (
+            <iframe
+              src={preview.url}
+              title="Video"
+              className="relative z-10 w-full max-w-3xl aspect-[9/16] max-h-full rounded-lg bg-black animate-slide-up"
+              allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
+              allowFullScreen
+            />
+          ) : preview.kind === 'video' ? (
+            <video
+              src={preview.url}
+              controls
+              autoPlay
+              playsInline
+              className="relative z-10 max-w-full max-h-full rounded-lg bg-black animate-slide-up"
+            >
+              <track kind="captions" />
+            </video>
+          ) : (
+            <img
+              src={preview.url}
+              alt=""
+              className="relative z-10 max-w-full max-h-full rounded-lg object-contain animate-slide-up"
+            />
+          )}
           <button
             type="button"
-            onClick={() => setPreviewUrl(null)}
+            onClick={() => setPreview(null)}
             className="absolute top-4 right-4 z-10 p-2 rounded-full bg-black/50 text-white"
           >
             <X className="w-5 h-5" />
@@ -1514,7 +1589,6 @@ export function MaloumSingleCreatorChat({
         <div className="h-16 px-4 border-b border-zinc-800/60 flex items-center gap-2">
           <img src={maloumIcon} alt="" className="w-5 h-5 rounded" />
           <span className="text-sm font-semibold text-white">Maloum</span>
-          <span className="w-2 h-2 rounded-full bg-maloum-500 ml-0.5" />
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-1.5 animate-fade-in">
           {creatorsLoading && (
@@ -1541,26 +1615,18 @@ export function MaloumSingleCreatorChat({
                 }`}
               >
                 <div className="relative shrink-0">
-                  <div
-                    className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white overflow-hidden ${
+                  <CreatorAvatar
+                    avatarUrl={creator.avatarUrl}
+                    displayName={creator.displayName}
+                    className={`w-10 h-10 rounded-full object-cover shrink-0 ${
+                      active ? 'shadow-md' : 'opacity-80 group-hover:opacity-100'
+                    }`}
+                    initialsClassName={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold text-white shrink-0 ${
                       active
                         ? 'shadow-md bg-gradient-to-br from-orange-400 to-rose-500'
                         : 'opacity-80 group-hover:opacity-100 bg-gradient-to-br from-pink-400 to-purple-500'
                     }`}
-                  >
-                    {creator.avatarUrl ? (
-                      <img
-                        src={creator.avatarUrl}
-                        alt=""
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      creator.displayName.charAt(0).toUpperCase()
-                    )}
-                  </div>
-                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-maloum-500 border-2 border-zinc-900 rounded-full flex items-center justify-center">
-                    <img src={maloumIcon} alt="" className="w-2.5 h-2.5 rounded-sm" />
-                  </div>
+                  />
                 </div>
                 <div className="min-w-0 flex-1">
                   <span
