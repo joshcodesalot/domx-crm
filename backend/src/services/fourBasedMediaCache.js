@@ -8,23 +8,45 @@ const CACHE_DIR =
   process.env.FOURBASED_MEDIA_CACHE_DIR ||
   path.join(os.tmpdir(), 'domx-4based-media-cache');
 
-/** Preview images stay warm for a day; avoids re-pulling thumbs through the residential proxy. */
-const TTL_MS = Number(process.env.FOURBASED_MEDIA_CACHE_TTL_MS) || 24 * 60 * 60 * 1000;
+/** Media is immutable; keep warm for a week by default. */
+const TTL_MS =
+  Number(process.env.FOURBASED_MEDIA_CACHE_TTL_MS) || 7 * 24 * 60 * 60 * 1000;
 
-/** Soft cap so the cache does not grow without bound. */
-const MAX_FILES = Number(process.env.FOURBASED_MEDIA_CACHE_MAX_FILES) || 2000;
+/** Soft byte cap so the cache does not grow without bound (~10 GB). */
+const MAX_BYTES =
+  Number(process.env.FOURBASED_MEDIA_CACHE_MAX_BYTES) || 10 * 1024 * 1024 * 1024;
+
+/** Per-file size caps. */
+const MAX_IMAGE_BYTES =
+  Number(process.env.FOURBASED_MEDIA_CACHE_MAX_IMAGE_BYTES) || 8 * 1024 * 1024;
+const MAX_VIDEO_BYTES =
+  Number(process.env.FOURBASED_MEDIA_CACHE_MAX_VIDEO_BYTES) || 512 * 1024 * 1024;
 
 let ensuredDir = false;
 let purgeRunning = false;
 
+function isVideoPath(mediaPath) {
+  if (!mediaPath || typeof mediaPath !== 'string') return false;
+  const lower = mediaPath.toLowerCase();
+  return (
+    lower.includes('.mp4') ||
+    lower.includes('.mov') ||
+    lower.includes('.webm') ||
+    lower.endsWith('/file.mp4') ||
+    /\/video\/[^/]+\.mp4$/i.test(lower)
+  );
+}
+
 function isCacheablePath(mediaPath) {
   if (!mediaPath || typeof mediaPath !== 'string') return false;
   const lower = mediaPath.toLowerCase();
-  if (lower.includes('.mp4') || lower.includes('.mov') || lower.includes('.webm')) {
-    return false;
-  }
   if (lower.includes('/preview/')) return true;
+  if (isVideoPath(lower)) return true;
   return /\.(jpe?g|png|webp|gif)$/i.test(lower);
+}
+
+function maxBytesForPath(mediaPath) {
+  return isVideoPath(mediaPath) ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
 }
 
 function cacheKey(creatorId, mediaPath) {
@@ -47,10 +69,17 @@ async function ensureCacheDir() {
   ensuredDir = true;
 }
 
-async function readCache(creatorId, mediaPath) {
+async function touchFiles(bin, meta) {
+  const now = new Date();
+  void fsp.utimes(bin, now, now).catch(() => {});
+  void fsp.utimes(meta, now, now).catch(() => {});
+}
+
+async function readMeta(creatorId, mediaPath) {
   if (!isCacheablePath(mediaPath)) return null;
   await ensureCacheDir();
-  const { bin, meta } = pathsFor(cacheKey(creatorId, mediaPath));
+  const key = cacheKey(creatorId, mediaPath);
+  const { bin, meta } = pathsFor(key);
   try {
     const raw = await fsp.readFile(meta, 'utf8');
     const info = JSON.parse(raw);
@@ -60,29 +89,54 @@ async function readCache(creatorId, mediaPath) {
       void fsp.unlink(meta).catch(() => {});
       return null;
     }
-    const buffer = await fsp.readFile(bin);
-    // Touch mtime for LRU-ish purge
-    const now = new Date();
-    void fsp.utimes(bin, now, now).catch(() => {});
-    void fsp.utimes(meta, now, now).catch(() => {});
+    const st = await fsp.stat(bin);
+    if (!st.isFile() || st.size <= 0) return null;
+    await touchFiles(bin, meta);
     return {
-      buffer,
+      key,
+      binPath: bin,
+      metaPath: meta,
+      size: st.size,
       contentType: info.contentType || 'application/octet-stream',
       etag: info.etag || null,
+      createdAt: info.createdAt,
     };
   } catch {
     return null;
   }
 }
 
+/** Returns { buffer, contentType, etag } for small files (images). */
+async function readCache(creatorId, mediaPath) {
+  const info = await readMeta(creatorId, mediaPath);
+  if (!info) return null;
+  try {
+    const buffer = await fsp.readFile(info.binPath);
+    return {
+      buffer,
+      contentType: info.contentType,
+      etag: info.etag,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns disk path + metadata so large videos can be streamed / ranged
+ * without loading the whole file into memory.
+ */
+async function readCachePath(creatorId, mediaPath) {
+  return readMeta(creatorId, mediaPath);
+}
+
 async function writeCache(creatorId, mediaPath, { buffer, contentType, etag }) {
   if (!isCacheablePath(mediaPath) || !buffer || !buffer.length) return;
-  // Skip very large "previews" (defensive)
-  if (buffer.length > 8 * 1024 * 1024) return;
+  if (buffer.length > maxBytesForPath(mediaPath)) return;
   await ensureCacheDir();
   const { bin, meta } = pathsFor(cacheKey(creatorId, mediaPath));
-  const tmpBin = `${bin}.${process.pid}.tmp`;
-  const tmpMeta = `${meta}.${process.pid}.tmp`;
+  const tmpBin = `${bin}.${process.pid}.${Date.now()}.tmp`;
+  const tmpMeta = `${meta}.${process.pid}.${Date.now()}.tmp`;
   try {
     await fsp.writeFile(tmpBin, buffer);
     await fsp.writeFile(
@@ -106,6 +160,57 @@ async function writeCache(creatorId, mediaPath, { buffer, contentType, etag }) {
   }
 }
 
+/**
+ * Atomically commit a temp file already written to disk into the cache.
+ * Used by the media route's tee-to-disk path for large videos.
+ */
+async function commitTempFile(
+  creatorId,
+  mediaPath,
+  tmpBinPath,
+  { contentType, etag, size } = {}
+) {
+  if (!isCacheablePath(mediaPath) || !tmpBinPath) return false;
+  const fileSize = Number(size) || 0;
+  if (fileSize <= 0 || fileSize > maxBytesForPath(mediaPath)) {
+    void fsp.unlink(tmpBinPath).catch(() => {});
+    return false;
+  }
+  await ensureCacheDir();
+  const { bin, meta } = pathsFor(cacheKey(creatorId, mediaPath));
+  const tmpMeta = `${meta}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fsp.writeFile(
+      tmpMeta,
+      JSON.stringify({
+        createdAt: Date.now(),
+        contentType: contentType || 'application/octet-stream',
+        etag: etag || null,
+        path: mediaPath,
+        creatorId,
+        size: fileSize,
+      })
+    );
+    await fsp.rename(tmpBinPath, bin);
+    await fsp.rename(tmpMeta, meta);
+    void maybePurge();
+    return true;
+  } catch (err) {
+    console.warn('4based media cache commit failed:', err.message);
+    void fsp.unlink(tmpBinPath).catch(() => {});
+    void fsp.unlink(tmpMeta).catch(() => {});
+    return false;
+  }
+}
+
+function tempDownloadPath(creatorId, mediaPath) {
+  const key = cacheKey(creatorId, mediaPath);
+  return path.join(
+    CACHE_DIR,
+    `${key}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.download`
+  );
+}
+
 async function maybePurge() {
   if (purgeRunning) return;
   purgeRunning = true;
@@ -113,25 +218,39 @@ async function maybePurge() {
     await ensureCacheDir();
     const names = await fsp.readdir(CACHE_DIR);
     const metas = names.filter((n) => n.endsWith('.json'));
-    if (metas.length <= MAX_FILES) return;
-
     const entries = [];
+    let totalBytes = 0;
+
     for (const name of metas) {
-      const full = path.join(CACHE_DIR, name);
+      const key = name.replace(/\.json$/, '');
+      const { bin, meta } = pathsFor(key);
       try {
-        const st = await fsp.stat(full);
-        entries.push({ name, mtime: st.mtimeMs });
+        const [stBin, stMeta] = await Promise.all([
+          fsp.stat(bin),
+          fsp.stat(meta),
+        ]);
+        const size = stBin.size || 0;
+        totalBytes += size;
+        entries.push({
+          key,
+          bin,
+          meta,
+          mtime: Math.max(stBin.mtimeMs || 0, stMeta.mtimeMs || 0),
+          size,
+        });
       } catch {
-        // ignore
+        // ignore missing pairs
       }
     }
+
+    if (totalBytes <= MAX_BYTES) return;
+
     entries.sort((a, b) => a.mtime - b.mtime);
-    const toRemove = entries.slice(0, Math.max(0, entries.length - MAX_FILES));
-    for (const entry of toRemove) {
-      const key = entry.name.replace(/\.json$/, '');
-      const { bin, meta } = pathsFor(key);
-      void fsp.unlink(bin).catch(() => {});
-      void fsp.unlink(meta).catch(() => {});
+    for (const entry of entries) {
+      if (totalBytes <= MAX_BYTES) break;
+      void fsp.unlink(entry.bin).catch(() => {});
+      void fsp.unlink(entry.meta).catch(() => {});
+      totalBytes -= entry.size;
     }
   } catch (err) {
     console.warn('4based media cache purge failed:', err.message);
@@ -142,8 +261,14 @@ async function maybePurge() {
 
 module.exports = {
   isCacheablePath,
+  isVideoPath,
   readCache,
+  readCachePath,
   writeCache,
+  commitTempFile,
+  tempDownloadPath,
   CACHE_DIR,
   TTL_MS,
+  MAX_BYTES,
+  maxBytesForPath,
 };

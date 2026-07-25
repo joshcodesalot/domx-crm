@@ -1151,17 +1151,155 @@ export async function reconnectFourBasedAccountSaved(
   });
 }
 
+export type FourBasedChatFilter =
+  | 'online'
+  | 'unread'
+  | 'read'
+  | 'follower'
+  | 'subscribers';
+
+export interface FourBasedUserList {
+  _id: string;
+  name?: string;
+  position?: number;
+  user_id?: string;
+  [key: string]: unknown;
+}
+
+export interface FourBasedPivot {
+  _id?: string;
+  alias?: string;
+  note?: string;
+  action_user_id?: string;
+  chat_id?: string;
+  [key: string]: unknown;
+}
+
 export async function listFourBasedChats(
   creatorId: string,
-  options: { limit?: number; offset?: number } = {}
+  options: {
+    limit?: number;
+    offset?: number;
+    filter?: FourBasedChatFilter | null;
+    listId?: string | null;
+  } = {}
 ): Promise<{ chats: FourBasedChat[]; providerUserId: string }> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.offset != null) params.set('offset', String(options.offset));
+  if (options.filter) params.set('filter', options.filter);
+  if (options.listId) params.set('listId', options.listId);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/4based/chats${query ? `?${query}` : ''}`
+  );
+}
+
+export async function pinFourBasedChat(
+  creatorId: string,
+  chatId: string,
+  isPinned: boolean
+): Promise<{ ok: boolean; isPinned: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/4based/chats/${encodeURIComponent(chatId)}/pin`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ isPinned }),
+    }
+  );
+}
+
+export async function listFourBasedUserLists(
+  creatorId: string,
+  options: { limit?: number; offset?: number } = {}
+): Promise<{ lists: FourBasedUserList[] }> {
   const params = new URLSearchParams();
   if (options.limit != null) params.set('limit', String(options.limit));
   if (options.offset != null) params.set('offset', String(options.offset));
   const query = params.toString();
   return request(
-    `/api/creators/${creatorId}/4based/chats${query ? `?${query}` : ''}`
+    `/api/creators/${creatorId}/4based/user-lists${query ? `?${query}` : ''}`
   );
+}
+
+export async function getFourBasedFanLists(
+  creatorId: string,
+  fanId: string
+): Promise<{ userId: string; userListIds: string[] }> {
+  return request(
+    `/api/creators/${creatorId}/4based/user-lists/contains/${encodeURIComponent(fanId)}`
+  );
+}
+
+export async function addFourBasedFanToList(
+  creatorId: string,
+  listId: string,
+  fanId: string
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/4based/user-lists/${encodeURIComponent(listId)}/add`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ fanId }),
+    }
+  );
+}
+
+export async function removeFourBasedFanFromList(
+  creatorId: string,
+  listId: string,
+  fanId: string
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/4based/user-lists/${encodeURIComponent(listId)}/remove`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ fanId }),
+    }
+  );
+}
+
+export async function getFourBasedPivot(
+  creatorId: string,
+  fanId: string
+): Promise<{ pivot: FourBasedPivot | null; alias: string; note: string }> {
+  return request(
+    `/api/creators/${creatorId}/4based/pivot/${encodeURIComponent(fanId)}`
+  );
+}
+
+export async function updateFourBasedPivot(
+  creatorId: string,
+  fanId: string,
+  patch: { alias?: string; note?: string }
+): Promise<{ pivot: FourBasedPivot | null; alias: string; note: string }> {
+  return request(
+    `/api/creators/${creatorId}/4based/pivot/${encodeURIComponent(fanId)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }
+  );
+}
+
+export async function deleteFourBasedPivotField(
+  creatorId: string,
+  fanId: string,
+  field: 'alias' | 'note'
+): Promise<{ ok: boolean; pivot: FourBasedPivot | null; alias: string; note: string }> {
+  return request(
+    `/api/creators/${creatorId}/4based/pivot/${encodeURIComponent(fanId)}/${field}`,
+    { method: 'DELETE' }
+  );
+}
+
+/** Alias for the shared fan-stats endpoint (4based + maloum). */
+export async function getFourBasedFanStats(filters: {
+  creatorId: string;
+  chatId?: string;
+  fanId?: string;
+}): Promise<MaloumFanStats> {
+  return getMaloumFanStats(filters);
 }
 
 export async function getFourBasedChat(

@@ -1723,6 +1723,292 @@ function handleFourBasedError(res, err, label) {
   return res.status(500).json({ error: 'Internal server error' });
 }
 
+/** Max concurrent upstream media fetches per creator (cache hits unaffected). */
+const FOURBASED_MEDIA_UPSTREAM_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.FOURBASED_MEDIA_UPSTREAM_CONCURRENCY) || 5
+);
+
+/** @type {Map<string, { active: number, queue: Array<() => void> }>} */
+const fourBasedMediaSemaphores = new Map();
+
+/** In-flight full-file downloads keyed by creatorId\\npath — single-flight de-dupe. */
+const fourBasedMediaInflight = new Map();
+
+function acquireFourBasedMediaSlot(creatorId) {
+  let state = fourBasedMediaSemaphores.get(creatorId);
+  if (!state) {
+    state = { active: 0, queue: [] };
+    fourBasedMediaSemaphores.set(creatorId, state);
+  }
+  if (state.active < FOURBASED_MEDIA_UPSTREAM_CONCURRENCY) {
+    state.active += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    state.queue.push(resolve);
+  }).then(() => {
+    state.active += 1;
+  });
+}
+
+function releaseFourBasedMediaSlot(creatorId) {
+  const state = fourBasedMediaSemaphores.get(creatorId);
+  if (!state) return;
+  state.active = Math.max(0, state.active - 1);
+  const next = state.queue.shift();
+  if (next) next();
+  if (state.active === 0 && state.queue.length === 0) {
+    fourBasedMediaSemaphores.delete(creatorId);
+  }
+}
+
+async function fetchFourBasedMediaThrottled(creator, { path, rangeHeader } = {}) {
+  await acquireFourBasedMediaSlot(creator.id);
+  try {
+    let lastErr;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const upstream = await fourBasedClient.fetchMedia(creator, {
+          path,
+          rangeHeader,
+        });
+        if ((upstream.ok || upstream.status === 206) || attempt === 1) {
+          return upstream;
+        }
+        lastErr = new Error(`Upstream status ${upstream.status}`);
+        // Drain body so the connection can close cleanly before retry.
+        try {
+          if (upstream.body) {
+            const { Readable } = require('stream');
+            Readable.fromWeb(upstream.body).resume();
+          }
+        } catch {
+          // ignore
+        }
+      } catch (err) {
+        lastErr = err;
+        if (attempt === 1) throw err;
+      }
+    }
+    throw lastErr || new Error('Failed to fetch media');
+  } finally {
+    releaseFourBasedMediaSlot(creator.id);
+  }
+}
+
+function parseBytesRange(rangeHeader, size) {
+  if (!rangeHeader || typeof rangeHeader !== 'string' || !Number.isFinite(size) || size <= 0) {
+    return null;
+  }
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+  if (!match) return null;
+  let start = match[1] === '' ? null : Number(match[1]);
+  let end = match[2] === '' ? null : Number(match[2]);
+  if (start == null && end == null) return null;
+  if (start == null) {
+    // suffix: last N bytes
+    const suffix = end;
+    if (!Number.isFinite(suffix) || suffix <= 0) return null;
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    if (!Number.isFinite(start) || start < 0) return null;
+    if (end == null || !Number.isFinite(end)) end = size - 1;
+    if (end >= size) end = size - 1;
+    if (start > end) return null;
+  }
+  return { start, end };
+}
+
+function setFourBasedMediaCommonHeaders(res, { contentType, etag, cacheStatus }) {
+  if (contentType) res.setHeader('Content-Type', contentType);
+  if (etag) res.setHeader('ETag', etag);
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader(
+    'Cache-Control',
+    'private, max-age=86400, stale-while-revalidate=604800'
+  );
+  res.setHeader('X-DomX-Media-Cache', cacheStatus);
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+}
+
+function sendFourBasedCachedFile(res, cached, rangeHeader, cacheStatus = 'HIT') {
+  const fs = require('fs');
+  const size = cached.size;
+  const range = parseBytesRange(rangeHeader, size);
+  setFourBasedMediaCommonHeaders(res, {
+    contentType: cached.contentType,
+    etag: cached.etag,
+    cacheStatus,
+  });
+
+  if (range) {
+    const chunkSize = range.end - range.start + 1;
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${size}`);
+    res.setHeader('Content-Length', String(chunkSize));
+    const stream = fs.createReadStream(cached.binPath, {
+      start: range.start,
+      end: range.end,
+    });
+    stream.on('error', (err) => {
+      console.warn('4based media cache stream error:', err.message);
+      if (!res.headersSent) res.status(502).end();
+      else res.destroy(err);
+    });
+    stream.pipe(res);
+    return;
+  }
+
+  res.status(200);
+  res.setHeader('Content-Length', String(size));
+  const stream = fs.createReadStream(cached.binPath);
+  stream.on('error', (err) => {
+    console.warn('4based media cache stream error:', err.message);
+    if (!res.headersSent) res.status(502).end();
+    else res.destroy(err);
+  });
+  stream.pipe(res);
+}
+
+/**
+ * Download full media file through residential proxy once, write to disk cache,
+ * and resolve with the cached path metadata. Single-flight per creator+path.
+ */
+async function downloadFourBasedMediaToCache(creator, creatorId, mediaPath) {
+  const flightKey = `${creatorId}\n${mediaPath}`;
+  const existing = fourBasedMediaInflight.get(flightKey);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    const fs = require('fs');
+    const fsp = require('fs/promises');
+    const { Readable } = require('stream');
+    const { pipeline } = require('stream/promises');
+
+    // Re-check cache in case another request finished while we waited for the slot.
+    const already = await fourBasedMediaCache.readCachePath(creatorId, mediaPath);
+    if (already) return already;
+
+    const upstream = await fetchFourBasedMediaThrottled(creator, {
+      path: mediaPath,
+      rangeHeader: null,
+    });
+    if (!upstream.ok || !upstream.body) {
+      throw new fourBasedClient.FourBasedApiError(
+        'Failed to fetch media',
+        upstream.status || 502
+      );
+    }
+
+    const contentType =
+      upstream.headers.get('content-type') || 'application/octet-stream';
+    const etag = upstream.headers.get('etag') || null;
+    const tmpPath = fourBasedMediaCache.tempDownloadPath(creatorId, mediaPath);
+    const maxBytes = fourBasedMediaCache.maxBytesForPath(mediaPath);
+    let written = 0;
+
+    try {
+      const nodeStream = Readable.fromWeb(upstream.body);
+      const writeStream = fs.createWriteStream(tmpPath);
+      nodeStream.on('data', (chunk) => {
+        written += chunk.length;
+        if (written > maxBytes) {
+          nodeStream.destroy(new Error('Media exceeds cache size limit'));
+        }
+      });
+      await pipeline(nodeStream, writeStream);
+      const committed = await fourBasedMediaCache.commitTempFile(
+        creatorId,
+        mediaPath,
+        tmpPath,
+        { contentType, etag, size: written }
+      );
+      if (!committed) {
+        throw new Error('Failed to commit media to cache');
+      }
+      const cached = await fourBasedMediaCache.readCachePath(creatorId, mediaPath);
+      if (!cached) {
+        throw new Error('Media cache miss after commit');
+      }
+      return cached;
+    } catch (err) {
+      void fsp.unlink(tmpPath).catch(() => {});
+      throw err;
+    }
+  })();
+
+  fourBasedMediaInflight.set(flightKey, promise);
+  try {
+    return await promise;
+  } finally {
+    fourBasedMediaInflight.delete(flightKey);
+  }
+}
+
+async function prewarmFourBasedVaultThumbs(creator, creatorId, items) {
+  const providerUserId = creator.providerUserId;
+  if (!providerUserId || !Array.isArray(items) || items.length === 0) return;
+
+  const paths = [];
+  for (const item of items) {
+    const id = item?._id || item?.id;
+    if (!id) continue;
+    let mediaPath = null;
+    const preview = item.preview;
+    if (preview && typeof preview === 'object') {
+      const preferred =
+        preview['200x200'] ||
+        preview['200x200.jpg'] ||
+        preview['500x500'] ||
+        preview['100x100'];
+      if (typeof preferred === 'string' && preferred.includes('/protected/')) {
+        const idx = preferred.indexOf('/protected/');
+        mediaPath = preferred.slice(idx + 1);
+      } else if (
+        typeof preferred === 'string' &&
+        preferred.startsWith('https://media.4based.com/')
+      ) {
+        mediaPath = preferred.slice('https://media.4based.com/'.length);
+      }
+    }
+    if (!mediaPath) {
+      mediaPath = fourBasedClient.buildMediaPreviewPath(
+        providerUserId,
+        id,
+        '200x200.jpg'
+      );
+    }
+    if (mediaPath) paths.push(mediaPath);
+  }
+
+  // Limited concurrency; skip already-cached. Never await from the request path.
+  const concurrency = 3;
+  let index = 0;
+  async function worker() {
+    while (index < paths.length) {
+      const current = index;
+      index += 1;
+      const mediaPath = paths[current];
+      try {
+        const hit = await fourBasedMediaCache.readCachePath(creatorId, mediaPath);
+        if (hit) continue;
+        await downloadFourBasedMediaToCache(creator, creatorId, mediaPath);
+      } catch (err) {
+        console.warn(
+          '4based vault thumb prewarm failed:',
+          mediaPath,
+          err?.message || err
+        );
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, paths.length) }, () => worker())
+  );
+}
+
 router.post(
   '/:id/4based/reconnect',
   authenticate,
@@ -2449,13 +2735,344 @@ router.get(
 
       const limit = Math.min(Number(req.query.limit) || 30, 100);
       const offset = Math.max(Number(req.query.offset) || 0, 0);
-      const chats = await fourBasedClient.listChats(loaded.creator, { limit, offset });
+      const filterRaw =
+        typeof req.query.filter === 'string' ? req.query.filter.trim() : '';
+      const listId =
+        typeof req.query.listId === 'string' && req.query.listId.trim()
+          ? req.query.listId.trim()
+          : undefined;
+      const listName =
+        filterRaw && fourBasedClient.BUILTIN_CHAT_FILTERS.has(filterRaw)
+          ? filterRaw
+          : undefined;
+      if (filterRaw && !listName && !listId) {
+        return res.status(400).json({
+          error:
+            'Invalid filter. Use online, unread, read, follower, subscribers, or listId.',
+        });
+      }
+      const chats = await fourBasedClient.listChats(loaded.creator, {
+        limit,
+        offset,
+        listName,
+        userListId: listId,
+      });
       res.json({
         chats: Array.isArray(chats) ? chats : chats?.items || chats || [],
         providerUserId: loaded.creator.providerUserId,
       });
     } catch (err) {
       return handleFourBasedError(res, err, 'List 4based chats error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/4based/chats/:chatId/pin',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, chatId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const isPinned =
+        req.body?.isPinned === true ||
+        req.body?.is_pinned === true ||
+        req.body?.isPinned === 'true';
+      const result = await fourBasedClient.pinChat(loaded.creator, chatId, isPinned);
+      res.json({
+        ok: true,
+        isPinned,
+        result: result || null,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Pin 4based chat error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/user-lists',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 20, 100);
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const lists = await fourBasedClient.listUserLists(loaded.creator, {
+        limit,
+        offset,
+      });
+      res.json({ lists: Array.isArray(lists) ? lists : [] });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'List 4based user lists error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/user-lists/contains/:fanId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, fanId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!fanId) {
+      return res.status(400).json({ error: 'fanId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const result = await fourBasedClient.getUserListsForFan(loaded.creator, fanId);
+      res.json(result);
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Get 4based fan lists error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/4based/user-lists/:listId/add',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, listId } = req.params;
+    const fanId = req.body?.fanId;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!listId || !fanId || typeof fanId !== 'string') {
+      return res.status(400).json({ error: 'listId and fanId are required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const result = await fourBasedClient.addUserToList(
+        loaded.creator,
+        listId,
+        fanId
+      );
+      res.json({ ok: true, result: result || null });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Add 4based fan to list error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/4based/user-lists/:listId/remove',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, listId } = req.params;
+    const fanId = req.body?.fanId;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!listId || !fanId || typeof fanId !== 'string') {
+      return res.status(400).json({ error: 'listId and fanId are required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const result = await fourBasedClient.removeUserFromList(
+        loaded.creator,
+        listId,
+        fanId
+      );
+      res.json({ ok: true, result: result || null });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Remove 4based fan from list error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/pivot/:fanId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, fanId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!fanId) {
+      return res.status(400).json({ error: 'fanId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const pivot = await fourBasedClient.getPivot(loaded.creator, fanId);
+      res.json({
+        pivot: pivot || null,
+        alias: typeof pivot?.alias === 'string' ? pivot.alias : '',
+        note: typeof pivot?.note === 'string' ? pivot.note : '',
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Get 4based pivot error:');
+    }
+  }
+);
+
+router.put(
+  '/:id/4based/pivot/:fanId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, fanId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!fanId) {
+      return res.status(400).json({ error: 'fanId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const patch = {};
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'alias')) {
+        patch.alias = req.body.alias;
+      }
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, 'note')) {
+        patch.note = req.body.note;
+      }
+      if (Object.keys(patch).length === 0) {
+        return res.status(400).json({ error: 'alias or note is required' });
+      }
+
+      const pivot = await fourBasedClient.updatePivot(loaded.creator, fanId, patch);
+      res.json({
+        pivot: pivot || null,
+        alias: typeof pivot?.alias === 'string' ? pivot.alias : '',
+        note: typeof pivot?.note === 'string' ? pivot.note : '',
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Update 4based pivot error:');
+    }
+  }
+);
+
+router.delete(
+  '/:id/4based/pivot/:fanId/:field',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, fanId, field } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!fanId) {
+      return res.status(400).json({ error: 'fanId is required' });
+    }
+    if (field !== 'alias' && field !== 'note') {
+      return res.status(400).json({ error: 'field must be alias or note' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      await fourBasedClient.deletePivotField(loaded.creator, fanId, field);
+      // Also clear via PUT so subsequent GET is consistent (HAR does both).
+      await fourBasedClient.updatePivot(
+        loaded.creator,
+        fanId,
+        field === 'alias' ? { alias: '' } : { note: '' }
+      );
+      const pivot = await fourBasedClient.getPivot(loaded.creator, fanId);
+      res.json({
+        ok: true,
+        pivot: pivot || null,
+        alias: typeof pivot?.alias === 'string' ? pivot.alias : '',
+        note: typeof pivot?.note === 'string' ? pivot.note : '',
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Delete 4based pivot field error:');
     }
   }
 );
@@ -2931,9 +3548,14 @@ router.get(
         sold,
         sent,
       });
+      const items = Array.isArray(vault) ? vault : vault?.items || vault || [];
       res.json({
-        items: Array.isArray(vault) ? vault : vault?.items || vault || [],
+        items,
         providerUserId: loaded.creator.providerUserId,
+      });
+      // Prewarm thumbnails in background so the grid hits disk cache.
+      void prewarmFourBasedVaultThumbs(loaded.creator, id, items).catch((err) => {
+        console.warn('4based vault prewarm error:', err?.message || err);
       });
     } catch (err) {
       return handleFourBasedError(res, err, 'List 4based vault error:');
@@ -3004,110 +3626,60 @@ router.get(
       }
 
       const rangeHeader = req.headers.range || null;
-      const canUseDiskCache =
-        !rangeHeader && fourBasedMediaCache.isCacheablePath(mediaPath);
+      const cacheable = fourBasedMediaCache.isCacheablePath(mediaPath);
 
-      if (canUseDiskCache) {
-        const cached = await fourBasedMediaCache.readCache(id, mediaPath);
-        if (cached) {
-          res.setHeader('Content-Type', cached.contentType);
-          res.setHeader('Content-Length', String(cached.buffer.length));
-          res.setHeader(
-            'Cache-Control',
-            'private, max-age=86400, stale-while-revalidate=604800'
+      // Cacheable paths (thumbs, full previews, videos): serve from disk,
+      // including Range/206. On miss, download the full file once (single-flight)
+      // through the residential proxy, then serve from disk.
+      if (cacheable) {
+        let cached = await fourBasedMediaCache.readCachePath(id, mediaPath);
+        let cacheStatus = 'HIT';
+        if (!cached) {
+          cached = await downloadFourBasedMediaToCache(
+            loaded.creator,
+            id,
+            mediaPath
           );
-          res.setHeader('X-DomX-Media-Cache', 'HIT');
-          res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-          if (cached.etag) {
-            res.setHeader('ETag', cached.etag);
-          }
-          return res.status(200).end(cached.buffer);
+          cacheStatus = 'MISS';
         }
+        return sendFourBasedCachedFile(res, cached, rangeHeader, cacheStatus);
       }
 
-      const upstream = await fourBasedClient.fetchMedia(loaded.creator, {
+      // Non-cacheable paths: stream through with optional Range.
+      const upstream = await fetchFourBasedMediaThrottled(loaded.creator, {
         path: mediaPath,
         rangeHeader,
       });
-
       if (!upstream.ok && upstream.status !== 206) {
-        return res.status(upstream.status || 502).json({ error: 'Failed to fetch media' });
+        return res
+          .status(upstream.status || 502)
+          .json({ error: 'Failed to fetch media' });
       }
 
       const passthrough = [
         'content-type',
+        'content-length',
         'content-range',
         'accept-ranges',
         'etag',
         'last-modified',
       ];
-      // Only forward content-length when streaming; buffered cache path sets it after download.
-      if (!(canUseDiskCache && upstream.status === 200)) {
-        passthrough.push('content-length');
-      }
       for (const header of passthrough) {
         const value = upstream.headers.get(header);
-        if (value) {
-          res.setHeader(header, value);
-        }
+        if (value) res.setHeader(header, value);
       }
-
-      // Prefer long-lived browser cache for previews; videos stay shorter.
-      if (canUseDiskCache) {
-        res.setHeader(
-          'Cache-Control',
-          'private, max-age=86400, stale-while-revalidate=604800'
-        );
-        res.setHeader('X-DomX-Media-Cache', 'MISS');
-      } else {
-        res.setHeader('Cache-Control', 'private, max-age=300');
-        res.setHeader('X-DomX-Media-Cache', 'BYPASS');
-      }
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      res.setHeader('X-DomX-Media-Cache', 'BYPASS');
       res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
       res.status(upstream.status);
-
-      if (!upstream.body) {
-        return res.end();
-      }
-
-      // Buffer cacheable image bodies so we can store them; stream everything else.
-      if (canUseDiskCache && upstream.status === 200) {
-        const { Readable } = require('stream');
-        const nodeStream = Readable.fromWeb(upstream.body);
-        const chunks = [];
-        nodeStream.on('data', (chunk) => chunks.push(chunk));
-        nodeStream.on('error', (err) => {
-          console.warn('4based media stream error:', err.message);
-          if (!res.headersSent) {
-            res.status(502).end();
-          } else {
-            res.destroy(err);
-          }
-        });
-        nodeStream.on('end', () => {
-          const buffer = Buffer.concat(chunks);
-          if (!res.headersSent) {
-            res.setHeader('Content-Length', String(buffer.length));
-          }
-          res.end(buffer);
-          void fourBasedMediaCache.writeCache(id, mediaPath, {
-            buffer,
-            contentType: upstream.headers.get('content-type') || 'application/octet-stream',
-            etag: upstream.headers.get('etag') || null,
-          });
-        });
-        return;
-      }
+      if (!upstream.body) return res.end();
 
       const { Readable } = require('stream');
       const nodeStream = Readable.fromWeb(upstream.body);
       nodeStream.on('error', (err) => {
         console.warn('4based media stream error:', err.message);
-        if (!res.headersSent) {
-          res.status(502).end();
-        } else {
-          res.destroy(err);
-        }
+        if (!res.headersSent) res.status(502).end();
+        else res.destroy(err);
       });
       nodeStream.pipe(res);
     } catch (err) {

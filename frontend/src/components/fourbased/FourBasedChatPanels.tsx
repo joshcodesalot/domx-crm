@@ -4,17 +4,20 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEvent,
   type UIEvent,
 } from 'react';
 import {
   Ban,
   Box,
   Check,
+  ChevronDown,
   Eye,
   Image as ImageIcon,
   Languages,
   Loader2,
   Lock,
+  PanelRight,
   Pin,
   Play,
   RefreshCw,
@@ -27,6 +30,7 @@ import {
 } from 'lucide-react';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import ToggleSwitch from '@/components/ToggleSwitch';
+import FourBasedFanPanel from '@/components/fourbased/FourBasedFanPanel';
 import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import {
@@ -41,17 +45,21 @@ import {
   getFourBasedUser,
   getMessagingDashboardSenders,
   listFourBasedChats,
+  listFourBasedUserLists,
   listFourBasedVault,
+  pinFourBasedChat,
   sendFourBasedMessage,
   sendFourBasedPpv,
   translateToGerman,
   updateMessagingDashboardPurchased,
   type Creator,
   type FourBasedChat,
+  type FourBasedChatFilter,
   type FourBasedChatUser,
   type FourBasedCoinPackage,
   type FourBasedLastMessage,
   type FourBasedMessage,
+  type FourBasedUserList,
   type FourBasedUserProfile,
   type FourBasedVaultItem,
   type TranslateHistoryItem,
@@ -59,9 +67,61 @@ import {
 
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
+const FAN_PANEL_OPEN_KEY = 'domx-4based-fan-panel';
 const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
 const MAX_TRANSLATION_HISTORY = 8;
 const POLL_MS = 5000;
+const THREAD_WIDE_BREAKPOINT = 1000;
+
+const INBOX_FILTERS: Array<{ id: FourBasedChatFilter | 'all'; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'online', label: 'Online' },
+  { id: 'unread', label: 'Unread' },
+  { id: 'read', label: 'Read' },
+  { id: 'follower', label: 'Follower' },
+  { id: 'subscribers', label: 'Subscribers' },
+];
+
+/** Strip a media.4based.com URL down to a protected/... or public/... path. */
+function protectedPathFromUrl(url: string | null | undefined): string | null {
+  if (!url || typeof url !== 'string') return null;
+  const idxProtected = url.indexOf('/protected/');
+  if (idxProtected >= 0) return url.slice(idxProtected + 1);
+  const idxPublic = url.indexOf('/public/');
+  if (idxPublic >= 0) return url.slice(idxPublic + 1);
+  if (url.startsWith('https://media.4based.com/')) {
+    return url.slice('https://media.4based.com/'.length);
+  }
+  if (url.startsWith('protected/') || url.startsWith('public/')) return url;
+  return null;
+}
+
+function vaultPreviewPathFromItem(
+  item: FourBasedVaultItem,
+  size: string
+): string | null {
+  const preview = item.preview;
+  if (preview && typeof preview === 'object') {
+    const sizeKey = size.replace(/\.jpg$/i, '');
+    const preferred =
+      preview[sizeKey] ||
+      preview[`${sizeKey}.jpg`] ||
+      preview['200x200'] ||
+      preview['500x500'] ||
+      preview['900xxx'] ||
+      preview['400x400'];
+    const fromPreview = protectedPathFromUrl(
+      typeof preferred === 'string' ? preferred : null
+    );
+    if (fromPreview) return fromPreview;
+  }
+  return null;
+}
+
+function vaultVideoPathFromItem(item: FourBasedVaultItem): string | null {
+  const source = Array.isArray(item.source) ? item.source[0] : null;
+  return protectedPathFromUrl(typeof source === 'string' ? source : null);
+}
 
 export const TRANSLATION_SETTINGS_EVENT = 'domx-translation-settings';
 export const FOURBASED_MESSAGE_DELETED_EVENT = 'domx-4based-message-deleted';
@@ -527,6 +587,13 @@ export function FourBasedChatList({
   const [providerUserId, setProviderUserId] = useState<string | null>(null);
   const [chatsLoading, setChatsLoading] = useState(false);
   const [chatsError, setChatsError] = useState<string | null>(null);
+  const [inboxFilter, setInboxFilter] = useState<FourBasedChatFilter | 'all'>(
+    'all'
+  );
+  const [selectedListId, setSelectedListId] = useState<string | null>(null);
+  const [userLists, setUserLists] = useState<FourBasedUserList[]>([]);
+  const [listsOpen, setListsOpen] = useState(false);
+  const [pinningChatId, setPinningChatId] = useState<string | null>(null);
   const creatorIdRef = useRef(creatorId);
 
   useEffect(() => {
@@ -540,7 +607,15 @@ export function FourBasedChatList({
         setChatsError(null);
       }
       try {
-        const result = await listFourBasedChats(creatorId, { limit: 50 });
+        const result = await listFourBasedChats(creatorId, {
+          limit: 50,
+          filter: selectedListId
+            ? null
+            : inboxFilter === 'all'
+              ? null
+              : inboxFilter,
+          listId: selectedListId,
+        });
         if (creatorIdRef.current !== creatorId) return;
         setChats(Array.isArray(result.chats) ? result.chats : []);
         setProviderUserId(result.providerUserId || null);
@@ -555,7 +630,7 @@ export function FourBasedChatList({
         }
       }
     },
-    [creatorId]
+    [creatorId, inboxFilter, selectedListId]
   );
 
   useEffect(() => {
@@ -563,6 +638,44 @@ export function FourBasedChatList({
     setProviderUserId(null);
     void loadChats();
   }, [loadChats]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listFourBasedUserLists(creatorId, { limit: 50 })
+      .then((result) => {
+        if (cancelled) return;
+        setUserLists(Array.isArray(result.lists) ? result.lists : []);
+      })
+      .catch(() => {
+        if (!cancelled) setUserLists([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [creatorId]);
+
+  async function handlePinChat(chat: FourBasedChat, e: MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!chat._id || pinningChatId) return;
+    const next = !chat.is_pinned;
+    setPinningChatId(chat._id);
+    // Optimistic update
+    setChats((prev) =>
+      prev.map((c) => (c._id === chat._id ? { ...c, is_pinned: next } : c))
+    );
+    try {
+      await pinFourBasedChat(creatorId, chat._id, next);
+    } catch {
+      setChats((prev) =>
+        prev.map((c) =>
+          c._id === chat._id ? { ...c, is_pinned: chat.is_pinned } : c
+        )
+      );
+    } finally {
+      setPinningChatId(null);
+    }
+  }
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -657,6 +770,80 @@ export function FourBasedChatList({
           </button>
         </div>
       )}
+      <div className="px-2 py-2 border-b border-gray-200 dark:border-zinc-800/60 shrink-0 space-y-1.5">
+        <div className="flex flex-wrap gap-1">
+          {INBOX_FILTERS.map((chip) => {
+            const active =
+              !selectedListId && inboxFilter === chip.id;
+            return (
+              <button
+                key={chip.id}
+                type="button"
+                onClick={() => {
+                  setSelectedListId(null);
+                  setInboxFilter(chip.id);
+                  setListsOpen(false);
+                }}
+                className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-colors ${
+                  active
+                    ? 'bg-4based-500 text-white'
+                    : 'bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                {chip.label}
+              </button>
+            );
+          })}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setListsOpen((v) => !v)}
+              className={`inline-flex items-center gap-0.5 px-2 py-1 rounded-full text-[10px] font-semibold transition-colors ${
+                selectedListId
+                  ? 'bg-4based-500 text-white'
+                  : 'bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              List
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            {listsOpen && (
+              <div className="absolute left-0 top-full mt-1 z-20 min-w-[160px] max-h-56 overflow-y-auto rounded-lg border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-xl">
+                {userLists.length === 0 ? (
+                  <p className="px-3 py-2 text-[11px] text-gray-500 dark:text-zinc-500">
+                    No lists yet.
+                  </p>
+                ) : (
+                  userLists.map((list) => (
+                    <button
+                      key={list._id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedListId(list._id);
+                        setInboxFilter('all');
+                        setListsOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 text-[11px] hover:bg-gray-100 dark:hover:bg-zinc-800 ${
+                        selectedListId === list._id
+                          ? 'text-4based-500 font-semibold'
+                          : 'text-gray-800 dark:text-zinc-200'
+                      }`}
+                    >
+                      {list.name || 'List'}
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+        {selectedListId && (
+          <p className="text-[10px] text-gray-500 dark:text-zinc-500 px-0.5 truncate">
+            Filtering:{' '}
+            {userLists.find((l) => l._id === selectedListId)?.name || 'List'}
+          </p>
+        )}
+      </div>
       <div className="flex-1 overflow-y-auto min-h-0 animate-fade-in">
         {chatsError && <p className="text-xs text-red-400 p-3">{chatsError}</p>}
         {!chatsLoading && !chatsError && chats.length === 0 && (
@@ -677,7 +864,7 @@ export function FourBasedChatList({
               key={chat._id}
               type="button"
               onClick={() => onSelectChat(chat)}
-              className={`w-full text-left p-3 border-l-2 transition-colors relative ${
+              className={`w-full text-left p-3 border-l-2 transition-colors relative group ${
                 active
                   ? 'border-4based-500 bg-gray-50/60 dark:bg-zinc-900/60 hover:bg-white/80 dark:hover:bg-zinc-900/80'
                   : 'border-transparent hover:bg-gray-100 dark:hover:bg-zinc-900/40 border-b border-b-gray-200 dark:border-b-zinc-800/30'
@@ -716,9 +903,33 @@ export function FourBasedChatList({
                         <Pin className="w-3 h-3 text-red-500 fill-red-500 shrink-0" />
                       )}
                     </div>
-                    <span className="text-[10px] text-gray-500 dark:text-zinc-500 shrink-0 ml-2">
-                      {relative || ''}
-                    </span>
+                    <div className="flex items-center gap-1 shrink-0 ml-2">
+                      <button
+                        type="button"
+                        onClick={(e) => void handlePinChat(chat, e)}
+                        disabled={pinningChatId === chat._id}
+                        className={`p-1 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity ${
+                          chat.is_pinned
+                            ? 'text-red-500 opacity-100'
+                            : 'text-gray-400 dark:text-zinc-500 hover:text-gray-700 dark:hover:text-zinc-200'
+                        }`}
+                        title={chat.is_pinned ? 'Unpin' : 'Pin'}
+                        aria-label={chat.is_pinned ? 'Unpin chat' : 'Pin chat'}
+                      >
+                        {pinningChatId === chat._id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Pin
+                            className={`w-3 h-3 ${
+                              chat.is_pinned ? 'fill-current' : ''
+                            }`}
+                          />
+                        )}
+                      </button>
+                      <span className="text-[10px] text-gray-500 dark:text-zinc-500">
+                        {relative || ''}
+                      </span>
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <p
@@ -846,9 +1057,50 @@ export function FourBasedChatThread({
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const threadRootRef = useRef<HTMLDivElement | null>(null);
+  const [threadWide, setThreadWide] = useState(true);
+  const [fanPanelOpen, setFanPanelOpen] = useState(() =>
+    readStoredBoolean(FAN_PANEL_OPEN_KEY, true)
+  );
+  const fanPanelUserOverrideRef = useRef(
+    localStorage.getItem(FAN_PANEL_OPEN_KEY) != null
+  );
   const threadKeyRef = useRef(`${creatorId}:${chatId}`);
   /** Message ids already PATCHed to purchased=true for chat-log sync. */
   const purchasedSyncedRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const el = threadRootRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const applyWidth = (width: number) => {
+      const wide = width >= THREAD_WIDE_BREAKPOINT;
+      setThreadWide(wide);
+      if (!fanPanelUserOverrideRef.current) {
+        setFanPanelOpen(wide);
+      }
+    };
+    applyWidth(el.getBoundingClientRect().width);
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      applyWidth(entry.contentRect.width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const toggleFanPanel = useCallback(() => {
+    setFanPanelOpen((prev) => {
+      const next = !prev;
+      fanPanelUserOverrideRef.current = true;
+      localStorage.setItem(FAN_PANEL_OPEN_KEY, String(next));
+      return next;
+    });
+  }, []);
+
+  const handleChatUpdated = useCallback((patch: Partial<FourBasedChat>) => {
+    setChat((prev) => (prev ? { ...prev, ...patch } : prev));
+  }, []);
 
   useEffect(() => {
     threadKeyRef.current = `${creatorId}:${chatId}`;
@@ -1497,6 +1749,8 @@ export function FourBasedChatThread({
     item: FourBasedVaultItem,
     size = '200x200.jpg'
   ): string | null {
+    const fromPreview = vaultPreviewPathFromItem(item, size);
+    if (fromPreview) return fourBasedMediaUrl(creatorId, fromPreview);
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
@@ -1507,6 +1761,8 @@ export function FourBasedChatThread({
   }
 
   function fullMediaSrc(item: FourBasedVaultItem): string | null {
+    const fromPreview = vaultPreviewPathFromItem(item, '900xxx.jpg');
+    if (fromPreview) return fourBasedMediaUrl(creatorId, fromPreview);
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
@@ -1517,6 +1773,8 @@ export function FourBasedChatThread({
   }
 
   function videoStreamSrc(item: FourBasedVaultItem): string | null {
+    const fromSource = vaultVideoPathFromItem(item);
+    if (fromSource) return fourBasedMediaUrl(creatorId, fromSource);
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
@@ -1584,8 +1842,10 @@ export function FourBasedChatThread({
 
   return (
     <div
-      className={`flex-1 flex flex-col min-w-0 min-h-0 relative chatter-thread-bg ${className}`}
+      ref={threadRootRef}
+      className={`flex-1 flex min-w-0 min-h-0 relative ${className}`}
     >
+    <div className="flex-1 flex flex-col min-w-0 min-h-0 relative chatter-thread-bg">
       <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95 z-0 pointer-events-none" />
 
       <div className="h-16 px-4 md:px-6 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 shrink-0 relative z-10 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-md min-w-0">
@@ -1609,6 +1869,9 @@ export function FourBasedChatThread({
                 >
                   <ShieldCheck className="w-3.5 h-3.5" />
                 </span>
+              )}
+              {chat?.is_pinned && (
+                <Pin className="w-3.5 h-3.5 text-red-500 fill-red-500 shrink-0" />
               )}
               {spent && (
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
@@ -1643,6 +1906,20 @@ export function FourBasedChatThread({
             ) : (
               <RefreshCw className="w-4 h-4" />
             )}
+          </button>
+          <button
+            type="button"
+            onClick={toggleFanPanel}
+            className={`p-2 rounded-lg transition-all border border-transparent hover:border-gray-300 dark:hover:border-zinc-700 ${
+              fanPanelOpen
+                ? 'text-4based-500 bg-4based-500/10'
+                : 'text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800'
+            }`}
+            title={fanPanelOpen ? 'Hide fan info' : 'Show fan info'}
+            aria-label={fanPanelOpen ? 'Hide fan info' : 'Show fan info'}
+            aria-pressed={fanPanelOpen}
+          >
+            <PanelRight className="w-4 h-4" />
           </button>
           {onClose && (
             <button
@@ -2486,6 +2763,46 @@ export function FourBasedChatThread({
             </button>
           </div>
         </div>
+      )}
+    </div>
+
+      {fanPanelOpen && threadWide && (
+        <FourBasedFanPanel
+          creatorId={creatorId}
+          chatId={chatId}
+          chat={chat}
+          fanId={fan.id || null}
+          fanName={fan.name}
+          fanUsername={fanProfile?.name || fan.name}
+          fanAvatarUrl={fan.avatarUrl}
+          fanProfile={fanProfile}
+          onChatUpdated={handleChatUpdated}
+          className="w-72 shrink-0"
+        />
+      )}
+
+      {fanPanelOpen && !threadWide && (
+        <>
+          <button
+            type="button"
+            className="absolute inset-0 z-20 bg-black/40 animate-fade-in"
+            aria-label="Close fan info"
+            onClick={toggleFanPanel}
+          />
+          <FourBasedFanPanel
+            creatorId={creatorId}
+            chatId={chatId}
+            chat={chat}
+            fanId={fan.id || null}
+            fanName={fan.name}
+            fanUsername={fanProfile?.name || fan.name}
+            fanAvatarUrl={fan.avatarUrl}
+            fanProfile={fanProfile}
+            onChatUpdated={handleChatUpdated}
+            onClose={toggleFanPanel}
+            className="absolute right-0 top-0 bottom-0 w-72 z-30 shadow-2xl animate-slide-up"
+          />
+        </>
       )}
     </div>
   );

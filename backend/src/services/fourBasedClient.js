@@ -298,14 +298,52 @@ function authContext(creator) {
   return session;
 }
 
-async function listChats(creator, { limit = 30, offset = 0 } = {}) {
+const BUILTIN_CHAT_FILTERS = new Set([
+  'online',
+  'unread',
+  'read',
+  'follower',
+  'subscribers',
+]);
+
+async function listChats(
+  creator,
+  { limit = 30, offset = 0, listName, userListId } = {}
+) {
   const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
-  const sort = encodeURIComponent(JSON.stringify({ updated_at: 'desc' }));
-  const url =
-    `${REST_BASE}/user/${providerUserId}/chat` +
-    `?with_users=true&deleted_user_id=${providerUserId}` +
-    `&with_last_message=true&without_empty_chats=true` +
-    `&limit=${limit}&offset=${offset}&sort=${sort}&list_names=`;
+  const safeLimit = Math.min(Math.max(Number(limit) || 30, 1), 100);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+
+  const builtin =
+    typeof listName === 'string' && BUILTIN_CHAT_FILTERS.has(listName.trim())
+      ? listName.trim()
+      : null;
+  const listId =
+    typeof userListId === 'string' && userListId.trim()
+      ? userListId.trim()
+      : null;
+
+  let url;
+  if (builtin || listId) {
+    const sort = encodeURIComponent(JSON.stringify({ chat_updated_at: 'desc' }));
+    url =
+      `${REST_BASE}/user/${providerUserId}/chatsByList` +
+      `?with_users=true&deleted_user_id=${providerUserId}` +
+      `&with_last_message=true&without_empty_chats=true` +
+      `&limit=${safeLimit}&offset=${safeOffset}&sort=${sort}`;
+    if (listId) {
+      url += `&list_names=&user_list_ids=${encodeURIComponent(listId)}`;
+    } else {
+      url += `&list_names=${encodeURIComponent(builtin)}`;
+    }
+  } else {
+    const sort = encodeURIComponent(JSON.stringify({ updated_at: 'desc' }));
+    url =
+      `${REST_BASE}/user/${providerUserId}/chat` +
+      `?with_users=true&deleted_user_id=${providerUserId}` +
+      `&with_last_message=true&without_empty_chats=true` +
+      `&limit=${safeLimit}&offset=${safeOffset}&sort=${sort}&list_names=`;
+  }
 
   const result = await requestJson({
     url,
@@ -313,6 +351,82 @@ async function listChats(creator, { limit = 30, offset = 0 } = {}) {
     cookies,
     token,
     resource,
+  });
+  return result.data;
+}
+
+async function pinChat(creator, chatId, isPinned) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const result = await requestJson({
+    method: 'POST',
+    url: `${REST_BASE}/user/${providerUserId}/chat/${chatId}/pin`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+    body: { is_pinned: Boolean(isPinned) },
+  });
+  return result.data;
+}
+
+async function listUserLists(creator, { limit = 20, offset = 0 } = {}) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const sort = encodeURIComponent(JSON.stringify({ position: 'asc' }));
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const result = await requestJson({
+    url:
+      `${REST_BASE}/user/${providerUserId}/user-lists` +
+      `?offset=${safeOffset}&limit=${safeLimit}&sort=${sort}`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  const data = result.data;
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  return data?.items || [];
+}
+
+async function getUserListsForFan(creator, fanId) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const result = await requestJson({
+    url: `${REST_BASE}/user/${providerUserId}/user-lists/contains-user/${fanId}`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  const payload = result.data?.data || result.data || {};
+  const ids = Array.isArray(payload.user_list_ids) ? payload.user_list_ids : [];
+  return { userId: payload.user_id || fanId, userListIds: ids };
+}
+
+async function addUserToList(creator, listId, fanId) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const result = await requestJson({
+    method: 'POST',
+    url: `${REST_BASE}/user/${providerUserId}/user-lists/${listId}/add-users`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+    body: { id: listId, user_ids: [fanId] },
+  });
+  return result.data;
+}
+
+async function removeUserFromList(creator, listId, fanId) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const result = await requestJson({
+    method: 'POST',
+    url: `${REST_BASE}/user/${providerUserId}/user-lists/${listId}/remove-users`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+    body: { id: listId, user_ids: [fanId] },
   });
   return result.data;
 }
@@ -437,6 +551,43 @@ async function getPivot(creator, fanId) {
   const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
   const result = await requestJson({
     url: `${REST_BASE}/user/${providerUserId}/pivot/${fanId}`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  return result.data;
+}
+
+async function updatePivot(creator, fanId, { alias, note } = {}) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const body = {};
+  if (alias !== undefined) body.alias = alias == null ? '' : String(alias);
+  if (note !== undefined) body.note = note == null ? '' : String(note);
+  if (Object.keys(body).length === 0) {
+    throw new FourBasedApiError('alias or note is required', 400);
+  }
+  const result = await requestJson({
+    method: 'PUT',
+    url: `${REST_BASE}/user/${providerUserId}/pivot/${fanId}`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+    body,
+  });
+  return result.data;
+}
+
+async function deletePivotField(creator, fanId, field) {
+  const allowed = field === 'alias' || field === 'note';
+  if (!allowed) {
+    throw new FourBasedApiError('field must be alias or note', 400);
+  }
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const result = await requestJson({
+    method: 'DELETE',
+    url: `${REST_BASE}/user/${providerUserId}/pivot/${fanId}/${field}`,
     proxyUrl,
     cookies,
     token,
@@ -765,6 +916,11 @@ module.exports = {
   resolveFourBasedProxyUrl,
   login,
   listChats,
+  pinChat,
+  listUserLists,
+  getUserListsForFan,
+  addUserToList,
+  removeUserFromList,
   getUnread,
   getBadges,
   listActivities,
@@ -773,6 +929,8 @@ module.exports = {
   getMessages,
   markReceived,
   getPivot,
+  updatePivot,
+  deletePivotField,
   sendTyping,
   sendText,
   sendMessage,
@@ -786,4 +944,5 @@ module.exports = {
   sanitizeMediaPath,
   buildMediaPreviewPath,
   extractSessionFromCreator,
+  BUILTIN_CHAT_FILTERS,
 };
