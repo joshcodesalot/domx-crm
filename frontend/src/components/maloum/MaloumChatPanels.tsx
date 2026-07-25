@@ -81,7 +81,7 @@ function UnreadBadge({
   return (
     <span
       className={`inline-flex items-center gap-1 text-[10px] font-medium ${
-        hasUnread ? accentClass : 'text-zinc-500'
+        hasUnread ? accentClass : 'text-gray-500 dark:text-zinc-500'
       }`}
       title={label}
     >
@@ -130,11 +130,11 @@ function TranslationToggles({
 }) {
   return (
     <div className="space-y-3">
-      <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+      <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500">
         Assist Settings
       </p>
       <label className="flex items-center justify-between cursor-pointer group gap-3">
-        <span className="text-xs font-medium text-zinc-300 group-hover:text-white transition-colors">
+        <span className="text-xs font-medium text-gray-700 dark:text-zinc-300 group-hover:text-gray-900 dark:group-hover:text-white transition-colors">
           Auto-translate Out
         </span>
         <ToggleSwitch
@@ -144,7 +144,7 @@ function TranslationToggles({
         />
       </label>
       <label className="flex items-center justify-between cursor-pointer group gap-3">
-        <span className="text-xs font-medium text-zinc-300 group-hover:text-white transition-colors">
+        <span className="text-xs font-medium text-gray-700 dark:text-zinc-300 group-hover:text-gray-900 dark:group-hover:text-white transition-colors">
           Show Translation UI
         </span>
         <ToggleSwitch
@@ -279,7 +279,7 @@ function PartnerAvatar({
       <img
         src={avatarUrl}
         alt=""
-        className={`${className} rounded-full object-cover border border-zinc-700 shrink-0 bg-zinc-800`}
+        className={`${className} rounded-full object-cover border border-gray-300 dark:border-zinc-700 shrink-0 bg-gray-100 dark:bg-zinc-800`}
         onError={() => setFailed(true)}
       />
     );
@@ -287,7 +287,7 @@ function PartnerAvatar({
 
   return (
     <div
-      className={`${className} rounded-full bg-zinc-800 flex items-center justify-center text-sm font-medium border border-zinc-700 shrink-0 text-zinc-300`}
+      className={`${className} rounded-full bg-gray-100 dark:bg-zinc-800 flex items-center justify-center text-sm font-medium border border-gray-300 dark:border-zinc-700 shrink-0 text-gray-700 dark:text-zinc-300`}
     >
       {initial}
     </div>
@@ -445,13 +445,13 @@ export function MaloumChatList({
   }, [loadChats]);
 
   return (
-    <div className={`flex flex-col h-full min-h-0 bg-[#0a0a0c] ${className}`}>
+    <div className={`flex flex-col h-full min-h-0 bg-[#F7F8FA] dark:bg-[#0a0a0c] ${className}`}>
       {showHeader && (
-        <div className="h-16 px-5 border-b border-zinc-800/60 flex items-center justify-between gap-2 shrink-0 bg-zinc-900/20">
-          <h2 className="text-sm font-semibold text-white flex items-center gap-2 min-w-0">
+        <div className="h-16 px-5 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-2 shrink-0 bg-gray-100/40 dark:bg-zinc-900/20">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2 min-w-0">
             <span className="truncate">{creatorName || 'Creator'}</span>
             {creatorName && (
-              <span className="text-[9px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700 shrink-0">
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-zinc-800 text-gray-500 dark:text-zinc-400 border border-gray-300 dark:border-zinc-700 shrink-0">
                 Active
               </span>
             )}
@@ -460,7 +460,7 @@ export function MaloumChatList({
             type="button"
             onClick={() => void loadChats()}
             disabled={loading}
-            className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all disabled:opacity-40"
+            className="p-1.5 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all disabled:opacity-40"
             title="Refresh chats"
           >
             {loading ? (
@@ -476,7 +476,7 @@ export function MaloumChatList({
           <p className="text-xs text-red-400 p-3">{error}</p>
         )}
         {!loading && !error && chats.length === 0 && (
-          <p className="text-xs text-zinc-500 p-3">No chats yet.</p>
+          <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">No chats yet.</p>
         )}
         {chats.map((chat) => {
           const active = chat._id === selectedChatId;
@@ -497,8 +497,8 @@ export function MaloumChatList({
               onClick={() => onSelectChat(chat)}
               className={`w-full text-left p-3 border-l-2 transition-colors relative ${
                 active
-                  ? 'border-maloum-500 bg-zinc-900/60 hover:bg-zinc-900/80'
-                  : 'border-transparent hover:bg-zinc-900/40 border-b border-b-zinc-800/30'
+                  ? 'border-maloum-500 bg-gray-50/60 dark:bg-zinc-900/60 hover:bg-white/80 dark:hover:bg-zinc-900/80'
+                  : 'border-transparent hover:bg-gray-100 dark:hover:bg-zinc-900/40 border-b border-b-gray-200 dark:border-b-zinc-800/30'
               }`}
             >
               <div className="flex items-start gap-3">
@@ -508,18 +508,18 @@ export function MaloumChatList({
                     <span
                       className={`text-sm truncate ${
                         active
-                          ? 'font-semibold text-white'
-                          : 'font-medium text-zinc-200'
+                          ? 'font-semibold text-gray-900 dark:text-white'
+                          : 'font-medium text-gray-800 dark:text-zinc-200'
                       }`}
                     >
                       {name}
                     </span>
-                    <span className="text-[10px] text-zinc-500 shrink-0 ml-2">
+                    <span className="text-[10px] text-gray-500 dark:text-zinc-500 shrink-0 ml-2">
                       {relative || ''}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <p className="text-xs text-zinc-400 truncate flex-1">{preview}</p>
+                    <p className="text-xs text-gray-500 dark:text-zinc-400 truncate flex-1">{preview}</p>
                     {spend && (
                       <span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                         {spend}
@@ -1013,24 +1013,24 @@ export function MaloumChatThread({
     <div
       className={`flex flex-col h-full min-h-0 relative chatter-thread-bg ${className}`}
     >
-      <div className="absolute inset-0 bg-zinc-950/95 z-0 pointer-events-none" />
+      <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95 z-0 pointer-events-none" />
 
-      <div className="h-16 px-4 md:px-6 border-b border-zinc-800/60 flex items-center justify-between gap-3 shrink-0 relative z-10 bg-zinc-950/80 backdrop-blur-md">
+      <div className="h-16 px-4 md:px-6 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 shrink-0 relative z-10 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-md">
         <div className="flex items-center gap-4 min-w-0">
           <div className="relative shrink-0 hidden sm:block">
             <PartnerAvatar partner={chat?.chatPartner} name={title} />
-            <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-green-500 border-2 border-zinc-950" />
+            <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-green-500 border-2 border-gray-200 dark:border-zinc-950" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2 min-w-0">
-              <h2 className="text-base font-bold text-white truncate">{title}</h2>
+              <h2 className="text-base font-bold text-gray-900 dark:text-white truncate">{title}</h2>
               {spend && (
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
                   LTV: {spend}
                 </span>
               )}
             </div>
-            <p className="text-xs text-zinc-500 truncate mt-0.5">
+            <p className="text-xs text-gray-500 dark:text-zinc-500 truncate mt-0.5">
               @{chat?.chatPartner?.username || 'fan'}
             </p>
           </div>
@@ -1039,7 +1039,7 @@ export function MaloumChatThread({
           <button
             type="button"
             onClick={() => void loadMessages()}
-            className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all border border-transparent hover:border-zinc-700"
+            className="p-2 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all border border-transparent hover:border-gray-300 dark:hover:border-zinc-700"
             title="Refresh"
           >
             <RefreshCw className="w-4 h-4" />
@@ -1048,7 +1048,7 @@ export function MaloumChatThread({
             <button
               type="button"
               onClick={onClose}
-              className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all border border-transparent hover:border-zinc-700"
+              className="p-2 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all border border-transparent hover:border-gray-300 dark:hover:border-zinc-700"
               title="Close chat"
               aria-label="Close chat"
             >
@@ -1069,7 +1069,7 @@ export function MaloumChatThread({
           </button>
         )}
         {messagesLoading && messages.length === 0 && (
-          <p className="text-xs text-zinc-500 text-center py-8">Loading messages…</p>
+          <p className="text-xs text-gray-500 dark:text-zinc-500 text-center py-8">Loading messages…</p>
         )}
         {messagesError && (
           <p className="text-xs text-red-400">{messagesError}</p>
@@ -1120,7 +1120,7 @@ export function MaloumChatThread({
                       type="button"
                       onClick={() => void handleDeleteMessage(msgKey)}
                       disabled={deleting}
-                      className="opacity-0 group-hover/msg:opacity-100 focus:opacity-100 p-1 rounded-md text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
+                      className="opacity-0 group-hover/msg:opacity-100 focus:opacity-100 p-1 rounded-md text-gray-500 dark:text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
                       title="Delete message"
                       aria-label="Delete message"
                     >
@@ -1136,12 +1136,12 @@ export function MaloumChatThread({
                   <div
                     className={`rounded-2xl p-1.5 shadow-lg relative overflow-hidden ${
                       mine
-                        ? 'bg-zinc-900 border border-maloum-500/30 text-white chat-bubble-out'
-                        : 'bg-zinc-800/80 border border-zinc-700/50 text-zinc-200 chat-bubble-in'
+                        ? 'bg-blue-50 dark:bg-zinc-900 border border-maloum-500/30 text-gray-900 dark:text-white chat-bubble-out'
+                        : 'bg-gray-100/80 dark:bg-zinc-800/80 border border-gray-200 dark:border-zinc-700/50 text-gray-800 dark:text-zinc-200 chat-bubble-in'
                     }`}
                   >
                     {ppvLabel && (
-                      <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-black/60 backdrop-blur border border-white/10 text-[10px] font-bold tracking-widest text-emerald-400 flex items-center gap-1">
+                      <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-black/35 dark:bg-black/60 backdrop-blur border border-gray-200 dark:border-white/10 text-[10px] font-bold tracking-widest text-emerald-400 flex items-center gap-1">
                         <Lock className="w-3 h-3" /> PPV · {ppvLabel}
                       </div>
                     )}
@@ -1173,17 +1173,17 @@ export function MaloumChatThread({
                                 <img
                                   src={thumbSrc}
                                   alt=""
-                                  className="w-full h-full object-cover bg-black/20 group-hover:scale-105 transition-transform duration-500"
+                                  className="w-full h-full object-cover bg-black/5 dark:bg-black/20 group-hover:scale-105 transition-transform duration-500"
                                   loading="lazy"
                                 />
                               ) : (
-                                <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-500">
+                                <div className="w-full h-full flex items-center justify-center bg-white dark:bg-zinc-900 text-gray-500 dark:text-zinc-500">
                                   <ImageIcon className="w-6 h-6" />
                                 </div>
                               )}
                               {video && (
-                                <span className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/10 transition-colors">
-                                  <span className="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center text-white/90">
+                                <span className="absolute inset-0 flex items-center justify-center bg-black/5 dark:bg-black/20 group-hover:bg-black/5 dark:group-hover:bg-black/10 transition-colors">
+                                  <span className="w-10 h-10 rounded-full bg-black/30 dark:bg-black/50 backdrop-blur flex items-center justify-center text-white/90">
                                     <Play className="w-5 h-5 ml-0.5" />
                                   </span>
                                 </span>
@@ -1204,7 +1204,7 @@ export function MaloumChatThread({
                     className={`rounded-2xl px-4 py-3 text-sm shadow-sm backdrop-blur-sm ${
                       mine
                         ? 'bg-maloum-600 text-white chat-bubble-out shadow-md'
-                        : 'bg-zinc-800/80 border border-zinc-700/50 text-zinc-200 chat-bubble-in'
+                        : 'bg-gray-100/80 dark:bg-zinc-800/80 border border-gray-200 dark:border-zinc-700/50 text-gray-800 dark:text-zinc-200 chat-bubble-in'
                     }`}
                   >
                     {text && (
@@ -1217,12 +1217,12 @@ export function MaloumChatThread({
                   <div
                     className={`mt-1.5 rounded-xl px-3 py-2 text-[11px] italic shadow-sm w-fit max-w-full flex items-center gap-1.5 ${
                       mine
-                        ? 'bg-zinc-800/60 border border-zinc-700/50 text-zinc-300'
-                        : 'bg-zinc-900/80 border border-zinc-800 text-zinc-400'
+                        ? 'bg-gray-100/60 dark:bg-zinc-800/60 border border-gray-200 dark:border-zinc-700/50 text-gray-700 dark:text-zinc-300'
+                        : 'bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 text-gray-500 dark:text-zinc-400'
                     }`}
                   >
                     {!mine && (
-                      <Languages className="w-3 h-3 text-zinc-500 shrink-0" />
+                      <Languages className="w-3 h-3 text-gray-500 dark:text-zinc-500 shrink-0" />
                     )}
                     <span className="whitespace-pre-wrap break-words">{historyEn}</span>
                   </div>
@@ -1233,11 +1233,11 @@ export function MaloumChatThread({
                     mine ? 'items-end mr-1' : 'items-start ml-1'
                   }`}
                 >
-                  <span className="text-[10px] text-zinc-600">
+                  <span className="text-[10px] text-gray-400 dark:text-zinc-600">
                     {formatRelativeTime(msg.sentAt) || ''}
                   </span>
                   {sentBy && (
-                    <div className="px-2.5 py-0.5 rounded-full bg-zinc-900/90 border border-zinc-800 text-[9px] font-medium text-zinc-400 shadow-sm">
+                    <div className="px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-zinc-900/90 border border-gray-200 dark:border-zinc-800 text-[9px] font-medium text-gray-500 dark:text-zinc-400 shadow-sm">
                       Sent by {sentBy}
                     </div>
                   )}
@@ -1249,7 +1249,7 @@ export function MaloumChatThread({
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="border-t border-zinc-800/80 bg-zinc-950 p-4 shrink-0 relative z-10 shadow-[0_-10px_40px_rgba(0,0,0,0.3)]">
+      <div className="border-t border-gray-200 dark:border-zinc-800/80 bg-white dark:bg-zinc-950 p-4 shrink-0 relative z-10 shadow-[0_-10px_40px_rgba(0,0,0,0.3)]">
         {selectedVaultItems.length > 0 && (
           <div className="flex items-center gap-4 mb-3 px-1 animate-fade-in">
             <div className="flex gap-2 max-w-[40%] overflow-x-auto">
@@ -1261,31 +1261,31 @@ export function MaloumChatThread({
                     key={uploadId || src || 'vault-chip'}
                     type="button"
                     onClick={() => toggleVaultItem(item)}
-                    className="w-12 h-12 rounded-lg relative group overflow-hidden border border-zinc-700 shrink-0"
+                    className="w-12 h-12 rounded-lg relative group overflow-hidden border border-gray-300 dark:border-zinc-700 shrink-0"
                     title="Remove"
                   >
                     {src ? (
                       <img src={src} alt="" className="w-full h-full object-cover" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-500">
+                      <div className="w-full h-full flex items-center justify-center bg-white dark:bg-zinc-900 text-gray-500 dark:text-zinc-500">
                         <ImageIcon className="w-4 h-4" />
                       </div>
                     )}
-                    <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/60 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/35 dark:bg-black/60 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                       <X className="w-3 h-3" />
                     </span>
                   </button>
                 );
               })}
             </div>
-            <div className="h-8 w-px bg-zinc-800" />
+            <div className="h-8 w-px bg-gray-100 dark:bg-zinc-800" />
             <div className="flex items-center gap-3">
               <div className="flex flex-col">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 mb-0.5">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-0.5">
                   PPV Price
                 </label>
                 <div className="relative">
-                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">
+                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-zinc-400 text-xs">
                     {currencySymbol}
                   </span>
                   <input
@@ -1294,11 +1294,11 @@ export function MaloumChatThread({
                     step="1"
                     value={ppvPrice}
                     onChange={(e) => setPpvPrice(e.target.value)}
-                    className="w-20 pl-6 pr-2 py-1 rounded-md border border-zinc-700 bg-zinc-900 text-sm text-white focus:border-domx-500 focus:outline-none transition-colors"
+                    className="w-20 pl-6 pr-2 py-1 rounded-md border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm text-gray-900 dark:text-white focus:border-domx-500 focus:outline-none transition-colors"
                   />
                 </div>
               </div>
-              <span className="text-xs text-zinc-400 mt-4">
+              <span className="text-xs text-gray-500 dark:text-zinc-400 mt-4">
                 {selectedVaultItems.length} item
                 {selectedVaultItems.length === 1 ? '' : 's'} attached
               </span>
@@ -1306,7 +1306,7 @@ export function MaloumChatThread({
             <button
               type="button"
               onClick={() => setSelectedVaultItems([])}
-              className="p-1 text-zinc-500 hover:text-white ml-auto"
+              className="p-1 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white ml-auto"
               aria-label="Clear attachment"
             >
               <X className="w-4 h-4" />
@@ -1318,14 +1318,14 @@ export function MaloumChatThread({
           <p className="text-xs text-red-400 mb-2">{sendError}</p>
         )}
         {translatingOutgoing && (
-          <p className="text-xs text-zinc-500 mb-2">Translating to German…</p>
+          <p className="text-xs text-gray-500 dark:text-zinc-500 mb-2">Translating to German…</p>
         )}
 
-        <div className="flex items-end gap-2 bg-zinc-900/80 border border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50 focus-within:bg-zinc-900 transition-all shadow-inner">
+        <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50 focus-within:bg-zinc-900 transition-all shadow-inner">
           <button
             type="button"
             onClick={() => void openVault()}
-            className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors shrink-0"
+            className="p-2 rounded-xl text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors shrink-0"
             title="Open Media Vault"
           >
             <ImageIcon className="w-5 h-5" />
@@ -1345,7 +1345,7 @@ export function MaloumChatThread({
                 ? 'Type a message… (Auto-translates to German)'
                 : 'Type a message…'
             }
-            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-white focus:outline-none placeholder:text-zinc-600 leading-relaxed"
+            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed"
           />
           <button
             type="button"
@@ -1382,18 +1382,18 @@ export function MaloumChatThread({
           <button
             type="button"
             aria-label="Close vault"
-            className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/30 dark:bg-black/80 backdrop-blur-sm"
             onClick={() => setVaultOpen(false)}
           />
-          <div className="relative bg-zinc-950 border border-zinc-800/80 rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-slide-up">
-            <div className="flex items-center justify-between p-5 border-b border-zinc-800/60 bg-zinc-900/50 backdrop-blur-md">
+          <div className="relative bg-white dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800/80 rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-slide-up">
+            <div className="flex items-center justify-between p-5 border-b border-gray-200 dark:border-zinc-800/60 bg-gray-50 dark:bg-zinc-900/50 backdrop-blur-md">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-domx-600/20 flex items-center justify-center border border-domx-500/30">
                   <Box className="w-5 h-5 text-domx-400" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-lg text-white">Media Vault</h3>
-                  <p className="text-xs text-zinc-400">
+                  <h3 className="font-bold text-lg text-gray-900 dark:text-white">Media Vault</h3>
+                  <p className="text-xs text-gray-500 dark:text-zinc-400">
                     {selectedVaultItems.length} item
                     {selectedVaultItems.length === 1 ? '' : 's'} selected
                   </p>
@@ -1404,7 +1404,7 @@ export function MaloumChatThread({
                   <button
                     type="button"
                     onClick={() => setSelectedVaultItems([])}
-                    className="px-3 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
+                    className="px-3 py-2 text-sm text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white transition-colors"
                   >
                     Clear Selection
                   </button>
@@ -1416,11 +1416,11 @@ export function MaloumChatThread({
                 >
                   Insert Media
                 </button>
-                <div className="w-px h-6 bg-zinc-800 mx-1" />
+                <div className="w-px h-6 bg-gray-100 dark:bg-zinc-800 mx-1" />
                 <button
                   type="button"
                   onClick={() => setVaultOpen(false)}
-                  className="p-2 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-lg transition-colors"
+                  className="p-2 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
                   aria-label="Close vault"
                 >
                   <X className="w-5 h-5" />
@@ -1429,8 +1429,8 @@ export function MaloumChatThread({
             </div>
 
             <div className="flex flex-1 overflow-hidden min-h-0">
-              <div className="w-48 sm:w-56 border-r border-zinc-800/60 bg-zinc-900/20 p-3 overflow-y-auto hidden md:block shrink-0">
-                <h4 className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 mb-3 px-2">
+              <div className="w-48 sm:w-56 border-r border-gray-200 dark:border-zinc-800/60 bg-gray-100/40 dark:bg-zinc-900/20 p-3 overflow-y-auto hidden md:block shrink-0">
+                <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-3 px-2">
                   Folders
                 </h4>
                 <ul className="space-y-1">
@@ -1443,8 +1443,8 @@ export function MaloumChatThread({
                           onClick={() => setSelectedFolderId(folder._id)}
                           className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 truncate ${
                             active
-                              ? 'bg-zinc-800 text-white font-medium'
-                              : 'hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200'
+                              ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
+                              : 'hover:bg-gray-100 dark:hover:bg-zinc-800/50 text-gray-500 dark:text-zinc-400 hover:text-gray-800 dark:hover:text-zinc-200'
                           }`}
                           title={folder.name || 'Folder'}
                         >
@@ -1462,7 +1462,7 @@ export function MaloumChatThread({
               </div>
 
               <div className="flex-1 flex flex-col min-w-0">
-                <div className="p-3 border-b border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0 md:hidden">
+                <div className="p-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0 md:hidden">
                   {vaultFolders.map((folder) => (
                     <button
                       key={folder._id}
@@ -1470,15 +1470,15 @@ export function MaloumChatThread({
                       onClick={() => setSelectedFolderId(folder._id)}
                       className={`shrink-0 px-3 py-1.5 text-xs rounded-full border transition-colors max-w-[160px] truncate ${
                         selectedFolderId === folder._id
-                          ? 'bg-zinc-800 text-white border-zinc-700'
-                          : 'bg-zinc-900/50 text-zinc-400 border-zinc-800 hover:border-zinc-700'
+                          ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                          : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
                       }`}
                     >
                       {folder.name || 'Folder'}
                     </button>
                   ))}
                 </div>
-                <div className="p-3 border-b border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0">
+                <div className="p-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0">
                   {(
                     [
                       { id: 'all', label: 'All Types' },
@@ -1495,8 +1495,8 @@ export function MaloumChatThread({
                         onClick={() => setVaultTypeFilter(chip.id)}
                         className={`px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors flex items-center gap-1.5 ${
                           active
-                            ? 'bg-zinc-800 text-white border-zinc-700'
-                            : 'bg-zinc-900/50 text-zinc-400 hover:text-white border-zinc-800 hover:border-zinc-700'
+                            ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                            : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
                         }`}
                       >
                         {Icon && <Icon className="w-3 h-3" />}
@@ -1509,7 +1509,7 @@ export function MaloumChatThread({
                 <div className="flex-1 overflow-y-auto p-4">
                   {vaultLoading && (
                     <div className="flex justify-center py-12">
-                      <Loader2 className="w-6 h-6 animate-spin text-zinc-400" />
+                      <Loader2 className="w-6 h-6 animate-spin text-gray-500 dark:text-zinc-400" />
                     </div>
                   )}
                   {vaultError && (
@@ -1518,7 +1518,7 @@ export function MaloumChatThread({
                   {!vaultLoading &&
                     !vaultError &&
                     filteredVaultItems.length === 0 && (
-                      <p className="text-sm text-zinc-500">
+                      <p className="text-sm text-gray-500 dark:text-zinc-500">
                         {selectedFolderId
                           ? 'No media in this folder.'
                           : 'Vault is empty.'}
@@ -1546,8 +1546,8 @@ export function MaloumChatThread({
                           key={uploadId || src || 'vault-item'}
                           className={`relative aspect-square rounded-xl overflow-hidden group transition-all ${
                             selected
-                              ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-zinc-950'
-                              : 'border border-zinc-800 hover:border-zinc-600'
+                              ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
+                              : 'border border-gray-200 dark:border-zinc-800 hover:border-gray-400 dark:hover:border-zinc-600'
                           }`}
                           title="Click to select · double-click to preview"
                         >
@@ -1569,7 +1569,7 @@ export function MaloumChatThread({
                                 loading="lazy"
                               />
                             ) : (
-                              <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-500">
+                              <div className="w-full h-full flex items-center justify-center bg-white dark:bg-zinc-900 text-gray-500 dark:text-zinc-500">
                                 <ImageIcon className="w-6 h-6" />
                               </div>
                             )}
@@ -1580,11 +1580,11 @@ export function MaloumChatThread({
                             </span>
                           )}
                           {video && (
-                            <div className="absolute inset-0 z-[5] flex items-center justify-center bg-black/20 group-hover:bg-black/10 transition-colors pointer-events-none">
+                            <div className="absolute inset-0 z-[5] flex items-center justify-center bg-black/5 dark:bg-black/20 group-hover:bg-black/5 dark:group-hover:bg-black/10 transition-colors pointer-events-none">
                               <button
                                 type="button"
                                 aria-label="Play video"
-                                className="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center text-white/90 pointer-events-auto hover:bg-black/70 transition-colors"
+                                className="w-10 h-10 rounded-full bg-black/30 dark:bg-black/50 backdrop-blur flex items-center justify-center text-white/90 pointer-events-auto hover:bg-black/20 dark:hover:bg-black/70 transition-colors"
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
@@ -1596,7 +1596,7 @@ export function MaloumChatThread({
                             </div>
                           )}
                           {video && durationLabel && (
-                            <span className="absolute bottom-2 right-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white backdrop-blur pointer-events-none">
+                            <span className="absolute bottom-2 right-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/20 dark:bg-black/70 text-white backdrop-blur pointer-events-none">
                               {durationLabel}
                             </span>
                           )}
@@ -1612,7 +1612,7 @@ export function MaloumChatThread({
       )}
 
       {preview && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-6 animate-fade-in">
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/20 dark:bg-black/70 p-6 animate-fade-in">
           <button
             type="button"
             className="absolute inset-0"
@@ -1623,7 +1623,7 @@ export function MaloumChatThread({
             <iframe
               src={preview.url}
               title="Video"
-              className="relative z-10 w-full max-w-3xl aspect-[9/16] max-h-full rounded-lg bg-black animate-slide-up"
+              className="relative z-10 w-full max-w-3xl aspect-[9/16] max-h-full rounded-lg bg-gray-900 dark:bg-black animate-slide-up"
               allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
               allowFullScreen
             />
@@ -1633,7 +1633,7 @@ export function MaloumChatThread({
               controls
               autoPlay
               playsInline
-              className="relative z-10 max-w-full max-h-full rounded-lg bg-black animate-slide-up"
+              className="relative z-10 max-w-full max-h-full rounded-lg bg-gray-900 dark:bg-black animate-slide-up"
             >
               <track kind="captions" />
             </video>
@@ -1647,7 +1647,7 @@ export function MaloumChatThread({
           <button
             type="button"
             onClick={() => setPreview(null)}
-            className="absolute top-4 right-4 z-10 p-2 rounded-full bg-black/50 text-white"
+            className="absolute top-4 right-4 z-10 p-2 rounded-full bg-black/30 dark:bg-black/50 text-white"
           >
             <X className="w-5 h-5" />
           </button>
@@ -1715,18 +1715,18 @@ export function MaloumSingleCreatorChat({
   }, []);
 
   return (
-    <div className="flex-1 flex min-w-0 min-h-0 bg-zinc-950 text-zinc-300">
-      <aside className="w-64 border-r border-zinc-800/60 flex flex-col shrink-0 bg-zinc-950/50 glass-panel">
-        <div className="h-16 px-4 border-b border-zinc-800/60 flex items-center gap-2">
+    <div className="flex-1 flex min-w-0 min-h-0 bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300">
+      <aside className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50 glass-panel">
+        <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center gap-2">
           <img src={maloumIcon} alt="" className="w-5 h-5 rounded" />
-          <span className="text-sm font-semibold text-white">Maloum</span>
+          <span className="text-sm font-semibold text-gray-900 dark:text-white">Maloum</span>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-1.5 animate-fade-in">
           {creatorsLoading && (
-            <p className="text-xs text-zinc-500 p-3">Loading creators…</p>
+            <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">Loading creators…</p>
           )}
           {!creatorsLoading && creators.length === 0 && (
-            <p className="text-xs text-zinc-500 p-3">
+            <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">
               No Maloum creators yet. Connect one from Manage Creators.
             </p>
           )}
@@ -1741,8 +1741,8 @@ export function MaloumSingleCreatorChat({
                 onClick={() => onSelectCreator(creator.id)}
                 className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all group ${
                   active
-                    ? 'bg-zinc-800/50 border border-zinc-700/50 hover:bg-zinc-800'
-                    : 'hover:bg-zinc-800/30 border border-transparent'
+                    ? 'bg-gray-100 dark:bg-zinc-800/50 border border-gray-200 dark:border-zinc-700/50 hover:bg-gray-100 dark:hover:bg-zinc-800'
+                    : 'hover:bg-gray-100 dark:hover:bg-zinc-800/30 border border-transparent'
                 }`}
               >
                 <div className="relative shrink-0">
@@ -1763,8 +1763,8 @@ export function MaloumSingleCreatorChat({
                   <span
                     className={`text-sm truncate block transition-colors ${
                       active
-                        ? 'font-semibold text-zinc-100 group-hover:text-white'
-                        : 'font-medium text-zinc-300 group-hover:text-white'
+                        ? 'font-semibold text-gray-900 dark:text-zinc-100 group-hover:text-gray-900 dark:group-hover:text-white'
+                        : 'font-medium text-gray-700 dark:text-zinc-300 group-hover:text-gray-900 dark:group-hover:text-white'
                     }`}
                   >
                     {creator.displayName}
@@ -1780,7 +1780,7 @@ export function MaloumSingleCreatorChat({
                       icon={Bell}
                       count={notificationUnread}
                       label="Unread notifications"
-                      accentClass="text-zinc-400"
+                      accentClass="text-gray-500 dark:text-zinc-400"
                     />
                   </div>
                 </div>
@@ -1788,7 +1788,7 @@ export function MaloumSingleCreatorChat({
             );
           })}
         </div>
-        <div className="shrink-0 border-t border-zinc-800/60 p-4 bg-zinc-950/80">
+        <div className="shrink-0 border-t border-gray-200 dark:border-zinc-800/60 p-4 bg-white/80 dark:bg-zinc-950/80">
           <TranslationToggles
             autoTranslateOutgoing={autoTranslateOutgoing}
             autoTranslateHistory={autoTranslateHistory}
@@ -1798,7 +1798,7 @@ export function MaloumSingleCreatorChat({
         </div>
       </aside>
 
-      <aside className="w-80 border-r border-zinc-800/60 flex flex-col shrink-0 bg-[#0a0a0c] glass-panel">
+      <aside className="w-80 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-[#F7F8FA] dark:bg-[#0a0a0c] glass-panel">
         {selectedCreatorId ? (
           <MaloumChatList
             creatorId={selectedCreatorId}
@@ -1810,7 +1810,7 @@ export function MaloumSingleCreatorChat({
             }}
           />
         ) : (
-          <p className="text-xs text-zinc-500 p-4">Select a creator</p>
+          <p className="text-xs text-gray-500 dark:text-zinc-500 p-4">Select a creator</p>
         )}
       </aside>
 
@@ -1826,8 +1826,8 @@ export function MaloumSingleCreatorChat({
             }}
           />
         ) : (
-          <div className="flex-1 flex items-center justify-center text-sm text-zinc-500 chatter-thread-bg relative">
-            <div className="absolute inset-0 bg-zinc-950/95" />
+          <div className="flex-1 flex items-center justify-center text-sm text-gray-500 dark:text-zinc-500 chatter-thread-bg relative">
+            <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95" />
             <span className="relative z-10">Select a creator chat to start</span>
           </div>
         )}

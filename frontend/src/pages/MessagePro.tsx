@@ -227,7 +227,7 @@ export default function MessagePro() {
             {pickerOpen && (
               <div className="absolute left-0 top-full mt-1 z-30 w-64 max-h-72 overflow-y-auto rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1">
                 {availableCreators.length === 0 ? (
-                  <p className="text-xs text-gray-500 px-3 py-2">
+                  <p className="text-xs text-gray-500 dark:text-gray-400 px-3 py-2">
                     {loading ? 'Loading…' : 'No more Maloum creators available'}
                   </p>
                 ) : (
@@ -262,7 +262,7 @@ export default function MessagePro() {
       )}
 
       {!activeWorkspace ? (
-        <div className="flex-1 flex items-center justify-center text-sm text-gray-500">
+        <div className="flex-1 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
           {loading
             ? 'Loading…'
             : 'Open a Maloum creator to start messaging'}
@@ -336,7 +336,7 @@ export default function MessagePro() {
                 }
               />
             ) : (
-              <div className="h-full flex items-center justify-center text-sm text-gray-500">
+              <div className="h-full flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
                 Tab not found
               </div>
             )}

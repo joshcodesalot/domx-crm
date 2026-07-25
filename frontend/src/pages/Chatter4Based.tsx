@@ -81,7 +81,7 @@ function UnreadBadge({
   return (
     <span
       className={`inline-flex items-center gap-1 text-[10px] font-medium ${
-        hasUnread ? 'text-4based-500' : 'text-zinc-500'
+        hasUnread ? 'text-4based-500' : 'text-gray-500 dark:text-zinc-500'
       }`}
       title={label}
     >
@@ -307,17 +307,17 @@ function FanAvatar({
           alt=""
           loading="lazy"
           decoding="async"
-          className={`${dim} rounded-full object-cover bg-zinc-800 border border-zinc-700`}
+          className={`${dim} rounded-full object-cover bg-gray-100 dark:bg-zinc-800 border border-gray-300 dark:border-zinc-700`}
         />
       ) : (
         <div
-          className={`${dim} rounded-full bg-zinc-800 border border-zinc-700 text-zinc-300 flex items-center justify-center text-sm font-medium`}
+          className={`${dim} rounded-full bg-gray-100 dark:bg-zinc-800 border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 flex items-center justify-center text-sm font-medium`}
         >
           {initials}
         </div>
       )}
       {isOnline && (
-        <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-green-500 border-2 border-zinc-950" />
+        <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-green-500 border-2 border-gray-200 dark:border-zinc-950" />
       )}
     </div>
   );
@@ -1042,23 +1042,23 @@ export default function Chatter4Based() {
   }, [vaultItems, vaultTypeFilter]);
 
   return (
-    <div className="bg-zinc-950 text-zinc-300 h-screen flex antialiased overflow-hidden">
+    <div className="bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 h-screen flex antialiased overflow-hidden">
       <Sidebar activePage="chatter" />
 
       <main className="flex-1 flex min-w-0 overflow-hidden">
         {/* Creators column */}
-        <aside className="w-64 border-r border-zinc-800/60 flex flex-col shrink-0 bg-zinc-950/50 glass-panel">
-          <div className="h-16 px-4 border-b border-zinc-800/60 flex items-center gap-2">
+        <aside className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50 glass-panel">
+          <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center gap-2">
             <img src={fourBasedIcon} alt="" className="w-5 h-5 rounded" />
-            <span className="text-sm font-semibold text-white">4based</span>
+            <span className="text-sm font-semibold text-gray-900 dark:text-white">4based</span>
             <span className="w-2 h-2 rounded-sm bg-4based-500 ml-0.5" />
           </div>
           <div className="flex-1 overflow-y-auto p-3 space-y-1.5 animate-fade-in">
             {creatorsLoading && (
-              <p className="text-xs text-zinc-500 p-3">Loading creators…</p>
+              <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">Loading creators…</p>
             )}
             {!creatorsLoading && creators.length === 0 && (
-              <p className="text-xs text-zinc-500 p-3">
+              <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">
                 No 4based creators yet. Connect one from Manage Creators.
               </p>
             )}
@@ -1075,8 +1075,8 @@ export default function Chatter4Based() {
                 onClick={() => setSelectedCreatorId(creator.id)}
                 className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all group ${
                   active
-                    ? 'bg-zinc-800/50 border border-zinc-700/50 hover:bg-zinc-800'
-                    : 'hover:bg-zinc-800/30 border border-transparent'
+                    ? 'bg-gray-100 dark:bg-zinc-800/50 border border-gray-200 dark:border-zinc-700/50 hover:bg-gray-100 dark:hover:bg-zinc-800'
+                    : 'hover:bg-gray-100 dark:hover:bg-zinc-800/30 border border-transparent'
                 }`}
               >
                 <div className="relative shrink-0">
@@ -1086,7 +1086,7 @@ export default function Chatter4Based() {
                     className="w-10 h-10 rounded-full object-cover shadow-md"
                     initialsClassName="w-10 h-10 rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center text-sm font-bold text-white shadow-md"
                   />
-                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-4based-500 border-2 border-zinc-900 rounded-sm flex items-center justify-center text-[7px] font-bold text-white">
+                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-4based-500 border-2 border-gray-200 dark:border-zinc-900 rounded-sm flex items-center justify-center text-[7px] font-bold text-white">
                     4B
                   </div>
                 </div>
@@ -1094,8 +1094,8 @@ export default function Chatter4Based() {
                   <span
                     className={`text-sm truncate block transition-colors ${
                       active
-                        ? 'font-semibold text-zinc-100 group-hover:text-white'
-                        : 'font-medium text-zinc-300 group-hover:text-white'
+                        ? 'font-semibold text-gray-900 dark:text-zinc-100 group-hover:text-gray-900 dark:group-hover:text-white'
+                        : 'font-medium text-gray-700 dark:text-zinc-300 group-hover:text-gray-900 dark:group-hover:text-white'
                     }`}
                   >
                     {creator.displayName}
@@ -1117,12 +1117,12 @@ export default function Chatter4Based() {
               );
             })}
           </div>
-          <div className="shrink-0 border-t border-zinc-800/60 p-4 space-y-3 bg-zinc-950/80">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+          <div className="shrink-0 border-t border-gray-200 dark:border-zinc-800/60 p-4 space-y-3 bg-white/80 dark:bg-zinc-950/80">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500">
               Assist Settings
             </p>
             <label className="flex items-center justify-between cursor-pointer group gap-3">
-              <span className="text-xs font-medium text-zinc-300 group-hover:text-white transition-colors">
+              <span className="text-xs font-medium text-gray-700 dark:text-zinc-300 group-hover:text-gray-900 dark:group-hover:text-white transition-colors">
                 Auto-translate Out
               </span>
               <ToggleSwitch
@@ -1132,7 +1132,7 @@ export default function Chatter4Based() {
               />
             </label>
             <label className="flex items-center justify-between cursor-pointer group gap-3">
-              <span className="text-xs font-medium text-zinc-300 group-hover:text-white transition-colors">
+              <span className="text-xs font-medium text-gray-700 dark:text-zinc-300 group-hover:text-gray-900 dark:group-hover:text-white transition-colors">
                 Show Translation UI
               </span>
               <ToggleSwitch
@@ -1145,14 +1145,14 @@ export default function Chatter4Based() {
         </aside>
 
         {/* Conversations */}
-        <aside className="w-80 border-r border-zinc-800/60 flex flex-col shrink-0 bg-[#0a0a0c] glass-panel">
-          <div className="h-16 px-5 border-b border-zinc-800/60 flex items-center justify-between gap-2 shrink-0 bg-zinc-900/20">
-            <h2 className="text-sm font-semibold text-white flex items-center gap-2 min-w-0">
+        <aside className="w-80 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-[#F7F8FA] dark:bg-[#0a0a0c] glass-panel">
+          <div className="h-16 px-5 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-2 shrink-0 bg-gray-100/40 dark:bg-zinc-900/20">
+            <h2 className="text-sm font-semibold text-gray-900 dark:text-white flex items-center gap-2 min-w-0">
               <span className="truncate">
                 {selectedCreator?.displayName || 'Creator'}
               </span>
               {selectedCreator && (
-                <span className="text-[9px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 border border-zinc-700 shrink-0">
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-zinc-800 text-gray-500 dark:text-zinc-400 border border-gray-300 dark:border-zinc-700 shrink-0">
                   Active
                 </span>
               )}
@@ -1168,7 +1168,7 @@ export default function Chatter4Based() {
                 }
               }}
               disabled={!selectedCreatorId || chatsLoading}
-              className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all disabled:opacity-40"
+              className="p-1.5 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all disabled:opacity-40"
               title="Refresh chats"
               aria-label="Refresh chats"
             >
@@ -1184,7 +1184,7 @@ export default function Chatter4Based() {
               <p className="text-xs text-red-400 p-3">{chatsError}</p>
             )}
             {!chatsLoading && !chatsError && chats.length === 0 && selectedCreatorId && (
-              <p className="text-xs text-zinc-500 p-3">No chats yet.</p>
+              <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">No chats yet.</p>
             )}
             {sortedChats.map((chat) => {
               const peer = fanFromChat(chat, providerUserId);
@@ -1203,8 +1203,8 @@ export default function Chatter4Based() {
                   onClick={() => setSelectedChatId(chat._id)}
                   className={`w-full text-left p-3 border-l-2 transition-colors relative ${
                     active
-                      ? 'border-4based-500 bg-zinc-900/60 hover:bg-zinc-900/80'
-                      : 'border-transparent hover:bg-zinc-900/40 border-b border-b-zinc-800/30'
+                      ? 'border-4based-500 bg-gray-50/60 dark:bg-zinc-900/60 hover:bg-white/80 dark:hover:bg-zinc-900/80'
+                      : 'border-transparent hover:bg-gray-100 dark:hover:bg-zinc-900/40 border-b border-b-gray-200 dark:border-b-zinc-800/30'
                   }`}
                 >
                   <div className="flex items-start gap-3">
@@ -1222,8 +1222,8 @@ export default function Chatter4Based() {
                           <span
                             className={`text-sm truncate ${
                               active
-                                ? 'font-semibold text-white'
-                                : 'font-medium text-zinc-200'
+                                ? 'font-semibold text-gray-900 dark:text-white'
+                                : 'font-medium text-gray-800 dark:text-zinc-200'
                             }`}
                           >
                             {peer.name}
@@ -1240,12 +1240,12 @@ export default function Chatter4Based() {
                             <Pin className="w-3 h-3 text-red-500 fill-red-500 shrink-0" />
                           )}
                         </div>
-                        <span className="text-[10px] text-zinc-500 shrink-0 ml-2">
+                        <span className="text-[10px] text-gray-500 dark:text-zinc-500 shrink-0 ml-2">
                           {relative || ''}
                         </span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <p className="text-xs text-zinc-400 truncate flex-1">
+                        <p className="text-xs text-gray-500 dark:text-zinc-400 truncate flex-1">
                           {chat.last_message?.message || '—'}
                         </p>
                         {spent && (
@@ -1269,9 +1269,9 @@ export default function Chatter4Based() {
 
         {/* Thread */}
         <section className="flex-1 flex flex-col min-w-0 relative chatter-thread-bg">
-          <div className="absolute inset-0 bg-zinc-950/95 z-0 pointer-events-none" />
+          <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95 z-0 pointer-events-none" />
 
-          <div className="h-16 px-4 md:px-6 border-b border-zinc-800/60 flex items-center justify-between gap-3 shrink-0 relative z-10 bg-zinc-950/80 backdrop-blur-md min-w-0">
+          <div className="h-16 px-4 md:px-6 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 shrink-0 relative z-10 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-md min-w-0">
             {selectedChat ? (
               <>
                 <div className="flex items-center gap-4 min-w-0">
@@ -1284,7 +1284,7 @@ export default function Chatter4Based() {
                   </div>
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 min-w-0">
-                      <h2 className="text-base font-bold text-white truncate">{fan.name}</h2>
+                      <h2 className="text-base font-bold text-gray-900 dark:text-white truncate">{fan.name}</h2>
                       {fanVerified && !fan.isCreator && (
                         <span
                           title="Trusted user — verified payment"
@@ -1299,7 +1299,7 @@ export default function Chatter4Based() {
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-zinc-500 truncate mt-0.5">
+                    <p className="text-xs text-gray-500 dark:text-zinc-500 truncate mt-0.5">
                       {fanProfileLoading
                         ? '…'
                         : fanIsOnline
@@ -1313,7 +1313,7 @@ export default function Chatter4Based() {
                 <button
                   type="button"
                   onClick={closeOpenThread}
-                  className="p-2 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-all border border-transparent hover:border-zinc-700 shrink-0"
+                  className="p-2 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all border border-transparent hover:border-gray-300 dark:hover:border-zinc-700 shrink-0"
                   title="Close chat"
                   aria-label="Close chat"
                 >
@@ -1321,7 +1321,7 @@ export default function Chatter4Based() {
                 </button>
               </>
             ) : (
-              <span className="text-sm text-zinc-500 relative z-10">
+              <span className="text-sm text-gray-500 dark:text-zinc-500 relative z-10">
                 Select a creator chat to start
               </span>
             )}
@@ -1330,7 +1330,7 @@ export default function Chatter4Based() {
           <div className="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 min-h-0 relative z-10 scroll-smooth animate-fade-in">
             {messagesLoading && (
               <div className="flex justify-center py-8">
-                <Loader2 className="w-5 h-5 animate-spin text-zinc-400" />
+                <Loader2 className="w-5 h-5 animate-spin text-gray-500 dark:text-zinc-400" />
               </div>
             )}
             {messagesError && (
@@ -1373,17 +1373,17 @@ export default function Chatter4Based() {
                       <div
                         className={`rounded-2xl p-1.5 shadow-lg relative overflow-hidden ${
                           mine
-                            ? 'bg-zinc-900 border border-4based-500/30 text-white chat-bubble-out'
-                            : 'bg-zinc-800/80 border border-zinc-700/50 text-zinc-200 chat-bubble-in'
+                            ? 'bg-emerald-50 dark:bg-zinc-900 border border-4based-500/30 text-white chat-bubble-out'
+                            : 'bg-gray-100/80 dark:bg-zinc-800/80 border border-gray-200 dark:border-zinc-700/50 text-gray-800 dark:text-zinc-200 chat-bubble-in'
                         }`}
                       >
                         {ppvLabel && !isPlaying && (
-                          <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-black/60 backdrop-blur border border-white/10 text-[10px] font-bold tracking-widest text-emerald-400 flex items-center gap-1">
+                          <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-black/35 dark:bg-black/60 backdrop-blur border border-gray-200 dark:border-white/10 text-[10px] font-bold tracking-widest text-emerald-400 flex items-center gap-1">
                             <Lock className="w-3 h-3" /> PPV · {ppvLabel}
                           </div>
                         )}
                         {hasMedia && (
-                          <div className="mb-2 relative overflow-hidden rounded-xl bg-black min-w-[200px]">
+                          <div className="mb-2 relative overflow-hidden rounded-xl bg-gray-900 dark:bg-black min-w-[200px]">
                             {isPlaying ? (
                               <video
                                 controls
@@ -1392,7 +1392,7 @@ export default function Chatter4Based() {
                                 preload="auto"
                                 poster={mediaUrl || undefined}
                                 src={videoUrl || undefined}
-                                className="max-h-56 w-full object-contain bg-black"
+                                className="max-h-56 w-full object-contain bg-gray-900 dark:bg-black"
                               >
                                 <track kind="captions" />
                               </video>
@@ -1416,13 +1416,13 @@ export default function Chatter4Based() {
                                     className="max-h-56 w-full object-cover group-hover:scale-105 transition-transform duration-500"
                                   />
                                 ) : (
-                                  <div className="h-40 flex items-center justify-center bg-black/40">
+                                  <div className="h-40 flex items-center justify-center bg-black/10 dark:bg-black/40">
                                     <Play className="w-10 h-10 text-white/80" />
                                   </div>
                                 )}
                                 {isVideo && (
-                                  <span className="absolute inset-0 flex items-center justify-center bg-black/25">
-                                    <span className="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center">
+                                  <span className="absolute inset-0 flex items-center justify-center bg-black/5 dark:bg-black/25">
+                                    <span className="w-10 h-10 rounded-full bg-black/30 dark:bg-black/50 backdrop-blur flex items-center justify-center">
                                       <Play className="w-5 h-5 ml-0.5 text-white" />
                                     </span>
                                   </span>
@@ -1430,7 +1430,7 @@ export default function Chatter4Based() {
                               </button>
                             )}
                             {typeof duration === 'number' && duration > 0 && !isPlaying && (
-                              <span className="absolute bottom-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white backdrop-blur z-10 pointer-events-none">
+                              <span className="absolute bottom-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/20 dark:bg-black/70 text-white backdrop-blur z-10 pointer-events-none">
                                 {formatDuration(duration)}
                               </span>
                             )}
@@ -1447,7 +1447,7 @@ export default function Chatter4Based() {
                         className={`rounded-2xl px-4 py-3 text-sm shadow-sm backdrop-blur-sm ${
                           mine
                             ? 'bg-4based-600 text-white chat-bubble-out shadow-md'
-                            : 'bg-zinc-800/80 border border-zinc-700/50 text-zinc-200 chat-bubble-in'
+                            : 'bg-gray-100/80 dark:bg-zinc-800/80 border border-gray-200 dark:border-zinc-700/50 text-gray-800 dark:text-zinc-200 chat-bubble-in'
                         }`}
                       >
                         {msg.message && (
@@ -1460,12 +1460,12 @@ export default function Chatter4Based() {
                       <div
                         className={`mt-1.5 rounded-xl px-3 py-2 text-[11px] italic shadow-sm w-fit max-w-full flex items-center gap-1.5 ${
                           mine
-                            ? 'bg-zinc-800/60 border border-zinc-700/50 text-zinc-300'
-                            : 'bg-zinc-900/80 border border-zinc-800 text-zinc-400'
+                            ? 'bg-gray-100/60 dark:bg-zinc-800/60 border border-gray-200 dark:border-zinc-700/50 text-gray-700 dark:text-zinc-300'
+                            : 'bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 text-gray-500 dark:text-zinc-400'
                         }`}
                       >
                         {!mine && (
-                          <Languages className="w-3 h-3 text-zinc-500 shrink-0" />
+                          <Languages className="w-3 h-3 text-gray-500 dark:text-zinc-500 shrink-0" />
                         )}
                         <span className="whitespace-pre-wrap break-words">{historyEn}</span>
                       </div>
@@ -1476,11 +1476,11 @@ export default function Chatter4Based() {
                         mine ? 'items-end mr-1' : 'items-start ml-1'
                       }`}
                     >
-                      <span className="text-[10px] text-zinc-600">
+                      <span className="text-[10px] text-gray-400 dark:text-zinc-600">
                         {formatTime(msg.created_at)}
                       </span>
                       {sentBy && (
-                        <div className="px-2.5 py-0.5 rounded-full bg-zinc-900/90 border border-zinc-800 text-[9px] font-medium text-zinc-400 shadow-sm">
+                        <div className="px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-zinc-900/90 border border-gray-200 dark:border-zinc-800 text-[9px] font-medium text-gray-500 dark:text-zinc-400 shadow-sm">
                           Sent by {sentBy}
                         </div>
                       )}
@@ -1492,7 +1492,7 @@ export default function Chatter4Based() {
             <div ref={messagesEndRef} />
           </div>
 
-          <div className="border-t border-zinc-800/80 bg-zinc-950 p-4 shrink-0 relative z-10 shadow-[0_-10px_40px_rgba(0,0,0,0.3)]">
+          <div className="border-t border-gray-200 dark:border-zinc-800/80 bg-white dark:bg-zinc-950 p-4 shrink-0 relative z-10 shadow-[0_-10px_40px_rgba(0,0,0,0.3)]">
             {selectedVaultItems.length > 0 && (
               <div className="flex items-center gap-4 mb-3 px-1 animate-fade-in">
                 <div className="flex gap-2 max-w-[40%] overflow-x-auto">
@@ -1504,7 +1504,7 @@ export default function Chatter4Based() {
                         key={id}
                         type="button"
                         onClick={() => toggleVaultItem(item)}
-                        className="w-12 h-12 rounded-lg relative group overflow-hidden border border-zinc-700 shrink-0"
+                        className="w-12 h-12 rounded-lg relative group overflow-hidden border border-gray-300 dark:border-zinc-700 shrink-0"
                         title="Remove"
                       >
                         {thumb ? (
@@ -1516,23 +1516,23 @@ export default function Chatter4Based() {
                             className="w-full h-full object-cover"
                           />
                         ) : (
-                          <div className="w-full h-full bg-zinc-800" />
+                          <div className="w-full h-full bg-gray-100 dark:bg-zinc-800" />
                         )}
-                        <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/60 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                        <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/35 dark:bg-black/60 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                           <X className="w-3 h-3" />
                         </span>
                       </button>
                     );
                   })}
                 </div>
-                <div className="h-8 w-px bg-zinc-800" />
+                <div className="h-8 w-px bg-gray-100 dark:bg-zinc-800" />
                 <div className="flex items-center gap-3">
                   <div className="flex flex-col">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 mb-0.5">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-0.5">
                       PPV Price
                     </label>
                     <div className="relative">
-                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-400 text-xs">
+                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-zinc-400 text-xs">
                         $
                       </span>
                       <input
@@ -1541,11 +1541,11 @@ export default function Chatter4Based() {
                         step="1"
                         value={ppvDollars}
                         onChange={(e) => setPpvDollars(e.target.value)}
-                        className="w-20 pl-6 pr-2 py-1 rounded-md border border-zinc-700 bg-zinc-900 text-sm text-white focus:border-domx-500 focus:outline-none transition-colors"
+                        className="w-20 pl-6 pr-2 py-1 rounded-md border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm text-gray-900 dark:text-white focus:border-domx-500 focus:outline-none transition-colors"
                       />
                     </div>
                   </div>
-                  <span className="text-xs text-zinc-400 mt-4">
+                  <span className="text-xs text-gray-500 dark:text-zinc-400 mt-4">
                     {selectedVaultItems.length} item
                     {selectedVaultItems.length === 1 ? '' : 's'} · ≈ {priceCoins} coins
                   </span>
@@ -1553,7 +1553,7 @@ export default function Chatter4Based() {
                 <button
                   type="button"
                   onClick={() => setSelectedVaultItems([])}
-                  className="p-1 text-zinc-500 hover:text-white ml-auto"
+                  className="p-1 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white ml-auto"
                   aria-label="Clear attachment"
                 >
                   <X className="w-4 h-4" />
@@ -1565,15 +1565,15 @@ export default function Chatter4Based() {
               <p className="text-xs text-red-400 mb-2">{sendError}</p>
             )}
             {translatingOutgoing && (
-              <p className="text-xs text-zinc-500 mb-2">Translating to German…</p>
+              <p className="text-xs text-gray-500 dark:text-zinc-500 mb-2">Translating to German…</p>
             )}
 
-            <div className="flex items-end gap-2 bg-zinc-900/80 border border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50 focus-within:bg-zinc-900 transition-all shadow-inner">
+            <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50 focus-within:bg-zinc-900 transition-all shadow-inner">
               <button
                 type="button"
                 onClick={() => void openVault()}
                 disabled={!selectedChatId}
-                className="p-2 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors shrink-0 disabled:opacity-40"
+                className="p-2 rounded-xl text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors shrink-0 disabled:opacity-40"
                 title="Open Media Vault"
               >
                 <ImageIcon className="w-5 h-5" />
@@ -1596,7 +1596,7 @@ export default function Chatter4Based() {
                       : 'Type a message…'
                     : 'Select a creator chat to start'
                 }
-                className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-white focus:outline-none placeholder:text-zinc-600 leading-relaxed disabled:opacity-50"
+                className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-50"
               />
               <button
                 type="button"
@@ -1627,21 +1627,21 @@ export default function Chatter4Based() {
           <button
             type="button"
             aria-label="Close vault"
-            className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            className="absolute inset-0 bg-black/30 dark:bg-black/80 backdrop-blur-sm"
             onClick={() => {
               setVaultOpen(false);
               setPreviewItem(null);
             }}
           />
-          <div className="relative bg-zinc-950 border border-zinc-800/80 rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-slide-up">
-            <div className="flex items-center justify-between p-5 border-b border-zinc-800/60 bg-zinc-900/50 backdrop-blur-md">
+          <div className="relative bg-white dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800/80 rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-slide-up">
+            <div className="flex items-center justify-between p-5 border-b border-gray-200 dark:border-zinc-800/60 bg-gray-50 dark:bg-zinc-900/50 backdrop-blur-md">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-domx-600/20 flex items-center justify-center border border-domx-500/30">
                   <Box className="w-5 h-5 text-domx-400" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-lg text-white">Media Vault</h3>
-                  <p className="text-xs text-zinc-400">
+                  <h3 className="font-bold text-lg text-gray-900 dark:text-white">Media Vault</h3>
+                  <p className="text-xs text-gray-500 dark:text-zinc-400">
                     {selectedVaultItems.length} item
                     {selectedVaultItems.length === 1 ? '' : 's'} selected
                   </p>
@@ -1652,7 +1652,7 @@ export default function Chatter4Based() {
                   <button
                     type="button"
                     onClick={() => setSelectedVaultItems([])}
-                    className="px-3 py-2 text-sm text-zinc-400 hover:text-white transition-colors"
+                    className="px-3 py-2 text-sm text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white transition-colors"
                   >
                     Clear Selection
                   </button>
@@ -1668,7 +1668,7 @@ export default function Chatter4Based() {
                 >
                   Insert Media
                 </button>
-                <div className="w-px h-6 bg-zinc-800 mx-1" />
+                <div className="w-px h-6 bg-gray-100 dark:bg-zinc-800 mx-1" />
                 <button
                   type="button"
                   onClick={() => {
@@ -1676,7 +1676,7 @@ export default function Chatter4Based() {
                     setPreviewItem(null);
                     setVaultPreviewPlaying(false);
                   }}
-                  className="p-2 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-lg transition-colors"
+                  className="p-2 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
                   aria-label="Close vault"
                 >
                   <X className="w-5 h-5" />
@@ -1693,7 +1693,7 @@ export default function Chatter4Based() {
                 >
                   ← Back to grid
                 </button>
-                <div className="flex justify-center bg-black/40 rounded-xl p-2 min-h-[240px]">
+                <div className="flex justify-center bg-black/10 dark:bg-black/40 rounded-xl p-2 min-h-[240px]">
                   {isVideoItem(previewItem) ? (
                     vaultPreviewPlaying ? (
                       <video
@@ -1722,11 +1722,11 @@ export default function Chatter4Based() {
                             className="max-h-[60vh] max-w-full rounded object-contain"
                           />
                         ) : (
-                          <div className="w-64 h-40 flex items-center justify-center rounded bg-black/40">
+                          <div className="w-64 h-40 flex items-center justify-center rounded bg-black/10 dark:bg-black/40">
                             <Play className="w-12 h-12 text-white" />
                           </div>
                         )}
-                        <span className="absolute inset-0 flex items-center justify-center bg-black/25 rounded">
+                        <span className="absolute inset-0 flex items-center justify-center bg-black/5 dark:bg-black/25 rounded">
                           <Play className="w-14 h-14 text-white drop-shadow fill-white/20" />
                         </span>
                       </button>
@@ -1751,7 +1751,7 @@ export default function Chatter4Based() {
                       setPpvDollars('0');
                       setPreviewItem(null);
                     }}
-                    className="px-3 py-2 text-sm rounded-lg border border-zinc-700 text-zinc-300 hover:text-white hover:bg-zinc-800"
+                    className="px-3 py-2 text-sm rounded-lg border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800"
                   >
                     Toggle free attach
                   </button>
@@ -1776,8 +1776,8 @@ export default function Chatter4Based() {
               </div>
             ) : (
               <div className="flex flex-1 overflow-hidden min-h-0">
-                <div className="w-48 sm:w-56 border-r border-zinc-800/60 bg-zinc-900/20 p-3 overflow-y-auto hidden md:block shrink-0">
-                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 mb-3 px-2">
+                <div className="w-48 sm:w-56 border-r border-gray-200 dark:border-zinc-800/60 bg-gray-100/40 dark:bg-zinc-900/20 p-3 overflow-y-auto hidden md:block shrink-0">
+                  <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-3 px-2">
                     Folders
                   </h4>
                   <ul className="space-y-1">
@@ -1787,8 +1787,8 @@ export default function Chatter4Based() {
                         onClick={() => void selectVaultFolder(null)}
                         className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${
                           selectedFolder === null
-                            ? 'bg-zinc-800 text-white font-medium'
-                            : 'hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200'
+                            ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
+                            : 'hover:bg-gray-100 dark:hover:bg-zinc-800/50 text-gray-500 dark:text-zinc-400 hover:text-gray-800 dark:hover:text-zinc-200'
                         }`}
                       >
                         {selectedFolder === null ? (
@@ -1808,8 +1808,8 @@ export default function Chatter4Based() {
                             onClick={() => void selectVaultFolder(folder)}
                             className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 truncate ${
                               active
-                                ? 'bg-zinc-800 text-white font-medium'
-                                : 'hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200'
+                                ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
+                                : 'hover:bg-gray-100 dark:hover:bg-zinc-800/50 text-gray-500 dark:text-zinc-400 hover:text-gray-800 dark:hover:text-zinc-200'
                             }`}
                             title={folder}
                           >
@@ -1827,14 +1827,14 @@ export default function Chatter4Based() {
                 </div>
 
                 <div className="flex-1 flex flex-col min-w-0">
-                  <div className="p-3 border-b border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0 md:hidden">
+                  <div className="p-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0 md:hidden">
                     <button
                       type="button"
                       onClick={() => void selectVaultFolder(null)}
                       className={`shrink-0 px-3 py-1.5 text-xs rounded-full border transition-colors ${
                         selectedFolder === null
-                          ? 'bg-zinc-800 text-white border-zinc-700'
-                          : 'bg-zinc-900/50 text-zinc-400 border-zinc-800'
+                          ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                          : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 border-gray-200 dark:border-zinc-800'
                       }`}
                     >
                       All
@@ -1846,8 +1846,8 @@ export default function Chatter4Based() {
                         onClick={() => void selectVaultFolder(folder)}
                         className={`shrink-0 px-3 py-1.5 text-xs rounded-full border transition-colors max-w-[160px] truncate ${
                           selectedFolder === folder
-                            ? 'bg-zinc-800 text-white border-zinc-700'
-                            : 'bg-zinc-900/50 text-zinc-400 border-zinc-800'
+                            ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                            : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 border-gray-200 dark:border-zinc-800'
                         }`}
                         title={folder}
                       >
@@ -1855,7 +1855,7 @@ export default function Chatter4Based() {
                       </button>
                     ))}
                   </div>
-                  <div className="p-3 border-b border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0">
+                  <div className="p-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0">
                     {(
                       [
                         { id: 'all' as const, label: 'All Types' },
@@ -1872,8 +1872,8 @@ export default function Chatter4Based() {
                           onClick={() => setVaultTypeFilter(chip.id)}
                           className={`px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors flex items-center gap-1.5 ${
                             active
-                              ? 'bg-zinc-800 text-white border-zinc-700'
-                              : 'bg-zinc-900/50 text-zinc-400 hover:text-white border-zinc-800 hover:border-zinc-700'
+                              ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                              : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
                           }`}
                         >
                           {Icon && <Icon className="w-3 h-3" />}
@@ -1886,7 +1886,7 @@ export default function Chatter4Based() {
                   <div className="flex-1 overflow-y-auto p-4">
                     {vaultLoading && (
                       <div className="flex justify-center py-12">
-                        <Loader2 className="w-6 h-6 animate-spin text-zinc-400" />
+                        <Loader2 className="w-6 h-6 animate-spin text-gray-500 dark:text-zinc-400" />
                       </div>
                     )}
                     {vaultError && (
@@ -1895,7 +1895,7 @@ export default function Chatter4Based() {
                     {!vaultLoading &&
                       !vaultError &&
                       filteredVaultItems.length === 0 && (
-                        <p className="text-sm text-zinc-500">
+                        <p className="text-sm text-gray-500 dark:text-zinc-500">
                           {selectedFolder
                             ? `No media in “${selectedFolder}”.`
                             : 'Vault is empty.'}
@@ -1920,8 +1920,8 @@ export default function Chatter4Based() {
                             }}
                             className={`relative aspect-square rounded-xl overflow-hidden group transition-all ${
                               selected
-                                ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-zinc-950'
-                                : 'border border-zinc-800 hover:border-zinc-600'
+                                ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
+                                : 'border border-gray-200 dark:border-zinc-800 hover:border-gray-400 dark:hover:border-zinc-600'
                             }`}
                             title="Click to select · double-click to preview"
                           >
@@ -1934,7 +1934,7 @@ export default function Chatter4Based() {
                                 className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
                               />
                             ) : (
-                              <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-500">
+                              <div className="w-full h-full flex items-center justify-center bg-white dark:bg-zinc-900 text-gray-500 dark:text-zinc-500">
                                 <ImageIcon className="w-6 h-6" />
                               </div>
                             )}
@@ -1944,14 +1944,14 @@ export default function Chatter4Based() {
                               </span>
                             )}
                             {video && (
-                              <span className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/10 transition-colors">
-                                <span className="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center text-white/90">
+                              <span className="absolute inset-0 flex items-center justify-center bg-black/5 dark:bg-black/20 group-hover:bg-black/5 dark:group-hover:bg-black/10 transition-colors">
+                                <span className="w-10 h-10 rounded-full bg-black/30 dark:bg-black/50 backdrop-blur flex items-center justify-center text-white/90">
                                   <Play className="w-5 h-5 ml-0.5" />
                                 </span>
                               </span>
                             )}
                             {video && item.duration != null && (
-                              <span className="absolute bottom-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white backdrop-blur">
+                              <span className="absolute bottom-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/20 dark:bg-black/70 text-white backdrop-blur">
                                 {formatDuration(Number(item.duration))}
                               </span>
                             )}

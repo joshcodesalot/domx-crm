@@ -49,9 +49,15 @@ select option {
 
 @layer components {
   .glass-panel {
-    background: rgba(24, 24, 27, 0.65);
+    background: rgba(255, 255, 255, 0.8);
+    border-color: rgba(229, 231, 235, 0.9);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
+  }
+
+  .dark .glass-panel {
+    background: rgba(24, 24, 27, 0.65);
+    border-color: rgba(63, 63, 70, 0.5);
   }
 
   .chat-bubble-out {
