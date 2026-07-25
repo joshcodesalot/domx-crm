@@ -1958,10 +1958,12 @@ async function prewarmFourBasedVaultThumbs(creator, creatorId, items) {
     let mediaPath = null;
     const preview = item.preview;
     if (preview && typeof preview === 'object') {
+      // Match native vault grid (HAR): 500x500 first.
       const preferred =
+        preview['500x500'] ||
+        preview['500x500.jpg'] ||
         preview['200x200'] ||
         preview['200x200.jpg'] ||
-        preview['500x500'] ||
         preview['100x100'];
       if (typeof preferred === 'string' && preferred.includes('/protected/')) {
         const idx = preferred.indexOf('/protected/');
@@ -1977,7 +1979,7 @@ async function prewarmFourBasedVaultThumbs(creator, creatorId, items) {
       mediaPath = fourBasedClient.buildMediaPreviewPath(
         providerUserId,
         id,
-        '200x200.jpg'
+        '500x500.jpg'
       );
     }
     if (mediaPath) paths.push(mediaPath);

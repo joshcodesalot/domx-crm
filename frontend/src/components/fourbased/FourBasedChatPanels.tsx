@@ -47,7 +47,10 @@ import {
   listFourBasedChats,
   listFourBasedUserLists,
   listFourBasedVault,
+  pickFourBasedPreviewUrl,
+  pickFourBasedSourceUrl,
   pinFourBasedChat,
+  resolveFourBasedMediaSrc,
   sendFourBasedMessage,
   sendFourBasedPpv,
   translateToGerman,
@@ -82,45 +85,18 @@ const INBOX_FILTERS: Array<{ id: FourBasedChatFilter | 'all'; label: string }> =
   { id: 'subscribers', label: 'Subscribers' },
 ];
 
-/** Strip a media.4based.com URL down to a protected/... or public/... path. */
-function protectedPathFromUrl(url: string | null | undefined): string | null {
-  if (!url || typeof url !== 'string') return null;
-  const idxProtected = url.indexOf('/protected/');
-  if (idxProtected >= 0) return url.slice(idxProtected + 1);
-  const idxPublic = url.indexOf('/public/');
-  if (idxPublic >= 0) return url.slice(idxPublic + 1);
-  if (url.startsWith('https://media.4based.com/')) {
-    return url.slice('https://media.4based.com/'.length);
-  }
-  if (url.startsWith('protected/') || url.startsWith('public/')) return url;
-  return null;
-}
-
-function vaultPreviewPathFromItem(
+function vaultPreviewUrlFromItem(
   item: FourBasedVaultItem,
   size: string
 ): string | null {
-  const preview = item.preview;
-  if (preview && typeof preview === 'object') {
-    const sizeKey = size.replace(/\.jpg$/i, '');
-    const preferred =
-      preview[sizeKey] ||
-      preview[`${sizeKey}.jpg`] ||
-      preview['200x200'] ||
-      preview['500x500'] ||
-      preview['900xxx'] ||
-      preview['400x400'];
-    const fromPreview = protectedPathFromUrl(
-      typeof preferred === 'string' ? preferred : null
-    );
-    if (fromPreview) return fromPreview;
-  }
-  return null;
-}
-
-function vaultVideoPathFromItem(item: FourBasedVaultItem): string | null {
-  const source = Array.isArray(item.source) ? item.source[0] : null;
-  return protectedPathFromUrl(typeof source === 'string' ? source : null);
+  const sizeKey = size.replace(/\.jpg$/i, '');
+  return pickFourBasedPreviewUrl(item.preview, [
+    sizeKey,
+    '500x500',
+    '200x200',
+    '900xxx',
+    '400x400',
+  ]);
 }
 
 export const TRANSLATION_SETTINGS_EVENT = 'domx-translation-settings';
@@ -1747,10 +1723,10 @@ export function FourBasedChatThread({
 
   function mediaSrcForVaultItem(
     item: FourBasedVaultItem,
-    size = '200x200.jpg'
+    size = '500x500.jpg'
   ): string | null {
-    const fromPreview = vaultPreviewPathFromItem(item, size);
-    if (fromPreview) return fourBasedMediaUrl(creatorId, fromPreview);
+    const fromPreview = vaultPreviewUrlFromItem(item, size);
+    if (fromPreview) return resolveFourBasedMediaSrc(creatorId, fromPreview);
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
@@ -1761,8 +1737,8 @@ export function FourBasedChatThread({
   }
 
   function fullMediaSrc(item: FourBasedVaultItem): string | null {
-    const fromPreview = vaultPreviewPathFromItem(item, '900xxx.jpg');
-    if (fromPreview) return fourBasedMediaUrl(creatorId, fromPreview);
+    const fromPreview = vaultPreviewUrlFromItem(item, '900xxx.jpg');
+    if (fromPreview) return resolveFourBasedMediaSrc(creatorId, fromPreview);
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
@@ -1773,51 +1749,57 @@ export function FourBasedChatThread({
   }
 
   function videoStreamSrc(item: FourBasedVaultItem): string | null {
-    const fromSource = vaultVideoPathFromItem(item);
-    if (fromSource) return fourBasedMediaUrl(creatorId, fromSource);
+    const fromSource = pickFourBasedSourceUrl(item.source);
+    if (fromSource) return resolveFourBasedMediaSrc(creatorId, fromSource);
     if (!providerUserId) return null;
     const id = vaultItemId(item);
     if (!id) return null;
     return fourBasedMediaUrl(creatorId, `protected/${providerUserId}/${id}/file.mp4`);
   }
 
-  function messageMediaPath(
-    msg: FourBasedMessage,
-    size = '400x400.jpg'
-  ): string | null {
-    if (!providerUserId || !msg.file_stack?._id) return null;
-    const fs = msg.file_stack;
-    const preview = fs.preview as Record<string, string> | undefined;
-    const sizeKey = size.replace(/\.jpg$/i, '');
-    const preferred =
-      preview?.[sizeKey] ||
-      preview?.['400x400'] ||
-      preview?.['500x500'] ||
-      preview?.['340xxx'] ||
-      preview?.['200x200'];
-    if (typeof preferred === 'string' && preferred.includes('/protected/')) {
-      const idx = preferred.indexOf('/protected/');
-      return preferred.slice(idx + 1); // strip leading slash → protected/...
-    }
-    const vaultId = fs.vault_file_stack_id;
-    if (vaultId) {
-      return `protected/${providerUserId}/${fs._id}/v/${vaultId}/preview/${size}`;
-    }
-    return fourBasedPreviewPath(providerUserId, fs._id, size);
-  }
-
   function messageMediaUrl(
     msg: FourBasedMessage,
     size = '400x400.jpg'
   ): string | null {
-    const path = messageMediaPath(msg, size);
-    if (!path) return null;
-    return fourBasedMediaUrl(creatorId, path);
+    if (!msg.file_stack?._id) return null;
+    const fs = msg.file_stack;
+    const sizeKey = size.replace(/\.jpg$/i, '');
+    const preferred = pickFourBasedPreviewUrl(fs.preview, [
+      sizeKey,
+      '900xxx',
+      '400x400',
+      '500x500',
+      '340xxx',
+      '200x200',
+    ]);
+    if (preferred) {
+      const resolved = resolveFourBasedMediaSrc(creatorId, preferred);
+      if (resolved) return resolved;
+    }
+    if (!providerUserId) return null;
+    const vaultId = fs.vault_file_stack_id;
+    if (vaultId) {
+      return fourBasedMediaUrl(
+        creatorId,
+        `protected/${providerUserId}/${fs._id}/v/${vaultId}/preview/${size}`
+      );
+    }
+    return fourBasedMediaUrl(
+      creatorId,
+      fourBasedPreviewPath(providerUserId, fs._id, size)
+    );
   }
 
   function messageVideoUrl(msg: FourBasedMessage): string | null {
-    if (!providerUserId || !msg.file_stack?._id) return null;
+    if (!msg.file_stack?._id) return null;
     const fs = msg.file_stack;
+    // HAR: prefer source[0] (.../video/{code}.mp4), often on media-public.
+    const fromSource = pickFourBasedSourceUrl(fs.source);
+    if (fromSource) {
+      const resolved = resolveFourBasedMediaSrc(creatorId, fromSource);
+      if (resolved) return resolved;
+    }
+    if (!providerUserId) return null;
     const vaultId = fs.vault_file_stack_id;
     if (vaultId) {
       return fourBasedMediaUrl(
@@ -1956,7 +1938,8 @@ export function FourBasedChatThread({
               (localKey ? messageSenders[localKey] : undefined) ||
               (msgKey ? messageSenders[msgKey] : undefined)
             : undefined;
-          const mediaUrl = deleted ? null : messageMediaUrl(msg, '400x400.jpg');
+          // Prefer 900xxx to match native open-pic (often media-public CDN).
+          const mediaUrl = deleted ? null : messageMediaUrl(msg, '900xxx.jpg');
           const isVideo = !deleted && isMessageVideo(msg);
           const videoUrl = isVideo ? messageVideoUrl(msg) : null;
           const isPlaying = Boolean(isVideo && videoUrl && playingMsgId === msgKey);

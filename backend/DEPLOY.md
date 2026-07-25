@@ -318,6 +318,34 @@ Port **4001** does not need to be exposed publicly — nginx proxies to it on lo
 
 ---
 
+## 4based media disk cache
+
+Vault thumbs, chat previews, and videos fetched through
+`GET /api/creators/:id/4based/media` are stored on disk so the residential
+proxy is not hit again for the same path.
+
+By default the cache lives under the OS temp dir
+(`$TMPDIR/domx-4based-media-cache` or `/tmp/domx-4based-media-cache`), which
+can be wiped on reboot. For production, set a durable path in `.env`:
+
+```bash
+mkdir -p /home/debian/domx_backend/data/4based-media-cache
+chown debian:debian /home/debian/domx_backend/data/4based-media-cache
+```
+
+```env
+FOURBASED_MEDIA_CACHE_DIR=/home/debian/domx_backend/data/4based-media-cache
+# Optional:
+# FOURBASED_MEDIA_CACHE_TTL_MS=604800000
+# FOURBASED_MEDIA_CACHE_MAX_BYTES=10737418240
+# FOURBASED_MEDIA_UPSTREAM_CONCURRENCY=5
+```
+
+Restart the API after changing these env vars. Response header
+`X-DomX-Media-Cache: HIT|MISS|BYPASS` shows whether a request used the cache.
+
+---
+
 ## Updating the deployment
 
 After copying new backend files from your machine (or `git pull` if using git on the server):

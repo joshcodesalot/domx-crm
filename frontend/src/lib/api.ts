@@ -1041,6 +1041,8 @@ export interface FourBasedFileStack {
   width?: number;
   height?: number;
   preview?: Record<string, string>;
+  /** Playback URLs, e.g. .../video/{code}.mp4 (often media-public). */
+  source?: string[];
   /** Fan user ids who purchased this PPV stack. */
   user_paid?: string[];
   [key: string]: unknown;
@@ -1496,6 +1498,79 @@ function isFourBasedPublicPreviewUrl(url?: string | null): url is string {
     url &&
       /^https:\/\/media-public\.4based\.com\//i.test(url)
   );
+}
+
+export function isFourBasedPublicMediaUrl(url?: string | null): url is string {
+  return isFourBasedPublicPreviewUrl(url);
+}
+
+/**
+ * Strip a 4based media URL down to a proxy path (`protected/...` or `public/...`).
+ * Returns null for media-public URLs that should be used directly as src.
+ */
+export function fourBasedMediaPathFromUrl(
+  url: string | null | undefined
+): string | null {
+  if (!url || typeof url !== 'string') return null;
+  if (isFourBasedPublicMediaUrl(url)) return null;
+  const idxProtected = url.indexOf('/protected/');
+  if (idxProtected >= 0) return url.slice(idxProtected + 1);
+  const idxPublic = url.indexOf('/public/');
+  if (idxPublic >= 0) return url.slice(idxPublic + 1);
+  if (url.startsWith('https://media.4based.com/')) {
+    return url.slice('https://media.4based.com/'.length);
+  }
+  if (url.startsWith('protected/') || url.startsWith('public/')) return url;
+  return null;
+}
+
+/**
+ * Resolve a 4based media URL for <img>/<video src>:
+ * - media-public HTTPS → use directly (no DomX proxy)
+ * - protected/public path or media.4based.com URL → DomX proxy + disk cache
+ */
+export function resolveFourBasedMediaSrc(
+  creatorId: string,
+  urlOrPath: string | null | undefined
+): string | null {
+  if (!urlOrPath || typeof urlOrPath !== 'string') return null;
+  if (isFourBasedPublicMediaUrl(urlOrPath)) return urlOrPath;
+  const path = fourBasedMediaPathFromUrl(urlOrPath) || (
+    urlOrPath.startsWith('protected/') || urlOrPath.startsWith('public/')
+      ? urlOrPath
+      : null
+  );
+  if (!path) return null;
+  return fourBasedMediaUrl(creatorId, path);
+}
+
+/** Pick a preview URL from a preview map, preferring listed sizes. */
+export function pickFourBasedPreviewUrl(
+  preview: Record<string, string> | null | undefined,
+  preferredSizes: string[] = ['500x500', '400x400', '200x200', '900xxx']
+): string | null {
+  if (!preview || typeof preview !== 'object') return null;
+  for (const size of preferredSizes) {
+    const withExt = preview[`${size}.jpg`] || preview[size];
+    if (typeof withExt === 'string' && withExt) return withExt;
+  }
+  for (const value of Object.values(preview)) {
+    if (typeof value === 'string' && value) return value;
+  }
+  return null;
+}
+
+/** First usable source URL from file_stack.source / vault source[]. */
+export function pickFourBasedSourceUrl(
+  source: unknown
+): string | null {
+  if (typeof source === 'string' && source) return source;
+  if (Array.isArray(source)) {
+    for (const entry of source) {
+      if (typeof entry === 'string' && entry) return entry;
+    }
+  }
+  return null;
 }
 
 /** Pick a public CDN preview URL from activity/file_stack.preview — never the DomX media proxy. */
