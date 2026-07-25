@@ -1347,6 +1347,9 @@ export interface MaloumMessageContent {
   text?: string;
   media?: MaloumMediaAsset[];
   thumbnails?: MaloumMediaAsset[];
+  /** Present on fetched chat_product messages from Maloum API */
+  price?: { gross?: number; net?: number; currency?: string };
+  /** Used on optimistic / outbound send payloads */
   priceNet?: number;
   [key: string]: unknown;
 }

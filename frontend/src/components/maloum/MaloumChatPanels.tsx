@@ -1361,10 +1361,24 @@ export function MaloumChatThread({
               ? historyTranslations[`${msgKey}::${text.trim()}`]
               : undefined;
           const isPpv = msg.content?.type === 'chat_product';
+          const isFreeMedia =
+            !isPpv &&
+            (msg.content?.type === 'media' || assets.length > 0);
+          const priceNet =
+            typeof msg.content?.price?.net === 'number'
+              ? msg.content.price.net
+              : typeof msg.content?.priceNet === 'number'
+                ? msg.content.priceNet
+                : null;
+          const priceCurrency =
+            typeof msg.content?.price?.currency === 'string'
+              ? msg.content.price.currency
+              : 'EUR';
           const ppvLabel =
-            isPpv && typeof msg.content?.priceNet === 'number'
-              ? formatSpend(msg.content.priceNet, 'EUR')
+            isPpv && priceNet != null
+              ? formatSpend(priceNet, priceCurrency)
               : null;
+          const isSold = isPpv && msg.isBought === true;
           return (
             <div
               key={msg._id}
@@ -1401,11 +1415,19 @@ export function MaloumChatThread({
                         : 'bg-gray-100/80 dark:bg-zinc-800/80 border border-gray-200 dark:border-zinc-700/50 text-gray-800 dark:text-zinc-200 chat-bubble-in'
                     }`}
                   >
-                    {ppvLabel && (
-                      <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-black/35 dark:bg-black/60 backdrop-blur border border-gray-200 dark:border-white/10 text-[10px] font-bold tracking-widest text-emerald-400 flex items-center gap-1">
+                    {isSold && ppvLabel ? (
+                      <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-emerald-600/90 backdrop-blur border border-emerald-400/40 text-[10px] font-bold tracking-widest text-white flex items-center gap-1">
+                        <Check className="w-3 h-3" /> Sold · {ppvLabel}
+                      </div>
+                    ) : ppvLabel ? (
+                      <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-black/35 dark:bg-black/60 backdrop-blur border border-gray-200 dark:border-white/10 text-[10px] font-bold tracking-widest text-amber-300 flex items-center gap-1">
                         <Lock className="w-3 h-3" /> PPV · {ppvLabel}
                       </div>
-                    )}
+                    ) : isFreeMedia ? (
+                      <div className="absolute top-3 right-3 z-10 px-2 py-1 rounded bg-black/35 dark:bg-black/60 backdrop-blur border border-gray-200 dark:border-white/10 text-[10px] font-bold tracking-widest text-zinc-300 flex items-center gap-1">
+                        Free
+                      </div>
+                    ) : null}
                     {assets.length > 0 && (
                       <div className="flex flex-wrap gap-1 mb-2">
                         {assets.map((asset, idx) => {
