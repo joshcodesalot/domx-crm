@@ -16,6 +16,7 @@ const { saveCreatorAvatarFromBuffer, cacheCreatorAvatarFromUrl } = require('../s
 const {
   userSeesAllCreators,
   userCanAccessCreator,
+  getUserIdsWithCreatorAccess,
 } = require('../services/creatorAccess');
 const {
   buildEncryptedTokenFields,
@@ -172,25 +173,6 @@ function sessionUpdatedAtFrom(session, fallbackDate) {
     return fallbackDate;
   }
   return null;
-}
-
-async function getUserIdsWithCreatorAccess(creatorId) {
-  const [assigned, managers] = await Promise.all([
-    pool.query(
-      `SELECT "userId" FROM creator_staff_assignments WHERE "creatorId" = $1`,
-      [creatorId]
-    ),
-    pool.query(
-      `SELECT id FROM users WHERE status = 'active' AND role <> 'chatter'`
-    ),
-  ]);
-
-  return [
-    ...new Set([
-      ...assigned.rows.map((row) => row.userId),
-      ...managers.rows.map((row) => row.id),
-    ]),
-  ];
 }
 
 function emitCreatorSessionUpdated(userIds, { creatorId, accountId, sessionUpdatedAt }) {

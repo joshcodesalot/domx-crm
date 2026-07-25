@@ -4,28 +4,10 @@ const pool = require('../db/pool');
 const { decryptJson, decryptSecret } = require('./crypto');
 const { emitToUsers } = require('./userEventBus');
 const { resolveFourBasedProxyUrl } = require('./fourBasedClient');
+const { getUserIdsWithCreatorAccess } = require('./creatorAccess');
 
 const SOCKET_URL = 'https://socket.4based.com';
 const connections = new Map();
-
-async function getUserIdsWithCreatorAccess(creatorId) {
-  const [assigned, managers] = await Promise.all([
-    pool.query(
-      `SELECT "userId" FROM creator_staff_assignments WHERE "creatorId" = $1`,
-      [creatorId]
-    ),
-    pool.query(
-      `SELECT id FROM users WHERE status = 'active' AND role <> 'chatter'`
-    ),
-  ]);
-
-  return [
-    ...new Set([
-      ...assigned.rows.map((row) => row.userId),
-      ...managers.rows.map((row) => row.id),
-    ]),
-  ];
-}
 
 function loadCreatorAuth(row) {
   let session = {};

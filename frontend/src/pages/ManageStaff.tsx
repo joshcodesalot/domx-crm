@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Plus, Shield, Users } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
+import AssignStaffCreatorsModal from '@/components/AssignStaffCreatorsModal';
 import StaffCredentialsModal from '@/components/StaffCredentialsModal';
 import { useAuth } from '@/context/AuthContext';
 import {
@@ -40,6 +41,8 @@ const EMPTY_FORM: StaffFormState = {
   role: 'chatter',
 };
 
+const CREATOR_ASSIGNABLE_ROLES = new Set(['chatter', 'team_leader']);
+
 const inputClassName =
   'w-full px-3 py-2 text-sm border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500';
 
@@ -78,6 +81,7 @@ export default function ManageStaff() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [assignCreatorsMember, setAssignCreatorsMember] = useState<User | null>(null);
   const [credentials, setCredentials] = useState<CredentialsState | null>(null);
   const [form, setForm] = useState<StaffFormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -89,6 +93,13 @@ export default function ManageStaff() {
   const canDelete = hasPermission('staff.delete');
   const canViewMatrix = hasPermission('roles.view');
   const canManageMatrix = hasPermission('roles.manage');
+  const canAssignCreators = hasPermission('creators.manage');
+  const isOwner = user?.role === 'owner';
+
+  function canManageMember(member: User): boolean {
+    if (member.role === 'owner' && !isOwner) return false;
+    return true;
+  }
 
   const loadStaff = useCallback(async () => {
     const [{ staff: staffList }, rolesRes] = await Promise.all([
@@ -326,99 +337,124 @@ export default function ManageStaff() {
                     <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Name</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Email</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Role</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Creators</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Status</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Last Login</th>
                     <th className="text-right px-4 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {staff.map((member) => (
-                    <tr
-                      key={member.id}
-                      className="border-b border-gray-100 dark:border-white/5 last:border-0"
-                    >
-                      <td className="px-4 py-3 font-medium">{member.name}</td>
-                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{member.email}</td>
-                      <td className="px-4 py-3">
-                        {canAssignRole && member.id !== user?.id ? (
-                          <select
-                            value={member.role}
-                            onChange={(e) => handleRoleChange(member.id, e.target.value)}
-                            className={tableSelectClassName}
-                          >
-                            {assignableRoles.map((role) => (
-                              <option
-                                key={role.slug}
-                                value={role.slug}
-                                className="bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100"
-                              >
-                                {role.name}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <span className="inline-flex px-2 py-0.5 rounded-full text-xs bg-gray-100 dark:bg-white/10">
-                            {member.roleName}
+                  {staff.map((member) => {
+                    const manageable = canManageMember(member);
+                    const showCreatorAssign =
+                      canAssignCreators && CREATOR_ASSIGNABLE_ROLES.has(member.role);
+
+                    return (
+                      <tr
+                        key={member.id}
+                        className="border-b border-gray-100 dark:border-white/5 last:border-0"
+                      >
+                        <td className="px-4 py-3 font-medium">{member.name}</td>
+                        <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{member.email}</td>
+                        <td className="px-4 py-3">
+                          {canAssignRole && member.id !== user?.id && manageable ? (
+                            <select
+                              value={member.role}
+                              onChange={(e) => handleRoleChange(member.id, e.target.value)}
+                              className={tableSelectClassName}
+                            >
+                              {assignableRoles.map((role) => (
+                                <option
+                                  key={role.slug}
+                                  value={role.slug}
+                                  className="bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100"
+                                >
+                                  {role.name}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-xs bg-gray-100 dark:bg-white/10">
+                              {member.roleName}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
+                          {CREATOR_ASSIGNABLE_ROLES.has(member.role)
+                            ? member.creatorCount ?? 0
+                            : '—'}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex px-2 py-0.5 rounded-full text-xs ${statusBadgeClass(member.status)}`}>
+                            {member.status}
                           </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex px-2 py-0.5 rounded-full text-xs ${statusBadgeClass(member.status)}`}>
-                          {member.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
-                        {formatDate(member.lastLoginAt)}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        {member.id !== user?.id && (
-                          <div className="flex items-center justify-end gap-2">
-                            {canEdit && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleResetPassword(member.id, member.name, member.email)
-                                }
-                                className="px-2 py-1 text-xs rounded border border-blue-200 dark:border-blue-500/30 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10"
-                              >
-                                Reset Password
-                              </button>
-                            )}
-                            {member.status === 'active' && canDeactivate && (
-                              <button
-                                type="button"
-                                onClick={() => handleDeactivate(member.id)}
-                                className="px-2 py-1 text-xs rounded border border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10"
-                              >
-                                Deactivate
-                              </button>
-                            )}
-                            {member.status === 'inactive' && canDeactivate && (
-                              <button
-                                type="button"
-                                onClick={() => handleActivate(member.id)}
-                                className="px-2 py-1 text-xs rounded border border-green-200 dark:border-green-500/30 text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-500/10"
-                              >
-                                Activate
-                              </button>
-                            )}
-                            {canDelete && (
-                              <button
-                                type="button"
-                                onClick={() => handleDelete(member.id, member.name)}
-                                className="px-2 py-1 text-xs rounded border border-red-200 dark:border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10"
-                              >
-                                Delete
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
+                          {formatDate(member.lastLoginAt)}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          {(member.id !== user?.id || showCreatorAssign) && (
+                            <div className="flex items-center justify-end gap-2 flex-wrap">
+                              {showCreatorAssign && (
+                                <button
+                                  type="button"
+                                  onClick={() => setAssignCreatorsMember(member)}
+                                  className="px-2 py-1 text-xs rounded border border-purple-200 dark:border-purple-500/30 text-purple-700 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-500/10"
+                                >
+                                  Assign Creators
+                                </button>
+                              )}
+                              {member.id !== user?.id && manageable && (
+                                <>
+                                  {canEdit && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleResetPassword(member.id, member.name, member.email)
+                                      }
+                                      className="px-2 py-1 text-xs rounded border border-blue-200 dark:border-blue-500/30 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-500/10"
+                                    >
+                                      Reset Password
+                                    </button>
+                                  )}
+                                  {member.status === 'active' && canDeactivate && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeactivate(member.id)}
+                                      className="px-2 py-1 text-xs rounded border border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-500/10"
+                                    >
+                                      Deactivate
+                                    </button>
+                                  )}
+                                  {member.status === 'inactive' && canDeactivate && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleActivate(member.id)}
+                                      className="px-2 py-1 text-xs rounded border border-green-200 dark:border-green-500/30 text-green-700 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-500/10"
+                                    >
+                                      Activate
+                                    </button>
+                                  )}
+                                  {canDelete && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDelete(member.id, member.name)}
+                                      className="px-2 py-1 text-xs rounded border border-red-200 dark:border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10"
+                                    >
+                                      Delete
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                   {staff.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-400">
+                      <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
                         No staff members found
                       </td>
                     </tr>
@@ -524,6 +560,16 @@ export default function ManageStaff() {
             tempPassword={credentials.tempPassword}
             title={credentials.title}
             onClose={() => setCredentials(null)}
+          />
+        )}
+
+        {assignCreatorsMember && (
+          <AssignStaffCreatorsModal
+            staffMember={assignCreatorsMember}
+            onClose={() => setAssignCreatorsMember(null)}
+            onSaved={() => {
+              void loadStaff();
+            }}
           />
         )}
 

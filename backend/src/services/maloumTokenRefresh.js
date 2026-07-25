@@ -8,6 +8,7 @@ const {
   mergeSessionWithSupabaseResponse,
 } = require('./maloumAuthTokens');
 const { emitToUsers } = require('./userEventBus');
+const { getUserIdsWithCreatorAccess } = require('./creatorAccess');
 
 const REFRESH_INTERVAL_MS = 60_000;
 const REFRESH_AHEAD_MS = 5 * 60_000;
@@ -19,23 +20,6 @@ let refreshQueue = Promise.resolve();
 function enqueueRefresh(task) {
   refreshQueue = refreshQueue.then(task, task);
   return refreshQueue;
-}
-
-async function getUserIdsWithCreatorAccess(creatorId) {
-  const [assigned, managers] = await Promise.all([
-    pool.query(
-      `SELECT "userId" FROM creator_staff_assignments WHERE "creatorId" = $1`,
-      [creatorId]
-    ),
-    pool.query(`SELECT id FROM users WHERE status = 'active' AND role <> 'chatter'`),
-  ]);
-
-  return [
-    ...new Set([
-      ...assigned.rows.map((row) => row.userId),
-      ...managers.rows.map((row) => row.id),
-    ]),
-  ];
 }
 
 function emitCreatorSessionUpdated(userIds, { creatorId, accountId, sessionUpdatedAt }) {

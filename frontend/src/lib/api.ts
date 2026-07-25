@@ -13,6 +13,7 @@ export interface User {
   createdAt: string;
   updatedAt: string;
   ipAddressLast: string | null;
+  creatorCount?: number;
 }
 
 export interface Role {
@@ -510,6 +511,38 @@ export async function resetStaffPassword(id: string): Promise<StaffCredentialsRe
   return request<StaffCredentialsResponse>(`/api/staff/${id}/reset-password`, {
     method: 'POST',
   });
+}
+
+export interface StaffAssignedCreator {
+  id: string;
+  displayName: string;
+  username: string | null;
+  platform: 'maloum' | '4based';
+  connectionStatus: 'connected' | 'error' | 'pending';
+  avatarUrl: string | null;
+  avatarSource: 'maloum' | 'manual' | null;
+  assignedAt: string;
+}
+
+export async function getStaffCreators(
+  staffId: string
+): Promise<{ creators: StaffAssignedCreator[] }> {
+  return request<{ creators: StaffAssignedCreator[] }>(
+    `/api/staff/${staffId}/creators`
+  );
+}
+
+export async function setStaffCreators(
+  staffId: string,
+  creatorIds: string[]
+): Promise<{ creators: StaffAssignedCreator[] }> {
+  return request<{ creators: StaffAssignedCreator[] }>(
+    `/api/staff/${staffId}/creators`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ creatorIds }),
+    }
+  );
 }
 
 export async function changePassword(

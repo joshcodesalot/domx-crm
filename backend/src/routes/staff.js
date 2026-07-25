@@ -20,14 +20,22 @@ const router = express.Router();
 
 const VALID_STATUSES = ['active', 'inactive'];
 
+const CREATOR_ASSIGNABLE_ROLES = ['chatter', 'team_leader'];
+
 function staffSelectQuery() {
   return `
     SELECT u.id, u.name, u.email, u.role, u.status,
            u."mustChangePassword",
            r.name AS "roleName",
-           u."lastLoginAt", u."createdAt", u."updatedAt", u."ipAddressLast"
+           u."lastLoginAt", u."createdAt", u."updatedAt", u."ipAddressLast",
+           COALESCE(a."creatorCount", 0)::int AS "creatorCount"
     FROM users u
     LEFT JOIN roles r ON r.slug = u.role
+    LEFT JOIN (
+      SELECT "userId", COUNT(*)::int AS "creatorCount"
+      FROM creator_staff_assignments
+      GROUP BY "userId"
+    ) a ON a."userId" = u.id
   `;
 }
 
@@ -330,6 +338,150 @@ router.delete('/:id', authenticate, requirePermission('staff.delete'), async (re
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+router.get(
+  '/:id/creators',
+  authenticate,
+  requirePermission('creators.manage'),
+  async (req, res) => {
+    const { id } = req.params;
+
+    try {
+      const staffMember = await getUserById(id);
+      if (!staffMember) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      if (!CREATOR_ASSIGNABLE_ROLES.includes(staffMember.role)) {
+        return res.status(400).json({
+          error: 'Creators can only be assigned to chatters and team leaders',
+        });
+      }
+
+      const result = await pool.query(
+        `SELECT c.id, c."displayName", c.username, c.platform, c."connectionStatus",
+                c."avatarUrl", c."avatarSource", a."assignedAt"
+         FROM creator_staff_assignments a
+         INNER JOIN creators c ON c.id = a."creatorId"
+         WHERE a."userId" = $1
+         ORDER BY c."displayName" ASC`,
+        [id]
+      );
+
+      res.json({ creators: result.rows });
+    } catch (err) {
+      console.error('List staff creators error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.put(
+  '/:id/creators',
+  authenticate,
+  requirePermission('creators.manage'),
+  async (req, res) => {
+    const { id } = req.params;
+    const { creatorIds } = req.body;
+
+    if (!Array.isArray(creatorIds)) {
+      return res.status(400).json({ error: 'creatorIds must be an array' });
+    }
+
+    const uniqueCreatorIds = [...new Set(creatorIds.filter((value) => typeof value === 'string'))];
+
+    try {
+      const staffMember = await getUserById(id);
+      if (!staffMember) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      if (!CREATOR_ASSIGNABLE_ROLES.includes(staffMember.role)) {
+        return res.status(400).json({
+          error: 'Creators can only be assigned to chatters and team leaders',
+        });
+      }
+
+      if (uniqueCreatorIds.length > 0) {
+        const creatorsResult = await pool.query(
+          'SELECT id FROM creators WHERE id = ANY($1::uuid[])',
+          [uniqueCreatorIds]
+        );
+        if (creatorsResult.rows.length !== uniqueCreatorIds.length) {
+          return res.status(400).json({ error: 'One or more creator IDs are invalid' });
+        }
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        const existing = await client.query(
+          `SELECT "creatorId" FROM creator_staff_assignments WHERE "userId" = $1`,
+          [id]
+        );
+        const existingIds = new Set(existing.rows.map((row) => row.creatorId));
+        const desiredIds = new Set(uniqueCreatorIds);
+
+        const toAdd = uniqueCreatorIds.filter((creatorId) => !existingIds.has(creatorId));
+        const toRemove = [...existingIds].filter((creatorId) => !desiredIds.has(creatorId));
+
+        for (const creatorId of toAdd) {
+          await client.query(
+            `INSERT INTO creator_staff_assignments ("creatorId", "userId", "assignedBy")
+             VALUES ($1, $2, $3)`,
+            [creatorId, id, req.user.id]
+          );
+          await client.query(
+            `UPDATE creators
+             SET "staffCount" = "staffCount" + 1, "updatedAt" = NOW()
+             WHERE id = $1`,
+            [creatorId]
+          );
+        }
+
+        for (const creatorId of toRemove) {
+          const deleted = await client.query(
+            `DELETE FROM creator_staff_assignments
+             WHERE "creatorId" = $1 AND "userId" = $2
+             RETURNING id`,
+            [creatorId, id]
+          );
+          if (deleted.rows.length > 0) {
+            await client.query(
+              `UPDATE creators
+               SET "staffCount" = GREATEST("staffCount" - 1, 0), "updatedAt" = NOW()
+               WHERE id = $1`,
+              [creatorId]
+            );
+          }
+        }
+
+        await client.query('COMMIT');
+
+        const result = await pool.query(
+          `SELECT c.id, c."displayName", c.username, c.platform, c."connectionStatus",
+                  c."avatarUrl", c."avatarSource", a."assignedAt"
+           FROM creator_staff_assignments a
+           INNER JOIN creators c ON c.id = a."creatorId"
+           WHERE a."userId" = $1
+           ORDER BY c."displayName" ASC`,
+          [id]
+        );
+
+        res.json({ creators: result.rows });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      console.error('Set staff creators error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
 
 router.get('/roles', authenticate, requirePermission('staff.view'), async (req, res) => {
   try {

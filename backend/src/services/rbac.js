@@ -104,6 +104,13 @@ async function canManageUser(actor, targetUserId, newRoleSlug = null) {
     return { allowed: false, reason: 'User not found' };
   }
 
+  if (target.role === OWNER_ROLE_SLUG && actor.role !== OWNER_ROLE_SLUG) {
+    return {
+      allowed: false,
+      reason: 'Only an Owner can manage an Owner account',
+    };
+  }
+
   const actorRank = actor.roleRank ?? (await getRoleRank(actor.role));
   const targetRank = target.roleRank ?? (await getRoleRank(target.role));
 
@@ -219,7 +226,7 @@ async function updateRolePermissions(roleSlug, permissionSlugs) {
 }
 
 function toSafeUser(row, permissions) {
-  return {
+  const user = {
     id: row.id,
     name: row.name,
     email: row.email,
@@ -233,6 +240,12 @@ function toSafeUser(row, permissions) {
     updatedAt: row.updatedAt,
     ipAddressLast: row.ipAddressLast,
   };
+
+  if (row.creatorCount != null) {
+    user.creatorCount = row.creatorCount;
+  }
+
+  return user;
 }
 
 module.exports = {
