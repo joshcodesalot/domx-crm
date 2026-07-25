@@ -28,6 +28,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import QuickEmojiBar from '@/components/QuickEmojiBar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import MaloumFanPanel from '@/components/maloum/MaloumFanPanel';
 import maloumIcon from '@/assets/maloum_icon.png';
@@ -1602,6 +1603,8 @@ export function MaloumChatThread({
         {translatingOutgoing && (
           <p className="text-xs text-gray-500 dark:text-zinc-500 mb-2">Translating to German…</p>
         )}
+
+        <QuickEmojiBar onInsert={(emoji) => setDraft((d) => d + emoji)} />
 
         <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50 focus-within:bg-zinc-900 transition-all shadow-inner">
           <button

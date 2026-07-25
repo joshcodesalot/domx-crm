@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Home, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ThemeToggle from '@/components/ThemeToggle';
+import ToggleSwitch from '@/components/ToggleSwitch';
 import {
   MaloumChatList,
   MaloumChatThread,
@@ -11,6 +12,9 @@ import { useStaffSync } from '@/context/StaffSyncContext';
 import { getCreators, type Creator, type MaloumChat } from '@/lib/api';
 
 const HOME_TAB_ID = 'home';
+const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
+const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
+const TRANSLATION_SETTINGS_EVENT = 'domx-translation-settings';
 
 interface FanTab {
   chatId: string;
@@ -25,6 +29,17 @@ interface CreatorWorkspace {
   activeTabId: string;
 }
 
+function readStoredBoolean(key: string, defaultValue: boolean): boolean {
+  const stored = localStorage.getItem(key);
+  if (stored === 'true') return true;
+  if (stored === 'false') return false;
+  return defaultValue;
+}
+
+function emitTranslationSettings() {
+  window.dispatchEvent(new Event(TRANSLATION_SETTINGS_EVENT));
+}
+
 function isOpenableCreator(creator: Creator): boolean {
   return creator.platform === 'maloum' && Boolean(creator.accountId || creator.id);
 }
@@ -36,6 +51,12 @@ export default function MessagePro() {
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
+    readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
+  );
+  const [autoTranslateHistory, setAutoTranslateHistory] = useState(() =>
+    readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true)
+  );
 
   const openableCreators = useMemo(
     () => creators.filter(isOpenableCreator),
@@ -76,6 +97,15 @@ export default function MessagePro() {
   }, [onSyncEvent, loadCreators]);
 
   useEffect(() => {
+    function sync() {
+      setAutoTranslateOutgoing(readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true));
+      setAutoTranslateHistory(readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true));
+    }
+    window.addEventListener(TRANSLATION_SETTINGS_EVENT, sync);
+    return () => window.removeEventListener(TRANSLATION_SETTINGS_EVENT, sync);
+  }, []);
+
+  useEffect(() => {
     setWorkspaces((prev) => {
       const prevById = new Map(prev.map((w) => [w.creator.id, w]));
       return openableCreators.map((creator) => {
@@ -98,6 +128,18 @@ export default function MessagePro() {
       return openableCreators[0]?.id || null;
     });
   }, [openableCreators]);
+
+  const handleAutoTranslateOutgoingChange = useCallback((enabled: boolean) => {
+    setAutoTranslateOutgoing(enabled);
+    localStorage.setItem(AUTO_TRANSLATE_OUTGOING_KEY, String(enabled));
+    emitTranslationSettings();
+  }, []);
+
+  const handleAutoTranslateHistoryChange = useCallback((enabled: boolean) => {
+    setAutoTranslateHistory(enabled);
+    localStorage.setItem(AUTO_TRANSLATE_HISTORY_KEY, String(enabled));
+    emitTranslationSettings();
+  }, []);
 
   const openFanTab = useCallback(
     (creatorId: string, chat: MaloumChat) => {
@@ -162,16 +204,6 @@ export default function MessagePro() {
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-[#0a0a0a] text-gray-900 dark:text-gray-100">
       <header className="h-12 shrink-0 border-b border-gray-200 dark:border-white/10 flex items-center gap-2 px-3">
-        <button
-          type="button"
-          onClick={() => {
-            window.location.hash = '#/dashboard';
-          }}
-          className="p-1.5 rounded-md text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-          title="Back to dashboard"
-        >
-          <Home className="w-4 h-4" />
-        </button>
         <span className="text-sm font-semibold mr-2">Message Pro</span>
         <div className="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
           {workspaces.map((workspace) => {
@@ -201,7 +233,29 @@ export default function MessagePro() {
             );
           })}
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-3 shrink-0">
+          <label className="inline-flex items-center gap-1.5 cursor-pointer">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-400 whitespace-nowrap">
+              Translate Outgoing
+            </span>
+            <ToggleSwitch
+              checked={autoTranslateOutgoing}
+              onChange={handleAutoTranslateOutgoingChange}
+              aria-label="Translate outgoing messages"
+            />
+          </label>
+          <label className="inline-flex items-center gap-1.5 cursor-pointer">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-400 whitespace-nowrap">
+              Translate History
+            </span>
+            <ToggleSwitch
+              checked={autoTranslateHistory}
+              onChange={handleAutoTranslateHistoryChange}
+              aria-label="Translate chat history"
+            />
+          </label>
+          <ThemeToggle />
+        </div>
       </header>
 
       {error && (
@@ -279,7 +333,6 @@ export default function MessagePro() {
                 creator={activeWorkspace.creator}
                 chatId={activeFanTab.chatId}
                 initialChat={activeFanTab.chat || null}
-                showTranslationToggles
                 onClose={() =>
                   closeFanTab(activeWorkspace.creator.id, activeFanTab.chatId)
                 }
