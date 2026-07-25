@@ -874,15 +874,27 @@ async function fetchMedia(creator, { path, rangeHeader } = {}) {
   }
 
   const dispatcher = createDispatcher(proxyUrl);
+  // Match browser media requests from 4based.com (HAR): cookies + page referer.
   const headers = {
-    accept: '*/*',
+    accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+    'accept-language': 'en-US,en;q=0.9',
     'user-agent': USER_AGENT,
     origin: 'https://4based.com',
-    referer: 'https://4based.com/',
+    referer: 'https://4based.com/chat',
+    'sec-ch-ua': '"Chromium";v="150", "Not A(Brand";v="24", "Google Chrome";v="150"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': safePath.includes('/video/') || safePath.endsWith('.mp4')
+      ? 'video'
+      : 'image',
+    'sec-fetch-mode': 'no-cors',
+    'sec-fetch-site': 'same-site',
     cookie: cookieHeaderFromMap(cookies),
   };
   if (rangeHeader) {
     headers.range = rangeHeader;
+    headers.accept = '*/*';
+    headers['sec-fetch-dest'] = 'video';
   }
 
   let response;

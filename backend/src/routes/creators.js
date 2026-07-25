@@ -1763,32 +1763,60 @@ function releaseFourBasedMediaSlot(creatorId) {
   }
 }
 
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function drainUpstreamBody(body) {
+  if (!body) return;
+  try {
+    const { Readable } = require('stream');
+    Readable.fromWeb(body).resume();
+  } catch {
+    // ignore
+  }
+}
+
 async function fetchFourBasedMediaThrottled(creator, { path, rangeHeader } = {}) {
   await acquireFourBasedMediaSlot(creator.id);
   try {
     let lastErr;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    const maxAttempts = 3;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         const upstream = await fourBasedClient.fetchMedia(creator, {
           path,
           rangeHeader,
         });
-        if ((upstream.ok || upstream.status === 206) || attempt === 1) {
+        if (upstream.ok || upstream.status === 206) {
           return upstream;
         }
-        lastErr = new Error(`Upstream status ${upstream.status}`);
-        // Drain body so the connection can close cleanly before retry.
-        try {
-          if (upstream.body) {
-            const { Readable } = require('stream');
-            Readable.fromWeb(upstream.body).resume();
-          }
-        } catch {
-          // ignore
+        const status = upstream.status || 0;
+        lastErr = new fourBasedClient.FourBasedApiError(
+          `Failed to fetch media (${status || 'no status'})`,
+          status || 502
+        );
+        await drainUpstreamBody(upstream.body);
+        // Retry transient upstream / proxy pressure; don't hammer 404s.
+        if (status === 404 || status === 400 || status === 401) {
+          throw lastErr;
+        }
+        if (attempt < maxAttempts - 1) {
+          await sleepMs(250 * (attempt + 1));
         }
       } catch (err) {
         lastErr = err;
-        if (attempt === 1) throw err;
+        if (
+          err instanceof fourBasedClient.FourBasedApiError &&
+          (err.status === 404 || err.status === 400 || err.status === 401)
+        ) {
+          throw err;
+        }
+        if (attempt < maxAttempts - 1) {
+          await sleepMs(250 * (attempt + 1));
+          continue;
+        }
+        throw err;
       }
     }
     throw lastErr || new Error('Failed to fetch media');
@@ -1897,7 +1925,7 @@ async function downloadFourBasedMediaToCache(creator, creatorId, mediaPath) {
     });
     if (!upstream.ok || !upstream.body) {
       throw new fourBasedClient.FourBasedApiError(
-        'Failed to fetch media',
+        `Failed to fetch media (${upstream.status || 'no status'})`,
         upstream.status || 502
       );
     }
@@ -1947,67 +1975,87 @@ async function downloadFourBasedMediaToCache(creator, creatorId, mediaPath) {
   }
 }
 
+function fourBasedVaultThumbCandidatePaths(providerUserId, item) {
+  const id = item?._id || item?.id;
+  if (!id) return [];
+  const paths = [];
+  const seen = new Set();
+  const pushPath = (mediaPath) => {
+    if (!mediaPath || typeof mediaPath !== 'string' || seen.has(mediaPath)) return;
+    seen.add(mediaPath);
+    paths.push(mediaPath);
+  };
+  const fromPreviewUrl = (url) => {
+    if (typeof url !== 'string') return null;
+    if (url.includes('/protected/')) {
+      const idx = url.indexOf('/protected/');
+      return url.slice(idx + 1);
+    }
+    if (url.startsWith('https://media.4based.com/')) {
+      return url.slice('https://media.4based.com/'.length);
+    }
+    return null;
+  };
+  const preview = item.preview;
+  if (preview && typeof preview === 'object') {
+    // Prefer 500x500 (native grid), then smaller fallbacks if that size fails.
+    for (const key of [
+      '500x500',
+      '500x500.jpg',
+      '200x200',
+      '200x200.jpg',
+      '100x100',
+      '100x100.jpg',
+    ]) {
+      pushPath(fromPreviewUrl(preview[key]));
+    }
+  }
+  pushPath(
+    fourBasedClient.buildMediaPreviewPath(providerUserId, id, '500x500.jpg')
+  );
+  pushPath(
+    fourBasedClient.buildMediaPreviewPath(providerUserId, id, '200x200.jpg')
+  );
+  return paths;
+}
+
 async function prewarmFourBasedVaultThumbs(creator, creatorId, items) {
   const providerUserId = creator.providerUserId;
   if (!providerUserId || !Array.isArray(items) || items.length === 0) return;
 
-  const paths = [];
-  for (const item of items) {
-    const id = item?._id || item?.id;
-    if (!id) continue;
-    let mediaPath = null;
-    const preview = item.preview;
-    if (preview && typeof preview === 'object') {
-      // Match native vault grid (HAR): 500x500 first.
-      const preferred =
-        preview['500x500'] ||
-        preview['500x500.jpg'] ||
-        preview['200x200'] ||
-        preview['200x200.jpg'] ||
-        preview['100x100'];
-      if (typeof preferred === 'string' && preferred.includes('/protected/')) {
-        const idx = preferred.indexOf('/protected/');
-        mediaPath = preferred.slice(idx + 1);
-      } else if (
-        typeof preferred === 'string' &&
-        preferred.startsWith('https://media.4based.com/')
-      ) {
-        mediaPath = preferred.slice('https://media.4based.com/'.length);
-      }
-    }
-    if (!mediaPath) {
-      mediaPath = fourBasedClient.buildMediaPreviewPath(
-        providerUserId,
-        id,
-        '500x500.jpg'
-      );
-    }
-    if (mediaPath) paths.push(mediaPath);
-  }
+  // Give interactive vault/chat media requests a short head start.
+  await sleepMs(150);
 
-  // Limited concurrency; skip already-cached. Never await from the request path.
-  const concurrency = 3;
+  const jobs = items
+    .map((item) => fourBasedVaultThumbCandidatePaths(providerUserId, item))
+    .filter((candidates) => candidates.length > 0);
+
+  // Keep prewarm quieter than UI clicks so full-image opens win the semaphore.
+  const concurrency = 2;
   let index = 0;
   async function worker() {
-    while (index < paths.length) {
+    while (index < jobs.length) {
       const current = index;
       index += 1;
-      const mediaPath = paths[current];
-      try {
-        const hit = await fourBasedMediaCache.readCachePath(creatorId, mediaPath);
-        if (hit) continue;
-        await downloadFourBasedMediaToCache(creator, creatorId, mediaPath);
-      } catch (err) {
-        console.warn(
-          '4based vault thumb prewarm failed:',
-          mediaPath,
-          err?.message || err
-        );
+      const candidates = jobs[current];
+      for (const mediaPath of candidates) {
+        try {
+          const hit = await fourBasedMediaCache.readCachePath(creatorId, mediaPath);
+          if (hit) break;
+          await downloadFourBasedMediaToCache(creator, creatorId, mediaPath);
+          break;
+        } catch (err) {
+          console.warn(
+            '4based vault thumb prewarm failed:',
+            mediaPath,
+            err?.message || err
+          );
+        }
       }
     }
   }
   await Promise.all(
-    Array.from({ length: Math.min(concurrency, paths.length) }, () => worker())
+    Array.from({ length: Math.min(concurrency, jobs.length) }, () => worker())
   );
 }
 

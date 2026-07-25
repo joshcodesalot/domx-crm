@@ -1016,6 +1016,8 @@ export function FourBasedChatThread({
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<FourBasedVaultItem | null>(null);
   const [vaultPreviewPlaying, setVaultPreviewPlaying] = useState(false);
+  /** When 900xxx full preview fails, fall back to grid thumb (500x500). */
+  const [previewFullFailed, setPreviewFullFailed] = useState(false);
   const [selectedVaultItems, setSelectedVaultItems] = useState<FourBasedVaultItem[]>(
     []
   );
@@ -1217,6 +1219,7 @@ export function FourBasedChatThread({
     setVaultOpen(false);
     setPreviewItem(null);
     setVaultPreviewPlaying(false);
+    setPreviewFullFailed(false);
     setSelectedFolder(null);
     setHistoryTranslations({});
     historyTranslationsRef.current = {};
@@ -1666,6 +1669,7 @@ export function FourBasedChatThread({
     setVaultOpen(true);
     setPreviewItem(null);
     setVaultPreviewPlaying(false);
+    setPreviewFullFailed(false);
     setSelectedFolder(null);
     setVaultCategoryFilter('all');
     setVaultSentFilter('all');
@@ -1706,6 +1710,7 @@ export function FourBasedChatThread({
     if (next.sent !== undefined) setVaultSentFilter(next.sent);
     setPreviewItem(null);
     setVaultPreviewPlaying(false);
+    setPreviewFullFailed(false);
     setVaultOffset(0);
     setVaultHasMore(false);
     await loadVaultItems({ folder, category, sent, offset: 0 });
@@ -1746,6 +1751,13 @@ export function FourBasedChatThread({
       creatorId,
       fourBasedPreviewPath(providerUserId, id, '900xxx.jpg')
     );
+  }
+
+  function vaultPreviewDisplaySrc(item: FourBasedVaultItem): string | null {
+    const full = fullMediaSrc(item);
+    const thumb = mediaSrcForVaultItem(item);
+    if (previewFullFailed) return thumb || full;
+    return full || thumb;
   }
 
   function videoStreamSrc(item: FourBasedVaultItem): string | null {
@@ -2382,7 +2394,11 @@ export function FourBasedChatThread({
               <div className="flex-1 overflow-y-auto p-4 space-y-4 animate-fade-in">
                 <button
                   type="button"
-                  onClick={() => setPreviewItem(null)}
+                  onClick={() => {
+                    setPreviewItem(null);
+                    setPreviewFullFailed(false);
+                    setVaultPreviewPlaying(false);
+                  }}
                   className="text-sm text-domx-400 hover:text-domx-500"
                 >
                   ← Back to grid
@@ -2394,7 +2410,9 @@ export function FourBasedChatThread({
                         controls
                         autoPlay
                         playsInline
-                        poster={fullMediaSrc(previewItem) || undefined}
+                        poster={
+                          vaultPreviewDisplaySrc(previewItem) || undefined
+                        }
                         src={videoStreamSrc(previewItem) || undefined}
                         className="max-h-[60vh] max-w-full rounded"
                       >
@@ -2407,12 +2425,15 @@ export function FourBasedChatThread({
                         onClick={() => setVaultPreviewPlaying(true)}
                         aria-label="Play video"
                       >
-                        {fullMediaSrc(previewItem) ? (
+                        {vaultPreviewDisplaySrc(previewItem) ? (
                           <img
-                            src={fullMediaSrc(previewItem)!}
+                            src={vaultPreviewDisplaySrc(previewItem)!}
                             alt=""
                             loading="lazy"
                             decoding="async"
+                            onError={() => {
+                              if (!previewFullFailed) setPreviewFullFailed(true);
+                            }}
                             className="max-h-[60vh] max-w-full rounded object-contain"
                           />
                         ) : (
@@ -2426,12 +2447,15 @@ export function FourBasedChatThread({
                       </button>
                     )
                   ) : (
-                    fullMediaSrc(previewItem) && (
+                    vaultPreviewDisplaySrc(previewItem) && (
                       <img
-                        src={fullMediaSrc(previewItem)!}
+                        src={vaultPreviewDisplaySrc(previewItem)!}
                         alt=""
                         loading="lazy"
                         decoding="async"
+                        onError={() => {
+                          if (!previewFullFailed) setPreviewFullFailed(true);
+                        }}
                         className="max-h-[60vh] max-w-full rounded object-contain"
                       />
                     )
@@ -2578,6 +2602,7 @@ export function FourBasedChatThread({
                           onClick={() => toggleVaultItem(item)}
                           onDoubleClick={() => {
                             setVaultPreviewPlaying(false);
+                            setPreviewFullFailed(false);
                             setPreviewItem(item);
                           }}
                           onKeyDown={(e) => {
@@ -2620,6 +2645,7 @@ export function FourBasedChatThread({
                                 aria-label="Play video"
                                 onClick={(e) => {
                                   e.stopPropagation();
+                                  setPreviewFullFailed(false);
                                   setPreviewItem(item);
                                   setVaultPreviewPlaying(true);
                                 }}
