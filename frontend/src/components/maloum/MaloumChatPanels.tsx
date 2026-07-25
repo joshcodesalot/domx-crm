@@ -612,7 +612,9 @@ export function MaloumChatThread({
   const [vaultTypeFilter, setVaultTypeFilter] = useState<'all' | 'image' | 'video'>(
     'all'
   );
-  const [ppvPrice, setPpvPrice] = useState('5');
+  const [ppvPrice, setPpvPrice] = useState('');
+  const [priceModalOpen, setPriceModalOpen] = useState(false);
+  const [priceDraft, setPriceDraft] = useState('');
   const [preview, setPreview] = useState<MaloumMediaPreview | null>(null);
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>(
     {}
@@ -682,6 +684,9 @@ export function MaloumChatThread({
     setDraft('');
     setSendError(null);
     setSelectedVaultItems([]);
+    setPpvPrice('');
+    setPriceModalOpen(false);
+    setPriceDraft('');
     setVaultOpen(false);
     setMessageSenders({});
     setHistoryTranslations({});
@@ -774,10 +779,15 @@ export function MaloumChatThread({
     if (!uploadId) return;
     setSelectedVaultItems((prev) => {
       const exists = prev.some((entry) => vaultUploadId(entry) === uploadId);
-      if (exists) {
-        return prev.filter((entry) => vaultUploadId(entry) !== uploadId);
+      const next = exists
+        ? prev.filter((entry) => vaultUploadId(entry) !== uploadId)
+        : [...prev, item];
+      if (next.length === 0) {
+        setPpvPrice('');
+        setPriceDraft('');
+        setPriceModalOpen(false);
       }
-      return [...prev, item];
+      return next;
     });
   }, []);
 
@@ -952,6 +962,9 @@ export function MaloumChatThread({
 
       setDraft('');
       setSelectedVaultItems([]);
+      setPpvPrice('');
+      setPriceModalOpen(false);
+      setPriceDraft('');
       await loadMessages();
     } catch (err) {
       setSendError(err instanceof Error ? err.message : 'Failed to send');
@@ -1251,8 +1264,8 @@ export function MaloumChatThread({
 
       <div className="border-t border-gray-200 dark:border-zinc-800/80 bg-white dark:bg-zinc-950 p-4 shrink-0 relative z-10 shadow-[0_-10px_40px_rgba(0,0,0,0.3)]">
         {selectedVaultItems.length > 0 && (
-          <div className="flex items-center gap-4 mb-3 px-1 animate-fade-in">
-            <div className="flex gap-2 max-w-[40%] overflow-x-auto">
+          <div className="flex items-center gap-3 mb-3 px-1 animate-fade-in">
+            <div className="flex gap-2 max-w-[50%] overflow-x-auto">
               {selectedVaultItems.map((item) => {
                 const uploadId = vaultUploadId(item);
                 const src = vaultDirectUrl(item);
@@ -1278,39 +1291,61 @@ export function MaloumChatThread({
                 );
               })}
             </div>
-            <div className="h-8 w-px bg-gray-100 dark:bg-zinc-800" />
-            <div className="flex items-center gap-3">
-              <div className="flex flex-col">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-0.5">
-                  PPV Price
-                </label>
-                <div className="relative">
-                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 dark:text-zinc-400 text-xs">
+            <div className="ml-auto flex items-center gap-2 shrink-0">
+              {Number(ppvPrice) > 0 ? (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPriceDraft(ppvPrice);
+                      setPriceModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-domx-500/40 bg-domx-600/10 text-sm font-semibold text-domx-600 dark:text-domx-400 hover:bg-domx-600/20 transition-colors"
+                    title="Edit media price"
+                  >
+                    <Lock className="w-3.5 h-3.5" />
                     {currencySymbol}
-                  </span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={ppvPrice}
-                    onChange={(e) => setPpvPrice(e.target.value)}
-                    className="w-20 pl-6 pr-2 py-1 rounded-md border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm text-gray-900 dark:text-white focus:border-domx-500 focus:outline-none transition-colors"
-                  />
+                    {ppvPrice}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPpvPrice('');
+                      setPriceDraft('');
+                    }}
+                    className="p-1 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white"
+                    aria-label="Remove price"
+                    title="Remove price (send free)"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-              </div>
-              <span className="text-xs text-gray-500 dark:text-zinc-400 mt-4">
-                {selectedVaultItems.length} item
-                {selectedVaultItems.length === 1 ? '' : 's'} attached
-              </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPriceDraft('');
+                    setPriceModalOpen(true);
+                  }}
+                  className="text-sm font-medium text-domx-600 dark:text-domx-400 hover:text-domx-500 dark:hover:text-domx-300 transition-colors whitespace-nowrap"
+                >
+                  Add price for your media +
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedVaultItems([]);
+                  setPpvPrice('');
+                  setPriceDraft('');
+                  setPriceModalOpen(false);
+                }}
+                className="p-1 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white"
+                aria-label="Clear attachment"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setSelectedVaultItems([])}
-              className="p-1 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white ml-auto"
-              aria-label="Clear attachment"
-            >
-              <X className="w-4 h-4" />
-            </button>
           </div>
         )}
 
@@ -1403,7 +1438,12 @@ export function MaloumChatThread({
                 {selectedVaultItems.length > 0 && (
                   <button
                     type="button"
-                    onClick={() => setSelectedVaultItems([])}
+                    onClick={() => {
+                      setSelectedVaultItems([]);
+                      setPpvPrice('');
+                      setPriceDraft('');
+                      setPriceModalOpen(false);
+                    }}
                     className="px-3 py-2 text-sm text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white transition-colors"
                   >
                     Clear Selection
@@ -1607,6 +1647,68 @@ export function MaloumChatThread({
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {priceModalOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in">
+          <button
+            type="button"
+            aria-label="Close media price"
+            className="absolute inset-0 bg-black/40 dark:bg-black/70 backdrop-blur-sm"
+            onClick={() => setPriceModalOpen(false)}
+          />
+          <div className="relative w-full max-w-sm rounded-2xl bg-white dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 shadow-2xl p-6 animate-slide-up">
+            <button
+              type="button"
+              onClick={() => setPriceModalOpen(false)}
+              className="absolute top-4 right-4 p-1 text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+              aria-label="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <h3 className="text-center text-lg font-bold text-gray-800 dark:text-white mb-6">
+              Media price
+            </h3>
+            <div className="flex items-center gap-3 border-b border-gray-200 dark:border-zinc-700 pb-3 mb-5">
+              <span className="text-2xl font-medium text-gray-700 dark:text-zinc-300">
+                {currencySymbol}
+              </span>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                autoFocus
+                value={priceDraft}
+                onChange={(e) => setPriceDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const net = Number(priceDraft);
+                    if (Number.isFinite(net) && net > 0) {
+                      setPpvPrice(String(net));
+                      setPriceModalOpen(false);
+                    }
+                  }
+                }}
+                placeholder="0.00"
+                className="flex-1 bg-transparent text-2xl text-gray-900 dark:text-white placeholder:text-gray-300 dark:placeholder:text-zinc-600 focus:outline-none"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const net = Number(priceDraft);
+                if (!Number.isFinite(net) || net <= 0) return;
+                setPpvPrice(String(net));
+                setPriceModalOpen(false);
+              }}
+              disabled={!Number.isFinite(Number(priceDraft)) || Number(priceDraft) <= 0}
+              className="w-full py-3 rounded-xl bg-orange-500 hover:bg-orange-400 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-base transition-colors"
+            >
+              Set price
+            </button>
           </div>
         </div>
       )}

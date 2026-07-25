@@ -596,29 +596,28 @@ async function sendMedia(creator, chatId, {
   }
 
   const net = Number(priceNet) || 0;
+  const caption = typeof text === 'string' ? text.trim() : '';
   if (net > 0) {
+    const content = {
+      type: 'chat_product',
+      media: normalizedMedia,
+      priceNet: net,
+    };
+    if (caption) content.text = caption;
     return sendMessage(creator, chatId, {
-      content: {
-        type: 'chat_product',
-        media: normalizedMedia,
-        priceNet: net,
-        text: typeof text === 'string' ? text : '',
-      },
+      content,
       optimisticMessageId,
     });
   }
 
+  // Free media: native Maloum always uses mediaId (not uploadId) and omits empty text.
+  const content = {
+    type: 'media',
+    media: normalizedMedia,
+  };
+  if (caption) content.text = caption;
   return sendMessage(creator, chatId, {
-    content: {
-      type: 'media',
-      media: normalizedMedia.map((item) => ({
-        uploadId: item.mediaId,
-        type: item.type,
-        width: item.width,
-        height: item.height,
-      })),
-      text: typeof text === 'string' ? text : '',
-    },
+    content,
     optimisticMessageId,
   });
 }
