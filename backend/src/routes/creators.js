@@ -1723,6 +1723,171 @@ function handleFourBasedError(res, err, label) {
   return res.status(500).json({ error: 'Internal server error' });
 }
 
+/** Single-flight media-session refresh per creator (mint fresh media_jwt via re-login). */
+const fourBasedMediaSessionRefreshInflight = new Map();
+
+/**
+ * Re-login with saved credentials and persist cookies (including media_jwt).
+ * Returns a fresh loadFourBasedCreator() result or { error }.
+ */
+async function refreshFourBasedSessionFromSaved(creatorId) {
+  const existing = fourBasedMediaSessionRefreshInflight.get(creatorId);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    const result = await pool.query(
+      `SELECT id, platform, "loginEmail", "encryptedLoginPassword", "encryptedProxy",
+              "accountId"
+       FROM creators WHERE id = $1`,
+      [creatorId]
+    );
+    if (result.rows.length === 0) {
+      return { error: { status: 404, message: 'Creator not found' } };
+    }
+    const row = result.rows[0];
+    if (row.platform !== '4based') {
+      return { error: { status: 400, message: 'Creator is not a 4based account' } };
+    }
+    if (!row.loginEmail || !row.encryptedLoginPassword) {
+      return {
+        error: {
+          status: 401,
+          message:
+            'Protected media auth expired and no saved credentials to refresh. Reconnect the 4based account.',
+        },
+      };
+    }
+
+    const loginPassword = decryptSecret(row.encryptedLoginPassword);
+    if (!loginPassword) {
+      return {
+        error: {
+          status: 401,
+          message:
+            'Protected media auth expired and saved credentials are unreadable. Reconnect the 4based account.',
+        },
+      };
+    }
+
+    const storedProxy = row.encryptedProxy ? decryptSecret(row.encryptedProxy) : null;
+    let resolvedProxy;
+    try {
+      resolvedProxy = fourBasedClient.resolveFourBasedProxyUrl(storedProxy);
+    } catch (err) {
+      if (err instanceof fourBasedClient.FourBasedApiError) {
+        return { error: { status: err.status || 400, message: err.message } };
+      }
+      throw err;
+    }
+
+    let loginResult;
+    try {
+      loginResult = await fourBasedClient.login({
+        identifier: row.loginEmail.trim(),
+        password: loginPassword,
+        proxyUrl: resolvedProxy,
+      });
+    } catch (err) {
+      if (err instanceof fourBasedClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
+        return { error: { status: 400, message: 'Password not correct' } };
+      }
+      if (err instanceof fourBasedClient.FourBasedApiError) {
+        return {
+          error: {
+            status: err.status >= 400 && err.status < 600 ? err.status : 502,
+            message: err.message || '4based login failed',
+          },
+        };
+      }
+      throw err;
+    }
+
+    if (!fourBasedClient.hasMediaJwt(loginResult.cookies)) {
+      console.warn(
+        `[4based] media session refresh for ${creatorId} still missing media_jwt`
+      );
+    }
+
+    const loginEmail = row.loginEmail.trim();
+    const sessionPayload = {
+      cookies: loginResult.cookies,
+      token: loginResult.token,
+      resource: loginResult.resource,
+      providerUserId: loginResult.providerUserId,
+      loginEmail,
+      savedAt: new Date().toISOString(),
+      platform: '4based',
+    };
+    const encryptedSession = encryptJson(sessionPayload);
+    const encryptedAccessToken = encryptSecret(loginResult.token);
+    const encryptedProxy = encryptSecret(resolvedProxy);
+
+    await pool.query(
+      `UPDATE creators SET
+         "encryptedSession" = $1,
+         "encryptedAccessToken" = $2,
+         "encryptedProxy" = $3,
+         "providerUserId" = $4,
+         "loginEmail" = $5,
+         username = COALESCE($6, username),
+         "avatarUrl" = COALESCE($7, "avatarUrl"),
+         "postLoginUrl" = $8,
+         "connectionStatus" = 'connected',
+         "lastValidatedAt" = NOW(),
+         "authRefreshState" = 'active',
+         "updatedAt" = NOW()
+       WHERE id = $9`,
+      [
+        encryptedSession,
+        encryptedAccessToken,
+        encryptedProxy,
+        loginResult.providerUserId,
+        loginEmail,
+        loginResult.username,
+        loginResult.avatarUrl,
+        loginResult.postLoginUrl,
+        creatorId,
+      ]
+    );
+
+    const accessUserIds = await getUserIdsWithCreatorAccess(creatorId);
+    emitCreatorSessionUpdated(accessUserIds, {
+      creatorId,
+      accountId: row.accountId,
+      sessionUpdatedAt: sessionPayload.savedAt,
+    });
+
+    return loadFourBasedCreator(creatorId);
+  })();
+
+  fourBasedMediaSessionRefreshInflight.set(creatorId, promise);
+  try {
+    return await promise;
+  } finally {
+    fourBasedMediaSessionRefreshInflight.delete(creatorId);
+  }
+}
+
+/**
+ * Ensure creator has a usable media_jwt.
+ * - force: always re-login (e.g. after upstream 401)
+ * - otherwise: only refresh when media_jwt exists but is within 1h of expiry
+ *   (missing media_jwt is not re-logged on every request — that would spam if proxy strips cookies)
+ */
+async function ensureFourBasedMediaAuth(creatorId, creator, { force = false } = {}) {
+  const cookies = creator?.session?.cookies || {};
+  if (!force) {
+    const hasJwt = fourBasedClient.hasMediaJwt(cookies);
+    if (!hasJwt || !fourBasedClient.isMediaJwtStale(cookies)) {
+      return { creator };
+    }
+  }
+  console.info(
+    `[4based] refreshing media session for ${creatorId} (force=${force}, hasMediaJwt=${fourBasedClient.hasMediaJwt(cookies)})`
+  );
+  return refreshFourBasedSessionFromSaved(creatorId);
+}
+
 /** Max concurrent upstream media fetches per creator (cache hits unaffected). */
 const FOURBASED_MEDIA_UPSTREAM_CONCURRENCY = Math.max(
   1,
@@ -1900,6 +2065,72 @@ function sendFourBasedCachedFile(res, cached, rangeHeader, cacheStatus = 'HIT') 
   stream.pipe(res);
 }
 
+async function fetchFourBasedMediaWithAuthRetry(creatorId, creator, { path, rangeHeader } = {}) {
+  let activeCreator = creator;
+  const ensured = await ensureFourBasedMediaAuth(creatorId, activeCreator);
+  if (ensured.error) {
+    // Proceed with existing session; may still work via x-auth headers.
+    console.warn(
+      `[4based] media auth ensure failed for ${creatorId}:`,
+      ensured.error.message
+    );
+  } else if (ensured.creator) {
+    activeCreator = ensured.creator;
+  }
+
+  let upstream = await fetchFourBasedMediaThrottled(activeCreator, {
+    path,
+    rangeHeader,
+  });
+
+  if (upstream.status === 401) {
+    try {
+      if (upstream.body) {
+        const { Readable } = require('stream');
+        Readable.fromWeb(upstream.body).resume();
+      }
+    } catch {
+      // ignore
+    }
+    const refreshed = await ensureFourBasedMediaAuth(creatorId, activeCreator, {
+      force: true,
+    });
+    if (refreshed.error) {
+      throw new fourBasedClient.FourBasedApiError(
+        refreshed.error.message ||
+          'Failed to refresh 4based media auth (401). Reconnect the account.',
+        refreshed.error.status || 401
+      );
+    }
+    activeCreator = refreshed.creator;
+    if (!fourBasedClient.hasMediaJwt(activeCreator?.session?.cookies || {})) {
+      console.warn(
+        `[4based] media_jwt still missing after reconnect for ${creatorId}; retrying with x-auth headers`
+      );
+    }
+    upstream = await fetchFourBasedMediaThrottled(activeCreator, {
+      path,
+      rangeHeader,
+    });
+    if (upstream.status === 401) {
+      try {
+        if (upstream.body) {
+          const { Readable } = require('stream');
+          Readable.fromWeb(upstream.body).resume();
+        }
+      } catch {
+        // ignore
+      }
+      throw new fourBasedClient.FourBasedApiError(
+        'Failed to fetch media (401). media_jwt missing or rejected — reconnect the account; if login logs show no media_jwt, the proxy may be stripping Set-Cookie.',
+        401
+      );
+    }
+  }
+
+  return { upstream, creator: activeCreator };
+}
+
 /**
  * Download full media file through residential proxy once, write to disk cache,
  * and resolve with the cached path metadata. Single-flight per creator+path.
@@ -1919,7 +2150,7 @@ async function downloadFourBasedMediaToCache(creator, creatorId, mediaPath) {
     const already = await fourBasedMediaCache.readCachePath(creatorId, mediaPath);
     if (already) return already;
 
-    const upstream = await fetchFourBasedMediaThrottled(creator, {
+    const { upstream } = await fetchFourBasedMediaWithAuthRetry(creatorId, creator, {
       path: mediaPath,
       rangeHeader: null,
     });
@@ -3696,14 +3927,23 @@ router.get(
       }
 
       // Non-cacheable paths: stream through with optional Range.
-      const upstream = await fetchFourBasedMediaThrottled(loaded.creator, {
-        path: mediaPath,
-        rangeHeader,
-      });
+      const { upstream } = await fetchFourBasedMediaWithAuthRetry(
+        id,
+        loaded.creator,
+        {
+          path: mediaPath,
+          rangeHeader,
+        }
+      );
       if (!upstream.ok && upstream.status !== 206) {
         return res
           .status(upstream.status || 502)
-          .json({ error: 'Failed to fetch media' });
+          .json({
+            error:
+              upstream.status === 401
+                ? 'Failed to fetch media (401). Reconnect the 4based account or check media_jwt cookies.'
+                : 'Failed to fetch media',
+          });
       }
 
       const passthrough = [

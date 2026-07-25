@@ -91,31 +91,104 @@ function cookieHeaderFromMap(cookies) {
     .join('; ');
 }
 
+function applySetCookiePair(cookies, raw) {
+  if (!raw || typeof raw !== 'string') return;
+  const first = raw.split(';')[0];
+  const eq = first.indexOf('=');
+  if (eq <= 0) return;
+  const name = first.slice(0, eq).trim();
+  const value = first.slice(eq + 1).trim();
+  if (name) {
+    cookies[name] = value;
+  }
+}
+
 function parseSetCookieHeaders(headers) {
   const cookies = {};
-  const getSetCookie =
-    typeof headers.getSetCookie === 'function' ? headers.getSetCookie() : null;
+  if (!headers) return cookies;
 
-  const rawList = Array.isArray(getSetCookie)
-    ? getSetCookie
-    : (() => {
-        const single = headers.get('set-cookie');
-        return single ? [single] : [];
-      })();
+  let rawList = [];
+  if (typeof headers.getSetCookie === 'function') {
+    try {
+      const fromGetter = headers.getSetCookie();
+      if (Array.isArray(fromGetter) && fromGetter.length > 0) {
+        rawList = fromGetter;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (rawList.length === 0) {
+    // Fetch forbids headers.get('set-cookie') in browsers; undici may still expose it.
+    try {
+      const single = headers.get('set-cookie');
+      if (single) rawList = [single];
+    } catch {
+      // ignore
+    }
+  }
+
+  // Last resort: walk raw header entries (undici / node Headers).
+  if (rawList.length === 0 && typeof headers.forEach === 'function') {
+    headers.forEach((value, key) => {
+      if (String(key).toLowerCase() === 'set-cookie' && value) {
+        rawList.push(value);
+      }
+    });
+  }
 
   for (const raw of rawList) {
-    if (!raw || typeof raw !== 'string') continue;
-    const first = raw.split(';')[0];
-    const eq = first.indexOf('=');
-    if (eq <= 0) continue;
-    const name = first.slice(0, eq).trim();
-    const value = first.slice(eq + 1).trim();
-    if (name) {
-      cookies[name] = value;
+    if (Array.isArray(raw)) {
+      for (const item of raw) applySetCookiePair(cookies, item);
+    } else {
+      applySetCookiePair(cookies, raw);
     }
   }
 
   return cookies;
+}
+
+function cookieNames(cookies) {
+  if (!cookies || typeof cookies !== 'object') return [];
+  return Object.keys(cookies).filter(
+    (name) => cookies[name] !== undefined && cookies[name] !== null && cookies[name] !== ''
+  );
+}
+
+/** Decode JWT payload (no verify). Returns null if not a 3-part JWT. */
+function decodeJwtPayload(jwt) {
+  if (!jwt || typeof jwt !== 'string') return null;
+  const parts = jwt.split('.');
+  if (parts.length < 2) return null;
+  try {
+    const padded = parts[1] + '='.repeat((4 - (parts[1].length % 4)) % 4);
+    return JSON.parse(Buffer.from(padded, 'base64url').toString('utf8'));
+  } catch {
+    try {
+      const padded = parts[1] + '='.repeat((4 - (parts[1].length % 4)) % 4);
+      return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+    } catch {
+      return null;
+    }
+  }
+}
+
+function mediaJwtExpiresAtMs(cookies) {
+  const payload = decodeJwtPayload(cookies?.media_jwt);
+  if (!payload || typeof payload.exp !== 'number') return null;
+  return payload.exp * 1000;
+}
+
+/** True when media_jwt is missing or expires within skewMs (default 1h). */
+function isMediaJwtStale(cookies, skewMs = 60 * 60 * 1000) {
+  const expMs = mediaJwtExpiresAtMs(cookies);
+  if (expMs == null) return true;
+  return Date.now() >= expMs - skewMs;
+}
+
+function hasMediaJwt(cookies) {
+  return Boolean(cookies && typeof cookies.media_jwt === 'string' && cookies.media_jwt);
 }
 
 function baseHeaders({ cookies, token, resource, extra = {} } = {}) {
@@ -272,6 +345,14 @@ async function login({ identifier, password, proxyUrl, locale = 'en' }) {
     ...setCookies,
     resource: setCookies.resource || resource,
   };
+
+  const names = cookieNames(cookies);
+  console.info(`[4based] login cookies: ${names.join(',') || '(none)'}`);
+  if (!hasMediaJwt(cookies)) {
+    console.warn(
+      '[4based] login missing media_jwt Set-Cookie (proxy may strip cookies; protected media will 401 until fixed)'
+    );
+  }
 
   return {
     token,
@@ -867,7 +948,7 @@ function sanitizeMediaPath(path, providerUserId) {
 }
 
 async function fetchMedia(creator, { path, rangeHeader } = {}) {
-  const { providerUserId, cookies, proxyUrl } = authContext(creator);
+  const { providerUserId, cookies, proxyUrl, token, resource } = authContext(creator);
   const safePath = sanitizeMediaPath(path, providerUserId);
   if (!safePath) {
     throw new FourBasedApiError('Invalid media path', 400);
@@ -875,6 +956,7 @@ async function fetchMedia(creator, { path, rangeHeader } = {}) {
 
   const dispatcher = createDispatcher(proxyUrl);
   // Match browser media requests from 4based.com (HAR): cookies + page referer.
+  // Also send REST auth headers — some edges accept them when cookies are incomplete.
   const headers = {
     accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
     'accept-language': 'en-US,en;q=0.9',
@@ -891,6 +973,12 @@ async function fetchMedia(creator, { path, rangeHeader } = {}) {
     'sec-fetch-site': 'same-site',
     cookie: cookieHeaderFromMap(cookies),
   };
+  if (token) {
+    headers['x-auth-token'] = token;
+  }
+  if (resource || cookies?.resource) {
+    headers['x-auth-resource'] = resource || cookies.resource;
+  }
   if (rangeHeader) {
     headers.range = rangeHeader;
     headers.accept = '*/*';
@@ -956,5 +1044,10 @@ module.exports = {
   sanitizeMediaPath,
   buildMediaPreviewPath,
   extractSessionFromCreator,
+  parseSetCookieHeaders,
+  cookieNames,
+  hasMediaJwt,
+  isMediaJwtStale,
+  mediaJwtExpiresAtMs,
   BUILTIN_CHAT_FILTERS,
 };

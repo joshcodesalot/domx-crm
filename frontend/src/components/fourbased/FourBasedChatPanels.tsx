@@ -1031,6 +1031,12 @@ export function FourBasedChatThread({
   const [coinPackages, setCoinPackages] = useState<FourBasedCoinPackage[]>([]);
   /** Message id currently streaming video (lazy — poster only until clicked). */
   const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
+  /** Chat image lightbox (separate from vault preview). */
+  const [chatMediaPreview, setChatMediaPreview] = useState<{
+    fullSrc: string;
+    thumbSrc: string | null;
+  } | null>(null);
+  const [chatPreviewFullFailed, setChatPreviewFullFailed] = useState(false);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -1220,6 +1226,8 @@ export function FourBasedChatThread({
     setPreviewItem(null);
     setVaultPreviewPlaying(false);
     setPreviewFullFailed(false);
+    setChatMediaPreview(null);
+    setChatPreviewFullFailed(false);
     setSelectedFolder(null);
     setHistoryTranslations({});
     historyTranslationsRef.current = {};
@@ -2052,9 +2060,20 @@ export function FourBasedChatThread({
                             onClick={() => {
                               if (isVideo && videoUrl) {
                                 setPlayingMsgId(msgKey);
+                                return;
+                              }
+                              if (mediaUrl) {
+                                setChatPreviewFullFailed(false);
+                                setChatMediaPreview({
+                                  fullSrc: mediaUrl,
+                                  thumbSrc:
+                                    messageMediaUrl(msg, '500x500.jpg') ||
+                                    messageMediaUrl(msg, '400x400.jpg') ||
+                                    messageMediaUrl(msg, '200x200.jpg'),
+                                });
                               }
                             }}
-                            aria-label={isVideo ? 'Play video' : 'Media'}
+                            aria-label={isVideo ? 'Play video' : 'Open full image'}
                           >
                             {mediaUrl ? (
                               <img
@@ -2325,6 +2344,51 @@ export function FourBasedChatThread({
           <FourBasedTranslationToggles className="mt-3" />
         )}
       </div>
+
+      {chatMediaPreview && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6 animate-fade-in">
+          <button
+            type="button"
+            aria-label="Close image"
+            className="absolute inset-0 bg-black/40 dark:bg-black/85 backdrop-blur-sm"
+            onClick={() => {
+              setChatMediaPreview(null);
+              setChatPreviewFullFailed(false);
+            }}
+          />
+          <div className="relative max-w-5xl w-full max-h-[85vh] flex flex-col items-center animate-slide-up">
+            <button
+              type="button"
+              aria-label="Close"
+              className="absolute -top-2 right-0 z-10 p-2 rounded-lg bg-black/40 text-white hover:bg-black/60"
+              onClick={() => {
+                setChatMediaPreview(null);
+                setChatPreviewFullFailed(false);
+              }}
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img
+              src={
+                chatPreviewFullFailed && chatMediaPreview.thumbSrc
+                  ? chatMediaPreview.thumbSrc
+                  : chatMediaPreview.fullSrc
+              }
+              alt=""
+              onError={() => {
+                if (
+                  !chatPreviewFullFailed &&
+                  chatMediaPreview.thumbSrc &&
+                  chatMediaPreview.thumbSrc !== chatMediaPreview.fullSrc
+                ) {
+                  setChatPreviewFullFailed(true);
+                }
+              }}
+              className="max-h-[80vh] max-w-full rounded-xl object-contain shadow-2xl bg-black/20"
+            />
+          </div>
+        </div>
+      )}
 
       {vaultOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 animate-fade-in">
