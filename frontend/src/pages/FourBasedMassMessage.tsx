@@ -52,6 +52,17 @@ const COINS_PER_DOLLAR = 121;
 const PAGE_SIZE = 20;
 const VAULT_PAGE_SIZE = 60;
 
+/** HAR audience filter enums for mass-message targeting. */
+const AUDIENCE_FILTERS = [
+  { id: 'users_with_purchases', label: 'Buyers' },
+  { id: 'users_without_purchases', label: 'Non-buyers' },
+  { id: 'users_with_subscription', label: 'Subscribers' },
+  { id: 'users_without_subscription', label: 'Non-subscribers' },
+] as const;
+
+type AudienceFilterId = (typeof AUDIENCE_FILTERS)[number]['id'];
+const ALL_AUDIENCE_FILTERS: AudienceFilterId[] = AUDIENCE_FILTERS.map((f) => f.id);
+
 type VaultTypeFilter = 'all' | 'image' | 'video';
 type VaultPublishFilter = 'all' | 'published' | 'unpublished';
 
@@ -131,7 +142,16 @@ export default function FourBasedMassMessage() {
   const [listsLoading, setListsLoading] = useState(false);
   const [includeIds, setIncludeIds] = useState<string[]>([]);
   const [excludeIds, setExcludeIds] = useState<string[]>([]);
+  const [audienceFilters, setAudienceFilters] =
+    useState<AudienceFilterId[]>(ALL_AUDIENCE_FILTERS);
   const [receiverCount, setReceiverCount] = useState<number | null>(null);
+
+  const allAudienceSelected = useMemo(
+    () =>
+      ALL_AUDIENCE_FILTERS.every((id) => audienceFilters.includes(id)) &&
+      audienceFilters.length === ALL_AUDIENCE_FILTERS.length,
+    [audienceFilters]
+  );
 
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -270,6 +290,7 @@ export default function FourBasedMassMessage() {
     setListsHasMore(false);
     setIncludeIds([]);
     setExcludeIds([]);
+    setAudienceFilters(ALL_AUDIENCE_FILTERS);
     setDraft('');
     setSelectedVaultItems([]);
     setVaultFolders([]);
@@ -316,11 +337,17 @@ export default function FourBasedMassMessage() {
       setReceiverCount(null);
       return;
     }
+    if (audienceFilters.length === 0) {
+      setReceiverCount(0);
+      return;
+    }
     let cancelled = false;
     const timer = window.setTimeout(() => {
       void countFourBasedMassMessageReceivers(selectedCreatorId, {
+        filter: audienceFilters,
         includeUserList: includeIds,
         excludeUserList: excludeIds,
+        excludeFilter: [],
       })
         .then((result) => {
           if (!cancelled) setReceiverCount(result.count);
@@ -333,7 +360,7 @@ export default function FourBasedMassMessage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [selectedCreatorId, includeIds, excludeIds]);
+  }, [selectedCreatorId, includeIds, excludeIds, audienceFilters]);
 
   const buildVaultOptions = useCallback(
     (filters: {
@@ -509,6 +536,17 @@ export default function FourBasedMassMessage() {
     }
   }, []);
 
+  const selectAllAudience = useCallback(() => {
+    setAudienceFilters(ALL_AUDIENCE_FILTERS);
+  }, []);
+
+  const toggleAudienceFilter = useCallback((id: AudienceFilterId) => {
+    setAudienceFilters((prev) => {
+      if (prev.includes(id)) return prev.filter((entry) => entry !== id);
+      return ALL_AUDIENCE_FILTERS.filter((entry) => prev.includes(entry) || entry === id);
+    });
+  }, []);
+
   const handleDelete = useCallback(
     async (messageId: string) => {
       if (!selectedCreatorId || deletingId) return;
@@ -535,8 +573,8 @@ export default function FourBasedMassMessage() {
       setSendError('Add text or media');
       return;
     }
-    if (includeIds.length === 0) {
-      setSendError('Select at least one include list');
+    if (audienceFilters.length === 0) {
+      setSendError('Select at least one audience filter (All, Buyers, …)');
       return;
     }
 
@@ -579,8 +617,10 @@ export default function FourBasedMassMessage() {
 
       await sendFourBasedMassMessage(selectedCreatorId, {
         message: textToSend,
+        filter: audienceFilters,
         includeUserList: includeIds,
         excludeUserList: excludeIds,
+        excludeFilter: [],
         vaults: vaults.length > 0 ? vaults : undefined,
         priceCoins: priceCoins > 0 ? priceCoins : undefined,
       });
@@ -604,6 +644,7 @@ export default function FourBasedMassMessage() {
     translatingOutgoing,
     draft,
     selectedVaultItems,
+    audienceFilters,
     includeIds,
     excludeIds,
     autoTranslateOutgoing,
@@ -865,6 +906,49 @@ export default function FourBasedMassMessage() {
             </div>
 
             <div className="shrink-0 border-t border-gray-200 dark:border-zinc-800/60 bg-white dark:bg-zinc-950 p-4 space-y-3">
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-gray-700 dark:text-zinc-300">
+                    Audience
+                  </span>
+                  {receiverCount != null && (
+                    <span className="text-[11px] text-gray-500 dark:text-zinc-500">
+                      About {receiverCount.toLocaleString()} recipients
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2 overflow-x-auto pb-0.5">
+                  <button
+                    type="button"
+                    onClick={selectAllAudience}
+                    className={`px-3 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors ${
+                      allAudienceSelected
+                        ? 'bg-4based-500/15 text-4based-500 border-4based-500/40'
+                        : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 border-gray-200 dark:border-zinc-800 hover:text-gray-900 dark:hover:text-white'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {AUDIENCE_FILTERS.map((chip) => {
+                    const active = audienceFilters.includes(chip.id);
+                    return (
+                      <button
+                        key={chip.id}
+                        type="button"
+                        onClick={() => toggleAudienceFilter(chip.id)}
+                        className={`px-3 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors ${
+                          active
+                            ? 'bg-4based-500/15 text-4based-500 border-4based-500/40'
+                            : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 border-gray-200 dark:border-zinc-800 hover:text-gray-900 dark:hover:text-white'
+                        }`}
+                      >
+                        {chip.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <ListPicker
                   title="Include lists"
@@ -893,12 +977,6 @@ export default function FourBasedMassMessage() {
                   }
                 />
               </div>
-
-              {receiverCount != null && (
-                <p className="text-[11px] text-gray-500 dark:text-zinc-500">
-                  About {receiverCount.toLocaleString()} recipients
-                </p>
-              )}
 
               {selectedVaultItems.length > 0 && (
                 <div className="flex items-center gap-2 flex-wrap">
@@ -1017,7 +1095,7 @@ export default function FourBasedMassMessage() {
                     sending ||
                     translatingOutgoing ||
                     (!draft.trim() && selectedVaultItems.length === 0) ||
-                    includeIds.length === 0
+                    audienceFilters.length === 0
                   }
                   className="p-3 rounded-xl bg-4based-500 text-white hover:opacity-90 shadow-lg shadow-4based-500/20 shrink-0 disabled:opacity-40"
                   title="Send mass message"
