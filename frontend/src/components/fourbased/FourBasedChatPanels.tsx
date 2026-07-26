@@ -79,9 +79,34 @@ const FAN_PANEL_OPEN_KEY = 'domx-4based-fan-panel';
 const MAX_TRANSLATION_HISTORY = 8;
 const POLL_MS = 20_000;
 const MESSAGE_PAGE_LIMIT = 30;
+const CHAT_PAGE_LIMIT = 30;
 const NEAR_BOTTOM_PX = 120;
 const NEAR_TOP_PX = 80;
+const CHAT_LIST_NEAR_BOTTOM_PX = 240;
 const THREAD_WIDE_BREAKPOINT = 1000;
+
+function mergeFourBasedChatPages(
+  prev: FourBasedChat[],
+  incoming: FourBasedChat[]
+): FourBasedChat[] {
+  const incomingIds = new Set(incoming.map((c) => c._id));
+  const rest = prev.filter((c) => c._id && !incomingIds.has(c._id));
+  return [...incoming, ...rest];
+}
+
+function appendFourBasedChats(
+  prev: FourBasedChat[],
+  incoming: FourBasedChat[]
+): FourBasedChat[] {
+  const seen = new Set(prev.map((c) => c._id));
+  const next = [...prev];
+  for (const chat of incoming) {
+    if (!chat._id || seen.has(chat._id)) continue;
+    seen.add(chat._id);
+    next.push(chat);
+  }
+  return next;
+}
 
 const INBOX_FILTERS: Array<{ id: FourBasedChatFilter | 'all'; label: string }> = [
   { id: 'all', label: 'All' },
@@ -591,7 +616,10 @@ export function FourBasedChatList({
   const [chats, setChats] = useState<FourBasedChat[]>([]);
   const [providerUserId, setProviderUserId] = useState<string | null>(null);
   const [chatsLoading, setChatsLoading] = useState(false);
+  const [chatsLoadingMore, setChatsLoadingMore] = useState(false);
   const [chatsError, setChatsError] = useState<string | null>(null);
+  const [chatsOffset, setChatsOffset] = useState(0);
+  const [chatsHasMore, setChatsHasMore] = useState(false);
   const [inboxFilter, setInboxFilter] = useState<FourBasedChatFilter | 'all'>(
     'all'
   );
@@ -601,10 +629,13 @@ export function FourBasedChatList({
   const [pinningChatId, setPinningChatId] = useState<string | null>(null);
   const creatorIdRef = useRef(creatorId);
   const chatCountRef = useRef(0);
+  const chatsOffsetRef = useRef(0);
+  const chatsHasMoreRef = useRef(false);
+  const chatsLoadingMoreRef = useRef(false);
   const prevPollEnabledRef = useRef(pollEnabled);
-  const prevLoadChatsRef = useRef<((silent?: boolean) => Promise<void>) | null>(
-    null
-  );
+  const prevLoadChatsRef = useRef<((
+    opts?: { append?: boolean; offset?: number; silent?: boolean } | boolean
+  ) => Promise<void>) | null>(null);
   const prevMessagesUnreadRef = useRef(messagesUnread);
   const filterKey = `${inboxFilter}:${selectedListId || ''}`;
   const prevFilterKeyRef = useRef(filterKey);
@@ -617,6 +648,14 @@ export function FourBasedChatList({
     chatCountRef.current = chats.length;
   }, [chats.length]);
 
+  useEffect(() => {
+    chatsOffsetRef.current = chatsOffset;
+  }, [chatsOffset]);
+
+  useEffect(() => {
+    chatsHasMoreRef.current = chatsHasMore;
+  }, [chatsHasMore]);
+
   // Reset 4based-only UI state when switching creators so filters don't leak.
   useEffect(() => {
     setInboxFilter('all');
@@ -624,17 +663,37 @@ export function FourBasedChatList({
     setListsOpen(false);
     setPinningChatId(null);
     setChatsError(null);
+    setChatsOffset(0);
+    setChatsHasMore(false);
+    chatsOffsetRef.current = 0;
+    chatsHasMoreRef.current = false;
   }, [creatorId]);
 
   const loadChats = useCallback(
-    async (silent = false) => {
-      if (!silent) {
+    async (
+      opts?: { append?: boolean; offset?: number; silent?: boolean } | boolean
+    ) => {
+      const normalized =
+        typeof opts === 'boolean' ? { silent: opts } : opts || {};
+      const append = Boolean(normalized.append);
+      const silent = Boolean(normalized.silent);
+      const offset = append
+        ? normalized.offset ?? chatsOffsetRef.current
+        : 0;
+
+      if (append) {
+        if (chatsLoadingMoreRef.current || !chatsHasMoreRef.current) return;
+        chatsLoadingMoreRef.current = true;
+        setChatsLoadingMore(true);
+      } else if (!silent) {
         setChatsLoading(true);
         setChatsError(null);
       }
+
       try {
         const result = await listFourBasedChats(creatorId, {
-          limit: 30,
+          limit: CHAT_PAGE_LIMIT,
+          offset,
           filter: selectedListId
             ? null
             : inboxFilter === 'all'
@@ -643,21 +702,60 @@ export function FourBasedChatList({
           listId: selectedListId,
         });
         if (creatorIdRef.current !== creatorId) return;
-        setChats(Array.isArray(result.chats) ? result.chats : []);
-        setProviderUserId(result.providerUserId || null);
+        const page = Array.isArray(result.chats) ? result.chats : [];
+        const hasMore = page.length >= CHAT_PAGE_LIMIT;
+
+        if (append) {
+          setChats((prev) => appendFourBasedChats(prev, page));
+          const nextOffset = offset + page.length;
+          setChatsOffset(nextOffset);
+          chatsOffsetRef.current = nextOffset;
+          setChatsHasMore(hasMore);
+          chatsHasMoreRef.current = hasMore;
+        } else if (silent) {
+          setChats((prev) =>
+            prev.length === 0 ? page : mergeFourBasedChatPages(prev, page)
+          );
+          setProviderUserId(result.providerUserId || null);
+        } else {
+          setChats(page);
+          setProviderUserId(result.providerUserId || null);
+          setChatsOffset(page.length);
+          chatsOffsetRef.current = page.length;
+          setChatsHasMore(hasMore);
+          chatsHasMoreRef.current = hasMore;
+        }
       } catch (err) {
-        if (!silent && creatorIdRef.current === creatorId) {
+        if (!silent && !append && creatorIdRef.current === creatorId) {
           setChatsError(err instanceof Error ? err.message : 'Failed to load chats');
           setChats([]);
+          setChatsOffset(0);
+          setChatsHasMore(false);
+          chatsOffsetRef.current = 0;
+          chatsHasMoreRef.current = false;
         }
       } finally {
-        if (!silent && creatorIdRef.current === creatorId) {
+        if (append) {
+          chatsLoadingMoreRef.current = false;
+          if (creatorIdRef.current === creatorId) {
+            setChatsLoadingMore(false);
+          }
+        } else if (!silent && creatorIdRef.current === creatorId) {
           setChatsLoading(false);
         }
       }
     },
     [creatorId, inboxFilter, selectedListId]
   );
+
+  function handleChatsScroll(e: UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > CHAT_LIST_NEAR_BOTTOM_PX) {
+      return;
+    }
+    if (!chatsHasMoreRef.current || chatsLoadingMoreRef.current) return;
+    void loadChats({ append: true, offset: chatsOffsetRef.current });
+  }
 
   useEffect(() => {
     if (!pollEnabled) {
@@ -676,15 +774,15 @@ export function FourBasedChatList({
     prevMessagesUnreadRef.current = messagesUnread;
 
     if (chatCountRef.current === 0 || loadChatsChanged || filterChanged) {
-      void loadChats(false);
+      void loadChats({ silent: false });
     } else if (justEnabled && messagesUnread > 0) {
-      void loadChats(true);
+      void loadChats({ silent: true });
     } else if (!justEnabled && unreadIncreased) {
-      void loadChats(true);
+      void loadChats({ silent: true });
     }
 
     const timer = window.setInterval(() => {
-      void loadChats(true);
+      void loadChats({ silent: true });
     }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [pollEnabled, loadChats, messagesUnread, filterKey]);
@@ -732,7 +830,7 @@ export function FourBasedChatList({
       if (event.type !== '4based:event') return;
       if (event.creatorId !== creatorId) return;
       if (!pollEnabled) return;
-      void loadChats(true);
+      void loadChats({ silent: true });
     });
   }, [onSyncEvent, creatorId, loadChats, pollEnabled]);
 
@@ -888,7 +986,10 @@ export function FourBasedChatList({
           </p>
         )}
       </div>
-      <div className="flex-1 overflow-y-auto min-h-0 animate-fade-in">
+      <div
+        className="flex-1 overflow-y-auto min-h-0 animate-fade-in"
+        onScroll={handleChatsScroll}
+      >
         {chatsError && <p className="text-xs text-red-400 p-3">{chatsError}</p>}
         {!chatsLoading && !chatsError && chats.length === 0 && (
           <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">No chats yet.</p>
@@ -1013,6 +1114,11 @@ export function FourBasedChatList({
             </button>
           );
         })}
+        {chatsLoadingMore && (
+          <div className="flex items-center justify-center py-3">
+            <Loader2 className="w-4 h-4 animate-spin text-gray-400 dark:text-zinc-500" />
+          </div>
+        )}
       </div>
     </div>
   );

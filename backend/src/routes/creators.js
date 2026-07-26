@@ -567,6 +567,14 @@ router.post(
         loginEmail,
         userAgent: loginResult.userAgent || null,
       });
+      const tokenFields = buildEncryptedTokenFields({
+        accessToken: loginResult.accessToken,
+        refreshToken: loginResult.refreshToken,
+        expiresAt: loginResult.expiresAt,
+      });
+      const encryptedProxy = encryptSecret(resolvedProxy);
+      const encryptedLoginPassword = encryptOptionalLoginPassword(password);
+      const expiresAt = new Date(Date.now() + PENDING_TTL_MINUTES * 60 * 1000);
       const resolvedDisplayName =
         (typeof displayName === 'string' && displayName.trim()) ||
         loginResult.displayName;

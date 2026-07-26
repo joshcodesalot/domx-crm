@@ -67,8 +67,33 @@ type MaloumMediaPreview = {
 
 const POLL_MS = 20_000;
 const MESSAGE_PAGE_LIMIT = 30;
+const CHAT_PAGE_LIMIT = 30;
 const NEAR_BOTTOM_PX = 120;
 const NEAR_TOP_PX = 80;
+const CHAT_LIST_NEAR_BOTTOM_PX = 240;
+
+function mergeMaloumChatPages(
+  prev: MaloumChat[],
+  incoming: MaloumChat[]
+): MaloumChat[] {
+  const incomingIds = new Set(incoming.map((c) => c._id));
+  const rest = prev.filter((c) => c._id && !incomingIds.has(c._id));
+  return [...incoming, ...rest];
+}
+
+function appendMaloumChats(
+  prev: MaloumChat[],
+  incoming: MaloumChat[]
+): MaloumChat[] {
+  const seen = new Set(prev.map((c) => c._id));
+  const next = [...prev];
+  for (const chat of incoming) {
+    if (!chat._id || seen.has(chat._id)) continue;
+    seen.add(chat._id);
+    next.push(chat);
+  }
+  return next;
+}
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const MAX_TRANSLATION_HISTORY = 8;
@@ -519,6 +544,9 @@ export function MaloumChatList({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const chatCountRef = useRef(0);
+  const nextCursorRef = useRef<string | null>(null);
+  const loadingMoreRef = useRef(false);
+  const paginatedBeyondFirstRef = useRef(false);
   const prevPollEnabledRef = useRef(pollEnabled);
   const prevLoadChatsRef = useRef<((opts?: {
     append?: boolean;
@@ -531,35 +559,75 @@ export function MaloumChatList({
     chatCountRef.current = chats.length;
   }, [chats.length]);
 
+  useEffect(() => {
+    nextCursorRef.current = nextCursor;
+  }, [nextCursor]);
+
   const loadChats = useCallback(
     async (opts?: { append?: boolean; next?: string | null; silent?: boolean }) => {
       const append = Boolean(opts?.append);
       const silent = Boolean(opts?.silent);
-      if (append) setLoadingMore(true);
-      else if (!silent) {
+      const next = opts?.next ?? (append ? nextCursorRef.current : null);
+
+      if (append) {
+        if (loadingMoreRef.current || !next) return;
+        loadingMoreRef.current = true;
+        setLoadingMore(true);
+      } else if (!silent) {
         setLoading(true);
         setError(null);
       }
+
       try {
         const result = await listMaloumChats(creatorId, {
-          limit: 30,
-          next: opts?.next || undefined,
+          limit: CHAT_PAGE_LIMIT,
+          next: next || undefined,
         });
-        setChats((prev) =>
-          append ? [...prev, ...(result.chats || [])] : result.chats || []
-        );
-        setNextCursor(result.next || null);
+        const page = result.chats || [];
+        const resultNext = result.next || null;
+
+        if (append) {
+          setChats((prev) => appendMaloumChats(prev, page));
+          setNextCursor(resultNext);
+          nextCursorRef.current = resultNext;
+          paginatedBeyondFirstRef.current = true;
+        } else if (silent) {
+          setChats((prev) =>
+            prev.length === 0 ? page : mergeMaloumChatPages(prev, page)
+          );
+          // Keep the deeper cursor when the user already loaded past page 1.
+          if (!paginatedBeyondFirstRef.current) {
+            setNextCursor(resultNext);
+            nextCursorRef.current = resultNext;
+          }
+        } else {
+          setChats(page);
+          setNextCursor(resultNext);
+          nextCursorRef.current = resultNext;
+          paginatedBeyondFirstRef.current = false;
+        }
       } catch (err) {
-        if (!silent) {
+        if (!silent && !append) {
           setError(err instanceof Error ? err.message : 'Failed to load chats');
         }
       } finally {
-        if (append) setLoadingMore(false);
-        else if (!silent) setLoading(false);
+        if (append) {
+          loadingMoreRef.current = false;
+          setLoadingMore(false);
+        } else if (!silent) {
+          setLoading(false);
+        }
       }
     },
     [creatorId]
   );
+
+  function handleChatsScroll(e: UIEvent<HTMLDivElement>) {
+    if (!nearScrollEnd(e.currentTarget, CHAT_LIST_NEAR_BOTTOM_PX)) return;
+    const next = nextCursorRef.current;
+    if (!next || loadingMoreRef.current) return;
+    void loadChats({ append: true, next });
+  }
 
   useEffect(() => {
     if (!pollEnabled) {
@@ -616,7 +684,10 @@ export function MaloumChatList({
           </button>
         </div>
       )}
-      <div className="flex-1 overflow-y-auto min-h-0 animate-fade-in">
+      <div
+        className="flex-1 overflow-y-auto min-h-0 animate-fade-in"
+        onScroll={handleChatsScroll}
+      >
         {error && (
           <p className="text-xs text-red-400 p-3">{error}</p>
         )}
