@@ -2,10 +2,19 @@ const { randomUUID } = require('crypto');
 const { ProxyAgent, fetch: undiciFetch } = require('undici');
 
 const REST_BASE = 'https://rest.4based.com/api/1.0';
+const REST_BASE_V2 = 'https://rest.4based.com/api/2.0';
 const MEDIA_BASE = 'https://media.4based.com';
 const APP_VERSION = '10.3.0.17';
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
+
+/** Default audience filters for mass messages (HAR). */
+const MASS_MESSAGE_DEFAULT_FILTER = [
+  'users_with_purchases',
+  'users_without_purchases',
+  'users_with_subscription',
+  'users_without_subscription',
+];
 
 class WrongPasswordError extends Error {
   constructor(message = 'Password not correct') {
@@ -783,17 +792,24 @@ async function listVault(
     fileType,
     sold,
     sent,
+    lastPublished,
   } = {}
 ) {
   const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
-  if (!fanId) {
-    throw new FourBasedApiError('fanId is required to list vault', 400);
+  if ((sold === true || sold === false || sent === true || sent === false) && !fanId) {
+    throw new FourBasedApiError(
+      'fanId is required when using sold or sent vault filters',
+      400
+    );
   }
   const sort = encodeURIComponent(JSON.stringify({ created_at: 'desc' }));
   let url =
     `${REST_BASE}/user/${providerUserId}/vault` +
     `?offset=${offset}&limit=${limit}&sort=${sort}` +
-    `&with_source=true&buyer_user_id=${encodeURIComponent(fanId)}`;
+    `&with_source=true`;
+  if (fanId) {
+    url += `&buyer_user_id=${encodeURIComponent(fanId)}`;
+  }
   if (typeof folder === 'string' && folder.trim()) {
     url += `&belongs_to_folders=${encodeURIComponent(folder.trim())}`;
   }
@@ -806,12 +822,135 @@ async function listVault(
   if (sent === true || sent === false) {
     url += `&sent=${sent ? 'true' : 'false'}`;
   }
+  if (lastPublished === true || lastPublished === false) {
+    url += `&last_published=${lastPublished ? 'true' : 'false'}`;
+  }
   const result = await requestJson({
     url,
     proxyUrl,
     cookies,
     token,
     resource,
+  });
+  if (result.status === 204 || result.data == null) {
+    return [];
+  }
+  return result.data;
+}
+
+function normalizeMassMessageList(data) {
+  if (data == null) return [];
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.items)) return data.items;
+  return [];
+}
+
+async function listMassMessages(creator, { offset = 0, limit = 20, tab = 'sent' } = {}) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const resolvedTab = tab === 'unsent' ? 'unsent' : 'sent';
+  let url =
+    `${REST_BASE}/user/${providerUserId}/chat/mass-message/` +
+    `?offset=${safeOffset}&limit=${safeLimit}`;
+  if (resolvedTab === 'unsent') {
+    url += '&only_deleted=true&status=finished';
+  } else {
+    url += '&status=finished';
+  }
+  const result = await requestJson({
+    url,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  if (result.status === 204 || result.data == null) {
+    return [];
+  }
+  return normalizeMassMessageList(result.data);
+}
+
+async function deleteMassMessage(creator, massMessageId) {
+  if (!massMessageId) {
+    throw new FourBasedApiError('massMessageId is required', 400);
+  }
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const result = await requestJson({
+    method: 'DELETE',
+    url: `${REST_BASE}/user/${providerUserId}/chat/mass-message/${encodeURIComponent(massMessageId)}`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  return result.data;
+}
+
+async function countMassMessageReceivers(
+  creator,
+  {
+    filter = MASS_MESSAGE_DEFAULT_FILTER,
+    includeUserList = [],
+    excludeUserList = [],
+    excludeFilter = [],
+  } = {}
+) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const result = await requestJson({
+    method: 'POST',
+    url: `${REST_BASE_V2}/user/${providerUserId}/chat/mass-message/receivers/count`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+    body: {
+      filter: Array.isArray(filter) ? filter : MASS_MESSAGE_DEFAULT_FILTER,
+      include_user_list: Array.isArray(includeUserList) ? includeUserList : [],
+      exclude_user_list: Array.isArray(excludeUserList) ? excludeUserList : [],
+      exclude_filter: Array.isArray(excludeFilter) ? excludeFilter : [],
+    },
+  });
+  const count = result.data?.data?.count ?? result.data?.count;
+  return { count: Number.isFinite(Number(count)) ? Number(count) : 0 };
+}
+
+async function sendMassMessage(
+  creator,
+  {
+    message = '',
+    includeUserList = [],
+    excludeUserList = [],
+    excludeFilter = [],
+    filter = MASS_MESSAGE_DEFAULT_FILTER,
+    fileStackId = null,
+    userIds = [],
+    excludeIds = [],
+    userListId = null,
+    toBePostedAt = null,
+  } = {}
+) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const result = await requestJson({
+    method: 'POST',
+    url: `${REST_BASE}/user/${providerUserId}/chat/mass-message/`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+    body: {
+      message: typeof message === 'string' ? message : '',
+      user_list_id: userListId || null,
+      user_ids: Array.isArray(userIds) ? userIds : [],
+      exclude_ids: Array.isArray(excludeIds) ? excludeIds : [],
+      filter: Array.isArray(filter) && filter.length > 0 ? filter : MASS_MESSAGE_DEFAULT_FILTER,
+      include_user_list: Array.isArray(includeUserList) ? includeUserList : [],
+      exclude_user_list: Array.isArray(excludeUserList) ? excludeUserList : [],
+      exclude_filter: Array.isArray(excludeFilter) ? excludeFilter : [],
+      file_stack_id: fileStackId || null,
+      to_be_posted_at: toBePostedAt || null,
+    },
   });
   return result.data;
 }
@@ -1037,6 +1176,11 @@ module.exports = {
   deleteMessage,
   getUser,
   listVault,
+  listMassMessages,
+  deleteMassMessage,
+  countMassMessageReceivers,
+  sendMassMessage,
+  MASS_MESSAGE_DEFAULT_FILTER,
   getCoinPackages,
   createFileStackFromVault,
   sendPpv,

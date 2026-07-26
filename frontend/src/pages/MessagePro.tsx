@@ -70,6 +70,7 @@ export default function MessagePro() {
   const [notificationUnreadByCreatorId, setNotificationUnreadByCreatorId] = useState<
     Record<string, number>
   >({});
+  const [mountedHomeIds, setMountedHomeIds] = useState<string[]>([]);
 
   const openableCreators = useMemo(
     () => creators.filter(isOpenableCreator),
@@ -189,6 +190,19 @@ export default function MessagePro() {
     }, BADGE_POLL_MS);
     return () => window.clearInterval(timer);
   }, [openableCreators, refreshBadges]);
+
+  useEffect(() => {
+    const openableIds = new Set(openableCreators.map((c) => c.id));
+    setMountedHomeIds((prev) => prev.filter((id) => openableIds.has(id)));
+  }, [openableCreators]);
+
+  useEffect(() => {
+    if (!activeAccountId || !activeWorkspace) return;
+    if (activeWorkspace.activeTabId !== HOME_TAB_ID) return;
+    setMountedHomeIds((prev) =>
+      prev.includes(activeAccountId) ? prev : [...prev, activeAccountId]
+    );
+  }, [activeAccountId, activeWorkspace]);
 
   const handleAutoTranslateOutgoingChange = useCallback((enabled: boolean) => {
     setAutoTranslateOutgoing(enabled);
@@ -395,29 +409,46 @@ export default function MessagePro() {
             })}
           </div>
 
-          <div className="flex-1 min-h-0">
-            {activeWorkspace.activeTabId === HOME_TAB_ID ? (
-              <MaloumChatList
-                creatorId={activeWorkspace.creator.id}
-                onSelectChat={(chat) =>
-                  openFanTab(activeWorkspace.creator.id, chat)
-                }
-                openActionLabel="Open tab"
-              />
-            ) : activeFanTab ? (
-              <MaloumChatThread
-                creator={activeWorkspace.creator}
-                chatId={activeFanTab.chatId}
-                initialChat={activeFanTab.chat || null}
-                onClose={() =>
-                  closeFanTab(activeWorkspace.creator.id, activeFanTab.chatId)
-                }
-              />
-            ) : (
+          <div className="flex-1 min-h-0 relative">
+            {mountedHomeIds.map((creatorId) => {
+              const workspace = workspaces.find((w) => w.creator.id === creatorId);
+              if (!workspace) return null;
+              const isActiveHome =
+                creatorId === activeAccountId &&
+                workspace.activeTabId === HOME_TAB_ID;
+              return (
+                <div
+                  key={creatorId}
+                  className={isActiveHome ? 'h-full' : undefined}
+                  aria-hidden={!isActiveHome}
+                  style={isActiveHome ? undefined : { display: 'none' }}
+                >
+                  <MaloumChatList
+                    creatorId={creatorId}
+                    pollEnabled={isActiveHome}
+                    messagesUnread={unreadByCreatorId[creatorId] || 0}
+                    onSelectChat={(chat) => openFanTab(creatorId, chat)}
+                    openActionLabel="Open tab"
+                  />
+                </div>
+              );
+            })}
+            {activeFanTab ? (
+              <div className="h-full">
+                <MaloumChatThread
+                  creator={activeWorkspace.creator}
+                  chatId={activeFanTab.chatId}
+                  initialChat={activeFanTab.chat || null}
+                  onClose={() =>
+                    closeFanTab(activeWorkspace.creator.id, activeFanTab.chatId)
+                  }
+                />
+              </div>
+            ) : activeWorkspace.activeTabId !== HOME_TAB_ID ? (
               <div className="h-full flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
                 Tab not found
               </div>
-            )}
+            ) : null}
           </div>
         </>
       )}

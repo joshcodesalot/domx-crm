@@ -49,6 +49,7 @@ export default function MessagePro4Based() {
   const [badgeCountsByCreatorId, setBadgeCountsByCreatorId] = useState<
     Record<string, CreatorUnreadCounts>
   >({});
+  const [mountedHomeIds, setMountedHomeIds] = useState<string[]>([]);
 
   const openableCreators = useMemo(
     () => creators.filter(isOpenableCreator),
@@ -147,6 +148,19 @@ export default function MessagePro4Based() {
     }, BADGE_POLL_MS);
     return () => window.clearInterval(timer);
   }, [openableCreators, refreshCreatorBadges]);
+
+  useEffect(() => {
+    const openableIds = new Set(openableCreators.map((c) => c.id));
+    setMountedHomeIds((prev) => prev.filter((id) => openableIds.has(id)));
+  }, [openableCreators]);
+
+  useEffect(() => {
+    if (!activeAccountId || !activeWorkspace) return;
+    if (activeWorkspace.activeTabId !== HOME_TAB_ID) return;
+    setMountedHomeIds((prev) =>
+      prev.includes(activeAccountId) ? prev : [...prev, activeAccountId]
+    );
+  }, [activeAccountId, activeWorkspace]);
 
   const openFanTab = useCallback((creatorId: string, chat: FourBasedChat) => {
     setWorkspaces((prev) =>
@@ -318,32 +332,51 @@ export default function MessagePro4Based() {
             })}
           </div>
 
-          <div className="flex-1 min-h-0">
-            {activeWorkspace.activeTabId === HOME_TAB_ID ? (
-              <FourBasedChatList
-                creatorId={activeWorkspace.creator.id}
-                onSelectChat={(chat) =>
-                  openFanTab(activeWorkspace.creator.id, chat)
-                }
-                openActionLabel="Open tab"
-                onRefreshExtra={() => {
-                  void refreshCreatorBadges([activeWorkspace.creator.id]);
-                }}
-              />
-            ) : activeFanTab ? (
-              <FourBasedChatThread
-                creator={activeWorkspace.creator}
-                chatId={activeFanTab.chatId}
-                initialChat={activeFanTab.chat || null}
-                onClose={() =>
-                  closeFanTab(activeWorkspace.creator.id, activeFanTab.chatId)
-                }
-              />
-            ) : (
+          <div className="flex-1 min-h-0 relative">
+            {mountedHomeIds.map((creatorId) => {
+              const workspace = workspaces.find((w) => w.creator.id === creatorId);
+              if (!workspace) return null;
+              const isActiveHome =
+                creatorId === activeAccountId &&
+                workspace.activeTabId === HOME_TAB_ID;
+              return (
+                <div
+                  key={creatorId}
+                  className={isActiveHome ? 'h-full' : undefined}
+                  aria-hidden={!isActiveHome}
+                  style={isActiveHome ? undefined : { display: 'none' }}
+                >
+                  <FourBasedChatList
+                    creatorId={creatorId}
+                    pollEnabled={isActiveHome}
+                    messagesUnread={
+                      badgeCountsByCreatorId[creatorId]?.messages || 0
+                    }
+                    onSelectChat={(chat) => openFanTab(creatorId, chat)}
+                    openActionLabel="Open tab"
+                    onRefreshExtra={() => {
+                      void refreshCreatorBadges([creatorId]);
+                    }}
+                  />
+                </div>
+              );
+            })}
+            {activeFanTab ? (
+              <div className="h-full">
+                <FourBasedChatThread
+                  creator={activeWorkspace.creator}
+                  chatId={activeFanTab.chatId}
+                  initialChat={activeFanTab.chat || null}
+                  onClose={() =>
+                    closeFanTab(activeWorkspace.creator.id, activeFanTab.chatId)
+                  }
+                />
+              </div>
+            ) : activeWorkspace.activeTabId !== HOME_TAB_ID ? (
               <div className="h-full flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
                 Tab not found
               </div>
-            )}
+            ) : null}
           </div>
         </>
       )}

@@ -25,6 +25,15 @@ export type StaffSyncEvent =
       creatorId: string;
       providerUserId: string;
       payload: unknown;
+    }
+  | {
+      type: 'messaging:sent';
+      creatorId: string;
+      chatId: string;
+      maloumMessageId: string;
+      optimisticMessageId: string | null;
+      chatterId: string;
+      chatterName: string;
     };
 
 export type UpdaterStatus =

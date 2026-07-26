@@ -1390,7 +1390,7 @@ export async function sendFourBasedPpv(
 
 export async function listFourBasedVault(
   creatorId: string,
-  fanId: string,
+  fanId?: string | null,
   options: {
     limit?: number;
     offset?: number;
@@ -1398,16 +1398,141 @@ export async function listFourBasedVault(
     fileType?: 'image' | 'video';
     sold?: boolean;
     sent?: boolean;
+    lastPublished?: boolean;
   } = {}
 ): Promise<{ items: FourBasedVaultItem[]; providerUserId: string }> {
-  const params = new URLSearchParams({ fanId });
+  const params = new URLSearchParams();
+  if (fanId) params.set('fanId', fanId);
   if (options.limit != null) params.set('limit', String(options.limit));
   if (options.offset != null) params.set('offset', String(options.offset));
   if (options.folder) params.set('folder', options.folder);
   if (options.fileType) params.set('fileType', options.fileType);
   if (options.sold != null) params.set('sold', options.sold ? 'true' : 'false');
   if (options.sent != null) params.set('sent', options.sent ? 'true' : 'false');
-  return request(`/api/creators/${creatorId}/4based/vault?${params.toString()}`);
+  if (options.lastPublished != null) {
+    params.set('lastPublished', options.lastPublished ? 'true' : 'false');
+  }
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/4based/vault${query ? `?${query}` : ''}`
+  );
+}
+
+export interface FourBasedMassMessageFileStack {
+  _id?: string;
+  type?: string;
+  fileStackType?: string;
+  preview?: Record<string, string>;
+  source?: string[] | string;
+  duration?: number;
+  width?: number;
+  height?: number;
+  price?: number;
+  vault_file_stack_id?: string;
+  [key: string]: unknown;
+}
+
+export interface FourBasedMassMessage {
+  _id: string;
+  id?: string;
+  user_id?: string;
+  message?: string;
+  status?: string;
+  target_group?: string;
+  filter?: string[];
+  include_user_list?: string[];
+  exclude_user_list?: string[];
+  exclude_filter?: string[];
+  user_list_id?: string | null;
+  file_stack_id?: string | null;
+  to_be_posted_at?: string | null;
+  recipient_count?: number;
+  viewed_count?: number;
+  processing_finished_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  message_data?: {
+    message?: string;
+    type?: string;
+    sender_status?: string;
+    file_stack_id?: string;
+    [key: string]: unknown;
+  };
+  file_stack?: FourBasedMassMessageFileStack | null;
+  [key: string]: unknown;
+}
+
+export type FourBasedMassMessageTab = 'sent' | 'unsent';
+
+export async function listFourBasedMassMessages(
+  creatorId: string,
+  options: {
+    tab?: FourBasedMassMessageTab;
+    limit?: number;
+    offset?: number;
+  } = {}
+): Promise<{ messages: FourBasedMassMessage[]; providerUserId: string }> {
+  const params = new URLSearchParams();
+  if (options.tab) params.set('tab', options.tab);
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.offset != null) params.set('offset', String(options.offset));
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/4based/mass-messages${query ? `?${query}` : ''}`
+  );
+}
+
+export async function deleteFourBasedMassMessage(
+  creatorId: string,
+  massMessageId: string
+): Promise<{ ok: boolean; id: string }> {
+  return request(
+    `/api/creators/${creatorId}/4based/mass-messages/${encodeURIComponent(massMessageId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export async function countFourBasedMassMessageReceivers(
+  creatorId: string,
+  payload: {
+    includeUserList?: string[];
+    excludeUserList?: string[];
+    excludeFilter?: string[];
+    filter?: string[];
+  } = {}
+): Promise<{ count: number }> {
+  return request(`/api/creators/${creatorId}/4based/mass-messages/receivers/count`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function sendFourBasedMassMessage(
+  creatorId: string,
+  payload: {
+    message?: string;
+    text?: string;
+    includeUserList?: string[];
+    excludeUserList?: string[];
+    excludeFilter?: string[];
+    filter?: string[];
+    vaults?: Array<{
+      id: string;
+      guid?: string;
+      position?: number;
+      is_teaser?: boolean;
+    }>;
+    vaultId?: string;
+    vaultGuid?: string;
+    priceCoins?: number;
+    price?: number;
+    fileStackId?: string;
+  }
+): Promise<{ message: FourBasedMassMessage; providerUserId: string }> {
+  return request(`/api/creators/${creatorId}/4based/mass-messages`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getFourBasedProfile(

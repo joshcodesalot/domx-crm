@@ -3408,18 +3408,8 @@ router.get(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      const [badges, activitiesPayload] = await Promise.all([
-        fourBasedClient.getBadges(loaded.creator),
-        fourBasedClient.listActivities(loaded.creator, { offset: 0, limit: 50 }),
-      ]);
-
-      const activities = Array.isArray(activitiesPayload) ? activitiesPayload : [];
-      try {
-        await messagingDashboard.processFourBasedSaleAndTipNotifications(id, activities);
-      } catch (err) {
-        console.warn('4based sale/tip sync failed:', err.message);
-      }
-
+      // Tip/sale CRM sync runs on /4based/activities (Notifications), not every badge poll.
+      const badges = await fourBasedClient.getBadges(loaded.creator);
       res.json(badges);
     } catch (err) {
       return handleFourBasedError(res, err, 'Get 4based badges error:');
@@ -3785,12 +3775,12 @@ router.get(
   requirePermission('creators.view'),
   async (req, res) => {
     const { id } = req.params;
-    const fanId = req.query.fanId;
+    const fanId =
+      typeof req.query.fanId === 'string' && req.query.fanId.trim()
+        ? req.query.fanId.trim()
+        : undefined;
     if (!isValidUuid(id)) {
       return res.status(400).json({ error: 'Invalid creator ID' });
-    }
-    if (!fanId || typeof fanId !== 'string') {
-      return res.status(400).json({ error: 'fanId query parameter is required' });
     }
 
     try {
@@ -3820,6 +3810,16 @@ router.get(
       let sent;
       if (req.query.sent === 'true') sent = true;
       else if (req.query.sent === 'false') sent = false;
+      let lastPublished;
+      if (req.query.lastPublished === 'true') lastPublished = true;
+      else if (req.query.lastPublished === 'false') lastPublished = false;
+
+      if ((sold !== undefined || sent !== undefined) && !fanId) {
+        return res.status(400).json({
+          error: 'fanId query parameter is required when using sold or sent filters',
+        });
+      }
+
       const vault = await fourBasedClient.listVault(loaded.creator, {
         fanId,
         limit,
@@ -3828,6 +3828,7 @@ router.get(
         fileType,
         sold,
         sent,
+        lastPublished,
       });
       const items = Array.isArray(vault) ? vault : vault?.items || vault || [];
       res.json({
@@ -3840,6 +3841,224 @@ router.get(
       });
     } catch (err) {
       return handleFourBasedError(res, err, 'List 4based vault error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/mass-messages',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const tab = req.query.tab === 'unsent' ? 'unsent' : 'sent';
+      const limit = Math.min(Number(req.query.limit) || 20, 100);
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const messages = await fourBasedClient.listMassMessages(loaded.creator, {
+        tab,
+        limit,
+        offset,
+      });
+      res.json({
+        messages: Array.isArray(messages) ? messages : [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'List 4based mass messages error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/4based/mass-messages/receivers/count',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const {
+        filter,
+        includeUserList,
+        excludeUserList,
+        excludeFilter,
+        include_user_list,
+        exclude_user_list,
+        exclude_filter,
+      } = req.body || {};
+
+      const result = await fourBasedClient.countMassMessageReceivers(loaded.creator, {
+        filter,
+        includeUserList: includeUserList || include_user_list,
+        excludeUserList: excludeUserList || exclude_user_list,
+        excludeFilter: excludeFilter || exclude_filter,
+      });
+      res.json(result);
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Count 4based mass message receivers error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/4based/mass-messages',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const {
+        message,
+        text,
+        includeUserList,
+        excludeUserList,
+        excludeFilter,
+        include_user_list,
+        exclude_user_list,
+        exclude_filter,
+        filter,
+        vaults,
+        vaultId,
+        vaultGuid,
+        priceCoins,
+        price,
+        fileStackId,
+        file_stack_id,
+      } = req.body || {};
+
+      const bodyText =
+        typeof message === 'string' ? message : typeof text === 'string' ? text : '';
+      const includeLists = Array.isArray(includeUserList)
+        ? includeUserList
+        : Array.isArray(include_user_list)
+          ? include_user_list
+          : [];
+      const excludeLists = Array.isArray(excludeUserList)
+        ? excludeUserList
+        : Array.isArray(exclude_user_list)
+          ? exclude_user_list
+          : [];
+
+      let resolvedFileStackId =
+        typeof fileStackId === 'string' && fileStackId.trim()
+          ? fileStackId.trim()
+          : typeof file_stack_id === 'string' && file_stack_id.trim()
+            ? file_stack_id.trim()
+            : null;
+
+      const hasVaults = Array.isArray(vaults) && vaults.length > 0;
+      const hasVaultId = typeof vaultId === 'string' && vaultId.trim();
+      if (!resolvedFileStackId && (hasVaults || hasVaultId)) {
+        const coins =
+          priceCoins !== undefined && priceCoins !== null
+            ? Number(priceCoins)
+            : Number(price) || 0;
+        const fileStack = await fourBasedClient.createFileStackFromVault(loaded.creator, {
+          vaultId: hasVaultId ? vaultId.trim() : undefined,
+          vaultGuid: typeof vaultGuid === 'string' ? vaultGuid : undefined,
+          vaults: hasVaults ? vaults : undefined,
+          description: bodyText,
+          priceCoins: Number.isFinite(coins) ? coins : 0,
+        });
+        resolvedFileStackId = fileStack?._id || null;
+        if (!resolvedFileStackId) {
+          return res.status(502).json({ error: 'Failed to create file stack for mass message' });
+        }
+      }
+
+      if (!bodyText.trim() && !resolvedFileStackId) {
+        return res.status(400).json({ error: 'message or media is required' });
+      }
+
+      const created = await fourBasedClient.sendMassMessage(loaded.creator, {
+        message: bodyText,
+        includeUserList: includeLists,
+        excludeUserList: excludeLists,
+        excludeFilter: excludeFilter || exclude_filter,
+        filter,
+        fileStackId: resolvedFileStackId,
+      });
+
+      return res.status(201).json({
+        message: created,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Send 4based mass message error:');
+    }
+  }
+);
+
+router.delete(
+  '/:id/4based/mass-messages/:massMessageId',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id, massMessageId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!massMessageId) {
+      return res.status(400).json({ error: 'massMessageId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const result = await fourBasedClient.deleteMassMessage(loaded.creator, massMessageId);
+      res.json({ ok: true, id: result?.id || massMessageId });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Delete 4based mass message error:');
     }
   }
 );

@@ -75,7 +75,7 @@ const FAN_PANEL_OPEN_KEY = 'domx-4based-fan-panel';
 const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
 const MAX_TRANSLATION_HISTORY = 8;
 const POLL_MS = 20_000;
-const MESSAGE_PAGE_LIMIT = 40;
+const MESSAGE_PAGE_LIMIT = 30;
 const NEAR_BOTTOM_PX = 120;
 const NEAR_TOP_PX = 80;
 const THREAD_WIDE_BREAKPOINT = 1000;
@@ -585,6 +585,10 @@ type FourBasedChatListProps = {
   openActionLabel?: string;
   /** Extra work to run alongside a manual refresh, e.g. badge reload. */
   onRefreshExtra?: () => void;
+  /** When false, stop polling and keep cached chats (Message Pro keep-alive). */
+  pollEnabled?: boolean;
+  /** Messages badge count; silent refresh on return only when > 0. */
+  messagesUnread?: number;
 };
 
 export function FourBasedChatList({
@@ -596,6 +600,8 @@ export function FourBasedChatList({
   showHeader = true,
   openActionLabel,
   onRefreshExtra,
+  pollEnabled = true,
+  messagesUnread = 0,
 }: FourBasedChatListProps) {
   const { onSyncEvent } = useStaffSync();
   const [chats, setChats] = useState<FourBasedChat[]>([]);
@@ -610,10 +616,22 @@ export function FourBasedChatList({
   const [listsOpen, setListsOpen] = useState(false);
   const [pinningChatId, setPinningChatId] = useState<string | null>(null);
   const creatorIdRef = useRef(creatorId);
+  const chatCountRef = useRef(0);
+  const prevPollEnabledRef = useRef(pollEnabled);
+  const prevLoadChatsRef = useRef<((silent?: boolean) => Promise<void>) | null>(
+    null
+  );
+  const prevMessagesUnreadRef = useRef(messagesUnread);
+  const filterKey = `${inboxFilter}:${selectedListId || ''}`;
+  const prevFilterKeyRef = useRef(filterKey);
 
   useEffect(() => {
     creatorIdRef.current = creatorId;
   }, [creatorId]);
+
+  useEffect(() => {
+    chatCountRef.current = chats.length;
+  }, [chats.length]);
 
   // Reset 4based-only UI state when switching creators so filters don't leak.
   useEffect(() => {
@@ -632,7 +650,7 @@ export function FourBasedChatList({
       }
       try {
         const result = await listFourBasedChats(creatorId, {
-          limit: 50,
+          limit: 30,
           filter: selectedListId
             ? null
             : inboxFilter === 'all'
@@ -657,10 +675,35 @@ export function FourBasedChatList({
     [creatorId, inboxFilter, selectedListId]
   );
 
-  // Refresh in place on creator/filter change (no wipe) — matches Maloum.
   useEffect(() => {
-    void loadChats();
-  }, [loadChats]);
+    if (!pollEnabled) {
+      prevPollEnabledRef.current = false;
+      return;
+    }
+
+    const loadChatsChanged =
+      prevLoadChatsRef.current !== null && prevLoadChatsRef.current !== loadChats;
+    prevLoadChatsRef.current = loadChats;
+    const justEnabled = !prevPollEnabledRef.current;
+    prevPollEnabledRef.current = true;
+    const filterChanged = prevFilterKeyRef.current !== filterKey;
+    prevFilterKeyRef.current = filterKey;
+    const unreadIncreased = messagesUnread > prevMessagesUnreadRef.current;
+    prevMessagesUnreadRef.current = messagesUnread;
+
+    if (chatCountRef.current === 0 || loadChatsChanged || filterChanged) {
+      void loadChats(false);
+    } else if (justEnabled && messagesUnread > 0) {
+      void loadChats(true);
+    } else if (!justEnabled && unreadIncreased) {
+      void loadChats(true);
+    }
+
+    const timer = window.setInterval(() => {
+      void loadChats(true);
+    }, POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [pollEnabled, loadChats, messagesUnread, filterKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -701,19 +744,13 @@ export function FourBasedChatList({
   }
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      void loadChats(true);
-    }, POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [loadChats]);
-
-  useEffect(() => {
     return onSyncEvent((event) => {
       if (event.type !== '4based:event') return;
       if (event.creatorId !== creatorId) return;
+      if (!pollEnabled) return;
       void loadChats(true);
     });
-  }, [onSyncEvent, creatorId, loadChats]);
+  }, [onSyncEvent, creatorId, loadChats, pollEnabled]);
 
   useEffect(() => {
     const onDeleted = (event: Event) => {
@@ -1390,11 +1427,31 @@ export function FourBasedChatThread({
 
   useEffect(() => {
     return onSyncEvent((event) => {
+      if (event.type === 'messaging:sent') {
+        if (event.creatorId !== creatorId || event.chatId !== chatId) return;
+        const name = event.chatterName;
+        if (!name) return;
+        setMessageSenders((prev) => {
+          const next = { ...prev };
+          if (event.maloumMessageId) {
+            next[event.maloumMessageId] = name;
+            if (!event.maloumMessageId.startsWith('4based:')) {
+              next[`4based:${event.maloumMessageId}`] = name;
+            }
+          }
+          if (event.optimisticMessageId) {
+            next[event.optimisticMessageId] = name;
+          }
+          return next;
+        });
+        void loadMessages({ silent: true });
+        return;
+      }
       if (event.type !== '4based:event') return;
       if (event.creatorId !== creatorId) return;
       void loadMessages({ silent: true });
     });
-  }, [onSyncEvent, creatorId, loadMessages]);
+  }, [onSyncEvent, creatorId, chatId, loadMessages]);
 
   useEffect(() => {
     let cancelled = false;

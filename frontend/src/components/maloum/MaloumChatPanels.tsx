@@ -54,6 +54,7 @@ import {
   type TranslateHistoryItem,
 } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { useStaffSync } from '@/context/StaffSyncContext';
 
 type MaloumMediaPreview = {
   url: string;
@@ -511,6 +512,10 @@ type MaloumChatListProps = {
   className?: string;
   showHeader?: boolean;
   openActionLabel?: string;
+  /** When false, stop polling and keep cached chats (Message Pro keep-alive). */
+  pollEnabled?: boolean;
+  /** Messages badge count; silent refresh on return only when > 0. */
+  messagesUnread?: number;
 };
 
 export function MaloumChatList({
@@ -521,19 +526,36 @@ export function MaloumChatList({
   className = '',
   showHeader = true,
   openActionLabel,
+  pollEnabled = true,
+  messagesUnread = 0,
 }: MaloumChatListProps) {
   const [chats, setChats] = useState<MaloumChat[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const chatCountRef = useRef(0);
+  const prevPollEnabledRef = useRef(pollEnabled);
+  const prevLoadChatsRef = useRef<((opts?: {
+    append?: boolean;
+    next?: string | null;
+    silent?: boolean;
+  }) => Promise<void>) | null>(null);
+  const prevMessagesUnreadRef = useRef(messagesUnread);
+
+  useEffect(() => {
+    chatCountRef.current = chats.length;
+  }, [chats.length]);
 
   const loadChats = useCallback(
-    async (opts?: { append?: boolean; next?: string | null }) => {
+    async (opts?: { append?: boolean; next?: string | null; silent?: boolean }) => {
       const append = Boolean(opts?.append);
+      const silent = Boolean(opts?.silent);
       if (append) setLoadingMore(true);
-      else setLoading(true);
-      setError(null);
+      else if (!silent) {
+        setLoading(true);
+        setError(null);
+      }
       try {
         const result = await listMaloumChats(creatorId, {
           limit: 30,
@@ -544,22 +566,44 @@ export function MaloumChatList({
         );
         setNextCursor(result.next || null);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load chats');
+        if (!silent) {
+          setError(err instanceof Error ? err.message : 'Failed to load chats');
+        }
       } finally {
-        setLoading(false);
-        setLoadingMore(false);
+        if (append) setLoadingMore(false);
+        else if (!silent) setLoading(false);
       }
     },
     [creatorId]
   );
 
   useEffect(() => {
-    void loadChats();
-    const timer = window.setInterval(() => {
+    if (!pollEnabled) {
+      prevPollEnabledRef.current = false;
+      return;
+    }
+
+    const loadChatsChanged =
+      prevLoadChatsRef.current !== null && prevLoadChatsRef.current !== loadChats;
+    prevLoadChatsRef.current = loadChats;
+    const justEnabled = !prevPollEnabledRef.current;
+    prevPollEnabledRef.current = true;
+    const unreadIncreased = messagesUnread > prevMessagesUnreadRef.current;
+    prevMessagesUnreadRef.current = messagesUnread;
+
+    if (chatCountRef.current === 0 || loadChatsChanged) {
       void loadChats();
+    } else if (justEnabled && messagesUnread > 0) {
+      void loadChats({ silent: true });
+    } else if (!justEnabled && unreadIncreased) {
+      void loadChats({ silent: true });
+    }
+
+    const timer = window.setInterval(() => {
+      void loadChats({ silent: true });
     }, POLL_MS);
     return () => window.clearInterval(timer);
-  }, [loadChats]);
+  }, [pollEnabled, loadChats, messagesUnread]);
 
   return (
     <div className={`flex flex-col h-full min-h-0 bg-[#F7F8FA] dark:bg-[#0a0a0c] ${className}`}>
@@ -692,6 +736,7 @@ export function MaloumChatThread({
   showTranslationToggles = false,
 }: MaloumChatThreadProps) {
   const { user } = useAuth();
+  const { onSyncEvent } = useStaffSync();
   const creatorId = creator.id;
 
   const [chat, setChat] = useState<MaloumChat | null>(initialChat);
@@ -905,6 +950,22 @@ export function MaloumChatThread({
     }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [chatId, creatorId, initialChat, loadMessages, loadSenders]);
+
+  useEffect(() => {
+    return onSyncEvent((event) => {
+      if (event.type !== 'messaging:sent') return;
+      if (event.creatorId !== creatorId || event.chatId !== chatId) return;
+      const name = event.chatterName;
+      if (!name) return;
+      setMessageSenders((prev) => {
+        const next = { ...prev };
+        if (event.maloumMessageId) next[event.maloumMessageId] = name;
+        if (event.optimisticMessageId) next[event.optimisticMessageId] = name;
+        return next;
+      });
+      void loadMessages({ silent: true });
+    });
+  }, [onSyncEvent, creatorId, chatId, loadMessages]);
 
   useEffect(() => {
     const el = threadRootRef.current;

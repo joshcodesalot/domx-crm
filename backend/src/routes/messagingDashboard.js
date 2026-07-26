@@ -3,7 +3,11 @@ const { randomUUID } = require('crypto');
 const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/authorize');
-const { userCanAccessCreator } = require('../services/creatorAccess');
+const {
+  getUserIdsWithCreatorAccess,
+  userCanAccessCreator,
+} = require('../services/creatorAccess');
+const { emitToUsers } = require('../services/userEventBus');
 
 const { requireElectronServiceKey } = require('../middleware/electronServiceKey');
 
@@ -1182,7 +1186,24 @@ router.post(
       ]
     );
 
-    res.json({ entry: toDashboardEntry(result.rows[0]) });
+    const entry = toDashboardEntry(result.rows[0]);
+
+    try {
+      const accessUserIds = await getUserIdsWithCreatorAccess(creatorId);
+      emitToUsers(accessUserIds, {
+        type: 'messaging:sent',
+        creatorId,
+        chatId,
+        maloumMessageId,
+        optimisticMessageId: optimisticMessageId || null,
+        chatterId,
+        chatterName,
+      });
+    } catch (err) {
+      console.warn('messaging:sent emit failed:', err.message);
+    }
+
+    res.json({ entry });
   }
 );
 
