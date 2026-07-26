@@ -53,6 +53,10 @@ import {
   type MaloumVaultMediaItem,
   type TranslateHistoryItem,
 } from '@/lib/api';
+import {
+  createHistoryTranslateQueue,
+  type HistoryTranslateQueue,
+} from '@/lib/historyTranslateQueue';
 import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 
@@ -67,7 +71,6 @@ const NEAR_BOTTOM_PX = 120;
 const NEAR_TOP_PX = 80;
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
-const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
 const MAX_TRANSLATION_HISTORY = 8;
 const TRANSLATION_SETTINGS_EVENT = 'domx-translation-settings';
 const FAN_PANEL_OPEN_KEY = 'domx-maloum-fan-panel';
@@ -115,25 +118,6 @@ function formatDuration(seconds?: number): string {
   const m = Math.floor(seconds / 60);
   const s = Math.floor(seconds % 60);
   return `${m}:${String(s).padStart(2, '0')}`;
-}
-
-async function translateTextToEnglish(text: string): Promise<string | null> {
-  if (!text.trim()) return null;
-  const response = await fetch(HISTORY_TRANSLATE_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      q: text,
-      source: 'de',
-      target: 'en',
-      format: 'text',
-    }),
-  });
-  if (!response.ok) {
-    throw new Error('Translation API failed with status ' + response.status);
-  }
-  const data = (await response.json()) as { translatedText?: string };
-  return data?.translatedText?.trim() || null;
 }
 
 function TranslationToggles({
@@ -763,7 +747,6 @@ export function MaloumChatThread({
     Record<string, string>
   >({});
   const historyTranslationsRef = useRef<Record<string, string>>({});
-  const historyInFlightRef = useRef<Set<string>>(new Set());
   const [manualTranslateOnlyIds, setManualTranslateOnlyIds] = useState<
     Set<string>
   >(() => new Set());
@@ -771,6 +754,37 @@ export function MaloumChatThread({
   const [translatingMessageKeys, setTranslatingMessageKeys] = useState<
     Set<string>
   >(() => new Set());
+  const historyTranslateQueueRef = useRef<HistoryTranslateQueue | null>(null);
+
+  useEffect(() => {
+    const queue = createHistoryTranslateQueue({
+      concurrency: 4,
+      onStart: (key) => {
+        setTranslatingMessageKeys((prev) => new Set(prev).add(key));
+      },
+      onResult: (key, translated) => {
+        historyTranslationsRef.current = {
+          ...historyTranslationsRef.current,
+          [key]: translated,
+        };
+        setHistoryTranslations((prev) => ({ ...prev, [key]: translated }));
+      },
+      onSettle: (key) => {
+        setTranslatingMessageKeys((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+      },
+    });
+    historyTranslateQueueRef.current = queue;
+    return () => {
+      queue.dispose();
+      if (historyTranslateQueueRef.current === queue) {
+        historyTranslateQueueRef.current = null;
+      }
+    };
+  }, []);
 
   const [vaultOpen, setVaultOpen] = useState(false);
   const [vaultFolders, setVaultFolders] = useState<MaloumVaultFolder[]>([]);
@@ -937,7 +951,7 @@ export function MaloumChatThread({
     setMessageSenders({});
     setHistoryTranslations({});
     historyTranslationsRef.current = {};
-    historyInFlightRef.current.clear();
+    historyTranslateQueueRef.current?.clear();
     setManualTranslateOnlyIds(new Set());
     manualTranslateOnlyIdsRef.current = new Set();
     setTranslatingMessageKeys(new Set());
@@ -1064,29 +1078,14 @@ export function MaloumChatThread({
     scrollToBottom('smooth');
   }, [historyTranslations, autoTranslateHistory, scrollToBottom]);
 
-  const translateMessage = useCallback(async (msgKey: string, text: string) => {
+  const translateMessage = useCallback((msgKey: string, text: string) => {
     const trimmed = text.trim();
     if (!msgKey || !trimmed) return;
     const cacheKey = `${msgKey}::${trimmed}`;
     if (historyTranslationsRef.current[cacheKey]) return;
-    if (historyInFlightRef.current.has(cacheKey)) return;
-    historyInFlightRef.current.add(cacheKey);
-    setTranslatingMessageKeys((prev) => new Set(prev).add(cacheKey));
-    try {
-      const translated = await translateTextToEnglish(trimmed);
-      if (translated) {
-        setHistoryTranslations((prev) => ({ ...prev, [cacheKey]: translated }));
-      }
-    } catch {
-      // Best-effort
-    } finally {
-      historyInFlightRef.current.delete(cacheKey);
-      setTranslatingMessageKeys((prev) => {
-        const next = new Set(prev);
-        next.delete(cacheKey);
-        return next;
-      });
-    }
+    historyTranslateQueueRef.current?.enqueue([
+      { key: cacheKey, text: trimmed },
+    ]);
   }, []);
 
   const handleMessagesScroll = useCallback(
@@ -1104,7 +1103,9 @@ export function MaloumChatThread({
   useEffect(() => {
     if (!autoTranslateHistory) return;
     const pending: Array<{ key: string; text: string }> = [];
-    for (const msg of messages) {
+    // Newest first so the bottom of the thread fills in first.
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const msg = messages[i];
       const text = messageText(msg).trim();
       if (!text) continue;
       const msgKey = maloumMessageId(msg);
@@ -1112,39 +1113,10 @@ export function MaloumChatThread({
       if (manualTranslateOnlyIdsRef.current.has(msgKey)) continue;
       const cacheKey = `${msgKey}::${text}`;
       if (historyTranslationsRef.current[cacheKey]) continue;
-      if (historyInFlightRef.current.has(cacheKey)) continue;
       pending.push({ key: cacheKey, text });
     }
     if (pending.length === 0) return;
-
-    let cancelled = false;
-    for (const item of pending) {
-      historyInFlightRef.current.add(item.key);
-    }
-
-    void (async () => {
-      const updates: Record<string, string> = {};
-      await Promise.all(
-        pending.map(async (item) => {
-          try {
-            const translated = await translateTextToEnglish(item.text);
-            if (translated && !cancelled) {
-              updates[item.key] = translated;
-            }
-          } catch {
-            // Best-effort
-          } finally {
-            historyInFlightRef.current.delete(item.key);
-          }
-        })
-      );
-      if (cancelled || Object.keys(updates).length === 0) return;
-      setHistoryTranslations((prev) => ({ ...prev, ...updates }));
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    historyTranslateQueueRef.current?.enqueue(pending);
   }, [messages, autoTranslateHistory]);
 
   const toggleVaultItem = useCallback((item: MaloumVaultMediaItem) => {
