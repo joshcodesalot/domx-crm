@@ -4332,7 +4332,34 @@ router.get(
 
       const limit = Math.min(Number(req.query.limit) || 15, 100);
       const next = typeof req.query.next === 'string' ? req.query.next : undefined;
-      const chats = await maloumClient.listChats(loaded.creator, { limit, next });
+      const filterRaw =
+        typeof req.query.filter === 'string' ? req.query.filter.trim() : '';
+      const lastMessageSenderRaw =
+        typeof req.query.lastMessageSender === 'string'
+          ? req.query.lastMessageSender.trim()
+          : '';
+      if (filterRaw && filterRaw !== 'unread') {
+        return res.status(400).json({
+          error: 'Invalid filter. Use unread.',
+        });
+      }
+      if (
+        lastMessageSenderRaw &&
+        lastMessageSenderRaw !== 'sentByMe' &&
+        lastMessageSenderRaw !== 'sentByOther'
+      ) {
+        return res.status(400).json({
+          error: 'Invalid lastMessageSender. Use sentByMe or sentByOther.',
+        });
+      }
+      const filter = filterRaw || undefined;
+      const lastMessageSender = lastMessageSenderRaw || undefined;
+      const chats = await maloumClient.listChats(loaded.creator, {
+        limit,
+        next,
+        filter,
+        lastMessageSender,
+      });
       res.json({
         next: chats?.next ?? null,
         chats: Array.isArray(chats?.data) ? chats.data : Array.isArray(chats) ? chats : [],

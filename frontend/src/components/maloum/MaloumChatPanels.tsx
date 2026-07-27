@@ -80,6 +80,29 @@ const NEAR_BOTTOM_PX = 120;
 const NEAR_TOP_PX = 80;
 const CHAT_LIST_NEAR_BOTTOM_PX = 240;
 
+type MaloumInboxFilterId = 'all' | 'unread' | 'waiting' | 'needs_reply';
+
+const MALOUM_INBOX_FILTERS: Array<{ id: MaloumInboxFilterId; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'unread', label: 'Unread' },
+  { id: 'waiting', label: 'Waiting' },
+  { id: 'needs_reply', label: 'Needs reply' },
+];
+
+function maloumInboxFilterParams(filterId: MaloumInboxFilterId): {
+  filter?: 'unread';
+  lastMessageSender?: 'sentByMe' | 'sentByOther';
+} {
+  if (filterId === 'unread') return { filter: 'unread' };
+  if (filterId === 'waiting') {
+    return { filter: 'unread', lastMessageSender: 'sentByMe' };
+  }
+  if (filterId === 'needs_reply') {
+    return { filter: 'unread', lastMessageSender: 'sentByOther' };
+  }
+  return {};
+}
+
 function mergeMaloumChatPages(
   prev: MaloumChat[],
   incoming: MaloumChat[]
@@ -586,6 +609,7 @@ export function MaloumChatList({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [inboxFilter, setInboxFilter] = useState<MaloumInboxFilterId>('all');
   const chatCountRef = useRef(0);
   const nextCursorRef = useRef<string | null>(null);
   const loadingMoreRef = useRef(false);
@@ -622,9 +646,11 @@ export function MaloumChatList({
       }
 
       try {
+        const filterParams = maloumInboxFilterParams(inboxFilter);
         const result = await listMaloumChats(creatorId, {
           limit: CHAT_PAGE_LIMIT,
           next: next || undefined,
+          ...filterParams,
         });
         const page = result.chats || [];
         const resultNext = result.next || null;
@@ -662,7 +688,7 @@ export function MaloumChatList({
         }
       }
     },
-    [creatorId]
+    [creatorId, inboxFilter]
   );
 
   function handleChatsScroll(e: UIEvent<HTMLDivElement>) {
@@ -727,6 +753,27 @@ export function MaloumChatList({
           </button>
         </div>
       )}
+      <div className="px-2 py-2 border-b border-gray-200 dark:border-zinc-800/60 shrink-0">
+        <div className="flex flex-wrap gap-1">
+          {MALOUM_INBOX_FILTERS.map((chip) => {
+            const active = inboxFilter === chip.id;
+            return (
+              <button
+                key={chip.id}
+                type="button"
+                onClick={() => setInboxFilter(chip.id)}
+                className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-colors ${
+                  active
+                    ? 'bg-maloum-500 text-white'
+                    : 'bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                {chip.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
       <div
         className="flex-1 overflow-y-auto min-h-0 animate-fade-in"
         onScroll={handleChatsScroll}

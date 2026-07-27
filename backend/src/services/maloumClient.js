@@ -424,11 +424,14 @@ function buildQuery(params) {
   return qs ? `?${qs}` : '';
 }
 
-async function listChats(creator, { limit = 15, next } = {}) {
+async function listChats(
+  creator,
+  { limit = 15, next, filter, lastMessageSender } = {}
+) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
-    path: `/chats${buildQuery({ limit, next })}`,
+    path: `/chats${buildQuery({ limit, next, filter, lastMessageSender })}`,
     proxyUrl,
     accessToken,
     timezone,

@@ -2022,11 +2022,20 @@ export interface MaloumVaultMediaItem {
 
 export async function listMaloumChats(
   creatorId: string,
-  options: { limit?: number; next?: string } = {}
+  options: {
+    limit?: number;
+    next?: string;
+    filter?: 'unread' | null;
+    lastMessageSender?: 'sentByMe' | 'sentByOther' | null;
+  } = {}
 ): Promise<{ chats: MaloumChat[]; next: string | null; providerUserId: string | null }> {
   const params = new URLSearchParams();
   if (options.limit != null) params.set('limit', String(options.limit));
   if (options.next) params.set('next', options.next);
+  if (options.filter) params.set('filter', options.filter);
+  if (options.lastMessageSender) {
+    params.set('lastMessageSender', options.lastMessageSender);
+  }
   const query = params.toString();
   return request(
     `/api/creators/${creatorId}/maloum/chats${query ? `?${query}` : ''}`
