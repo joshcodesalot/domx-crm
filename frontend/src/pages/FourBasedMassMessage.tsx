@@ -23,8 +23,12 @@ import {
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
+import VaultMediaNoteModal, {
+  VaultMediaNoteButton,
+} from '@/components/VaultMediaNoteModal';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import { formatRelativeTime } from '@/components/fourbased/FourBasedChatPanels';
+import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import {
   countFourBasedMassMessageReceivers,
@@ -35,6 +39,7 @@ import {
   listFourBasedMassMessages,
   listFourBasedUserLists,
   listFourBasedVault,
+  listVaultMediaNotes,
   pickFourBasedPreviewUrl,
   resolveFourBasedMediaSrc,
   sendFourBasedMassMessage,
@@ -122,7 +127,9 @@ function mediaThumbSrc(
 }
 
 export default function FourBasedMassMessage() {
+  const { hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
+  const canEditVaultNotes = hasPermission('vault.notes.edit');
   const [creators, setCreators] = useState<Creator[]>([]);
   const [creatorsLoading, setCreatorsLoading] = useState(true);
   const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
@@ -176,6 +183,11 @@ export default function FourBasedMassMessage() {
   const [vaultTypeFilter, setVaultTypeFilter] = useState<VaultTypeFilter>('all');
   const [vaultPublishFilter, setVaultPublishFilter] =
     useState<VaultPublishFilter>('all');
+  const [vaultNotes, setVaultNotes] = useState<Record<string, string>>({});
+  const [vaultNoteModal, setVaultNoteModal] = useState<{
+    mediaKey: string;
+    note: string;
+  } | null>(null);
   const [ppvPrice, setPpvPrice] = useState('');
   const [priceModalOpen, setPriceModalOpen] = useState(false);
   const [priceDraft, setPriceDraft] = useState('');
@@ -414,6 +426,7 @@ export default function FourBasedMassMessage() {
       } else {
         setVaultLoading(true);
         setVaultError(null);
+        setVaultNotes({});
       }
 
       try {
@@ -441,10 +454,26 @@ export default function FourBasedMassMessage() {
         setVaultOffset(offset + items.length);
         setVaultHasMore(items.length >= VAULT_PAGE_SIZE);
         if (result.providerUserId) setProviderUserId(result.providerUserId);
+        const keys = items.map((item) => vaultItemId(item)).filter(Boolean);
+        if (keys.length > 0) {
+          try {
+            const notesResult = await listVaultMediaNotes(
+              selectedCreatorId,
+              '4based',
+              keys
+            );
+            setVaultNotes((prev) =>
+              append ? { ...prev, ...notesResult.notes } : { ...notesResult.notes }
+            );
+          } catch {
+            // Notes are optional; vault grid still works without them.
+          }
+        }
       } catch (err) {
         setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
         if (!append) {
           setVaultItems([]);
+          setVaultNotes({});
           setVaultOffset(0);
           setVaultHasMore(false);
         }
@@ -474,6 +503,7 @@ export default function FourBasedMassMessage() {
     setVaultPublishFilter('all');
     setSelectedFolder(null);
     setVaultItems([]);
+    setVaultNotes({});
     setVaultOffset(0);
     setVaultHasMore(false);
     await loadVaultItems({
@@ -1266,11 +1296,18 @@ export default function FourBasedMassMessage() {
                   );
                   const video = isVideoItem(item);
                   return (
-                    <button
+                    <div
                       key={id || src || 'item'}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       onClick={() => toggleVaultItem(item)}
-                      className={`relative aspect-square rounded-xl overflow-hidden ${
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          toggleVaultItem(item);
+                        }
+                      }}
+                      className={`relative aspect-square rounded-xl overflow-hidden cursor-pointer ${
                         selected
                           ? 'ring-2 ring-4based-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
                           : 'border border-gray-200 dark:border-zinc-800'
@@ -1288,6 +1325,17 @@ export default function FourBasedMassMessage() {
                           <ImageIcon className="w-6 h-6" />
                         </div>
                       )}
+                      {id ? (
+                        <VaultMediaNoteButton
+                          hasNote={Boolean(vaultNotes[id]?.trim())}
+                          onOpen={() =>
+                            setVaultNoteModal({
+                              mediaKey: id,
+                              note: vaultNotes[id] || '',
+                            })
+                          }
+                        />
+                      ) : null}
                       {selected && (
                         <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-4based-500 text-white flex items-center justify-center">
                           <Check className="w-3.5 h-3.5" />
@@ -1298,7 +1346,7 @@ export default function FourBasedMassMessage() {
                           <Video className="w-5 h-5 text-white" />
                         </span>
                       )}
-                    </button>
+                    </div>
                   );
                 })}
               </div>
@@ -1377,6 +1425,23 @@ export default function FourBasedMassMessage() {
             </button>
           </div>
         </div>
+      )}
+
+      {vaultNoteModal && selectedCreatorId && (
+        <VaultMediaNoteModal
+          creatorId={selectedCreatorId}
+          platform="4based"
+          mediaKey={vaultNoteModal.mediaKey}
+          initialNote={vaultNoteModal.note}
+          canEdit={canEditVaultNotes}
+          onClose={() => setVaultNoteModal(null)}
+          onSaved={(note) => {
+            setVaultNotes((prev) => ({
+              ...prev,
+              [vaultNoteModal.mediaKey]: note,
+            }));
+          }}
+        />
       )}
     </div>
   );

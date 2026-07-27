@@ -32,6 +32,10 @@ import {
 import CreatorAvatar from '@/components/CreatorAvatar';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import ToggleSwitch from '@/components/ToggleSwitch';
+import VaultMediaNoteModal, {
+  VaultMediaNoteButton,
+} from '@/components/VaultMediaNoteModal';
+import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import MaloumFanPanel from '@/components/maloum/MaloumFanPanel';
 import maloumIcon from '@/assets/maloum_icon.png';
 import {
@@ -43,9 +47,13 @@ import {
   listMaloumChats,
   listMaloumVaultFolders,
   listMaloumVaultMedia,
+  listVaultMediaNotes,
+  markScriptSent,
   sendMaloumMessage,
   translateToGerman,
   type Creator,
+  type CreatorScript,
+  type CreatorScriptMediaItem,
   type MaloumChat,
   type MaloumChatPartner,
   type MaloumMessage,
@@ -270,6 +278,41 @@ export function computeMaloumResponseTime(
 
 export function vaultUploadId(item: MaloumVaultMediaItem): string | null {
   return item.media?.uploadId || item.thumbnail?.uploadId || null;
+}
+
+export function maloumVaultItemToScriptMedia(
+  item: MaloumVaultMediaItem
+): CreatorScriptMediaItem | null {
+  const mediaKey = vaultUploadId(item);
+  if (!mediaKey) return null;
+  return {
+    mediaKey,
+    type: item.media?.type || item.thumbnail?.type,
+    previewUrl: vaultDirectUrl(item) || undefined,
+    width: item.media?.width,
+    height: item.media?.height,
+  };
+}
+
+export function scriptMediaToMaloumVaultItem(
+  media: CreatorScriptMediaItem
+): MaloumVaultMediaItem {
+  return {
+    media: {
+      uploadId: media.mediaKey,
+      type: media.type || 'picture',
+      url: media.previewUrl,
+      width: media.width,
+      height: media.height,
+    },
+    thumbnail: media.previewUrl
+      ? {
+          uploadId: media.mediaKey,
+          url: media.previewUrl,
+          type: media.type || 'picture',
+        }
+      : undefined,
+  };
 }
 
 const MANAGED_VAULT_FOLDER_LABELS: Record<string, string> = {
@@ -790,9 +833,11 @@ export function MaloumChatThread({
   onClose,
   showTranslationToggles = false,
 }: MaloumChatThreadProps) {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
   const creatorId = creator.id;
+  const canEditVaultNotes = hasPermission('vault.notes.edit');
+  const canManageScripts = hasPermission('scripts.manage');
 
   const [chat, setChat] = useState<MaloumChat | null>(initialChat);
   const [providerUserId, setProviderUserId] = useState<string | null>(
@@ -858,6 +903,13 @@ export function MaloumChatThread({
   }, []);
 
   const [vaultOpen, setVaultOpen] = useState(false);
+  const [vaultPickMode, setVaultPickMode] = useState<'composer' | 'script'>('composer');
+  const [scriptPickItems, setScriptPickItems] = useState<MaloumVaultMediaItem[]>([]);
+  const [pendingScriptVaultMedia, setPendingScriptVaultMedia] = useState<
+    CreatorScriptMediaItem[] | null
+  >(null);
+  const [appliedScriptId, setAppliedScriptId] = useState<string | null>(null);
+  const [scriptsRefreshKey, setScriptsRefreshKey] = useState(0);
   const [vaultFolders, setVaultFolders] = useState<MaloumVaultFolder[]>([]);
   const [vaultFoldersNext, setVaultFoldersNext] = useState<number | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
@@ -873,6 +925,11 @@ export function MaloumChatThread({
   const [vaultTypeFilter, setVaultTypeFilter] = useState<'all' | 'image' | 'video'>(
     'all'
   );
+  const [vaultNotes, setVaultNotes] = useState<Record<string, string>>({});
+  const [vaultNoteModal, setVaultNoteModal] = useState<{
+    mediaKey: string;
+    note: string;
+  } | null>(null);
   const [ppvPrice, setPpvPrice] = useState('');
   const [priceModalOpen, setPriceModalOpen] = useState(false);
   const [priceDraft, setPriceDraft] = useState('');
@@ -1190,22 +1247,34 @@ export function MaloumChatThread({
     historyTranslateQueueRef.current?.enqueue(pending);
   }, [messages, autoTranslateHistory]);
 
-  const toggleVaultItem = useCallback((item: MaloumVaultMediaItem) => {
-    const uploadId = vaultUploadId(item);
-    if (!uploadId) return;
-    setSelectedVaultItems((prev) => {
-      const exists = prev.some((entry) => vaultUploadId(entry) === uploadId);
-      const next = exists
-        ? prev.filter((entry) => vaultUploadId(entry) !== uploadId)
-        : [...prev, item];
-      if (next.length === 0) {
-        setPpvPrice('');
-        setPriceDraft('');
-        setPriceModalOpen(false);
+  const toggleVaultItem = useCallback(
+    (item: MaloumVaultMediaItem) => {
+      const uploadId = vaultUploadId(item);
+      if (!uploadId) return;
+      if (vaultPickMode === 'script') {
+        setScriptPickItems((prev) => {
+          const exists = prev.some((entry) => vaultUploadId(entry) === uploadId);
+          return exists
+            ? prev.filter((entry) => vaultUploadId(entry) !== uploadId)
+            : [...prev, item];
+        });
+        return;
       }
-      return next;
-    });
-  }, []);
+      setSelectedVaultItems((prev) => {
+        const exists = prev.some((entry) => vaultUploadId(entry) === uploadId);
+        const next = exists
+          ? prev.filter((entry) => vaultUploadId(entry) !== uploadId)
+          : [...prev, item];
+        if (next.length === 0) {
+          setPpvPrice('');
+          setPriceDraft('');
+          setPriceModalOpen(false);
+        }
+        return next;
+      });
+    },
+    [vaultPickMode]
+  );
 
   const loadVaultFolders = useCallback(
     async (opts?: { append?: boolean; next?: number | null }) => {
@@ -1282,6 +1351,7 @@ export function MaloumChatThread({
       } else {
         setVaultLoading(true);
         setVaultItems([]);
+        setVaultNotes({});
         vaultMediaNextRef.current = null;
         setVaultMediaNext(null);
       }
@@ -1302,6 +1372,19 @@ export function MaloumChatThread({
         setVaultItems((prev) =>
           append ? mergeVaultMediaItems(prev, items) : items
         );
+        const keys = items
+          .map((item) => vaultUploadId(item))
+          .filter((key): key is string => Boolean(key));
+        if (keys.length > 0) {
+          try {
+            const notesResult = await listVaultMediaNotes(creatorId, 'maloum', keys);
+            setVaultNotes((prev) =>
+              append ? { ...prev, ...notesResult.notes } : { ...notesResult.notes }
+            );
+          } catch {
+            // Notes are optional; vault grid still works without them.
+          }
+        }
       } catch (err) {
         setVaultError(err instanceof Error ? err.message : 'Failed to load media');
       } finally {
@@ -1323,6 +1406,7 @@ export function MaloumChatThread({
   }, [loadVaultMedia]);
 
   const openVault = useCallback(async () => {
+    setVaultPickMode('composer');
     setVaultOpen(true);
     setVaultTypeFilter('all');
     setVaultFolders([]);
@@ -1330,6 +1414,33 @@ export function MaloumChatThread({
     setVaultFoldersNext(null);
     await loadVaultFolders();
   }, [loadVaultFolders]);
+
+  const openVaultForScript = useCallback(async () => {
+    setVaultPickMode('script');
+    setScriptPickItems([]);
+    setVaultOpen(true);
+    setVaultTypeFilter('all');
+    setVaultFolders([]);
+    vaultFoldersNextRef.current = null;
+    setVaultFoldersNext(null);
+    await loadVaultFolders();
+  }, [loadVaultFolders]);
+
+  const applyScriptToComposer = useCallback((script: CreatorScript) => {
+    setDraft(script.messageText || '');
+    setSelectedVaultItems(
+      (script.media || []).map(scriptMediaToMaloumVaultItem)
+    );
+    setPpvPrice(
+      script.price != null && script.price > 0 ? String(script.price) : ''
+    );
+    setPriceDraft('');
+    setPriceModalOpen(false);
+    setAppliedScriptId(script.id);
+  }, []);
+
+  const activeVaultSelection =
+    vaultPickMode === 'script' ? scriptPickItems : selectedVaultItems;
 
   useEffect(() => {
     if (!vaultOpen || !selectedFolderId) return;
@@ -1484,6 +1595,20 @@ export function MaloumChatThread({
       setPpvPrice('');
       setPriceModalOpen(false);
       setPriceDraft('');
+      if (appliedScriptId) {
+        const fanId = partnerId(chat);
+        if (fanId) {
+          void markScriptSent(creatorId, appliedScriptId, {
+            fanId,
+            chatId,
+          })
+            .then(() => setScriptsRefreshKey((k) => k + 1))
+            .catch(() => {
+              // Non-blocking
+            });
+        }
+        setAppliedScriptId(null);
+      }
       await loadMessages();
       requestAnimationFrame(() => {
         scrollToBottom();
@@ -1511,6 +1636,7 @@ export function MaloumChatThread({
     currency,
     loadMessages,
     scrollToBottom,
+    appliedScriptId,
   ]);
 
   const handleDeleteMessage = useCallback(
@@ -1996,7 +2122,22 @@ export function MaloumChatThread({
           <p className="text-xs text-gray-500 dark:text-zinc-500 mb-2">Translating to German…</p>
         )}
 
-        <QuickEmojiBar onInsert={(emoji) => setDraft((d) => d + emoji)} />
+        <QuickEmojiBar
+          onInsert={(emoji) => setDraft((d) => d + emoji)}
+          trailing={
+            <ScriptToolbarButton
+              creatorId={creatorId}
+              platform="maloum"
+              fanId={partnerId(chat)}
+              canManage={canManageScripts}
+              onApply={applyScriptToComposer}
+              onRequestVaultPick={() => void openVaultForScript()}
+              pendingVaultMedia={pendingScriptVaultMedia}
+              onPendingVaultMediaConsumed={() => setPendingScriptVaultMedia(null)}
+              refreshKey={scriptsRefreshKey}
+            />
+          }
+        />
 
         <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50 focus-within:bg-zinc-900 transition-all shadow-inner">
           <button
@@ -2055,12 +2196,20 @@ export function MaloumChatThread({
       </div>
 
       {vaultOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 animate-fade-in">
+        <div
+          className={`fixed inset-0 flex items-center justify-center p-4 sm:p-6 animate-fade-in ${
+            vaultPickMode === 'script' ? 'z-[95]' : 'z-50'
+          }`}
+        >
           <button
             type="button"
             aria-label="Close vault"
             className="absolute inset-0 bg-black/30 dark:bg-black/80 backdrop-blur-sm"
-            onClick={() => setVaultOpen(false)}
+            onClick={() => {
+              setVaultOpen(false);
+              setVaultPickMode('composer');
+              setScriptPickItems([]);
+            }}
           />
           <div className="relative bg-white dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800/80 rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-slide-up">
             <div className="flex items-center justify-between p-5 border-b border-gray-200 dark:border-zinc-800/60 bg-gray-50 dark:bg-zinc-900/50 backdrop-blur-md">
@@ -2069,22 +2218,28 @@ export function MaloumChatThread({
                   <Box className="w-5 h-5 text-domx-400" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-lg text-gray-900 dark:text-white">Media Vault</h3>
+                  <h3 className="font-bold text-lg text-gray-900 dark:text-white">
+                    {vaultPickMode === 'script' ? 'Add media to script' : 'Media Vault'}
+                  </h3>
                   <p className="text-xs text-gray-500 dark:text-zinc-400">
-                    {selectedVaultItems.length} item
-                    {selectedVaultItems.length === 1 ? '' : 's'} selected
+                    {activeVaultSelection.length} item
+                    {activeVaultSelection.length === 1 ? '' : 's'} selected
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                {selectedVaultItems.length > 0 && (
+                {activeVaultSelection.length > 0 && (
                   <button
                     type="button"
                     onClick={() => {
-                      setSelectedVaultItems([]);
-                      setPpvPrice('');
-                      setPriceDraft('');
-                      setPriceModalOpen(false);
+                      if (vaultPickMode === 'script') {
+                        setScriptPickItems([]);
+                      } else {
+                        setSelectedVaultItems([]);
+                        setPpvPrice('');
+                        setPriceDraft('');
+                        setPriceModalOpen(false);
+                      }
                     }}
                     className="px-3 py-2 text-sm text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white transition-colors"
                   >
@@ -2093,15 +2248,29 @@ export function MaloumChatThread({
                 )}
                 <button
                   type="button"
-                  onClick={() => setVaultOpen(false)}
+                  onClick={() => {
+                    if (vaultPickMode === 'script') {
+                      const media = scriptPickItems
+                        .map(maloumVaultItemToScriptMedia)
+                        .filter((m): m is CreatorScriptMediaItem => Boolean(m));
+                      setPendingScriptVaultMedia(media);
+                      setScriptPickItems([]);
+                      setVaultPickMode('composer');
+                    }
+                    setVaultOpen(false);
+                  }}
                   className="px-5 py-2 text-sm font-semibold rounded-lg bg-domx-600 text-white hover:bg-domx-500 transition-colors shadow-lg shadow-domx-600/20"
                 >
-                  Insert Media
+                  {vaultPickMode === 'script' ? 'Add to Script' : 'Insert Media'}
                 </button>
                 <div className="w-px h-6 bg-gray-100 dark:bg-zinc-800 mx-1" />
                 <button
                   type="button"
-                  onClick={() => setVaultOpen(false)}
+                  onClick={() => {
+                    setVaultOpen(false);
+                    setVaultPickMode('composer');
+                    setScriptPickItems([]);
+                  }}
                   className="p-2 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
                   aria-label="Close vault"
                 >
@@ -2244,7 +2413,7 @@ export function MaloumChatThread({
                     {filteredVaultItems.map((item) => {
                       const uploadId = vaultUploadId(item);
                       const src = vaultDirectUrl(item);
-                      const selected = selectedVaultItems.some(
+                      const selected = activeVaultSelection.some(
                         (entry) => vaultUploadId(entry) === uploadId
                       );
                       const video = isVideoAsset(item.media?.type);
@@ -2290,6 +2459,17 @@ export function MaloumChatThread({
                               </div>
                             )}
                           </button>
+                          {uploadId ? (
+                            <VaultMediaNoteButton
+                              hasNote={Boolean(vaultNotes[uploadId]?.trim())}
+                              onOpen={() =>
+                                setVaultNoteModal({
+                                  mediaKey: uploadId,
+                                  note: vaultNotes[uploadId] || '',
+                                })
+                              }
+                            />
+                          ) : null}
                           {selected && (
                             <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center z-10 shadow-lg pointer-events-none">
                               <Check className="w-3.5 h-3.5" />
@@ -2440,6 +2620,23 @@ export function MaloumChatThread({
             <X className="w-5 h-5" />
           </button>
         </div>
+      )}
+
+      {vaultNoteModal && (
+        <VaultMediaNoteModal
+          creatorId={creatorId}
+          platform="maloum"
+          mediaKey={vaultNoteModal.mediaKey}
+          initialNote={vaultNoteModal.note}
+          canEdit={canEditVaultNotes}
+          onClose={() => setVaultNoteModal(null)}
+          onSaved={(note) => {
+            setVaultNotes((prev) => ({
+              ...prev,
+              [vaultNoteModal.mediaKey]: note,
+            }));
+          }}
+        />
       )}
       </div>
 

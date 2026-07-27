@@ -1418,6 +1418,193 @@ export async function listFourBasedVault(
   );
 }
 
+export type VaultNotePlatform = 'maloum' | '4based';
+
+export interface VaultMediaNote {
+  mediaKey: string;
+  note: string;
+  updatedAt: string | null;
+}
+
+export async function listVaultMediaNotes(
+  creatorId: string,
+  platform: VaultNotePlatform,
+  keys: string[]
+): Promise<{ notes: Record<string, string> }> {
+  const unique = [...new Set(keys.map((k) => k.trim()).filter(Boolean))].slice(0, 200);
+  if (unique.length === 0) return { notes: {} };
+  const params = new URLSearchParams();
+  params.set('platform', platform);
+  params.set('keys', unique.join(','));
+  return request(`/api/creators/${creatorId}/vault-notes?${params.toString()}`);
+}
+
+export async function getVaultMediaNote(
+  creatorId: string,
+  platform: VaultNotePlatform,
+  mediaKey: string
+): Promise<VaultMediaNote> {
+  return request(
+    `/api/creators/${creatorId}/vault-notes/${platform}/${encodeURIComponent(mediaKey)}`
+  );
+}
+
+export async function upsertVaultMediaNote(
+  creatorId: string,
+  platform: VaultNotePlatform,
+  mediaKey: string,
+  note: string
+): Promise<VaultMediaNote> {
+  return request(
+    `/api/creators/${creatorId}/vault-notes/${platform}/${encodeURIComponent(mediaKey)}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ note }),
+    }
+  );
+}
+
+export type ScriptPlatform = 'maloum' | '4based';
+
+export interface CreatorScriptMediaItem {
+  mediaKey: string;
+  type?: string;
+  previewUrl?: string;
+  width?: number;
+  height?: number;
+  guid?: string;
+}
+
+export interface CreatorScriptFolder {
+  id: string;
+  creatorId: string;
+  platform: ScriptPlatform;
+  name: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreatorScript {
+  id: string;
+  creatorId: string;
+  platform: ScriptPlatform;
+  folderId: string | null;
+  title: string;
+  shortcutCode: string | null;
+  messageText: string;
+  price: number;
+  media: CreatorScriptMediaItem[];
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+  sentToFan?: boolean;
+}
+
+export interface CreatorScriptsListResponse {
+  folders: CreatorScriptFolder[];
+  scripts: CreatorScript[];
+}
+
+export async function listCreatorScripts(
+  creatorId: string,
+  platform: ScriptPlatform,
+  fanId?: string | null
+): Promise<CreatorScriptsListResponse> {
+  const params = new URLSearchParams();
+  params.set('platform', platform);
+  if (fanId?.trim()) params.set('fanId', fanId.trim());
+  return request(`/api/creators/${creatorId}/scripts?${params.toString()}`);
+}
+
+export async function createScriptFolder(
+  creatorId: string,
+  body: { platform: ScriptPlatform; name: string; sortOrder?: number }
+): Promise<CreatorScriptFolder> {
+  return request(`/api/creators/${creatorId}/script-folders`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateScriptFolder(
+  creatorId: string,
+  folderId: string,
+  body: { name?: string; sortOrder?: number }
+): Promise<CreatorScriptFolder> {
+  return request(`/api/creators/${creatorId}/script-folders/${folderId}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteScriptFolder(
+  creatorId: string,
+  folderId: string
+): Promise<{ ok: boolean; id: string }> {
+  return request(`/api/creators/${creatorId}/script-folders/${folderId}`, {
+    method: 'DELETE',
+  });
+}
+
+export interface CreatorScriptInput {
+  platform: ScriptPlatform;
+  title: string;
+  shortcutCode?: string | null;
+  messageText?: string;
+  price?: number;
+  media?: CreatorScriptMediaItem[];
+  folderId?: string | null;
+  sortOrder?: number;
+}
+
+export async function createCreatorScript(
+  creatorId: string,
+  body: CreatorScriptInput
+): Promise<CreatorScript> {
+  return request(`/api/creators/${creatorId}/scripts`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateCreatorScript(
+  creatorId: string,
+  scriptId: string,
+  body: Partial<Omit<CreatorScriptInput, 'platform'>>
+): Promise<CreatorScript> {
+  return request(`/api/creators/${creatorId}/scripts/${scriptId}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteCreatorScript(
+  creatorId: string,
+  scriptId: string
+): Promise<{ ok: boolean; id: string }> {
+  return request(`/api/creators/${creatorId}/scripts/${scriptId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function markScriptSent(
+  creatorId: string,
+  scriptId: string,
+  body: { fanId: string; chatId?: string | null }
+): Promise<{
+  id: string;
+  scriptId: string;
+  fanId: string;
+  chatId: string | null;
+  sentAt: string;
+}> {
+  return request(`/api/creators/${creatorId}/scripts/${scriptId}/sent`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
 export interface FourBasedMassMessageFileStack {
   _id?: string;
   type?: string;

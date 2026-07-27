@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Plus, SlidersHorizontal, X } from 'lucide-react';
 
 const QUICK_EMOJIS_KEY = 'domx_quick_emojis';
@@ -69,9 +69,14 @@ function extractEmojis(input: string): string[] {
 interface QuickEmojiBarProps {
   onInsert: (emoji: string) => void;
   disabled?: boolean;
+  trailing?: ReactNode;
 }
 
-export default function QuickEmojiBar({ onInsert, disabled = false }: QuickEmojiBarProps) {
+export default function QuickEmojiBar({
+  onInsert,
+  disabled = false,
+  trailing,
+}: QuickEmojiBarProps) {
   const [quickEmojis, setQuickEmojis] = useState<string[]>(() =>
     readStoredEmojis(QUICK_EMOJIS_KEY, DEFAULT_QUICK_EMOJIS),
   );
@@ -174,7 +179,7 @@ export default function QuickEmojiBar({ onInsert, disabled = false }: QuickEmoji
           <SlidersHorizontal className="w-4 h-4" />
         </button>
         <div className="w-px h-4 bg-gray-200 dark:bg-zinc-700 shrink-0" />
-        <div className="flex items-center gap-0.5 overflow-x-auto min-w-0">
+        <div className="flex items-center gap-0.5 overflow-x-auto min-w-0 flex-1">
           {quickEmojis.map((emoji) => (
             <button
               key={emoji}
@@ -188,6 +193,7 @@ export default function QuickEmojiBar({ onInsert, disabled = false }: QuickEmoji
             </button>
           ))}
         </div>
+        {trailing ? <div className="shrink-0 ml-auto pl-1">{trailing}</div> : null}
       </div>
 
       {modalOpen && (

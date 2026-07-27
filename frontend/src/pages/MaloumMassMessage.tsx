@@ -25,7 +25,11 @@ import {
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
+import VaultMediaNoteModal, {
+  VaultMediaNoteButton,
+} from '@/components/VaultMediaNoteModal';
 import maloumIcon from '@/assets/maloum_icon.png';
+import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import {
   formatRelativeTime,
@@ -40,6 +44,7 @@ import {
   listMaloumChatLists,
   listMaloumVaultFolders,
   listMaloumVaultMedia,
+  listVaultMediaNotes,
   maloumMediaUrl,
   revokeMaloumBroadcast,
   sendMaloumBroadcast,
@@ -189,7 +194,9 @@ function mergeVaultMediaItems(
 }
 
 export default function MaloumMassMessage() {
+  const { hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
+  const canEditVaultNotes = hasPermission('vault.notes.edit');
   const [creators, setCreators] = useState<Creator[]>([]);
   const [creatorsLoading, setCreatorsLoading] = useState(true);
   const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
@@ -230,6 +237,11 @@ export default function MaloumMassMessage() {
   const [vaultTypeFilter, setVaultTypeFilter] = useState<'all' | 'image' | 'video'>(
     'all'
   );
+  const [vaultNotes, setVaultNotes] = useState<Record<string, string>>({});
+  const [vaultNoteModal, setVaultNoteModal] = useState<{
+    mediaKey: string;
+    note: string;
+  } | null>(null);
   const [ppvPrice, setPpvPrice] = useState('');
   const [priceModalOpen, setPriceModalOpen] = useState(false);
   const [priceDraft, setPriceDraft] = useState('');
@@ -418,6 +430,7 @@ export default function MaloumMassMessage() {
       } else {
         setVaultLoading(true);
         setVaultItems([]);
+        setVaultNotes({});
         vaultMediaNextRef.current = null;
         setVaultMediaNext(null);
       }
@@ -437,6 +450,23 @@ export default function MaloumMassMessage() {
         setVaultItems((prev) =>
           append ? mergeVaultMediaItems(prev, items) : items
         );
+        const keys = items
+          .map((item) => vaultUploadId(item))
+          .filter((key): key is string => Boolean(key));
+        if (keys.length > 0) {
+          try {
+            const notesResult = await listVaultMediaNotes(
+              selectedCreatorId,
+              'maloum',
+              keys
+            );
+            setVaultNotes((prev) =>
+              append ? { ...prev, ...notesResult.notes } : { ...notesResult.notes }
+            );
+          } catch {
+            // Notes are optional; vault grid still works without them.
+          }
+        }
       } catch (err) {
         setVaultError(err instanceof Error ? err.message : 'Failed to load media');
       } finally {
@@ -1157,11 +1187,18 @@ export default function MaloumMassMessage() {
                       );
                       const video = isVideoAsset(item.media?.type);
                       return (
-                        <button
+                        <div
                           key={uploadId || src || 'item'}
-                          type="button"
+                          role="button"
+                          tabIndex={0}
                           onClick={() => toggleVaultItem(item)}
-                          className={`relative aspect-square rounded-xl overflow-hidden ${
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              toggleVaultItem(item);
+                            }
+                          }}
+                          className={`relative aspect-square rounded-xl overflow-hidden cursor-pointer ${
                             selected
                               ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
                               : 'border border-gray-200 dark:border-zinc-800'
@@ -1179,6 +1216,17 @@ export default function MaloumMassMessage() {
                               <ImageIcon className="w-6 h-6" />
                             </div>
                           )}
+                          {uploadId ? (
+                            <VaultMediaNoteButton
+                              hasNote={Boolean(vaultNotes[uploadId]?.trim())}
+                              onOpen={() =>
+                                setVaultNoteModal({
+                                  mediaKey: uploadId,
+                                  note: vaultNotes[uploadId] || '',
+                                })
+                              }
+                            />
+                          ) : null}
                           {selected && (
                             <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center">
                               <Check className="w-3.5 h-3.5" />
@@ -1189,7 +1237,7 @@ export default function MaloumMassMessage() {
                               <Video className="w-5 h-5 text-white" />
                             </span>
                           )}
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -1270,6 +1318,23 @@ export default function MaloumMassMessage() {
             </button>
           </div>
         </div>
+      )}
+
+      {vaultNoteModal && selectedCreatorId && (
+        <VaultMediaNoteModal
+          creatorId={selectedCreatorId}
+          platform="maloum"
+          mediaKey={vaultNoteModal.mediaKey}
+          initialNote={vaultNoteModal.note}
+          canEdit={canEditVaultNotes}
+          onClose={() => setVaultNoteModal(null)}
+          onSaved={(note) => {
+            setVaultNotes((prev) => ({
+              ...prev,
+              [vaultNoteModal.mediaKey]: note,
+            }));
+          }}
+        />
       )}
     </div>
   );

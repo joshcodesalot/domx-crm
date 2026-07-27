@@ -5219,4 +5219,864 @@ router.get(
   }
 );
 
+const VAULT_NOTE_PLATFORMS = new Set(['maloum', '4based']);
+const VAULT_NOTE_MAX_LENGTH = 2000;
+const VAULT_NOTE_BATCH_MAX = 200;
+
+function normalizeVaultNotePlatform(value) {
+  return typeof value === 'string' && VAULT_NOTE_PLATFORMS.has(value) ? value : null;
+}
+
+function normalizeVaultMediaKey(value) {
+  if (typeof value !== 'string') return null;
+  const key = value.trim();
+  return key.length > 0 && key.length <= 256 ? key : null;
+}
+
+router.get(
+  '/:id/vault-notes',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const platform = normalizeVaultNotePlatform(req.query.platform);
+    if (!platform) {
+      return res.status(400).json({ error: 'platform must be maloum or 4based' });
+    }
+
+    const rawKeys =
+      typeof req.query.keys === 'string'
+        ? req.query.keys.split(',')
+        : Array.isArray(req.query.keys)
+          ? req.query.keys
+          : [];
+    const keys = [
+      ...new Set(
+        rawKeys
+          .map((k) => (typeof k === 'string' ? k.trim() : ''))
+          .filter((k) => k.length > 0 && k.length <= 256)
+      ),
+    ].slice(0, VAULT_NOTE_BATCH_MAX);
+
+    if (keys.length === 0) {
+      return res.json({ notes: {} });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const result = await pool.query(
+        `SELECT "mediaKey", note
+         FROM vault_media_notes
+         WHERE "creatorId" = $1 AND platform = $2 AND "mediaKey" = ANY($3::text[])`,
+        [id, platform, keys]
+      );
+
+      const notes = {};
+      for (const row of result.rows) {
+        notes[row.mediaKey] = row.note || '';
+      }
+      return res.json({ notes });
+    } catch (err) {
+      console.error('List vault media notes error:', err);
+      return res.status(500).json({ error: 'Failed to load vault notes' });
+    }
+  }
+);
+
+router.get(
+  '/:id/vault-notes/:platform/:mediaKey',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, platform: platformParam, mediaKey: mediaKeyParam } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const platform = normalizeVaultNotePlatform(platformParam);
+    const mediaKey = normalizeVaultMediaKey(
+      typeof mediaKeyParam === 'string' ? decodeURIComponent(mediaKeyParam) : ''
+    );
+    if (!platform) {
+      return res.status(400).json({ error: 'platform must be maloum or 4based' });
+    }
+    if (!mediaKey) {
+      return res.status(400).json({ error: 'Invalid media key' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const result = await pool.query(
+        `SELECT "mediaKey", note, "updatedAt"
+         FROM vault_media_notes
+         WHERE "creatorId" = $1 AND platform = $2 AND "mediaKey" = $3`,
+        [id, platform, mediaKey]
+      );
+
+      if (result.rows.length === 0) {
+        return res.json({ mediaKey, note: '', updatedAt: null });
+      }
+
+      const row = result.rows[0];
+      return res.json({
+        mediaKey: row.mediaKey,
+        note: row.note || '',
+        updatedAt: row.updatedAt,
+      });
+    } catch (err) {
+      console.error('Get vault media note error:', err);
+      return res.status(500).json({ error: 'Failed to load vault note' });
+    }
+  }
+);
+
+router.put(
+  '/:id/vault-notes/:platform/:mediaKey',
+  authenticate,
+  requirePermission('vault.notes.edit'),
+  async (req, res) => {
+    const { id, platform: platformParam, mediaKey: mediaKeyParam } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const platform = normalizeVaultNotePlatform(platformParam);
+    const mediaKey = normalizeVaultMediaKey(
+      typeof mediaKeyParam === 'string' ? decodeURIComponent(mediaKeyParam) : ''
+    );
+    if (!platform) {
+      return res.status(400).json({ error: 'platform must be maloum or 4based' });
+    }
+    if (!mediaKey) {
+      return res.status(400).json({ error: 'Invalid media key' });
+    }
+
+    const rawNote = req.body?.note;
+    if (typeof rawNote !== 'string') {
+      return res.status(400).json({ error: 'note must be a string' });
+    }
+    const note = rawNote.trim();
+    if (note.length > VAULT_NOTE_MAX_LENGTH) {
+      return res.status(400).json({
+        error: `note must be at most ${VAULT_NOTE_MAX_LENGTH} characters`,
+      });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const result = await pool.query(
+        `INSERT INTO vault_media_notes (id, "creatorId", platform, "mediaKey", note, "updatedBy", "createdAt", "updatedAt")
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+         ON CONFLICT ("creatorId", platform, "mediaKey")
+         DO UPDATE SET
+           note = EXCLUDED.note,
+           "updatedBy" = EXCLUDED."updatedBy",
+           "updatedAt" = NOW()
+         RETURNING "mediaKey", note, "updatedAt"`,
+        [randomUUID(), id, platform, mediaKey, note, req.user.id]
+      );
+
+      const row = result.rows[0];
+      return res.json({
+        mediaKey: row.mediaKey,
+        note: row.note || '',
+        updatedAt: row.updatedAt,
+      });
+    } catch (err) {
+      console.error('Upsert vault media note error:', err);
+      return res.status(500).json({ error: 'Failed to save vault note' });
+    }
+  }
+);
+
+// --- Creator chat scripts ---
+
+const SCRIPT_TITLE_MAX = 200;
+const SCRIPT_SHORTCUT_MAX = 64;
+const SCRIPT_MESSAGE_MAX = 10000;
+const SCRIPT_MEDIA_MAX = 50;
+const SCRIPT_FOLDER_NAME_MAX = 120;
+
+function normalizeScriptPlatform(value) {
+  return normalizeVaultNotePlatform(value);
+}
+
+function normalizeShortcutCode(value) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string') return undefined;
+  const code = value.trim();
+  if (!code) return null;
+  if (code.length > SCRIPT_SHORTCUT_MAX) return undefined;
+  return code;
+}
+
+function normalizeScriptMedia(raw) {
+  if (raw == null) return [];
+  if (!Array.isArray(raw)) return null;
+  if (raw.length > SCRIPT_MEDIA_MAX) return null;
+  const media = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') return null;
+    const mediaKey = normalizeVaultMediaKey(item.mediaKey);
+    if (!mediaKey) return null;
+    const entry = { mediaKey };
+    if (typeof item.type === 'string' && item.type.trim()) {
+      entry.type = item.type.trim().slice(0, 64);
+    }
+    if (typeof item.previewUrl === 'string' && item.previewUrl.trim()) {
+      entry.previewUrl = item.previewUrl.trim().slice(0, 2048);
+    }
+    if (typeof item.width === 'number' && Number.isFinite(item.width)) {
+      entry.width = Math.round(item.width);
+    }
+    if (typeof item.height === 'number' && Number.isFinite(item.height)) {
+      entry.height = Math.round(item.height);
+    }
+    if (typeof item.guid === 'string' && item.guid.trim()) {
+      entry.guid = item.guid.trim().slice(0, 256);
+    }
+    media.push(entry);
+  }
+  return media;
+}
+
+function mapScriptFolderRow(row) {
+  return {
+    id: row.id,
+    creatorId: row.creatorId,
+    platform: row.platform,
+    name: row.name || '',
+    sortOrder: row.sortOrder ?? 0,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function mapScriptRow(row, sentFanIds) {
+  const media = Array.isArray(row.media) ? row.media : [];
+  const script = {
+    id: row.id,
+    creatorId: row.creatorId,
+    platform: row.platform,
+    folderId: row.folderId || null,
+    title: row.title || '',
+    shortcutCode: row.shortcutCode || null,
+    messageText: row.messageText || '',
+    price: Number(row.price) || 0,
+    media,
+    sortOrder: row.sortOrder ?? 0,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+  if (sentFanIds) {
+    script.sentToFan = sentFanIds.has(row.id);
+  }
+  return script;
+}
+
+router.get(
+  '/:id/scripts',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const platform = normalizeScriptPlatform(req.query.platform);
+    if (!platform) {
+      return res.status(400).json({ error: 'platform must be maloum or 4based' });
+    }
+
+    const fanId =
+      typeof req.query.fanId === 'string' && req.query.fanId.trim()
+        ? req.query.fanId.trim().slice(0, 256)
+        : null;
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const [foldersResult, scriptsResult] = await Promise.all([
+        pool.query(
+          `SELECT id, "creatorId", platform, name, "sortOrder", "createdAt", "updatedAt"
+           FROM creator_script_folders
+           WHERE "creatorId" = $1 AND platform = $2
+           ORDER BY "sortOrder" ASC, name ASC, "createdAt" ASC`,
+          [id, platform]
+        ),
+        pool.query(
+          `SELECT id, "creatorId", platform, "folderId", title, "shortcutCode", "messageText",
+                  price, media, "sortOrder", "createdAt", "updatedAt"
+           FROM creator_scripts
+           WHERE "creatorId" = $1 AND platform = $2
+           ORDER BY "sortOrder" ASC, title ASC, "createdAt" ASC`,
+          [id, platform]
+        ),
+      ]);
+
+      let sentFanIds = null;
+      if (fanId && scriptsResult.rows.length > 0) {
+        const scriptIds = scriptsResult.rows.map((r) => r.id);
+        const sentResult = await pool.query(
+          `SELECT "scriptId"
+           FROM creator_script_sends
+           WHERE "creatorId" = $1 AND platform = $2 AND "fanId" = $3
+             AND "scriptId" = ANY($4::uuid[])`,
+          [id, platform, fanId, scriptIds]
+        );
+        sentFanIds = new Set(sentResult.rows.map((r) => r.scriptId));
+      }
+
+      return res.json({
+        folders: foldersResult.rows.map(mapScriptFolderRow),
+        scripts: scriptsResult.rows.map((row) => mapScriptRow(row, sentFanIds)),
+      });
+    } catch (err) {
+      console.error('List creator scripts error:', err);
+      return res.status(500).json({ error: 'Failed to load scripts' });
+    }
+  }
+);
+
+router.post(
+  '/:id/script-folders',
+  authenticate,
+  requirePermission('scripts.manage'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const platform = normalizeScriptPlatform(req.body?.platform);
+    if (!platform) {
+      return res.status(400).json({ error: 'platform must be maloum or 4based' });
+    }
+
+    const name =
+      typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name) {
+      return res.status(400).json({ error: 'name is required' });
+    }
+    if (name.length > SCRIPT_FOLDER_NAME_MAX) {
+      return res.status(400).json({
+        error: `name must be at most ${SCRIPT_FOLDER_NAME_MAX} characters`,
+      });
+    }
+
+    const sortOrder =
+      typeof req.body?.sortOrder === 'number' && Number.isFinite(req.body.sortOrder)
+        ? Math.round(req.body.sortOrder)
+        : 0;
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const result = await pool.query(
+        `INSERT INTO creator_script_folders
+           (id, "creatorId", platform, name, "sortOrder", "createdBy", "updatedBy", "createdAt", "updatedAt")
+         VALUES ($1, $2, $3, $4, $5, $6, $6, NOW(), NOW())
+         RETURNING id, "creatorId", platform, name, "sortOrder", "createdAt", "updatedAt"`,
+        [randomUUID(), id, platform, name, sortOrder, req.user.id]
+      );
+
+      return res.status(201).json(mapScriptFolderRow(result.rows[0]));
+    } catch (err) {
+      console.error('Create script folder error:', err);
+      return res.status(500).json({ error: 'Failed to create folder' });
+    }
+  }
+);
+
+router.put(
+  '/:id/script-folders/:folderId',
+  authenticate,
+  requirePermission('scripts.manage'),
+  async (req, res) => {
+    const { id, folderId } = req.params;
+    if (!isValidUuid(id) || !isValidUuid(folderId)) {
+      return res.status(400).json({ error: 'Invalid ID' });
+    }
+
+    const updates = [];
+    const values = [];
+    let idx = 1;
+
+    if (typeof req.body?.name === 'string') {
+      const name = req.body.name.trim();
+      if (!name) {
+        return res.status(400).json({ error: 'name cannot be empty' });
+      }
+      if (name.length > SCRIPT_FOLDER_NAME_MAX) {
+        return res.status(400).json({
+          error: `name must be at most ${SCRIPT_FOLDER_NAME_MAX} characters`,
+        });
+      }
+      updates.push(`name = $${idx++}`);
+      values.push(name);
+    }
+
+    if (typeof req.body?.sortOrder === 'number' && Number.isFinite(req.body.sortOrder)) {
+      updates.push(`"sortOrder" = $${idx++}`);
+      values.push(Math.round(req.body.sortOrder));
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
+
+    updates.push(`"updatedBy" = $${idx++}`);
+    values.push(req.user.id);
+    updates.push('"updatedAt" = NOW()');
+
+    values.push(id, folderId);
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const result = await pool.query(
+        `UPDATE creator_script_folders
+         SET ${updates.join(', ')}
+         WHERE "creatorId" = $${idx++} AND id = $${idx}
+         RETURNING id, "creatorId", platform, name, "sortOrder", "createdAt", "updatedAt"`,
+        values
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Folder not found' });
+      }
+
+      return res.json(mapScriptFolderRow(result.rows[0]));
+    } catch (err) {
+      console.error('Update script folder error:', err);
+      return res.status(500).json({ error: 'Failed to update folder' });
+    }
+  }
+);
+
+router.delete(
+  '/:id/script-folders/:folderId',
+  authenticate,
+  requirePermission('scripts.manage'),
+  async (req, res) => {
+    const { id, folderId } = req.params;
+    if (!isValidUuid(id) || !isValidUuid(folderId)) {
+      return res.status(400).json({ error: 'Invalid ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      // ON DELETE SET NULL on scripts.folderId handles unlinking
+      const result = await pool.query(
+        `DELETE FROM creator_script_folders
+         WHERE "creatorId" = $1 AND id = $2
+         RETURNING id`,
+        [id, folderId]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Folder not found' });
+      }
+
+      return res.json({ ok: true, id: folderId });
+    } catch (err) {
+      console.error('Delete script folder error:', err);
+      return res.status(500).json({ error: 'Failed to delete folder' });
+    }
+  }
+);
+
+router.post(
+  '/:id/scripts',
+  authenticate,
+  requirePermission('scripts.manage'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const platform = normalizeScriptPlatform(req.body?.platform);
+    if (!platform) {
+      return res.status(400).json({ error: 'platform must be maloum or 4based' });
+    }
+
+    const title =
+      typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+    if (!title) {
+      return res.status(400).json({ error: 'title is required' });
+    }
+    if (title.length > SCRIPT_TITLE_MAX) {
+      return res.status(400).json({
+        error: `title must be at most ${SCRIPT_TITLE_MAX} characters`,
+      });
+    }
+
+    const shortcutCode = normalizeShortcutCode(req.body?.shortcutCode);
+    if (shortcutCode === undefined) {
+      return res.status(400).json({ error: 'Invalid shortcutCode' });
+    }
+
+    const messageText =
+      typeof req.body?.messageText === 'string' ? req.body.messageText : '';
+    if (messageText.length > SCRIPT_MESSAGE_MAX) {
+      return res.status(400).json({
+        error: `messageText must be at most ${SCRIPT_MESSAGE_MAX} characters`,
+      });
+    }
+
+    const priceRaw = req.body?.price;
+    const price =
+      priceRaw == null || priceRaw === ''
+        ? 0
+        : Number(priceRaw);
+    if (!Number.isFinite(price) || price < 0) {
+      return res.status(400).json({ error: 'price must be a non-negative number' });
+    }
+
+    const media = normalizeScriptMedia(req.body?.media);
+    if (media == null) {
+      return res.status(400).json({ error: 'Invalid media array' });
+    }
+
+    let folderId = null;
+    if (req.body?.folderId != null && req.body.folderId !== '') {
+      if (!isValidUuid(req.body.folderId)) {
+        return res.status(400).json({ error: 'Invalid folderId' });
+      }
+      folderId = req.body.folderId;
+    }
+
+    const sortOrder =
+      typeof req.body?.sortOrder === 'number' && Number.isFinite(req.body.sortOrder)
+        ? Math.round(req.body.sortOrder)
+        : 0;
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      if (folderId) {
+        const folderCheck = await pool.query(
+          `SELECT id FROM creator_script_folders
+           WHERE id = $1 AND "creatorId" = $2 AND platform = $3`,
+          [folderId, id, platform]
+        );
+        if (folderCheck.rows.length === 0) {
+          return res.status(400).json({ error: 'Folder not found for this creator/platform' });
+        }
+      }
+
+      const result = await pool.query(
+        `INSERT INTO creator_scripts
+           (id, "creatorId", platform, "folderId", title, "shortcutCode", "messageText",
+            price, media, "sortOrder", "createdBy", "updatedBy", "createdAt", "updatedAt")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $11, NOW(), NOW())
+         RETURNING id, "creatorId", platform, "folderId", title, "shortcutCode", "messageText",
+                   price, media, "sortOrder", "createdAt", "updatedAt"`,
+        [
+          randomUUID(),
+          id,
+          platform,
+          folderId,
+          title,
+          shortcutCode,
+          messageText,
+          price,
+          JSON.stringify(media),
+          sortOrder,
+          req.user.id,
+        ]
+      );
+
+      return res.status(201).json(mapScriptRow(result.rows[0], null));
+    } catch (err) {
+      if (err && err.code === '23505') {
+        return res.status(409).json({ error: 'Shortcut code already exists for this creator' });
+      }
+      console.error('Create script error:', err);
+      return res.status(500).json({ error: 'Failed to create script' });
+    }
+  }
+);
+
+router.put(
+  '/:id/scripts/:scriptId',
+  authenticate,
+  requirePermission('scripts.manage'),
+  async (req, res) => {
+    const { id, scriptId } = req.params;
+    if (!isValidUuid(id) || !isValidUuid(scriptId)) {
+      return res.status(400).json({ error: 'Invalid ID' });
+    }
+
+    const updates = [];
+    const values = [];
+    let idx = 1;
+
+    if (typeof req.body?.title === 'string') {
+      const title = req.body.title.trim();
+      if (!title) {
+        return res.status(400).json({ error: 'title cannot be empty' });
+      }
+      if (title.length > SCRIPT_TITLE_MAX) {
+        return res.status(400).json({
+          error: `title must be at most ${SCRIPT_TITLE_MAX} characters`,
+        });
+      }
+      updates.push(`title = $${idx++}`);
+      values.push(title);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'shortcutCode')) {
+      const shortcutCode = normalizeShortcutCode(req.body.shortcutCode);
+      if (shortcutCode === undefined) {
+        return res.status(400).json({ error: 'Invalid shortcutCode' });
+      }
+      updates.push(`"shortcutCode" = $${idx++}`);
+      values.push(shortcutCode);
+    }
+
+    if (typeof req.body?.messageText === 'string') {
+      if (req.body.messageText.length > SCRIPT_MESSAGE_MAX) {
+        return res.status(400).json({
+          error: `messageText must be at most ${SCRIPT_MESSAGE_MAX} characters`,
+        });
+      }
+      updates.push(`"messageText" = $${idx++}`);
+      values.push(req.body.messageText);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'price')) {
+      const price = Number(req.body.price);
+      if (!Number.isFinite(price) || price < 0) {
+        return res.status(400).json({ error: 'price must be a non-negative number' });
+      }
+      updates.push(`price = $${idx++}`);
+      values.push(price);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'media')) {
+      const media = normalizeScriptMedia(req.body.media);
+      if (media == null) {
+        return res.status(400).json({ error: 'Invalid media array' });
+      }
+      updates.push(`media = $${idx++}::jsonb`);
+      values.push(JSON.stringify(media));
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'folderId')) {
+      const rawFolder = req.body.folderId;
+      if (rawFolder == null || rawFolder === '') {
+        updates.push(`"folderId" = $${idx++}`);
+        values.push(null);
+      } else if (isValidUuid(rawFolder)) {
+        updates.push(`"folderId" = $${idx++}`);
+        values.push(rawFolder);
+      } else {
+        return res.status(400).json({ error: 'Invalid folderId' });
+      }
+    }
+
+    if (typeof req.body?.sortOrder === 'number' && Number.isFinite(req.body.sortOrder)) {
+      updates.push(`"sortOrder" = $${idx++}`);
+      values.push(Math.round(req.body.sortOrder));
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No valid fields to update' });
+    }
+
+    updates.push(`"updatedBy" = $${idx++}`);
+    values.push(req.user.id);
+    updates.push('"updatedAt" = NOW()');
+
+    values.push(id, scriptId);
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      // Validate folder belongs to same creator/platform if setting folderId
+      if (
+        Object.prototype.hasOwnProperty.call(req.body || {}, 'folderId') &&
+        req.body.folderId != null &&
+        req.body.folderId !== ''
+      ) {
+        const existing = await pool.query(
+          `SELECT platform FROM creator_scripts WHERE id = $1 AND "creatorId" = $2`,
+          [scriptId, id]
+        );
+        if (existing.rows.length === 0) {
+          return res.status(404).json({ error: 'Script not found' });
+        }
+        const folderCheck = await pool.query(
+          `SELECT id FROM creator_script_folders
+           WHERE id = $1 AND "creatorId" = $2 AND platform = $3`,
+          [req.body.folderId, id, existing.rows[0].platform]
+        );
+        if (folderCheck.rows.length === 0) {
+          return res.status(400).json({ error: 'Folder not found for this creator/platform' });
+        }
+      }
+
+      const result = await pool.query(
+        `UPDATE creator_scripts
+         SET ${updates.join(', ')}
+         WHERE "creatorId" = $${idx++} AND id = $${idx}
+         RETURNING id, "creatorId", platform, "folderId", title, "shortcutCode", "messageText",
+                   price, media, "sortOrder", "createdAt", "updatedAt"`,
+        values
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Script not found' });
+      }
+
+      return res.json(mapScriptRow(result.rows[0], null));
+    } catch (err) {
+      if (err && err.code === '23505') {
+        return res.status(409).json({ error: 'Shortcut code already exists for this creator' });
+      }
+      console.error('Update script error:', err);
+      return res.status(500).json({ error: 'Failed to update script' });
+    }
+  }
+);
+
+router.delete(
+  '/:id/scripts/:scriptId',
+  authenticate,
+  requirePermission('scripts.manage'),
+  async (req, res) => {
+    const { id, scriptId } = req.params;
+    if (!isValidUuid(id) || !isValidUuid(scriptId)) {
+      return res.status(400).json({ error: 'Invalid ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const result = await pool.query(
+        `DELETE FROM creator_scripts
+         WHERE "creatorId" = $1 AND id = $2
+         RETURNING id`,
+        [id, scriptId]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Script not found' });
+      }
+
+      return res.json({ ok: true, id: scriptId });
+    } catch (err) {
+      console.error('Delete script error:', err);
+      return res.status(500).json({ error: 'Failed to delete script' });
+    }
+  }
+);
+
+router.post(
+  '/:id/scripts/:scriptId/sent',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, scriptId } = req.params;
+    if (!isValidUuid(id) || !isValidUuid(scriptId)) {
+      return res.status(400).json({ error: 'Invalid ID' });
+    }
+
+    const fanId =
+      typeof req.body?.fanId === 'string' ? req.body.fanId.trim().slice(0, 256) : '';
+    if (!fanId) {
+      return res.status(400).json({ error: 'fanId is required' });
+    }
+
+    const chatId =
+      typeof req.body?.chatId === 'string' && req.body.chatId.trim()
+        ? req.body.chatId.trim().slice(0, 256)
+        : null;
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const scriptResult = await pool.query(
+        `SELECT id, platform FROM creator_scripts
+         WHERE id = $1 AND "creatorId" = $2`,
+        [scriptId, id]
+      );
+      if (scriptResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Script not found' });
+      }
+
+      const platform = scriptResult.rows[0].platform;
+
+      const result = await pool.query(
+        `INSERT INTO creator_script_sends
+           (id, "scriptId", "creatorId", platform, "fanId", "chatId", "sentBy", "sentAt")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         ON CONFLICT ("scriptId", "fanId")
+         DO UPDATE SET
+           "chatId" = COALESCE(EXCLUDED."chatId", creator_script_sends."chatId"),
+           "sentBy" = EXCLUDED."sentBy",
+           "sentAt" = NOW()
+         RETURNING id, "scriptId", "fanId", "chatId", "sentAt"`,
+        [randomUUID(), scriptId, id, platform, fanId, chatId, req.user.id]
+      );
+
+      const row = result.rows[0];
+      return res.json({
+        id: row.id,
+        scriptId: row.scriptId,
+        fanId: row.fanId,
+        chatId: row.chatId,
+        sentAt: row.sentAt,
+      });
+    } catch (err) {
+      console.error('Mark script sent error:', err);
+      return res.status(500).json({ error: 'Failed to mark script as sent' });
+    }
+  }
+);
+
 module.exports = router;

@@ -31,6 +31,10 @@ import {
 } from 'lucide-react';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import ToggleSwitch from '@/components/ToggleSwitch';
+import VaultMediaNoteModal, {
+  VaultMediaNoteButton,
+} from '@/components/VaultMediaNoteModal';
+import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import FourBasedFanPanel from '@/components/fourbased/FourBasedFanPanel';
 import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
@@ -48,6 +52,8 @@ import {
   listFourBasedChats,
   listFourBasedUserLists,
   listFourBasedVault,
+  listVaultMediaNotes,
+  markScriptSent,
   pickFourBasedPreviewUrl,
   pickFourBasedSourceUrl,
   pinFourBasedChat,
@@ -57,6 +63,8 @@ import {
   translateToGerman,
   updateMessagingDashboardPurchased,
   type Creator,
+  type CreatorScript,
+  type CreatorScriptMediaItem,
   type FourBasedChat,
   type FourBasedChatFilter,
   type FourBasedChatUser,
@@ -454,6 +462,42 @@ function vaultItemId(item: FourBasedVaultItem): string {
 
 function vaultItemGuid(item: FourBasedVaultItem): string {
   return String(item.guid || crypto.randomUUID());
+}
+
+export function fourBasedVaultItemToScriptMedia(
+  item: FourBasedVaultItem,
+  previewUrl?: string | null
+): CreatorScriptMediaItem | null {
+  const mediaKey = vaultItemId(item);
+  if (!mediaKey) return null;
+  return {
+    mediaKey,
+    type: String(item.fileStackType || item.type || '') || undefined,
+    previewUrl: previewUrl || vaultPreviewUrlFromItem(item, '500x500.jpg') || undefined,
+    width: typeof item.width === 'number' ? item.width : undefined,
+    height: typeof item.height === 'number' ? item.height : undefined,
+    guid: item.guid ? String(item.guid) : undefined,
+  };
+}
+
+export function scriptMediaToFourBasedVaultItem(
+  media: CreatorScriptMediaItem
+): FourBasedVaultItem {
+  return {
+    _id: media.mediaKey,
+    id: media.mediaKey,
+    guid: media.guid,
+    type: media.type,
+    fileStackType: media.type,
+    width: media.width,
+    height: media.height,
+    preview: media.previewUrl
+      ? {
+          '500x500': media.previewUrl,
+          '500x500.jpg': media.previewUrl,
+        }
+      : undefined,
+  };
 }
 
 function isVideoItem(item: FourBasedVaultItem | null | undefined): boolean {
@@ -1142,9 +1186,11 @@ export function FourBasedChatThread({
   className = '',
   showTranslationToggles = false,
 }: FourBasedChatThreadProps) {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
   const creatorId = creator.id;
+  const canEditVaultNotes = hasPermission('vault.notes.edit');
+  const canManageScripts = hasPermission('scripts.manage');
 
   const [chat, setChat] = useState<FourBasedChat | null>(initialChat);
   const [providerUserId, setProviderUserId] = useState<string | null>(
@@ -1216,6 +1262,13 @@ export function FourBasedChatThread({
   }, []);
 
   const [vaultOpen, setVaultOpen] = useState(false);
+  const [vaultPickMode, setVaultPickMode] = useState<'composer' | 'script'>('composer');
+  const [scriptPickItems, setScriptPickItems] = useState<FourBasedVaultItem[]>([]);
+  const [pendingScriptVaultMedia, setPendingScriptVaultMedia] = useState<
+    CreatorScriptMediaItem[] | null
+  >(null);
+  const [appliedScriptId, setAppliedScriptId] = useState<string | null>(null);
+  const [scriptsRefreshKey, setScriptsRefreshKey] = useState(0);
   const [vaultItems, setVaultItems] = useState<FourBasedVaultItem[]>([]);
   const [vaultFolders, setVaultFolders] = useState<string[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
@@ -1234,6 +1287,11 @@ export function FourBasedChatThread({
   const [selectedVaultItems, setSelectedVaultItems] = useState<FourBasedVaultItem[]>(
     []
   );
+  const [vaultNotes, setVaultNotes] = useState<Record<string, string>>({});
+  const [vaultNoteModal, setVaultNoteModal] = useState<{
+    mediaKey: string;
+    note: string;
+  } | null>(null);
   const vaultLoadingMoreRef = useRef(false);
   /** Empty = free (Maloum-style). Dollars string when priced. */
   const [ppvDollars, setPpvDollars] = useState('');
@@ -1342,6 +1400,23 @@ export function FourBasedChatThread({
     setPriceDraft('');
     setPriceModalOpen(false);
     setTeaserVaultId(null);
+  }
+
+  const activeVaultSelection =
+    vaultPickMode === 'script' ? scriptPickItems : selectedVaultItems;
+
+  function applyScriptToComposer(script: CreatorScript) {
+    setDraft(script.messageText || '');
+    setSelectedVaultItems(
+      (script.media || []).map(scriptMediaToFourBasedVaultItem)
+    );
+    setPpvDollars(
+      script.price != null && script.price > 0 ? String(script.price) : ''
+    );
+    setPriceDraft('');
+    setPriceModalOpen(false);
+    setTeaserVaultId(null);
+    setAppliedScriptId(script.id);
   }
 
   const fanIsOnline =
@@ -1694,6 +1769,15 @@ export function FourBasedChatThread({
   function toggleVaultItem(item: FourBasedVaultItem) {
     const id = vaultItemId(item);
     if (!id) return;
+    if (vaultPickMode === 'script') {
+      setScriptPickItems((prev) => {
+        const exists = prev.some((entry) => vaultItemId(entry) === id);
+        return exists
+          ? prev.filter((entry) => vaultItemId(entry) !== id)
+          : [...prev, item];
+      });
+      return;
+    }
     setSelectedVaultItems((prev) => {
       const exists = prev.some((entry) => vaultItemId(entry) === id);
       if (exists) {
@@ -1900,6 +1984,17 @@ export function FourBasedChatThread({
       }
 
       setDraft('');
+      if (appliedScriptId && fan.id) {
+        void markScriptSent(creatorId, appliedScriptId, {
+          fanId: fan.id,
+          chatId,
+        })
+          .then(() => setScriptsRefreshKey((k) => k + 1))
+          .catch(() => {
+            // Non-blocking
+          });
+        setAppliedScriptId(null);
+      }
       await loadMessages(true);
       requestAnimationFrame(() => {
         scrollToBottom();
@@ -1964,6 +2059,7 @@ export function FourBasedChatThread({
     } else {
       setVaultLoading(true);
       setVaultError(null);
+      setVaultNotes({});
     }
 
     try {
@@ -1991,10 +2087,23 @@ export function FourBasedChatThread({
       setVaultOffset(offset + items.length);
       setVaultHasMore(items.length >= VAULT_PAGE_SIZE);
       if (result.providerUserId) setProviderUserId(result.providerUserId);
+
+      const keys = items.map((item) => vaultItemId(item)).filter(Boolean);
+      if (keys.length > 0) {
+        try {
+          const notesResult = await listVaultMediaNotes(creatorId, '4based', keys);
+          setVaultNotes((prev) =>
+            append ? { ...prev, ...notesResult.notes } : { ...notesResult.notes }
+          );
+        } catch {
+          // Notes are optional; vault grid still works without them.
+        }
+      }
     } catch (err) {
       setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
       if (!append) {
         setVaultItems([]);
+        setVaultNotes({});
         setVaultOffset(0);
         setVaultHasMore(false);
       }
@@ -2009,6 +2118,45 @@ export function FourBasedChatThread({
   }
 
   async function openVault() {
+    setVaultPickMode('composer');
+    if (!fan.id) {
+      setVaultError('Open a conversation first to browse vault for that fan.');
+      setVaultOpen(true);
+      return;
+    }
+    setVaultOpen(true);
+    setPreviewItem(null);
+    setVaultPreviewPlaying(false);
+    setPreviewFullFailed(false);
+    setSelectedFolder(null);
+    setVaultCategoryFilter('all');
+    setVaultSentFilter('all');
+    setVaultOffset(0);
+    setVaultHasMore(false);
+
+    if (vaultFolders.length === 0) {
+      try {
+        const r = await getFourBasedProfile(creatorId);
+        const folders = Array.isArray(r.profile?.folders)
+          ? r.profile.folders.filter((f): f is string => typeof f === 'string')
+          : [];
+        setVaultFolders(folders);
+      } catch {
+        // keep empty
+      }
+    }
+
+    await loadVaultItems({
+      folder: null,
+      category: 'all',
+      sent: 'all',
+      offset: 0,
+    });
+  }
+
+  async function openVaultForScript() {
+    setVaultPickMode('script');
+    setScriptPickItems([]);
     if (!fan.id) {
       setVaultError('Open a conversation first to browse vault for that fan.');
       setVaultOpen(true);
@@ -2683,7 +2831,22 @@ export function FourBasedChatThread({
           </p>
         )}
 
-        <QuickEmojiBar onInsert={(emoji) => setDraft((d) => d + emoji)} />
+        <QuickEmojiBar
+          onInsert={(emoji) => setDraft((d) => d + emoji)}
+          trailing={
+            <ScriptToolbarButton
+              creatorId={creatorId}
+              platform="4based"
+              fanId={fan.id || null}
+              canManage={canManageScripts}
+              onApply={applyScriptToComposer}
+              onRequestVaultPick={() => void openVaultForScript()}
+              pendingVaultMedia={pendingScriptVaultMedia}
+              onPendingVaultMediaConsumed={() => setPendingScriptVaultMedia(null)}
+              refreshKey={scriptsRefreshKey}
+            />
+          }
+        />
 
         <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50 focus-within:bg-zinc-900 transition-all shadow-inner">
           <button
@@ -2781,7 +2944,11 @@ export function FourBasedChatThread({
       )}
 
       {vaultOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 animate-fade-in">
+        <div
+          className={`fixed inset-0 flex items-center justify-center p-4 sm:p-6 animate-fade-in ${
+            vaultPickMode === 'script' ? 'z-[95]' : 'z-50'
+          }`}
+        >
           <button
             type="button"
             aria-label="Close vault"
@@ -2789,6 +2956,8 @@ export function FourBasedChatThread({
             onClick={() => {
               setVaultOpen(false);
               setPreviewItem(null);
+              setVaultPickMode('composer');
+              setScriptPickItems([]);
             }}
           />
           <div className="relative bg-white dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800/80 rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden animate-slide-up">
@@ -2799,19 +2968,25 @@ export function FourBasedChatThread({
                 </div>
                 <div>
                   <h3 className="font-bold text-lg text-gray-900 dark:text-white">
-                    Media Vault
+                    {vaultPickMode === 'script' ? 'Add media to script' : 'Media Vault'}
                   </h3>
                   <p className="text-xs text-gray-500 dark:text-zinc-400">
-                    {selectedVaultItems.length} item
-                    {selectedVaultItems.length === 1 ? '' : 's'} selected
+                    {activeVaultSelection.length} item
+                    {activeVaultSelection.length === 1 ? '' : 's'} selected
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                {selectedVaultItems.length > 0 && (
+                {activeVaultSelection.length > 0 && (
                   <button
                     type="button"
-                    onClick={clearMediaAttachments}
+                    onClick={() => {
+                      if (vaultPickMode === 'script') {
+                        setScriptPickItems([]);
+                      } else {
+                        clearMediaAttachments();
+                      }
+                    }}
                     className="px-3 py-2 text-sm text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white transition-colors"
                   >
                     Clear Selection
@@ -2820,13 +2995,26 @@ export function FourBasedChatThread({
                 <button
                   type="button"
                   onClick={() => {
+                    if (vaultPickMode === 'script') {
+                      const media = scriptPickItems
+                        .map((item) =>
+                          fourBasedVaultItemToScriptMedia(
+                            item,
+                            mediaSrcForVaultItem(item)
+                          )
+                        )
+                        .filter((m): m is CreatorScriptMediaItem => Boolean(m));
+                      setPendingScriptVaultMedia(media);
+                      setScriptPickItems([]);
+                      setVaultPickMode('composer');
+                    }
                     setVaultOpen(false);
                     setPreviewItem(null);
                     setVaultPreviewPlaying(false);
                   }}
                   className="px-5 py-2 text-sm font-semibold rounded-lg bg-domx-600 text-white hover:bg-domx-500 transition-colors shadow-lg shadow-domx-600/20"
                 >
-                  Insert Media
+                  {vaultPickMode === 'script' ? 'Add to Script' : 'Insert Media'}
                 </button>
                 <div className="w-px h-6 bg-gray-100 dark:bg-zinc-800 mx-1" />
                 <button
@@ -2835,6 +3023,8 @@ export function FourBasedChatThread({
                     setVaultOpen(false);
                     setPreviewItem(null);
                     setVaultPreviewPlaying(false);
+                    setVaultPickMode('composer');
+                    setScriptPickItems([]);
                   }}
                   className="p-2 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
                   aria-label="Close vault"
@@ -2925,7 +3115,7 @@ export function FourBasedChatThread({
                     }}
                     className="px-3 py-2 text-sm rounded-lg bg-domx-600 text-white hover:bg-domx-500"
                   >
-                    {selectedVaultItems.some(
+                    {activeVaultSelection.some(
                       (entry) => vaultItemId(entry) === vaultItemId(previewItem)
                     )
                       ? 'Remove from selection'
@@ -3045,7 +3235,7 @@ export function FourBasedChatThread({
                       const thumb = mediaSrcForVaultItem(item);
                       const video = isVideoItem(item);
                       const id = vaultItemId(item);
-                      const selected = selectedVaultItems.some(
+                      const selected = activeVaultSelection.some(
                         (entry) => vaultItemId(entry) === id
                       );
                       return (
@@ -3085,6 +3275,17 @@ export function FourBasedChatThread({
                               <ImageIcon className="w-6 h-6" />
                             </div>
                           )}
+                          {id ? (
+                            <VaultMediaNoteButton
+                              hasNote={Boolean(vaultNotes[id]?.trim())}
+                              onOpen={() =>
+                                setVaultNoteModal({
+                                  mediaKey: id,
+                                  note: vaultNotes[id] || '',
+                                })
+                              }
+                            />
+                          ) : null}
                           {selected && (
                             <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center z-10 shadow-lg">
                               <Check className="w-3.5 h-3.5" />
@@ -3226,6 +3427,23 @@ export function FourBasedChatThread({
             </button>
           </div>
         </div>
+      )}
+
+      {vaultNoteModal && (
+        <VaultMediaNoteModal
+          creatorId={creatorId}
+          platform="4based"
+          mediaKey={vaultNoteModal.mediaKey}
+          initialNote={vaultNoteModal.note}
+          canEdit={canEditVaultNotes}
+          onClose={() => setVaultNoteModal(null)}
+          onSaved={(note) => {
+            setVaultNotes((prev) => ({
+              ...prev,
+              [vaultNoteModal.mediaKey]: note,
+            }));
+          }}
+        />
       )}
     </div>
 
