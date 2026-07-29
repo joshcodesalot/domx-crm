@@ -36,7 +36,10 @@ import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
-import MaloumFanPanel from '@/components/maloum/MaloumFanPanel';
+import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
+import MaloumFanPanel, {
+  DEFAULT_FAN_NOTES_TEMPLATE,
+} from '@/components/maloum/MaloumFanPanel';
 import maloumIcon from '@/assets/maloum_icon.png';
 import {
   createMessagingDashboardEntry,
@@ -47,8 +50,10 @@ import {
   listMaloumChats,
   listMaloumVaultFolders,
   listMaloumVaultMedia,
+  listMaloumVaultSent,
   listVaultMediaNotes,
   markScriptSent,
+  recordMaloumVaultSent,
   sendMaloumMessage,
   translateToGerman,
   type Creator,
@@ -73,7 +78,8 @@ type MaloumMediaPreview = {
   kind: 'picture' | 'video' | 'embed';
 };
 
-const POLL_MS = 20_000;
+const CHAT_LIST_POLL_MS = 10_000;
+const MESSAGE_POLL_MS = 10_000;
 const MESSAGE_PAGE_LIMIT = 30;
 const CHAT_PAGE_LIMIT = 30;
 const NEAR_BOTTOM_PX = 120;
@@ -722,7 +728,7 @@ export function MaloumChatList({
 
     const timer = window.setInterval(() => {
       void loadChats({ silent: true });
-    }, POLL_MS);
+    }, CHAT_LIST_POLL_MS);
     return () => window.clearInterval(timer);
   }, [pollEnabled, loadChats, messagesUnread]);
 
@@ -897,6 +903,8 @@ export function MaloumChatThread({
   const [messagesError, setMessagesError] = useState<string | null>(null);
 
   const [draft, setDraft] = useState('');
+  const [skipOutgoingTranslate, setSkipOutgoingTranslate] = useState(false);
+  const [suggestedEnglish, setSuggestedEnglish] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [translatingOutgoing, setTranslatingOutgoing] = useState(false);
@@ -972,6 +980,10 @@ export function MaloumChatThread({
   const [vaultTypeFilter, setVaultTypeFilter] = useState<'all' | 'image' | 'video'>(
     'all'
   );
+  const [vaultSentFilter, setVaultSentFilter] = useState<'all' | 'sent' | 'not_sent'>(
+    'all'
+  );
+  const [sentUploadIds, setSentUploadIds] = useState<Record<string, true>>({});
   const [vaultNotes, setVaultNotes] = useState<Record<string, string>>({});
   const [vaultNoteModal, setVaultNoteModal] = useState<{
     mediaKey: string;
@@ -1111,18 +1123,60 @@ export function MaloumChatThread({
     }
   }, [creatorId, chatId]);
 
+  const historySentUploadIds = useMemo(() => {
+    const ids: Record<string, true> = {};
+    for (const msg of messages) {
+      for (const asset of messageMediaAssets(msg)) {
+        const id = asset.uploadId ? String(asset.uploadId) : '';
+        if (id) ids[id] = true;
+      }
+    }
+    return ids;
+  }, [messages]);
+
+  const loadVaultSent = useCallback(async () => {
+    const fanId = partnerId(chat);
+    if (!fanId && !chatId) return;
+    try {
+      const result = await listMaloumVaultSent(creatorId, {
+        fanId: fanId || undefined,
+        chatId,
+      });
+      const fromApi: Record<string, true> = {};
+      for (const id of result.uploadIds || []) {
+        if (id) fromApi[String(id)] = true;
+      }
+      setSentUploadIds((prev) => ({ ...prev, ...fromApi }));
+    } catch {
+      // best-effort
+    }
+  }, [creatorId, chat, chatId]);
+
+  useEffect(() => {
+    setSentUploadIds((prev) => ({ ...prev, ...historySentUploadIds }));
+  }, [historySentUploadIds]);
+
+  useEffect(() => {
+    if (!vaultOpen) return;
+    void loadVaultSent();
+  }, [vaultOpen, loadVaultSent]);
+
   useEffect(() => {
     setChat(initialChat);
     setMessages([]);
     setMessagesNext(null);
     messagesNextRef.current = null;
     setDraft('');
+    setSkipOutgoingTranslate(false);
+    setSuggestedEnglish(null);
     setSendError(null);
     setSelectedVaultItems([]);
     setPpvPrice('');
     setPriceModalOpen(false);
     setPriceDraft('');
     setVaultOpen(false);
+    setVaultSentFilter('all');
+    setSentUploadIds({});
     setMessageSenders({});
     setHistoryTranslations({});
     historyTranslationsRef.current = {};
@@ -1136,7 +1190,7 @@ export function MaloumChatThread({
     void loadSenders();
     const timer = window.setInterval(() => {
       void loadMessages({ silent: true });
-    }, POLL_MS);
+    }, MESSAGE_POLL_MS);
     return () => window.clearInterval(timer);
   }, [chatId, creatorId, initialChat, loadMessages, loadSenders]);
 
@@ -1456,6 +1510,7 @@ export function MaloumChatThread({
     setVaultPickMode('composer');
     setVaultOpen(true);
     setVaultTypeFilter('all');
+    setVaultSentFilter('all');
     setVaultFolders([]);
     vaultFoldersNextRef.current = null;
     setVaultFoldersNext(null);
@@ -1467,6 +1522,7 @@ export function MaloumChatThread({
     setScriptPickItems([]);
     setVaultOpen(true);
     setVaultTypeFilter('all');
+    setVaultSentFilter('all');
     setVaultFolders([]);
     vaultFoldersNextRef.current = null;
     setVaultFoldersNext(null);
@@ -1475,6 +1531,8 @@ export function MaloumChatThread({
 
   const applyScriptToComposer = useCallback((script: CreatorScript) => {
     setDraft(script.messageText || '');
+    setSkipOutgoingTranslate(false);
+    setSuggestedEnglish(null);
     setSelectedVaultItems(
       (script.media || []).map(scriptMediaToMaloumVaultItem)
     );
@@ -1485,6 +1543,38 @@ export function MaloumChatThread({
     setPriceModalOpen(false);
     setAppliedScriptId(script.id);
   }, []);
+
+  const applySuggestedReply = useCallback(
+    (payload: { english: string; german: string }) => {
+      setDraft(payload.german || '');
+      setSuggestedEnglish(payload.english || null);
+      setSkipOutgoingTranslate(true);
+      setAppliedScriptId(null);
+    },
+    []
+  );
+
+  const getSuggestMessages = useCallback((): TranslateHistoryItem[] => {
+    return messages
+      .filter((m) => messageText(m).trim())
+      .slice(-12)
+      .map((m) => ({
+        role:
+          providerUserId && m.senderId === providerUserId
+            ? 'assistant'
+            : 'user',
+        content: messageText(m).trim(),
+      }));
+  }, [messages, providerUserId]);
+
+  const getSuggestFanNotes = useCallback(() => {
+    const notes =
+      typeof chat?.chatPartner?.notes === 'string'
+        ? chat.chatPartner.notes.trim()
+        : '';
+    if (!notes || notes === DEFAULT_FAN_NOTES_TEMPLATE.trim()) return '';
+    return notes;
+  }, [chat]);
 
   const activeVaultSelection =
     vaultPickMode === 'script' ? scriptPickItems : selectedVaultItems;
@@ -1524,7 +1614,8 @@ export function MaloumChatThread({
     setSendError(null);
     try {
       let textToSend = englishDraft;
-      if (autoTranslateOutgoing && englishDraft) {
+      const usedSuggestedGerman = skipOutgoingTranslate && Boolean(englishDraft);
+      if (autoTranslateOutgoing && englishDraft && !skipOutgoingTranslate) {
         setTranslatingOutgoing(true);
         try {
           const history: TranslateHistoryItem[] = messages
@@ -1595,6 +1686,31 @@ export function MaloumChatThread({
           [messageId]: chatterName,
           [optimisticMessageId]: chatterName,
         }));
+        if (hasMedia && mediaPayload) {
+          const sentIds = mediaPayload
+            .map((entry) => entry.mediaId)
+            .filter(Boolean);
+          if (sentIds.length > 0) {
+            setSentUploadIds((prev) => {
+              const next = { ...prev };
+              for (const id of sentIds) next[id] = true;
+              return next;
+            });
+            const fanId = partnerId(chat);
+            if (fanId) {
+              void recordMaloumVaultSent(creatorId, {
+                fanId,
+                chatId,
+                uploadIds: sentIds,
+              }).catch(() => {
+                // Non-blocking
+              });
+            }
+          }
+        }
+        const loggedEnglish = usedSuggestedGerman
+          ? suggestedEnglish?.trim() || englishDraft
+          : englishDraft || textToSend || null;
         void createMessagingDashboardEntry({
           id: crypto.randomUUID(),
           creatorId,
@@ -1614,7 +1730,7 @@ export function MaloumChatThread({
               ? 'chat_product'
               : 'media'
             : 'text',
-          englishMessage: englishDraft || textToSend || null,
+          englishMessage: loggedEnglish,
           germanTranslatedMessage: textToSend || null,
           actualSentText: textToSend || null,
           priceNet: hasMedia && priceNet > 0 ? priceNet : null,
@@ -1638,6 +1754,8 @@ export function MaloumChatThread({
       }
 
       setDraft('');
+      setSkipOutgoingTranslate(false);
+      setSuggestedEnglish(null);
       setSelectedVaultItems([]);
       setPpvPrice('');
       setPriceModalOpen(false);
@@ -1672,6 +1790,8 @@ export function MaloumChatThread({
     sending,
     translatingOutgoing,
     autoTranslateOutgoing,
+    skipOutgoingTranslate,
+    suggestedEnglish,
     ppvPrice,
     messages,
     providerUserId,
@@ -1711,12 +1831,26 @@ export function MaloumChatThread({
   const currencySymbol = '€';
 
   const filteredVaultItems = useMemo(() => {
-    if (vaultTypeFilter === 'all') return vaultItems;
-    return vaultItems.filter((item) => {
-      const video = isVideoAsset(item.media?.type);
-      return vaultTypeFilter === 'video' ? video : !video;
-    });
-  }, [vaultItems, vaultTypeFilter]);
+    let items = vaultItems;
+    if (vaultTypeFilter !== 'all') {
+      items = items.filter((item) => {
+        const video = isVideoAsset(item.media?.type);
+        return vaultTypeFilter === 'video' ? video : !video;
+      });
+    }
+    if (vaultSentFilter === 'sent') {
+      items = items.filter((item) => {
+        const id = vaultUploadId(item);
+        return Boolean(id && sentUploadIds[id]);
+      });
+    } else if (vaultSentFilter === 'not_sent') {
+      items = items.filter((item) => {
+        const id = vaultUploadId(item);
+        return Boolean(id && !sentUploadIds[id]);
+      });
+    }
+    return items;
+  }, [vaultItems, vaultTypeFilter, vaultSentFilter, sentUploadIds]);
 
   return (
     <div
@@ -2168,21 +2302,35 @@ export function MaloumChatThread({
         {translatingOutgoing && (
           <p className="text-xs text-gray-500 dark:text-zinc-500 mb-2">Translating to German…</p>
         )}
+        {skipOutgoingTranslate && !translatingOutgoing && (
+          <p className="text-xs text-domx-600 dark:text-domx-400 mb-2">
+            AI German — won’t re-translate
+          </p>
+        )}
 
         <QuickEmojiBar
           onInsert={(emoji) => setDraft((d) => d + emoji)}
           trailing={
-            <ScriptToolbarButton
-              creatorId={creatorId}
-              platform="maloum"
-              fanId={partnerId(chat)}
-              canManage={canManageScripts}
-              onApply={applyScriptToComposer}
-              onRequestVaultPick={() => void openVaultForScript()}
-              pendingVaultMedia={pendingScriptVaultMedia}
-              onPendingVaultMediaConsumed={() => setPendingScriptVaultMedia(null)}
-              refreshKey={scriptsRefreshKey}
-            />
+            <div className="flex items-center gap-0.5">
+              <SuggestReplyToolbarButton
+                disabled={sending || translatingOutgoing || messages.length === 0}
+                getMessages={getSuggestMessages}
+                getFanNotes={getSuggestFanNotes}
+                fanName={partnerName(chat)}
+                onApply={applySuggestedReply}
+              />
+              <ScriptToolbarButton
+                creatorId={creatorId}
+                platform="maloum"
+                fanId={partnerId(chat)}
+                canManage={canManageScripts}
+                onApply={applyScriptToComposer}
+                onRequestVaultPick={() => void openVaultForScript()}
+                pendingVaultMedia={pendingScriptVaultMedia}
+                onPendingVaultMediaConsumed={() => setPendingScriptVaultMedia(null)}
+                refreshKey={scriptsRefreshKey}
+              />
+            </div>
           }
         />
 
@@ -2197,7 +2345,14 @@ export function MaloumChatThread({
           </button>
           <textarea
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              const next = e.target.value;
+              setDraft(next);
+              if (!next.trim()) {
+                setSkipOutgoingTranslate(false);
+                setSuggestedEnglish(null);
+              }
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -2206,9 +2361,11 @@ export function MaloumChatThread({
             }}
             rows={1}
             placeholder={
-              autoTranslateOutgoing
-                ? 'Type a message… (Auto-translates to German)'
-                : 'Type a message…'
+              skipOutgoingTranslate
+                ? 'Edit German reply… (won’t re-translate)'
+                : autoTranslateOutgoing
+                  ? 'Type a message… (Auto-translates to German)'
+                  : 'Type a message…'
             }
             className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed"
           />
@@ -2434,6 +2591,31 @@ export function MaloumChatThread({
                     );
                   })}
                 </div>
+                <div className="px-3 pb-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0">
+                  {(
+                    [
+                      { id: 'all' as const, label: 'All' },
+                      { id: 'sent' as const, label: 'Sent' },
+                      { id: 'not_sent' as const, label: 'Not Sent' },
+                    ] as const
+                  ).map((chip) => {
+                    const active = vaultSentFilter === chip.id;
+                    return (
+                      <button
+                        key={chip.id}
+                        type="button"
+                        onClick={() => setVaultSentFilter(chip.id)}
+                        className={`px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors ${
+                          active
+                            ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                            : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
+                        }`}
+                      >
+                        {chip.label}
+                      </button>
+                    );
+                  })}
+                </div>
 
                 <div
                   className="flex-1 overflow-y-auto p-4"
@@ -2463,6 +2645,7 @@ export function MaloumChatThread({
                       const selected = activeVaultSelection.some(
                         (entry) => vaultUploadId(entry) === uploadId
                       );
+                      const alreadySent = Boolean(uploadId && sentUploadIds[uploadId]);
                       const video = isVideoAsset(item.media?.type);
                       const durationSec =
                         typeof item.media?.length === 'number'
@@ -2517,6 +2700,11 @@ export function MaloumChatThread({
                               }
                             />
                           ) : null}
+                          {alreadySent && (
+                            <span className="absolute bottom-2 left-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-domx-600/90 text-white backdrop-blur pointer-events-none">
+                              Sent
+                            </span>
+                          )}
                           {selected && (
                             <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center z-10 shadow-lg pointer-events-none">
                               <Check className="w-3.5 h-3.5" />

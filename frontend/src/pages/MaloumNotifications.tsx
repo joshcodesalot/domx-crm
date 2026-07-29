@@ -13,7 +13,7 @@ import {
   type MaloumNotification,
 } from '@/lib/api';
 
-const BADGE_POLL_MS = 30_000;
+const BADGE_POLL_MS = 15_000;
 
 function fanDisplayName(n: MaloumNotification): string {
   return (

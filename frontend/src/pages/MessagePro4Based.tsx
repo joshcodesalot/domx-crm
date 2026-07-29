@@ -18,7 +18,7 @@ import {
 } from '@/lib/api';
 
 const HOME_TAB_ID = 'home';
-const BADGE_POLL_MS = 30_000;
+const BADGE_POLL_MS = 15_000;
 
 interface FanTab {
   chatId: string;

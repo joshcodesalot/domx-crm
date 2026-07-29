@@ -35,7 +35,10 @@ import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
-import FourBasedFanPanel from '@/components/fourbased/FourBasedFanPanel';
+import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
+import FourBasedFanPanel, {
+  DEFAULT_FAN_NOTES_TEMPLATE,
+} from '@/components/fourbased/FourBasedFanPanel';
 import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import {
@@ -46,6 +49,7 @@ import {
   getFourBasedChat,
   getFourBasedCoinPackages,
   getFourBasedMessages,
+  getFourBasedPivot,
   getFourBasedProfile,
   getFourBasedUser,
   getMessagingDashboardSenders,
@@ -85,7 +89,8 @@ const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const FAN_PANEL_OPEN_KEY = 'domx-4based-fan-panel';
 const MAX_TRANSLATION_HISTORY = 8;
-const POLL_MS = 20_000;
+const CHAT_LIST_POLL_MS = 10_000;
+const MESSAGE_POLL_MS = 10_000;
 const MESSAGE_PAGE_LIMIT = 30;
 const CHAT_PAGE_LIMIT = 30;
 const NEAR_BOTTOM_PX = 120;
@@ -827,7 +832,7 @@ export function FourBasedChatList({
 
     const timer = window.setInterval(() => {
       void loadChats({ silent: true });
-    }, POLL_MS);
+    }, CHAT_LIST_POLL_MS);
     return () => window.clearInterval(timer);
   }, [pollEnabled, loadChats, messagesUnread, filterKey]);
 
@@ -1207,6 +1212,8 @@ export function FourBasedChatThread({
   const [fanProfileLoading, setFanProfileLoading] = useState(false);
 
   const [draft, setDraft] = useState('');
+  const [skipOutgoingTranslate, setSkipOutgoingTranslate] = useState(false);
+  const [suggestedEnglish, setSuggestedEnglish] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [translatingOutgoing, setTranslatingOutgoing] = useState(false);
@@ -1407,6 +1414,8 @@ export function FourBasedChatThread({
 
   function applyScriptToComposer(script: CreatorScript) {
     setDraft(script.messageText || '');
+    setSkipOutgoingTranslate(false);
+    setSuggestedEnglish(null);
     setSelectedVaultItems(
       (script.media || []).map(scriptMediaToFourBasedVaultItem)
     );
@@ -1418,6 +1427,38 @@ export function FourBasedChatThread({
     setTeaserVaultId(null);
     setAppliedScriptId(script.id);
   }
+
+  const applySuggestedReply = useCallback(
+    (payload: { english: string; german: string }) => {
+      setDraft(payload.german || '');
+      setSuggestedEnglish(payload.english || null);
+      setSkipOutgoingTranslate(true);
+      setAppliedScriptId(null);
+    },
+    []
+  );
+
+  const getSuggestMessages = useCallback((): TranslateHistoryItem[] => {
+    return messages
+      .filter((m) => typeof m.message === 'string' && m.message.trim())
+      .slice(-12)
+      .map((m) => ({
+        role: m.user_id === providerUserId ? 'assistant' : 'user',
+        content: m.message!.trim(),
+      }));
+  }, [messages, providerUserId]);
+
+  const getSuggestFanNotes = useCallback(async () => {
+    if (!fan.id) return '';
+    try {
+      const result = await getFourBasedPivot(creatorId, fan.id);
+      const notes = (result.note || '').trim();
+      if (!notes || notes === DEFAULT_FAN_NOTES_TEMPLATE.trim()) return '';
+      return notes;
+    } catch {
+      return '';
+    }
+  }, [creatorId, fan.id]);
 
   const fanIsOnline =
     fanProfile?.is_online != null ? Boolean(fanProfile.is_online) : fan.isOnline;
@@ -1584,6 +1625,8 @@ export function FourBasedChatThread({
     setMessageSenders({});
     setFanProfile(null);
     setDraft('');
+    setSkipOutgoingTranslate(false);
+    setSuggestedEnglish(null);
     setSendError(null);
     clearMediaAttachments();
     setPlayingMsgId(null);
@@ -1616,7 +1659,7 @@ export function FourBasedChatThread({
   useEffect(() => {
     const timer = window.setInterval(() => {
       void loadMessages({ silent: true });
-    }, POLL_MS);
+    }, MESSAGE_POLL_MS);
     return () => window.clearInterval(timer);
   }, [loadMessages]);
 
@@ -1875,6 +1918,7 @@ export function FourBasedChatThread({
     setSendError(null);
     const localId = crypto.randomUUID();
     const englishDraft = text;
+    const usedSuggestedGerman = skipOutgoingTranslate && Boolean(text);
     const vaultForLog = selectedVaultItems;
     const dollarsForLog = hasPpvPrice ? ppvDollarsNum : 0;
     const coinsForLog = dollarsForLog > 0 ? priceCoins : 0;
@@ -1884,7 +1928,7 @@ export function FourBasedChatThread({
     try {
       let messageToSend = text;
 
-      if (autoTranslateOutgoing && text) {
+      if (autoTranslateOutgoing && text && !skipOutgoingTranslate) {
         setTranslatingOutgoing(true);
         try {
           const history: TranslateHistoryItem[] = messages
@@ -1934,6 +1978,9 @@ export function FourBasedChatThread({
           messageToSend ||
           (vaultForLog[0] ? vaultForLog[0].description || '' : '') ||
           englishDraft;
+        const loggedEnglish = usedSuggestedGerman
+          ? suggestedEnglish?.trim() || englishDraft
+          : englishDraft || actualSent;
         const chatterName = user.name;
         const dashboardMessageId = `4based:${sentMessage._id}`;
         setMessageSenders((prev) => ({
@@ -1960,7 +2007,7 @@ export function FourBasedChatThread({
               ? 'chat_product'
               : 'media'
             : 'text',
-          englishMessage: englishDraft || actualSent || null,
+          englishMessage: loggedEnglish || null,
           germanTranslatedMessage: actualSent || null,
           actualSentText: actualSent || null,
           priceNet: hasMedia && dollarsForLog > 0 ? dollarsForLog : null,
@@ -1984,6 +2031,8 @@ export function FourBasedChatThread({
       }
 
       setDraft('');
+      setSkipOutgoingTranslate(false);
+      setSuggestedEnglish(null);
       if (appliedScriptId && fan.id) {
         void markScriptSent(creatorId, appliedScriptId, {
           fanId: fan.id,
@@ -2830,21 +2879,35 @@ export function FourBasedChatThread({
             Translating to German…
           </p>
         )}
+        {skipOutgoingTranslate && !translatingOutgoing && (
+          <p className="text-xs text-domx-600 dark:text-domx-400 mb-2">
+            AI German — won’t re-translate
+          </p>
+        )}
 
         <QuickEmojiBar
           onInsert={(emoji) => setDraft((d) => d + emoji)}
           trailing={
-            <ScriptToolbarButton
-              creatorId={creatorId}
-              platform="4based"
-              fanId={fan.id || null}
-              canManage={canManageScripts}
-              onApply={applyScriptToComposer}
-              onRequestVaultPick={() => void openVaultForScript()}
-              pendingVaultMedia={pendingScriptVaultMedia}
-              onPendingVaultMediaConsumed={() => setPendingScriptVaultMedia(null)}
-              refreshKey={scriptsRefreshKey}
-            />
+            <div className="flex items-center gap-0.5">
+              <SuggestReplyToolbarButton
+                disabled={sending || translatingOutgoing || messages.length === 0}
+                getMessages={getSuggestMessages}
+                getFanNotes={getSuggestFanNotes}
+                fanName={fan.name || null}
+                onApply={applySuggestedReply}
+              />
+              <ScriptToolbarButton
+                creatorId={creatorId}
+                platform="4based"
+                fanId={fan.id || null}
+                canManage={canManageScripts}
+                onApply={applyScriptToComposer}
+                onRequestVaultPick={() => void openVaultForScript()}
+                pendingVaultMedia={pendingScriptVaultMedia}
+                onPendingVaultMediaConsumed={() => setPendingScriptVaultMedia(null)}
+                refreshKey={scriptsRefreshKey}
+              />
+            </div>
           }
         />
 
@@ -2859,7 +2922,14 @@ export function FourBasedChatThread({
           </button>
           <textarea
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              const next = e.target.value;
+              setDraft(next);
+              if (!next.trim()) {
+                setSkipOutgoingTranslate(false);
+                setSuggestedEnglish(null);
+              }
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -2869,9 +2939,11 @@ export function FourBasedChatThread({
             disabled={sending || translatingOutgoing}
             rows={1}
             placeholder={
-              autoTranslateOutgoing
-                ? 'Type a message… (Auto-translates to German)'
-                : 'Type a message…'
+              skipOutgoingTranslate
+                ? 'Edit German reply… (won’t re-translate)'
+                : autoTranslateOutgoing
+                  ? 'Type a message… (Auto-translates to German)'
+                  : 'Type a message…'
             }
             className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-50"
           />

@@ -17,7 +17,7 @@ import {
   type FourBasedChat,
 } from '@/lib/api';
 
-const BADGE_POLL_INTERVAL_MS = 30_000;
+const BADGE_POLL_INTERVAL_MS = 15_000;
 const CREATOR_POLL_INTERVAL_MS = 15_000;
 
 type CreatorUnreadCounts = { messages: number; notifications: number };

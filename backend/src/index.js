@@ -12,6 +12,7 @@ const creatorsRoutes = require('./routes/creators');
 const maloumSentMessagesRoutes = require('./routes/maloumSentMessages');
 const messagingDashboardRoutes = require('./routes/messagingDashboard');
 const translateRoutes = require('./routes/translate');
+const suggestReplyRoutes = require('./routes/suggestReply');
 const eventsRoutes = require('./routes/events');
 const {
   startMaloumTokenRefreshScheduler,
@@ -56,6 +57,7 @@ app.use('/api/creators', creatorsRoutes);
 app.use('/api/maloum-sent-messages', maloumSentMessagesRoutes);
 app.use('/api/messaging-dashboard', messagingDashboardRoutes);
 app.use('/api/translate-to-german', translateRoutes);
+app.use('/api/suggest-reply', suggestReplyRoutes);
 app.use('/api/events', eventsRoutes);
 
 app.use((_req, res) => {

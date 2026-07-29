@@ -21,7 +21,7 @@ const HOME_TAB_ID = 'home';
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const TRANSLATION_SETTINGS_EVENT = 'domx-translation-settings';
-const BADGE_POLL_MS = 30_000;
+const BADGE_POLL_MS = 15_000;
 
 interface FanTab {
   chatId: string;

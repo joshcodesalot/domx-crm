@@ -2386,6 +2386,29 @@ export async function listMaloumVaultMedia(
   );
 }
 
+export async function listMaloumVaultSent(
+  creatorId: string,
+  options: { fanId?: string; chatId?: string } = {}
+): Promise<{ uploadIds: string[] }> {
+  const params = new URLSearchParams();
+  if (options.fanId) params.set('fanId', options.fanId);
+  if (options.chatId) params.set('chatId', options.chatId);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/vault-sent${query ? `?${query}` : ''}`
+  );
+}
+
+export async function recordMaloumVaultSent(
+  creatorId: string,
+  payload: { fanId: string; chatId?: string; uploadIds: string[] }
+): Promise<{ ok: boolean; uploadIds: string[] }> {
+  return request(`/api/creators/${creatorId}/maloum/vault-sent`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 /** Build a Maloum media-proxy URL for use in <img src>. Includes DomX access token. */
 export function maloumMediaUrl(
   creatorId: string,
@@ -2423,5 +2446,36 @@ export async function translateToGerman(
     throw new Error('Translation returned empty text');
   }
   return translated;
+}
+
+export type SuggestReplyId = 'rapport' | 'upsell';
+
+export interface SuggestReplyOption {
+  id: SuggestReplyId;
+  label: string;
+  english: string;
+  german: string;
+}
+
+export async function suggestReply(payload: {
+  messages: TranslateHistoryItem[];
+  fanNotes?: string;
+  fanName?: string;
+}): Promise<{ suggestions: SuggestReplyOption[] }> {
+  const result = await request<{ suggestions: SuggestReplyOption[] }>(
+    '/api/suggest-reply',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        messages: payload.messages,
+        fanNotes: payload.fanNotes || '',
+        fanName: payload.fanName || '',
+      }),
+    }
+  );
+  if (!Array.isArray(result.suggestions) || result.suggestions.length < 2) {
+    throw new Error('Suggest reply returned incomplete suggestions');
+  }
+  return result;
 }
 

@@ -4,7 +4,7 @@ import { MaloumSingleCreatorChat } from '@/components/maloum/MaloumChatPanels';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import { getCreators, getMaloumBadges, type Creator } from '@/lib/api';
 
-const BADGE_POLL_MS = 30_000;
+const BADGE_POLL_MS = 15_000;
 const CREATOR_POLL_MS = 15_000;
 
 export default function ChatterMaloum() {

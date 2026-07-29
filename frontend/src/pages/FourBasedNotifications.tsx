@@ -27,7 +27,7 @@ import {
   type FourBasedActivity,
 } from '@/lib/api';
 
-const BADGE_POLL_MS = 30_000;
+const BADGE_POLL_MS = 15_000;
 const PAGE_LIMIT = 20;
 
 const FILTER_OPTIONS: { key: string; label: string }[] = [

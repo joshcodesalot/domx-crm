@@ -5104,6 +5104,185 @@ router.get(
   }
 );
 
+function collectMediaIdsFromJson(mediaJson, into) {
+  if (!mediaJson) return;
+  const items = Array.isArray(mediaJson)
+    ? mediaJson
+    : typeof mediaJson === 'object' && Array.isArray(mediaJson.items)
+      ? mediaJson.items
+      : null;
+  if (!items) return;
+  for (const entry of items) {
+    if (!entry || typeof entry !== 'object') continue;
+    const mediaId =
+      (typeof entry.mediaId === 'string' && entry.mediaId.trim()) ||
+      (typeof entry.uploadId === 'string' && entry.uploadId.trim()) ||
+      '';
+    if (mediaId) into.add(mediaId);
+  }
+}
+
+router.get(
+  '/:id/maloum/vault-sent',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const fanId =
+      typeof req.query.fanId === 'string' && req.query.fanId.trim()
+        ? req.query.fanId.trim()
+        : null;
+    const chatId =
+      typeof req.query.chatId === 'string' && req.query.chatId.trim()
+        ? req.query.chatId.trim()
+        : null;
+
+    if (!fanId && !chatId) {
+      return res.status(400).json({ error: 'fanId or chatId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const uploadIds = new Set();
+
+      if (fanId) {
+        const storeResult = await pool.query(
+          `SELECT "uploadId"
+           FROM maloum_vault_sent
+           WHERE "creatorId" = $1 AND "fanId" = $2`,
+          [id, fanId]
+        );
+        for (const row of storeResult.rows) {
+          if (row.uploadId) uploadIds.add(String(row.uploadId));
+        }
+      } else if (chatId) {
+        const storeResult = await pool.query(
+          `SELECT "uploadId"
+           FROM maloum_vault_sent
+           WHERE "creatorId" = $1 AND "chatId" = $2`,
+          [id, chatId]
+        );
+        for (const row of storeResult.rows) {
+          if (row.uploadId) uploadIds.add(String(row.uploadId));
+        }
+      }
+
+      const dashConditions = ['"creatorId" = $1', '"mediaCount" > 0'];
+      const dashValues = [id];
+      let paramIndex = 2;
+      dashConditions.push(`"contentType" IN ('media', 'chat_product')`);
+
+      if (fanId && chatId) {
+        dashConditions.push(
+          `("chatId" = $${paramIndex} OR "fanId" = $${paramIndex + 1})`
+        );
+        dashValues.push(chatId, fanId);
+        paramIndex += 2;
+      } else if (chatId) {
+        dashConditions.push(`"chatId" = $${paramIndex}`);
+        dashValues.push(chatId);
+        paramIndex += 1;
+      } else {
+        dashConditions.push(`"fanId" = $${paramIndex}`);
+        dashValues.push(fanId);
+        paramIndex += 1;
+      }
+
+      const dashResult = await pool.query(
+        `SELECT "mediaJson"
+         FROM messaging_dashboard_entries
+         WHERE ${dashConditions.join(' AND ')}
+         ORDER BY "sentAt" DESC
+         LIMIT 500`,
+        dashValues
+      );
+      for (const row of dashResult.rows) {
+        collectMediaIdsFromJson(row.mediaJson, uploadIds);
+      }
+
+      return res.json({ uploadIds: [...uploadIds] });
+    } catch (err) {
+      console.error('List Maloum vault sent error:', err);
+      return res.status(500).json({ error: 'Failed to load vault sent media' });
+    }
+  }
+);
+
+router.post(
+  '/:id/maloum/vault-sent',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const fanId =
+      typeof req.body?.fanId === 'string' && req.body.fanId.trim()
+        ? req.body.fanId.trim()
+        : null;
+    const chatId =
+      typeof req.body?.chatId === 'string' && req.body.chatId.trim()
+        ? req.body.chatId.trim()
+        : null;
+    const rawUploadIds = Array.isArray(req.body?.uploadIds) ? req.body.uploadIds : [];
+    const uploadIds = [
+      ...new Set(
+        rawUploadIds
+          .map((value) => (typeof value === 'string' ? value.trim() : ''))
+          .filter((value) => value.length > 0 && value.length <= 256)
+      ),
+    ].slice(0, 100);
+
+    if (!fanId) {
+      return res.status(400).json({ error: 'fanId is required' });
+    }
+    if (uploadIds.length === 0) {
+      return res.status(400).json({ error: 'uploadIds is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const creatorCheck = await pool.query('SELECT id FROM creators WHERE id = $1', [id]);
+      if (creatorCheck.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+
+      const sentByUserId = req.user?.id || null;
+      for (const uploadId of uploadIds) {
+        await pool.query(
+          `INSERT INTO maloum_vault_sent (
+             "creatorId", "fanId", "chatId", "uploadId", "sentByUserId", "sentAt"
+           ) VALUES ($1, $2, $3, $4, $5, NOW())
+           ON CONFLICT ("creatorId", "fanId", "uploadId") DO UPDATE SET
+             "chatId" = COALESCE(EXCLUDED."chatId", maloum_vault_sent."chatId"),
+             "sentByUserId" = COALESCE(EXCLUDED."sentByUserId", maloum_vault_sent."sentByUserId"),
+             "sentAt" = maloum_vault_sent."sentAt"`,
+          [id, fanId, chatId, uploadId, sentByUserId]
+        );
+      }
+
+      return res.json({ ok: true, uploadIds });
+    } catch (err) {
+      console.error('Record Maloum vault sent error:', err);
+      return res.status(500).json({ error: 'Failed to record vault sent media' });
+    }
+  }
+);
+
 router.get(
   '/:id/maloum/media',
   async (req, res, next) => {
