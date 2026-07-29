@@ -510,6 +510,20 @@ async function listNotifications(creator, { limit = 15, next } = {}) {
   return result.data;
 }
 
+async function markNotificationsReadAll(creator) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const result = await requestJson({
+    method: 'POST',
+    path: '/notifications/read-all',
+    proxyUrl,
+    accessToken,
+    timezone,
+    contentType: 'application/x-www-form-urlencoded',
+    rawBody: '',
+  });
+  return result.data;
+}
+
 function normalizeListData(payload) {
   if (Array.isArray(payload?.data)) return payload.data;
   if (Array.isArray(payload)) return payload;
@@ -1166,6 +1180,7 @@ module.exports = {
   markRead,
   getUnreadCount,
   listNotifications,
+  markNotificationsReadAll,
   countUnreadChatsFromList,
   countUnreadNotificationsFromList,
   normalizeListData,

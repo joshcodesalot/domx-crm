@@ -2086,6 +2086,14 @@ export async function getMaloumNotifications(
   );
 }
 
+export async function markMaloumNotificationsReadAll(
+  creatorId: string
+): Promise<{ ok: boolean }> {
+  return request(`/api/creators/${creatorId}/maloum/notifications/read-all`, {
+    method: 'POST',
+  });
+}
+
 export async function getMaloumChat(
   creatorId: string,
   chatId: string

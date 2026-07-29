@@ -9,6 +9,7 @@ import {
   getCreators,
   getMaloumBadges,
   getMaloumNotifications,
+  markMaloumNotificationsReadAll,
   type Creator,
   type MaloumNotification,
 } from '@/lib/api';
@@ -107,13 +108,27 @@ export default function MaloumNotifications() {
           limit: 30,
           next: opts?.next || undefined,
         });
-        setNotifications((prev) =>
-          append
-            ? [...prev, ...(result.notifications || [])]
-            : result.notifications || []
-        );
+        const list = result.notifications || [];
+        setNotifications((prev) => (append ? [...prev, ...list] : list));
         setNextCursor(result.next || null);
-        void refreshBadges([selectedCreatorId]);
+
+        if (!append) {
+          try {
+            await markMaloumNotificationsReadAll(selectedCreatorId);
+            setUnreadByCreatorId((prev) => ({
+              ...prev,
+              [selectedCreatorId]: 0,
+            }));
+            setNotifications((prev) =>
+              prev.map((n) => (n.isRead === false ? { ...n, isRead: true } : n))
+            );
+          } catch {
+            // best-effort — list still succeeded
+            void refreshBadges([selectedCreatorId]);
+          }
+        } else {
+          void refreshBadges([selectedCreatorId]);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load notifications');
       } finally {

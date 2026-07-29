@@ -4487,6 +4487,35 @@ router.get(
   }
 );
 
+router.post(
+  '/:id/maloum/notifications/read-all',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      await maloumClient.markNotificationsReadAll(loaded.creator);
+      res.json({ ok: true });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Mark Maloum notifications read error:');
+    }
+  }
+);
+
 router.get(
   '/:id/maloum/chats/:chatId',
   authenticate,
