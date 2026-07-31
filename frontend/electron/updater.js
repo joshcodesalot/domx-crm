@@ -1,7 +1,7 @@
 const { app, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 
-const UPDATE_FEED_URL = 'https://domx.low7labs.cloud/crm-updates/';
+const UPDATE_FEED_URL = 'https://domx-agency.com/crm-updates/';
 const UPDATE_JSON_URL = `${UPDATE_FEED_URL.replace(/\/$/, '')}/latest.json`;
 const CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const CHECK_TIMEOUT_MS = 30 * 1000;

@@ -4,7 +4,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const RELEASE_DIR = path.join(ROOT, 'release');
 const PACKAGE_JSON = path.join(ROOT, 'package.json');
-const PUBLISH_URL = 'https://domx.low7labs.cloud/crm-updates/';
+const PUBLISH_URL = 'https://domx-agency.com/crm-updates/';
 
 function readVersion() {
   const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON, 'utf8'));

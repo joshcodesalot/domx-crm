@@ -10,5 +10,5 @@ Quick release:
 git tag v1.0.1
 git push origin v1.0.1
 # 3. Download domx-crm-release artifact from GitHub Actions
-# 4. Upload all files to https://domx.low7labs.cloud/crm-updates/
+# 4. Upload all files to https://domx-agency.com/crm-updates/
 ```

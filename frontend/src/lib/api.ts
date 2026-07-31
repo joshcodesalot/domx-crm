@@ -2045,8 +2045,7 @@ export async function listMaloumChats(
 export async function getMaloumUnreadCount(
   creatorId: string
 ): Promise<{ unread: number }> {
-  const badges = await getMaloumBadges(creatorId);
-  return { unread: badges.messages };
+  return request(`/api/creators/${creatorId}/maloum/chats/unread-count`);
 }
 
 export async function getMaloumBadges(

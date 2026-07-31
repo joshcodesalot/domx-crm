@@ -4421,8 +4421,9 @@ router.get(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      const [chatsPayload, notificationsPayload] = await Promise.all([
-        maloumClient.listChats(loaded.creator, { limit: 15 }),
+      const [messagesUnread, notificationsUnread, notificationsPayload] = await Promise.all([
+        maloumClient.getUnreadCount(loaded.creator),
+        maloumClient.getNotificationsUnreadCount(loaded.creator),
         maloumClient.listNotifications(loaded.creator, { limit: 15 }),
       ]);
 
@@ -4434,9 +4435,12 @@ router.get(
         console.warn('Maloum sale/tip sync failed:', err.message);
       }
 
+      const toCount = (value) =>
+        typeof value === 'number' ? value : Number(value) || 0;
+
       res.json({
-        messages: maloumClient.countUnreadChatsFromList(chatsPayload),
-        notifications: maloumClient.countUnreadNotificationsFromList(notificationsPayload),
+        messages: toCount(messagesUnread),
+        notifications: toCount(notificationsUnread),
       });
     } catch (err) {
       return handleMaloumError(res, err, 'Get Maloum badges error:');

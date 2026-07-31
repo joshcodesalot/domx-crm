@@ -16,7 +16,7 @@ asar: true
 
 publish:
   provider: generic
-  url: https://domx.low7labs.cloud/crm-updates/
+  url: https://domx-agency.com/crm-updates/
 
 icon: build/icon.png
 

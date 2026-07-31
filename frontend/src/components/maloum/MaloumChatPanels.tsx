@@ -2334,7 +2334,7 @@ export function MaloumChatThread({
           }
         />
 
-        <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50 focus-within:bg-zinc-900 transition-all shadow-inner">
+        <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50 focus-within:bg-white dark:focus-within:bg-zinc-900 transition-all shadow-inner">
           <button
             type="button"
             onClick={() => void openVault()}

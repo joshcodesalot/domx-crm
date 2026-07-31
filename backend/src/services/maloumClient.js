@@ -498,6 +498,18 @@ async function getUnreadCount(creator) {
   return result.data;
 }
 
+async function getNotificationsUnreadCount(creator) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const result = await requestJson({
+    method: 'GET',
+    path: '/notifications/unread-count',
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
 async function listNotifications(creator, { limit = 15, next } = {}) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
@@ -1179,6 +1191,7 @@ module.exports = {
   getMessages,
   markRead,
   getUnreadCount,
+  getNotificationsUnreadCount,
   listNotifications,
   markNotificationsReadAll,
   countUnreadChatsFromList,

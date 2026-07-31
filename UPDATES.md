@@ -19,7 +19,7 @@ DomX CRM uses a **hard-gate** update policy: if a newer version is available, th
 
 Published files are hosted at:
 
-**https://domx.low7labs.cloud/crm-updates/**
+**https://domx-agency.com/crm-updates/**
 
 The app reads:
 
@@ -89,7 +89,7 @@ This zip contains everything you need, including `latest.json`.
 
 Upload **all files** from the build to:
 
-`https://domx.low7labs.cloud/crm-updates/`
+`https://domx-agency.com/crm-updates/`
 
 Required files per release:
 
@@ -109,8 +109,8 @@ Overwrite `latest.yml`, `latest-mac.yml`, and `latest.json` each release. Keep o
 
 Confirm these URLs load in a browser:
 
-- https://domx.low7labs.cloud/crm-updates/latest.yml
-- https://domx.low7labs.cloud/crm-updates/latest.json
+- https://domx-agency.com/crm-updates/latest.yml
+- https://domx-agency.com/crm-updates/latest.json
 
 ### 6. Test
 
@@ -158,14 +158,14 @@ Example output:
   "publishedAt": "2026-07-14T08:00:00.000Z",
   "downloads": {
     "windows": {
-      "url": "https://domx.low7labs.cloud/crm-updates/DomX-CRM-Setup-1.0.1-x64.exe"
+      "url": "https://domx-agency.com/crm-updates/DomX-CRM-Setup-1.0.1-x64.exe"
     },
     "mac": {
       "arm64": {
-        "url": "https://domx.low7labs.cloud/crm-updates/DomX-CRM-1.0.1-arm64.dmg"
+        "url": "https://domx-agency.com/crm-updates/DomX-CRM-1.0.1-arm64.dmg"
       },
       "x64": {
-        "url": "https://domx.low7labs.cloud/crm-updates/DomX-CRM-1.0.1-x64.dmg"
+        "url": "https://domx-agency.com/crm-updates/DomX-CRM-1.0.1-x64.dmg"
       }
     }
   }
@@ -182,7 +182,7 @@ Example output:
 | Bump version | `frontend/package.json` → `"version"` |
 | Trigger CI build | `git tag v1.0.1 && git push origin v1.0.1` |
 | Download artifacts | Actions → workflow run → **domx-crm-release** |
-| Upload destination | `https://domx.low7labs.cloud/crm-updates/` |
+| Upload destination | `https://domx-agency.com/crm-updates/` |
 | Windows local build | `npm run build:electron:win` |
 | macOS local build | `npm run build:electron:mac` (Mac only) |
 | Regenerate manifest | `cd frontend && node scripts/generate-update-manifest.js` |
