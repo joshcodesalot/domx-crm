@@ -7,6 +7,7 @@ import {
   Megaphone,
   MessageSquare,
   PanelsTopLeft,
+  Sparkles,
   UserCog,
   Users,
 } from 'lucide-react';
@@ -99,7 +100,12 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   }
 
   async function handleMaloumNavigate(
-    view: 'chat' | 'message-pro' | 'mass-message' | 'notifications'
+    view:
+      | 'chat'
+      | 'message-pro'
+      | 'mass-message'
+      | 'ai-bulk-reply'
+      | 'notifications'
   ) {
     setMaloumMenuOpen(false);
     if (view === 'message-pro') {
@@ -110,6 +116,10 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       navigate('/chatter/maloum/mass-message');
       return;
     }
+    if (view === 'ai-bulk-reply') {
+      navigate('/chatter/maloum/ai-bulk-reply');
+      return;
+    }
     if (view === 'notifications') {
       navigate('/chatter/maloum/notifications');
       return;
@@ -118,7 +128,12 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   }
 
   async function handleFourBasedNavigate(
-    view: 'chat' | 'message-pro' | 'mass-message' | 'notifications'
+    view:
+      | 'chat'
+      | 'message-pro'
+      | 'mass-message'
+      | 'ai-bulk-reply'
+      | 'notifications'
   ) {
     setFourBasedMenuOpen(false);
     if (view === 'message-pro') {
@@ -127,6 +142,10 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     }
     if (view === 'mass-message') {
       navigate('/chatter/4based/mass-message');
+      return;
+    }
+    if (view === 'ai-bulk-reply') {
+      navigate('/chatter/4based/ai-bulk-reply');
       return;
     }
     if (view === 'notifications') {
@@ -236,6 +255,17 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                     Mass Message
                   </button>
                 )}
+                {hasPermission('mass_messages.send') && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void handleMaloumNavigate('ai-bulk-reply')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                  >
+                    <Sparkles className="w-4 h-4 shrink-0" />
+                    AI Bulk Reply
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -309,6 +339,17 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                   >
                     <Megaphone className="w-4 h-4 shrink-0" />
                     Mass Message
+                  </button>
+                )}
+                {hasPermission('mass_messages.send') && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void handleFourBasedNavigate('ai-bulk-reply')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                  >
+                    <Sparkles className="w-4 h-4 shrink-0" />
+                    AI Bulk Reply
                   </button>
                 )}
               </div>

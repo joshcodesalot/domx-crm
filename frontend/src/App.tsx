@@ -18,6 +18,8 @@ import ChatterMaloum from '@/pages/ChatterMaloum';
 import Chatter4Based from '@/pages/Chatter4Based';
 import MaloumMassMessage from '@/pages/MaloumMassMessage';
 import FourBasedMassMessage from '@/pages/FourBasedMassMessage';
+import MaloumAiBulkReply from '@/pages/MaloumAiBulkReply';
+import FourBasedAiBulkReply from '@/pages/FourBasedAiBulkReply';
 import MaloumNotifications from '@/pages/MaloumNotifications';
 import FourBasedNotifications from '@/pages/FourBasedNotifications';
 import MessagePro from '@/pages/MessagePro';
@@ -221,6 +223,14 @@ function AppRoutes() {
                 <Route
                   path="/chatter/4based/mass-message"
                   element={<FourBasedMassMessage />}
+                />
+                <Route
+                  path="/chatter/maloum/ai-bulk-reply"
+                  element={<MaloumAiBulkReply />}
+                />
+                <Route
+                  path="/chatter/4based/ai-bulk-reply"
+                  element={<FourBasedAiBulkReply />}
                 />
               </Route>
               <Route element={<PermissionRoute permission="creators.manage" />}>
