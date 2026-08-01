@@ -40,6 +40,7 @@ import FourBasedFanPanel, {
   DEFAULT_FAN_NOTES_TEMPLATE,
 } from '@/components/fourbased/FourBasedFanPanel';
 import { useAuth } from '@/context/AuthContext';
+import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import {
   createMessagingDashboardEntry,
@@ -1193,6 +1194,7 @@ export function FourBasedChatThread({
 }: FourBasedChatThreadProps) {
   const { user, hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
+  const confirm = useConfirm();
   const creatorId = creator.id;
   const canEditVaultNotes = hasPermission('vault.notes.edit');
   const canManageScripts = hasPermission('scripts.manage');
@@ -1384,9 +1386,12 @@ export function FourBasedChatThread({
       if (!isFourBasedPpvSold(msg.file_stack)) continue;
       if (purchasedSyncedRef.current.has(id)) continue;
       purchasedSyncedRef.current.add(id);
-      void updateMessagingDashboardPurchased(`4based:${id}`, true).catch(() => {
-        purchasedSyncedRef.current.delete(id);
-      });
+      const priceNet = coinsToDollars(price);
+      void updateMessagingDashboardPurchased(`4based:${id}`, true, priceNet).catch(
+        () => {
+          purchasedSyncedRef.current.delete(id);
+        }
+      );
     }
   }
 
@@ -1864,7 +1869,13 @@ export function FourBasedChatThread({
 
   async function handleDeleteMessage(messageId: string) {
     if (!isPersistedFourBasedMessageId(messageId) || deletingMessageId) return;
-    if (!window.confirm('Delete this message?')) return;
+    const ok = await confirm({
+      title: 'Delete message',
+      message: 'Delete this message?',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    });
+    if (!ok) return;
     setDeletingMessageId(messageId);
     setDeleteError(null);
     try {
@@ -1950,6 +1961,7 @@ export function FourBasedChatThread({
       }
 
       let sentMessage: FourBasedMessage | null = null;
+      let sentFileStackId: string | null = null;
 
       if (vaultForLog.length > 0) {
         // HAR: free media with no caption uses a single space as message body
@@ -1961,6 +1973,13 @@ export function FourBasedChatThread({
           localId,
         });
         sentMessage = result.message;
+        sentFileStackId =
+          String(
+            result.fileStack?._id ||
+              result.message?.file_stack_id ||
+              result.message?.file_stack?._id ||
+              ''
+          ).trim() || null;
         clearMediaAttachments();
       } else {
         const result = await sendFourBasedMessage(creatorId, chatId, {
@@ -2017,10 +2036,15 @@ export function FourBasedChatThread({
           pictureCount,
           videoCount,
           mediaJson: hasMedia
-            ? vaultForLog.map((item) => ({
-                mediaId: vaultItemId(item),
-                type: isVideoItem(item) ? 'video' : 'image',
-              }))
+            ? vaultForLog.map((item) => {
+                const vaultId = vaultItemId(item);
+                return {
+                  mediaId: vaultId,
+                  vaultFileStackId: vaultId || null,
+                  fileStackId: sentFileStackId,
+                  type: isVideoItem(item) ? 'video' : 'image',
+                };
+              })
             : null,
           previousFanMessageAt: responseSnapshot.previousFanMessageAt,
           responseTimeSeconds: responseSnapshot.responseTimeSeconds,
@@ -2936,7 +2960,6 @@ export function FourBasedChatThread({
                 void handleSendText();
               }
             }}
-            disabled={sending || translatingOutgoing}
             rows={1}
             placeholder={
               skipOutgoingTranslate
@@ -2945,7 +2968,7 @@ export function FourBasedChatThread({
                   ? 'Type a message… (Auto-translates to German)'
                   : 'Type a message…'
             }
-            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-50"
+            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed"
           />
           <button
             type="button"

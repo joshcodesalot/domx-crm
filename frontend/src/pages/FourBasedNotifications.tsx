@@ -97,9 +97,12 @@ function isVideoStack(a: FourBasedActivity): boolean {
 }
 
 function activityAmountDollars(a: FourBasedActivity): number | null {
-  const coins = Number(a.process?.amount ?? a.process?.value);
+  // Sale activities often have process: null; price is on file_stack.price (coins).
+  const coins = Number(
+    a.process?.amount ?? a.process?.value ?? a.file_stack?.price
+  );
   if (!Number.isFinite(coins) || coins === 0) return null;
-  return coins / 121;
+  return Math.abs(coins) / 121;
 }
 
 export default function FourBasedNotifications() {

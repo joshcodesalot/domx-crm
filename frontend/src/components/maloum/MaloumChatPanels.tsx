@@ -71,6 +71,7 @@ import {
   type HistoryTranslateQueue,
 } from '@/lib/historyTranslateQueue';
 import { useAuth } from '@/context/AuthContext';
+import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 
 type MaloumMediaPreview = {
@@ -888,6 +889,7 @@ export function MaloumChatThread({
 }: MaloumChatThreadProps) {
   const { user, hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
+  const confirm = useConfirm();
   const creatorId = creator.id;
   const canEditVaultNotes = hasPermission('vault.notes.edit');
   const canManageScripts = hasPermission('scripts.manage');
@@ -1809,7 +1811,13 @@ export function MaloumChatThread({
   const handleDeleteMessage = useCallback(
     async (messageId: string) => {
       if (!isPersistedMaloumMessageId(messageId) || deletingMessageId) return;
-      if (!window.confirm('Delete this message?')) return;
+      const ok = await confirm({
+        title: 'Delete message',
+        message: 'Delete this message?',
+        confirmLabel: 'Delete',
+        variant: 'danger',
+      });
+      if (!ok) return;
       setDeletingMessageId(messageId);
       setDeleteError(null);
       try {
@@ -1823,7 +1831,7 @@ export function MaloumChatThread({
         setDeletingMessageId(null);
       }
     },
-    [creatorId, chatId, deletingMessageId]
+    [creatorId, chatId, deletingMessageId, confirm]
   );
 
   const title = partnerName(chat);

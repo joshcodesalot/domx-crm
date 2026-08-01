@@ -29,7 +29,9 @@ import VaultMediaNoteModal, {
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import { formatRelativeTime } from '@/components/fourbased/FourBasedChatPanels';
 import { useAuth } from '@/context/AuthContext';
+import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
+import { useToast } from '@/context/ToastContext';
 import {
   countFourBasedMassMessageReceivers,
   deleteFourBasedMassMessage,
@@ -129,6 +131,8 @@ function mediaThumbSrc(
 export default function FourBasedMassMessage() {
   const { hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
+  const confirm = useConfirm();
+  const { toast } = useToast();
   const canEditVaultNotes = hasPermission('vault.notes.edit');
   const [creators, setCreators] = useState<Creator[]>([]);
   const [creatorsLoading, setCreatorsLoading] = useState(true);
@@ -580,20 +584,24 @@ export default function FourBasedMassMessage() {
   const handleDelete = useCallback(
     async (messageId: string) => {
       if (!selectedCreatorId || deletingId) return;
-      if (!window.confirm('Unsend this mass message? Recipients will no longer see it.')) {
-        return;
-      }
+      const ok = await confirm({
+        title: 'Unsend mass message',
+        message: 'Unsend this mass message? Recipients will no longer see it.',
+        confirmLabel: 'Unsend',
+        variant: 'danger',
+      });
+      if (!ok) return;
       setDeletingId(messageId);
       try {
         await deleteFourBasedMassMessage(selectedCreatorId, messageId);
         setMessages((prev) => prev.filter((m) => massMessageId(m) !== messageId));
       } catch (err) {
-        window.alert(err instanceof Error ? err.message : 'Failed to delete mass message');
+        toast.error(err instanceof Error ? err.message : 'Failed to delete mass message');
       } finally {
         setDeletingId(null);
       }
     },
-    [selectedCreatorId, deletingId]
+    [selectedCreatorId, deletingId, confirm, toast]
   );
 
   const handleSend = useCallback(async () => {

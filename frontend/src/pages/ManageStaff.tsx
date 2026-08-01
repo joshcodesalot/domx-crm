@@ -4,6 +4,7 @@ import AppLayout from '@/components/AppLayout';
 import AssignStaffCreatorsModal from '@/components/AssignStaffCreatorsModal';
 import StaffCredentialsModal from '@/components/StaffCredentialsModal';
 import { useAuth } from '@/context/AuthContext';
+import { useConfirm } from '@/context/ConfirmDialogContext';
 import {
   assignStaffRole,
   activateStaff,
@@ -71,6 +72,7 @@ function statusBadgeClass(status: string): string {
 
 export default function ManageStaff() {
   const { user, hasPermission } = useAuth();
+  const confirm = useConfirm();
   const [activeTab, setActiveTab] = useState<Tab>('staff');
   const [staff, setStaff] = useState<User[]>([]);
   const [assignableRoles, setAssignableRoles] = useState<Role[]>([]);
@@ -187,13 +189,13 @@ export default function ManageStaff() {
   }
 
   async function handleResetPassword(staffId: string, staffName: string, staffEmail: string) {
-    if (
-      !confirm(
-        `Reset password for ${staffName}? They will need to set a new password on next login.`
-      )
-    ) {
-      return;
-    }
+    const ok = await confirm({
+      title: 'Reset password',
+      message: `Reset password for ${staffName}? They will need to set a new password on next login.`,
+      confirmLabel: 'Reset password',
+      variant: 'default',
+    });
+    if (!ok) return;
 
     setError(null);
     try {
@@ -220,7 +222,13 @@ export default function ManageStaff() {
   }
 
   async function handleDeactivate(staffId: string) {
-    if (!confirm('Deactivate this staff member?')) return;
+    const ok = await confirm({
+      title: 'Deactivate staff',
+      message: 'Deactivate this staff member?',
+      confirmLabel: 'Deactivate',
+      variant: 'danger',
+    });
+    if (!ok) return;
     setError(null);
     try {
       await deactivateStaff(staffId);
@@ -241,7 +249,13 @@ export default function ManageStaff() {
   }
 
   async function handleDelete(staffId: string, staffName: string) {
-    if (!confirm(`Permanently delete ${staffName}? This cannot be undone.`)) return;
+    const ok = await confirm({
+      title: 'Delete staff',
+      message: `Permanently delete ${staffName}? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    });
+    if (!ok) return;
     setError(null);
     try {
       await deleteStaff(staffId);

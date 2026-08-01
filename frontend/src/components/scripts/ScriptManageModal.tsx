@@ -16,6 +16,7 @@ import {
   type CreatorScriptFolder,
   type ScriptPlatform,
 } from '@/lib/api';
+import { useConfirm } from '@/context/ConfirmDialogContext';
 import ScriptEditorModal from './ScriptEditorModal';
 import type { CreatorScriptMediaItem } from '@/lib/api';
 
@@ -45,6 +46,7 @@ export default function ScriptManageModal({
   pendingVaultMedia,
   onPendingVaultMediaConsumed,
 }: ScriptManageModalProps) {
+  const confirm = useConfirm();
   const [localFolders, setLocalFolders] = useState(folders);
   const [localScripts, setLocalScripts] = useState(scripts);
   const [editorScript, setEditorScript] = useState<CreatorScript | null | 'new'>(null);
@@ -110,7 +112,13 @@ export default function ScriptManageModal({
   }
 
   async function handleDeleteFolder(folderId: string) {
-    if (!window.confirm('Delete this folder? Scripts will move to No folder.')) return;
+    const ok = await confirm({
+      title: 'Delete folder',
+      message: 'Delete this folder? Scripts will move to No folder.',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    });
+    if (!ok) return;
     setBusyId(folderId);
     setError(null);
     try {
@@ -129,7 +137,13 @@ export default function ScriptManageModal({
   }
 
   async function handleDeleteScript(scriptId: string) {
-    if (!window.confirm('Delete this script?')) return;
+    const ok = await confirm({
+      title: 'Delete script',
+      message: 'Delete this script?',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    });
+    if (!ok) return;
     setBusyId(scriptId);
     setError(null);
     try {

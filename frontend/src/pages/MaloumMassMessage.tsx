@@ -30,7 +30,9 @@ import VaultMediaNoteModal, {
 } from '@/components/VaultMediaNoteModal';
 import maloumIcon from '@/assets/maloum_icon.png';
 import { useAuth } from '@/context/AuthContext';
+import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
+import { useToast } from '@/context/ToastContext';
 import {
   formatRelativeTime,
   friendlyVaultFolderName,
@@ -196,6 +198,8 @@ function mergeVaultMediaItems(
 export default function MaloumMassMessage() {
   const { hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
+  const confirm = useConfirm();
+  const { toast } = useToast();
   const canEditVaultNotes = hasPermission('vault.notes.edit');
   const [creators, setCreators] = useState<Creator[]>([]);
   const [creatorsLoading, setCreatorsLoading] = useState(true);
@@ -560,9 +564,13 @@ export default function MaloumMassMessage() {
   const handleRevoke = useCallback(
     async (broadcastId: string) => {
       if (!selectedCreatorId || revokingId) return;
-      if (!window.confirm('Delete this mass message? Recipients will no longer see it.')) {
-        return;
-      }
+      const ok = await confirm({
+        title: 'Delete mass message',
+        message: 'Delete this mass message? Recipients will no longer see it.',
+        confirmLabel: 'Delete',
+        variant: 'danger',
+      });
+      if (!ok) return;
       setRevokingId(broadcastId);
       try {
         await revokeMaloumBroadcast(selectedCreatorId, broadcastId);
@@ -570,12 +578,12 @@ export default function MaloumMassMessage() {
           prev.map((b) => (b._id === broadcastId ? { ...b, isRevoked: true } : b))
         );
       } catch (err) {
-        window.alert(err instanceof Error ? err.message : 'Failed to delete mass message');
+        toast.error(err instanceof Error ? err.message : 'Failed to delete mass message');
       } finally {
         setRevokingId(null);
       }
     },
-    [selectedCreatorId, revokingId]
+    [selectedCreatorId, revokingId, confirm, toast]
   );
 
   const handleSend = useCallback(async () => {

@@ -3416,8 +3416,32 @@ router.get(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      // Tip/sale CRM sync runs on /4based/activities (Notifications), not every badge poll.
-      const badges = await fourBasedClient.getBadges(loaded.creator);
+      const [badges, saleTipActivities] = await Promise.all([
+        fourBasedClient.getBadges(loaded.creator),
+        fourBasedClient
+          .listActivities(loaded.creator, {
+            offset: 0,
+            limit: 15,
+            types: 'sale,tip',
+          })
+          .catch((err) => {
+            console.warn(
+              '4based badge sale/tip fetch failed:',
+              err.message || err
+            );
+            return [];
+          }),
+      ]);
+
+      try {
+        await messagingDashboard.processFourBasedSaleAndTipNotifications(
+          id,
+          Array.isArray(saleTipActivities) ? saleTipActivities : []
+        );
+      } catch (err) {
+        console.warn('4based sale/tip sync failed:', err.message);
+      }
+
       res.json(badges);
     } catch (err) {
       return handleFourBasedError(res, err, 'Get 4based badges error:');

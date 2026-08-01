@@ -452,7 +452,12 @@ function fourBasedCoinsToDollars(coins) {
 }
 
 function activityAmountDollars(entry) {
-  const amount = entry?.process?.amount ?? entry?.process?.value ?? entry?.amount;
+  // Sale activities often have process: null; price is on file_stack.price (coins).
+  const amount =
+    entry?.process?.amount ??
+    entry?.process?.value ??
+    entry?.amount ??
+    entry?.file_stack?.price;
   return fourBasedCoinsToDollars(amount);
 }
 
@@ -461,6 +466,140 @@ function activityCreatedAt(entry) {
   if (!raw) return null;
   const normalized = typeof raw === 'string' ? raw.replace(' ', 'T') : raw;
   return Number.isNaN(Date.parse(normalized)) ? null : new Date(normalized).toISOString();
+}
+
+async function backfillEntryPriceNet(maloumMessageId, priceNet, notificationId = null) {
+  const parsedPriceNet = parsePriceNet(priceNet);
+  if (!maloumMessageId || parsedPriceNet == null) {
+    return {
+      updated: false,
+      reason: 'nothing_to_backfill',
+      maloumMessageId: maloumMessageId || null,
+      notificationId,
+    };
+  }
+
+  const result = await pool.query(
+    `UPDATE messaging_dashboard_entries
+     SET "priceNet" = COALESCE("priceNet", $1),
+         purchased = true,
+         "updatedAt" = NOW()
+     WHERE "maloumMessageId" = $2
+       AND ("priceNet" IS NULL OR purchased = false)
+     RETURNING *`,
+    [parsedPriceNet, maloumMessageId]
+  );
+
+  if (result.rows.length === 0) {
+    return {
+      updated: false,
+      reason: 'nothing_to_backfill',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  return {
+    updated: true,
+    reason: 'backfilled',
+    entry: toDashboardEntry({
+      ...result.rows[0],
+      chatterSalesTotal: null,
+    }),
+    maloumMessageId,
+    notificationId,
+  };
+}
+
+/**
+ * Match a 4based sale activity to the original PPV send log row.
+ * Activities have file_stack_id / vault_file_stack_id but not message_id.
+ */
+async function findFourBasedSendRow({
+  creatorId,
+  fanId,
+  vaultFileStackId = null,
+  fileStackId = null,
+} = {}) {
+  if (!creatorId || !isValidUuid(creatorId) || !fanId) return null;
+  if (!vaultFileStackId && !fileStackId) return null;
+
+  const values = [creatorId, fanId];
+  const mediaConds = [];
+  let paramIndex = 3;
+
+  if (vaultFileStackId) {
+    mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+    values.push(JSON.stringify([{ mediaId: String(vaultFileStackId) }]));
+    paramIndex += 1;
+    mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+    values.push(JSON.stringify([{ vaultFileStackId: String(vaultFileStackId) }]));
+    paramIndex += 1;
+  }
+
+  if (fileStackId) {
+    mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+    values.push(JSON.stringify([{ fileStackId: String(fileStackId) }]));
+    paramIndex += 1;
+  }
+
+  if (mediaConds.length === 0) return null;
+
+  const result = await pool.query(
+    `SELECT *
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+       AND "fanId" = $2
+       AND "maloumMessageId" LIKE '4based:%'
+       AND "maloumMessageId" NOT LIKE '4based-sale:%'
+       AND "maloumMessageId" NOT LIKE '4based-tip:%'
+       AND (${mediaConds.join(' OR ')})
+     ORDER BY
+       CASE WHEN purchased = false THEN 0 ELSE 1 END,
+       "sentAt" DESC
+     LIMIT 1`,
+    values
+  );
+
+  return result.rows[0] || null;
+}
+
+async function ensureFourBasedSaleUnlocked({
+  maloumMessageId,
+  priceNet = null,
+  notificationId = null,
+} = {}) {
+  const unlock = await unlockSaleByMessageId({
+    maloumMessageId,
+    priceNet,
+    notificationId,
+  });
+
+  if (unlock.updated) return unlock;
+
+  if (unlock.reason === 'already_purchased') {
+    const backfill = await backfillEntryPriceNet(
+      maloumMessageId,
+      priceNet,
+      notificationId
+    );
+    if (backfill.updated) return backfill;
+    return {
+      ...unlock,
+      maloumMessageId,
+    };
+  }
+
+  return unlock;
+}
+
+async function deleteFourBasedSaleOrphan(activityId) {
+  if (!activityId) return;
+  await pool.query(
+    `DELETE FROM messaging_dashboard_entries
+     WHERE "maloumMessageId" = $1`,
+    [`4based-sale:${activityId}`]
+  );
 }
 
 async function logFourBasedSale({
@@ -498,6 +637,13 @@ async function logFourBasedSale({
   );
 
   if (existing.rows.length > 0) {
+    const backfill = await backfillEntryPriceNet(
+      maloumMessageId,
+      priceNet,
+      notificationId
+    );
+    if (backfill.updated) return backfill;
+
     return {
       updated: false,
       reason: 'already_logged',
@@ -659,6 +805,37 @@ async function processFourBasedSaleAndTipNotifications(creatorId, activities) {
     }
 
     if (type === 'sale') {
+      const vaultFileStackId = entry?.file_stack?.vault_file_stack_id
+        ? String(entry.file_stack.vault_file_stack_id)
+        : null;
+      const fileStackId =
+        entry?.file_stack_id || entry?.file_stack?._id
+          ? String(entry.file_stack_id || entry.file_stack._id)
+          : null;
+
+      const match = await findFourBasedSendRow({
+        creatorId,
+        fanId,
+        vaultFileStackId,
+        fileStackId,
+      });
+
+      if (match?.maloumMessageId) {
+        const result = await ensureFourBasedSaleUnlocked({
+          maloumMessageId: match.maloumMessageId,
+          priceNet,
+          notificationId: activityId,
+        });
+        // Drop orphan stub so Chatter Sales does not double-count.
+        await deleteFourBasedSaleOrphan(activityId);
+        results.push({
+          type,
+          ...result,
+          matchedMaloumMessageId: match.maloumMessageId,
+        });
+        continue;
+      }
+
       const result = await logFourBasedSale({
         creatorId,
         fanId,
@@ -1268,10 +1445,10 @@ router.post(
 router.patch(
   '/:maloumMessageId/purchased',
   authenticate,
-  requirePermission('analytics.view'),
+  requirePermission('creators.view'),
   async (req, res) => {
     const { maloumMessageId } = req.params;
-    const { purchased } = req.body || {};
+    const { purchased, priceNet = null } = req.body || {};
 
     if (!maloumMessageId) {
       return res.status(400).json({ error: 'maloumMessageId is required' });
@@ -1281,12 +1458,19 @@ router.patch(
       return res.status(400).json({ error: 'purchased boolean is required' });
     }
 
+    const parsedPriceNet = parsePriceNet(priceNet);
+
     const result = await pool.query(
       `UPDATE messaging_dashboard_entries
-       SET purchased = $1, "updatedAt" = NOW()
-       WHERE "maloumMessageId" = $2
+       SET purchased = $1,
+           "priceNet" = CASE
+             WHEN $1 = true THEN COALESCE("priceNet", $2)
+             ELSE "priceNet"
+           END,
+           "updatedAt" = NOW()
+       WHERE "maloumMessageId" = $3
        RETURNING *`,
-      [purchased, maloumMessageId]
+      [purchased, parsedPriceNet, maloumMessageId]
     );
 
     if (result.rows.length === 0) {

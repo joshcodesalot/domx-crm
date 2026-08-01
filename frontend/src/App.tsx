@@ -4,8 +4,10 @@ import ForcedUpdateOverlay from '@/components/ForcedUpdateOverlay';
 import PermissionRoute from '@/components/PermissionRoute';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
+import { ConfirmDialogProvider } from '@/context/ConfirmDialogContext';
 import { StaffSyncProvider } from '@/context/StaffSyncContext';
 import { CreatorBootProvider } from '@/context/CreatorBootContext';
+import { ToastProvider } from '@/context/ToastContext';
 import ChangePassword from '@/pages/ChangePassword';
 import Dashboard from '@/pages/Dashboard';
 import Login from '@/pages/Login';
@@ -237,8 +239,12 @@ function AppRoutes() {
 export default function App() {
   return (
     <AuthProvider>
-      <ForcedUpdateOverlay />
-      <AppRoutes />
+      <ToastProvider>
+        <ConfirmDialogProvider>
+          <ForcedUpdateOverlay />
+          <AppRoutes />
+        </ConfirmDialogProvider>
+      </ToastProvider>
     </AuthProvider>
   );
 }

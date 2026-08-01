@@ -883,13 +883,17 @@ export async function getMaloumFanStats(filters: {
 
 export async function updateMessagingDashboardPurchased(
   maloumMessageId: string,
-  purchased: boolean
+  purchased: boolean,
+  priceNet?: number | null
 ): Promise<CreateMessagingDashboardEntryResponse> {
   return request<CreateMessagingDashboardEntryResponse>(
     `/api/messaging-dashboard/${encodeURIComponent(maloumMessageId)}/purchased`,
     {
       method: 'PATCH',
-      body: JSON.stringify({ purchased }),
+      body: JSON.stringify({
+        purchased,
+        ...(priceNet != null ? { priceNet } : {}),
+      }),
     }
   );
 }
