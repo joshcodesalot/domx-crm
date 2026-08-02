@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Loader2,
   Pause,
@@ -13,23 +13,13 @@ import CreatorAvatar from '@/components/CreatorAvatar';
 import maloumIcon from '@/assets/maloum_icon.png';
 import { useToast } from '@/context/ToastContext';
 import {
-  checkpointMaloumFanScrapeJob,
-  createMaloumChat,
   createMaloumChatList,
   getCreators,
-  getMaloumFanAssignedLists,
   getMaloumFanScrapeJob,
-  getMaloumUserProfile,
   listMaloumChatLists,
-  listMaloumPostComments,
-  listMaloumTopCreators,
-  listMaloumUserPosts,
-  maloumFanScrapeFansExist,
-  setMaloumFanAssignedLists,
   startMaloumFanScrapeJob,
   stopMaloumFanScrapeJob,
   updateMaloumFanScrapeJob,
-  upsertMaloumFanScrapeFan,
   type Creator,
   type MaloumChatListItem,
   type MaloumFanScrapeCheckpoint,
@@ -37,30 +27,7 @@ import {
   type MaloumFanScrapeSourceMode,
 } from '@/lib/api';
 
-const COMMENT_DELAY_MS = 1200;
-const STEP_DELAY_MS = 350;
-
-function sleep(ms: number, signal: { aborted: boolean }) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal.aborted) {
-      reject(new DOMException('Aborted', 'AbortError'));
-      return;
-    }
-    const started = Date.now();
-    const tick = () => {
-      if (signal.aborted) {
-        reject(new DOMException('Aborted', 'AbortError'));
-        return;
-      }
-      if (Date.now() - started >= ms) {
-        resolve();
-        return;
-      }
-      window.setTimeout(tick, Math.min(100, ms - (Date.now() - started)));
-    };
-    window.setTimeout(tick, Math.min(100, ms));
-  });
-}
+const POLL_MS = 2000;
 
 function normalizeUsernameList(input: string): string[] {
   const parts = input
@@ -101,6 +68,7 @@ function emptyCheckpoint(): MaloumFanScrapeCheckpoint {
     lastError: null,
     currentCreatorUsername: null,
     currentPostId: null,
+    statusMessage: null,
   };
 }
 
@@ -112,6 +80,7 @@ export default function MaloumFanScraper() {
 
   const [job, setJob] = useState<MaloumFanScrapeJob | null>(null);
   const [scrapedFanCount, setScrapedFanCount] = useState(0);
+  const [serverRunning, setServerRunning] = useState(false);
   const [jobLoading, setJobLoading] = useState(false);
   const [jobError, setJobError] = useState<string | null>(null);
 
@@ -126,11 +95,7 @@ export default function MaloumFanScraper() {
   const [postsPerCreator, setPostsPerCreator] = useState(50);
   const [customUsernamesText, setCustomUsernamesText] = useState('');
   const [savingConfig, setSavingConfig] = useState(false);
-  const [running, setRunning] = useState(false);
-  const [statusLine, setStatusLine] = useState('Idle');
-
-  const abortRef = useRef(0);
-  const runningRef = useRef(false);
+  const [actionBusy, setActionBusy] = useState(false);
 
   const selectedCreator = useMemo(
     () => creators.find((c) => c.id === selectedCreatorId) || null,
@@ -138,6 +103,7 @@ export default function MaloumFanScraper() {
   );
 
   const checkpoint = job?.checkpoint || emptyCheckpoint();
+  const isRunning = job?.status === 'running' || serverRunning;
   const sourceLocked = (checkpoint.sourceCreators?.length || 0) > 0;
   const parsedCustomCount = normalizeUsernameList(customUsernamesText).length;
 
@@ -155,25 +121,28 @@ export default function MaloumFanScraper() {
     }
   }, []);
 
-  const loadJob = useCallback(async (creatorId: string) => {
-    setJobLoading(true);
+  const loadJob = useCallback(async (creatorId: string, opts?: { quiet?: boolean }) => {
+    if (!opts?.quiet) setJobLoading(true);
     setJobError(null);
     try {
       const result = await getMaloumFanScrapeJob(creatorId);
       setJob(result.job);
       setScrapedFanCount(result.scrapedFanCount || 0);
+      setServerRunning(Boolean(result.serverRunning));
       setSourceMode(result.job.sourceMode);
       setTopCreatorsLimit(result.job.topCreatorsLimit);
       setPostsPerCreator(result.job.postsPerCreator);
       setCustomUsernamesText((result.job.customUsernames || []).join('\n'));
-      if (result.job.status === 'running') {
-        setStatusLine('Job marked running — press Start to resume this session');
+      if (result.job.checkpoint?.lastError && result.job.status === 'failed') {
+        setJobError(result.job.checkpoint.lastError);
       }
     } catch (err) {
       setJob(null);
-      setJobError(err instanceof Error ? err.message : 'Failed to load scrape job');
+      if (!opts?.quiet) {
+        setJobError(err instanceof Error ? err.message : 'Failed to load scrape job');
+      }
     } finally {
-      setJobLoading(false);
+      if (!opts?.quiet) setJobLoading(false);
     }
   }, []);
 
@@ -207,12 +176,17 @@ export default function MaloumFanScraper() {
 
   useEffect(() => {
     if (!selectedCreatorId) return;
-    abortRef.current += 1;
-    runningRef.current = false;
-    setRunning(false);
     void loadJob(selectedCreatorId);
     void loadChatLists();
   }, [selectedCreatorId, loadJob, loadChatLists]);
+
+  useEffect(() => {
+    if (!selectedCreatorId || !isRunning) return;
+    const timer = window.setInterval(() => {
+      void loadJob(selectedCreatorId, { quiet: true });
+    }, POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [selectedCreatorId, isRunning, loadJob]);
 
   const persistConfig = useCallback(
     async (extra?: { resetCheckpoint?: boolean }) => {
@@ -254,7 +228,7 @@ export default function MaloumFanScraper() {
 
   const selectList = useCallback(
     async (list: MaloumChatListItem) => {
-      if (!selectedCreatorId || runningRef.current) return;
+      if (!selectedCreatorId || isRunning) return;
       try {
         const result = await updateMaloumFanScrapeJob(selectedCreatorId, {
           targetListId: list._id,
@@ -274,6 +248,7 @@ export default function MaloumFanScraper() {
     },
     [
       selectedCreatorId,
+      isRunning,
       sourceMode,
       topCreatorsLimit,
       postsPerCreator,
@@ -283,7 +258,7 @@ export default function MaloumFanScraper() {
   );
 
   const handleCreateList = useCallback(async () => {
-    if (!selectedCreatorId || creatingList) return;
+    if (!selectedCreatorId || creatingList || isRunning) return;
     const name = newListName.trim();
     if (!name) {
       toast.error('Enter a list name');
@@ -302,412 +277,74 @@ export default function MaloumFanScraper() {
     } finally {
       setCreatingList(false);
     }
-  }, [selectedCreatorId, creatingList, newListName, selectList, toast]);
-
-  const saveCheckpoint = useCallback(
-    async (
-      creatorId: string,
-      next: MaloumFanScrapeCheckpoint,
-      status?: MaloumFanScrapeJob['status']
-    ) => {
-      const result = await checkpointMaloumFanScrapeJob(creatorId, {
-        checkpoint: next,
-        status,
-      });
-      setJob(result.job);
-      return result.job;
-    },
-    []
-  );
-
-  const resolveSourceCreators = useCallback(
-    async (
-      creatorId: string,
-      currentJob: MaloumFanScrapeJob,
-      signal: { aborted: boolean }
-    ): Promise<MaloumFanScrapeCheckpoint> => {
-      let cp = { ...currentJob.checkpoint };
-      if (cp.sourceCreators.length > 0) return cp;
-
-      if (currentJob.sourceMode === 'top_creators') {
-        setStatusLine('Loading top creators…');
-        const usernames: string[] = [];
-        let next: number | undefined;
-        const limit = currentJob.topCreatorsLimit || 50;
-        while (usernames.length < limit) {
-          if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-          const pageLimit = Math.min(15, limit - usernames.length);
-          const page = await listMaloumTopCreators(creatorId, {
-            limit: pageLimit,
-            next,
-          });
-          for (const item of page.creators || []) {
-            const username = item.user?.username?.trim().toLowerCase();
-            if (username && !usernames.includes(username)) {
-              usernames.push(username);
-            }
-            if (usernames.length >= limit) break;
-          }
-          if (page.next == null || (page.creators || []).length === 0) break;
-          next = page.next;
-          await sleep(STEP_DELAY_MS, signal);
-        }
-        cp = {
-          ...cp,
-          sourceCreators: usernames,
-          creatorIndex: 0,
-          postIndex: 0,
-          posts: [],
-          commentNext: null,
-        };
-        await saveCheckpoint(creatorId, cp, 'running');
-        return cp;
-      }
-
-      setStatusLine('Resolving custom usernames…');
-      const usernames = normalizeUsernameList(
-        (currentJob.customUsernames || []).join('\n')
-      );
-      const valid: string[] = [];
-      const invalid: string[] = [...(cp.invalidUsernames || [])];
-      for (const username of usernames) {
-        if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-        try {
-          const profile = await getMaloumUserProfile(creatorId, username);
-          const resolved =
-            profile.profile?.username?.trim().toLowerCase() || username;
-          if (!valid.includes(resolved)) valid.push(resolved);
-        } catch {
-          if (!invalid.includes(username)) invalid.push(username);
-        }
-        await sleep(STEP_DELAY_MS, signal);
-      }
-      cp = {
-        ...cp,
-        sourceCreators: valid,
-        invalidUsernames: invalid,
-        creatorIndex: 0,
-        postIndex: 0,
-        posts: [],
-        commentNext: null,
-      };
-      await saveCheckpoint(creatorId, cp, 'running');
-      return cp;
-    },
-    [saveCheckpoint]
-  );
-
-  const ensureCreatorPosts = useCallback(
-    async (
-      creatorId: string,
-      username: string,
-      postsLimit: number,
-      cp: MaloumFanScrapeCheckpoint,
-      signal: { aborted: boolean }
-    ): Promise<MaloumFanScrapeCheckpoint> => {
-      if (cp.posts.length > 0) return cp;
-      setStatusLine(`Loading posts for @${username}…`);
-      const postIds: string[] = [];
-      let next: string | undefined;
-      while (postIds.length < postsLimit) {
-        if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-        const page = await listMaloumUserPosts(creatorId, username, {
-          limit: Math.min(15, postsLimit - postIds.length),
-          next,
-        });
-        for (const post of page.posts || []) {
-          if (post._id && !postIds.includes(post._id)) postIds.push(post._id);
-          if (postIds.length >= postsLimit) break;
-        }
-        if (!page.next || (page.posts || []).length === 0) break;
-        next = page.next;
-        await sleep(STEP_DELAY_MS, signal);
-      }
-      const nextCp: MaloumFanScrapeCheckpoint = {
-        ...cp,
-        posts: postIds,
-        postIndex: 0,
-        commentNext: null,
-        currentCreatorUsername: username,
-      };
-      await saveCheckpoint(creatorId, nextCp, 'running');
-      return nextCp;
-    },
-    [saveCheckpoint]
-  );
-
-  const processFan = useCallback(
-    async (
-      creatorId: string,
-      listId: string,
-      fanId: string,
-      username: string | undefined,
-      sourceCreatorUsername: string,
-      sourcePostId: string,
-      cp: MaloumFanScrapeCheckpoint
-    ): Promise<MaloumFanScrapeCheckpoint> => {
-      const exists = await maloumFanScrapeFansExist(creatorId, [fanId]);
-      if (exists.existing.includes(fanId)) {
-        return {
-          ...cp,
-          skippedFans: cp.skippedFans + 1,
-        };
-      }
-
-      try {
-        const chatResult = await createMaloumChat(creatorId, fanId);
-        const chatId = chatResult.chat?._id || null;
-        const assigned = await getMaloumFanAssignedLists(creatorId, fanId);
-        const currentIds = (assigned.lists || []).map((list) => list._id);
-        if (!currentIds.includes(listId)) {
-          await setMaloumFanAssignedLists(creatorId, fanId, [
-            ...currentIds,
-            listId,
-          ]);
-        }
-        await upsertMaloumFanScrapeFan(creatorId, {
-          fanId,
-          chatId,
-          username: username || null,
-          sourceCreatorUsername,
-          sourcePostId,
-          listId,
-        });
-        setScrapedFanCount((n) => n + 1);
-        return {
-          ...cp,
-          processedFans: cp.processedFans + 1,
-        };
-      } catch (err) {
-        return {
-          ...cp,
-          failedFans: cp.failedFans + 1,
-          lastError: err instanceof Error ? err.message : 'Failed to process fan',
-        };
-      }
-    },
-    []
-  );
-
-  const runLoop = useCallback(
-    async (creatorId: string) => {
-      const runId = ++abortRef.current;
-      const signal = {
-        get aborted() {
-          return abortRef.current !== runId;
-        },
-      };
-      runningRef.current = true;
-      setRunning(true);
-      setJobError(null);
-
-      try {
-        const existing = await getMaloumFanScrapeJob(creatorId);
-        // Clear stale "running" from a previous browser session so settings can save.
-        if (existing.job.status === 'running') {
-          await stopMaloumFanScrapeJob(creatorId);
-        }
-
-        let current = await persistConfig();
-        if (!current) return;
-        if (!current.targetListId) {
-          toast.error('Select or create a target list first');
-          return;
-        }
-
-        const started = await startMaloumFanScrapeJob(creatorId);
-        current = started.job;
-        setJob(current);
-
-        let cp = await resolveSourceCreators(creatorId, current, signal);
-        if (cp.sourceCreators.length === 0) {
-          cp = {
-            ...cp,
-            lastError: 'No source creators to scrape',
-          };
-          await saveCheckpoint(creatorId, cp, 'failed');
-          setStatusLine('No source creators found');
-          return;
-        }
-
-        while (cp.creatorIndex < cp.sourceCreators.length) {
-          if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-          const username = cp.sourceCreators[cp.creatorIndex];
-          cp = {
-            ...cp,
-            currentCreatorUsername: username,
-          };
-          cp = await ensureCreatorPosts(
-            creatorId,
-            username,
-            current.postsPerCreator || 50,
-            cp,
-            signal
-          );
-
-          while (cp.postIndex < cp.posts.length) {
-            if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-            const postId = cp.posts[cp.postIndex];
-            cp = {
-              ...cp,
-              currentPostId: postId,
-            };
-            setStatusLine(
-              `@${username} · post ${cp.postIndex + 1}/${cp.posts.length} · fans ${cp.processedFans}`
-            );
-
-            let commentNext: string | undefined =
-              cp.commentNext || undefined;
-            let pageDone = false;
-            while (!pageDone) {
-              if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-              await sleep(COMMENT_DELAY_MS, signal);
-              const page = await listMaloumPostComments(creatorId, postId, {
-                limit: 15,
-                next: commentNext,
-              });
-              const comments = page.comments || [];
-              for (const comment of comments) {
-                if (signal.aborted) {
-                  throw new DOMException('Aborted', 'AbortError');
-                }
-                const fan = comment.user;
-                const fanId = fan?._id;
-                if (!fanId || fan.isCreator) {
-                  cp = { ...cp, skippedFans: cp.skippedFans + 1 };
-                  continue;
-                }
-                cp = await processFan(
-                  creatorId,
-                  current.targetListId!,
-                  fanId,
-                  fan.username,
-                  username,
-                  postId,
-                  cp
-                );
-                cp = {
-                  ...cp,
-                  commentNext: page.next || null,
-                };
-                await saveCheckpoint(creatorId, cp, 'running');
-                await sleep(STEP_DELAY_MS, signal);
-              }
-
-              if (!page.next || comments.length === 0) {
-                pageDone = true;
-                commentNext = undefined;
-              } else {
-                commentNext = page.next;
-                cp = { ...cp, commentNext: page.next };
-                await saveCheckpoint(creatorId, cp, 'running');
-              }
-            }
-
-            cp = {
-              ...cp,
-              postIndex: cp.postIndex + 1,
-              commentNext: null,
-            };
-            await saveCheckpoint(creatorId, cp, 'running');
-          }
-
-          cp = {
-            ...cp,
-            creatorIndex: cp.creatorIndex + 1,
-            postIndex: 0,
-            posts: [],
-            commentNext: null,
-            currentPostId: null,
-          };
-          await saveCheckpoint(creatorId, cp, 'running');
-        }
-
-        cp = { ...cp, lastError: null };
-        await saveCheckpoint(creatorId, cp, 'completed');
-        setStatusLine(
-          `Completed · ${cp.processedFans} added · ${cp.skippedFans} skipped · ${cp.failedFans} failed`
-        );
-        toast.success('Fan scrape completed');
-      } catch (err) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          try {
-            const stopped = await stopMaloumFanScrapeJob(creatorId);
-            setJob(stopped.job);
-            setStatusLine(
-              `Paused · ${stopped.job.checkpoint.processedFans} added`
-            );
-          } catch {
-            setStatusLine('Paused');
-          }
-          return;
-        }
-        const message = err instanceof Error ? err.message : 'Scrape failed';
-        setJobError(message);
-        setStatusLine(message);
-        try {
-          const latest = await getMaloumFanScrapeJob(creatorId);
-          await saveCheckpoint(
-            creatorId,
-            {
-              ...latest.job.checkpoint,
-              lastError: message,
-            },
-            'failed'
-          );
-        } catch {
-          /* ignore */
-        }
-        toast.error(message);
-      } finally {
-        runningRef.current = false;
-        setRunning(false);
-      }
-    },
-    [
-      persistConfig,
-      resolveSourceCreators,
-      ensureCreatorPosts,
-      processFan,
-      saveCheckpoint,
-      toast,
-    ]
-  );
+  }, [selectedCreatorId, creatingList, isRunning, newListName, selectList, toast]);
 
   const handleStart = useCallback(async () => {
-    if (!selectedCreatorId || runningRef.current) return;
-    await runLoop(selectedCreatorId);
-  }, [selectedCreatorId, runLoop]);
+    if (!selectedCreatorId || actionBusy || isRunning) return;
+    setActionBusy(true);
+    setJobError(null);
+    try {
+      const saved = await persistConfig();
+      if (!saved) return;
+      if (!saved.targetListId) {
+        toast.error('Select or create a target list first');
+        return;
+      }
+      const started = await startMaloumFanScrapeJob(selectedCreatorId);
+      setJob(started.job);
+      setServerRunning(Boolean(started.serverRunning ?? true));
+      toast.success('Scrape started on server — safe to close the CRM');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to start scrape';
+      setJobError(message);
+      toast.error(message);
+    } finally {
+      setActionBusy(false);
+    }
+  }, [selectedCreatorId, actionBusy, isRunning, persistConfig, toast]);
 
   const handleStop = useCallback(async () => {
-    abortRef.current += 1;
-    if (selectedCreatorId) {
-      try {
-        const stopped = await stopMaloumFanScrapeJob(selectedCreatorId);
-        setJob(stopped.job);
-      } catch {
-        /* loop will also stop */
-      }
+    if (!selectedCreatorId || actionBusy) return;
+    setActionBusy(true);
+    try {
+      const stopped = await stopMaloumFanScrapeJob(selectedCreatorId);
+      setJob(stopped.job);
+      setServerRunning(Boolean(stopped.serverRunning));
+      toast.info('Stop requested — server will pause shortly');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to stop scrape');
+    } finally {
+      setActionBusy(false);
     }
-    setStatusLine('Stopping…');
-  }, [selectedCreatorId]);
+  }, [selectedCreatorId, actionBusy, toast]);
 
   const handleReset = useCallback(async () => {
-    if (!selectedCreatorId || runningRef.current) return;
-    const updated = await persistConfig({ resetCheckpoint: true });
-    if (updated) {
-      setScrapedFanCount(0);
-      setStatusLine('Reset — ready to start');
-      toast.success('Progress reset');
-      const refreshed = await getMaloumFanScrapeJob(selectedCreatorId);
-      setScrapedFanCount(refreshed.scrapedFanCount || 0);
+    if (!selectedCreatorId || isRunning || actionBusy) return;
+    setActionBusy(true);
+    try {
+      const updated = await persistConfig({ resetCheckpoint: true });
+      if (updated) {
+        toast.success('Progress reset');
+        await loadJob(selectedCreatorId);
+      }
+    } finally {
+      setActionBusy(false);
     }
-  }, [selectedCreatorId, persistConfig, toast]);
+  }, [selectedCreatorId, isRunning, actionBusy, persistConfig, loadJob, toast]);
 
   const creatorsDone = checkpoint.creatorIndex;
   const creatorsTotal = checkpoint.sourceCreators.length || 0;
   const postsDone = checkpoint.postIndex;
   const postsTotal = checkpoint.posts.length || 0;
+  const statusLine =
+    checkpoint.statusMessage ||
+    (job?.status === 'running'
+      ? 'Running on server…'
+      : job?.status === 'paused'
+        ? `Paused · ${checkpoint.processedFans} added`
+        : job?.status === 'completed'
+          ? `Completed · ${checkpoint.processedFans} added`
+          : 'Idle');
 
   return (
     <div className="h-screen flex bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 antialiased overflow-hidden">
@@ -737,13 +374,12 @@ export default function MaloumFanScraper() {
               <button
                 key={creator.id}
                 type="button"
-                disabled={running}
                 onClick={() => setSelectedCreatorId(creator.id)}
                 className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all group ${
                   active
                     ? 'bg-gray-100 dark:bg-zinc-800/50 border border-gray-200 dark:border-zinc-700/50'
                     : 'hover:bg-gray-100 dark:hover:bg-zinc-800/30 border border-transparent'
-                } ${running && !active ? 'opacity-50' : ''}`}
+                }`}
               >
                 <CreatorAvatar
                   displayName={creator.displayName || creator.username || '?'}
@@ -774,34 +410,44 @@ export default function MaloumFanScraper() {
             </h1>
             <p className="text-xs text-gray-500 dark:text-zinc-500 truncate">
               {selectedCreator
-                ? `Scraping with ${selectedCreator.displayName || selectedCreator.username}`
+                ? `Server job on ${selectedCreator.displayName || selectedCreator.username}`
                 : 'Select a mother model'}
+              {isRunning ? ' · runs after CRM closes' : ''}
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {!running ? (
+            {!isRunning ? (
               <button
                 type="button"
-                disabled={!selectedCreatorId || jobLoading || savingConfig}
+                disabled={!selectedCreatorId || jobLoading || savingConfig || actionBusy}
                 onClick={() => void handleStart()}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50"
               >
-                <Play className="w-3.5 h-3.5" />
+                {actionBusy ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Play className="w-3.5 h-3.5" />
+                )}
                 Start
               </button>
             ) : (
               <button
                 type="button"
+                disabled={actionBusy}
                 onClick={() => void handleStop()}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-500"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-50"
               >
-                <Pause className="w-3.5 h-3.5" />
+                {actionBusy ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Pause className="w-3.5 h-3.5" />
+                )}
                 Stop
               </button>
             )}
             <button
               type="button"
-              disabled={running || !selectedCreatorId}
+              disabled={isRunning || !selectedCreatorId || actionBusy}
               onClick={() => void handleReset()}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-900 disabled:opacity-50"
             >
@@ -859,7 +505,8 @@ export default function MaloumFanScraper() {
             <p className="text-sm text-gray-600 dark:text-zinc-400">
               Status:{' '}
               <span className="font-medium text-gray-900 dark:text-white">
-                {running ? 'Running' : job?.status || 'idle'}
+                {job?.status || 'idle'}
+                {serverRunning ? ' (server active)' : ''}
               </span>
               {' · '}
               {statusLine}
@@ -878,14 +525,15 @@ export default function MaloumFanScraper() {
               </p>
             )}
             <p className="text-xs text-gray-500 dark:text-zinc-500">
-              After scraping, use{' '}
+              Scraping runs on the DomX API server. Closing the CRM will not stop it.
+              Message later via{' '}
               <Link
                 to="/chatter/maloum/mass-message"
                 className="underline underline-offset-2 text-gray-800 dark:text-zinc-200"
               >
                 Mass Message
-              </Link>{' '}
-              with the selected list.
+              </Link>
+              .
             </p>
           </section>
 
@@ -896,7 +544,7 @@ export default function MaloumFanScraper() {
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                disabled={running || sourceLocked}
+                disabled={isRunning || sourceLocked}
                 onClick={() => setSourceMode('top_creators')}
                 className={`px-3 py-1.5 rounded-lg text-sm border ${
                   sourceMode === 'top_creators'
@@ -908,7 +556,7 @@ export default function MaloumFanScraper() {
               </button>
               <button
                 type="button"
-                disabled={running || sourceLocked}
+                disabled={isRunning || sourceLocked}
                 onClick={() => setSourceMode('custom_usernames')}
                 className={`px-3 py-1.5 rounded-lg text-sm border ${
                   sourceMode === 'custom_usernames'
@@ -929,7 +577,7 @@ export default function MaloumFanScraper() {
                   type="number"
                   min={1}
                   max={200}
-                  disabled={running || sourceLocked}
+                  disabled={isRunning || sourceLocked}
                   value={topCreatorsLimit}
                   onChange={(e) =>
                     setTopCreatorsLimit(
@@ -946,7 +594,7 @@ export default function MaloumFanScraper() {
                 </span>
                 <textarea
                   rows={6}
-                  disabled={running || sourceLocked}
+                  disabled={isRunning || sourceLocked}
                   value={customUsernamesText}
                   onChange={(e) => setCustomUsernamesText(e.target.value)}
                   placeholder={'stella4twenty\ncreator2\nhttps://app.maloum.com/creator/name'}
@@ -963,7 +611,7 @@ export default function MaloumFanScraper() {
                 type="number"
                 min={1}
                 max={200}
-                disabled={running || sourceLocked}
+                disabled={isRunning || sourceLocked}
                 value={postsPerCreator}
                 onChange={(e) =>
                   setPostsPerCreator(
@@ -992,7 +640,7 @@ export default function MaloumFanScraper() {
                 </span>
                 <input
                   type="text"
-                  disabled={running}
+                  disabled={isRunning}
                   value={newListName}
                   onChange={(e) => setNewListName(e.target.value)}
                   placeholder="Bot - fans"
@@ -1001,7 +649,7 @@ export default function MaloumFanScraper() {
               </label>
               <button
                 type="button"
-                disabled={running || creatingList || !newListName.trim()}
+                disabled={isRunning || creatingList || !newListName.trim()}
                 onClick={() => void handleCreateList()}
                 className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm border border-gray-200 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-900 disabled:opacity-50"
               >
@@ -1027,7 +675,7 @@ export default function MaloumFanScraper() {
                   <button
                     key={list._id}
                     type="button"
-                    disabled={running}
+                    disabled={isRunning}
                     onClick={() => void selectList(list)}
                     className={`w-full text-left px-3 py-2.5 text-sm flex items-center justify-between gap-2 disabled:opacity-50 ${
                       selected
@@ -1051,7 +699,7 @@ export default function MaloumFanScraper() {
             {chatListsNext && (
               <button
                 type="button"
-                disabled={chatListsLoading || running}
+                disabled={chatListsLoading || isRunning}
                 onClick={() => void loadChatLists({ append: true, next: chatListsNext })}
                 className="text-xs text-gray-600 dark:text-zinc-400 underline underline-offset-2 disabled:opacity-50"
               >

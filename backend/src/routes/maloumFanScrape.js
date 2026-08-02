@@ -7,6 +7,7 @@ const { decryptJson, decryptSecret } = require('../services/crypto');
 const { decryptAccessToken } = require('../services/maloumAuthTokens');
 const { userCanAccessCreator } = require('../services/creatorAccess');
 const maloumClient = require('../services/maloumClient');
+const fanScrapeRunner = require('../services/maloumFanScrapeRunner');
 
 const router = express.Router();
 
@@ -263,6 +264,7 @@ router.get(
       return res.json({
         job,
         scrapedFanCount: fanCount.rows[0]?.count || 0,
+        serverRunning: fanScrapeRunner.isActive(id),
         providerUserId: loaded.creator.providerUserId,
       });
     } catch (err) {
@@ -406,34 +408,17 @@ router.post(
       const loaded = await ensureAccess(req, res, id);
       if (!loaded) return;
 
-      const job = await getOrCreateJob(id, req.user.id);
-      if (!job.targetListId) {
-        return res.status(400).json({ error: 'Select or create a target list first' });
-      }
-      if (
-        job.sourceMode === 'custom_usernames' &&
-        (!job.customUsernames || job.customUsernames.length === 0) &&
-        (!job.checkpoint.sourceCreators ||
-          job.checkpoint.sourceCreators.length === 0)
-      ) {
-        return res.status(400).json({ error: 'Add at least one creator username' });
-      }
-
-      const updated = await pool.query(
-        `UPDATE maloum_fan_scrape_jobs
-         SET status = 'running',
-             "startedAt" = COALESCE("startedAt", NOW()),
-             "updatedAt" = NOW()
-         WHERE "motherCreatorId" = $1
-         RETURNING *`,
-        [id]
-      );
-
+      await getOrCreateJob(id, req.user.id);
+      const job = await fanScrapeRunner.startJob(id);
       return res.json({
-        job: rowToJob(updated.rows[0]),
+        job,
+        serverRunning: fanScrapeRunner.isActive(id),
         providerUserId: loaded.creator.providerUserId,
       });
     } catch (err) {
+      if (err?.status >= 400 && err.status < 500) {
+        return res.status(err.status).json({ error: err.message });
+      }
       console.error('Start fan scrape job error:', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
@@ -451,21 +436,10 @@ router.post(
       if (!loaded) return;
 
       await getOrCreateJob(id, req.user.id);
-      const updated = await pool.query(
-        `UPDATE maloum_fan_scrape_jobs
-         SET status = CASE
-               WHEN status = 'completed' THEN 'completed'
-               WHEN status = 'failed' THEN 'failed'
-               ELSE 'paused'
-             END,
-             "updatedAt" = NOW()
-         WHERE "motherCreatorId" = $1
-         RETURNING *`,
-        [id]
-      );
-
+      const job = await fanScrapeRunner.stopJob(id);
       return res.json({
-        job: rowToJob(updated.rows[0]),
+        job,
+        serverRunning: fanScrapeRunner.isActive(id),
         providerUserId: loaded.creator.providerUserId,
       });
     } catch (err) {

@@ -2449,6 +2449,7 @@ export interface MaloumFanScrapeCheckpoint {
   lastError: string | null;
   currentCreatorUsername: string | null;
   currentPostId: string | null;
+  statusMessage?: string | null;
 }
 
 export interface MaloumFanScrapeJob {
@@ -2471,6 +2472,7 @@ export interface MaloumFanScrapeJob {
 export async function getMaloumFanScrapeJob(creatorId: string): Promise<{
   job: MaloumFanScrapeJob;
   scrapedFanCount: number;
+  serverRunning?: boolean;
   providerUserId: string | null;
 }> {
   return request(`/api/creators/${creatorId}/maloum/fan-scrape/job`);
@@ -2496,6 +2498,7 @@ export async function updateMaloumFanScrapeJob(
 
 export async function startMaloumFanScrapeJob(creatorId: string): Promise<{
   job: MaloumFanScrapeJob;
+  serverRunning?: boolean;
   providerUserId: string | null;
 }> {
   return request(`/api/creators/${creatorId}/maloum/fan-scrape/job/start`, {
@@ -2506,6 +2509,7 @@ export async function startMaloumFanScrapeJob(creatorId: string): Promise<{
 
 export async function stopMaloumFanScrapeJob(creatorId: string): Promise<{
   job: MaloumFanScrapeJob;
+  serverRunning?: boolean;
   providerUserId: string | null;
 }> {
   return request(`/api/creators/${creatorId}/maloum/fan-scrape/job/stop`, {

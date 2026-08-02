@@ -78,4 +78,8 @@ app.listen(PORT, () => {
     startFourBasedSocketManager,
   } = require('./services/fourBasedSocket');
   startFourBasedSocketManager();
+  const {
+    resumeRunningJobs,
+  } = require('./services/maloumFanScrapeRunner');
+  void resumeRunningJobs();
 });
