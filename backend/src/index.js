@@ -10,6 +10,7 @@ const staffRoutes = require('./routes/staff');
 const rolesRoutes = require('./routes/roles');
 const creatorsRoutes = require('./routes/creators');
 const maloumFanScrapeRoutes = require('./routes/maloumFanScrape');
+const fourbasedFanScrapeRoutes = require('./routes/fourbasedFanScrape');
 const maloumSentMessagesRoutes = require('./routes/maloumSentMessages');
 const messagingDashboardRoutes = require('./routes/messagingDashboard');
 const translateRoutes = require('./routes/translate');
@@ -56,6 +57,7 @@ app.use('/api/staff', staffRoutes);
 app.use('/api/roles', rolesRoutes);
 app.use('/api/creators', creatorsRoutes);
 app.use('/api/creators', maloumFanScrapeRoutes);
+app.use('/api/creators', fourbasedFanScrapeRoutes);
 app.use('/api/maloum-sent-messages', maloumSentMessagesRoutes);
 app.use('/api/messaging-dashboard', messagingDashboardRoutes);
 app.use('/api/translate-to-german', translateRoutes);
@@ -79,7 +81,11 @@ app.listen(PORT, () => {
   } = require('./services/fourBasedSocket');
   startFourBasedSocketManager();
   const {
-    resumeRunningJobs,
+    resumeRunningJobs: resumeMaloumFanScrapeJobs,
   } = require('./services/maloumFanScrapeRunner');
-  void resumeRunningJobs();
+  void resumeMaloumFanScrapeJobs();
+  const {
+    resumeRunningJobs: resumeFourBasedFanScrapeJobs,
+  } = require('./services/fourbasedFanScrapeRunner');
+  void resumeFourBasedFanScrapeJobs();
 });

@@ -2558,6 +2558,87 @@ export async function upsertMaloumFanScrapeFan(
   });
 }
 
+export type FourBasedFanScrapeJobStatus =
+  | 'idle'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed';
+
+export interface FourBasedFanScrapeCheckpoint {
+  trendingOffset: number;
+  currentPagePostIds: string[];
+  postIndex: number;
+  commentOffset: number;
+  processedFans: number;
+  skippedFans: number;
+  failedFans: number;
+  lastError: string | null;
+  currentPostId: string | null;
+  statusMessage?: string | null;
+  trendingExhausted?: boolean;
+}
+
+export interface FourBasedFanScrapeJob {
+  id: string;
+  motherCreatorId: string;
+  status: FourBasedFanScrapeJobStatus;
+  messageText: string;
+  vaultIds: string[];
+  priceCoins: number;
+  checkpoint: FourBasedFanScrapeCheckpoint;
+  startedAt: string | null;
+  updatedAt: string;
+  createdAt: string;
+  createdByUserId: string | null;
+}
+
+export async function getFourBasedFanScrapeJob(creatorId: string): Promise<{
+  job: FourBasedFanScrapeJob;
+  scrapedFanCount: number;
+  serverRunning?: boolean;
+  providerUserId: string | null;
+}> {
+  return request(`/api/creators/${creatorId}/4based/fan-scrape/job`);
+}
+
+export async function updateFourBasedFanScrapeJob(
+  creatorId: string,
+  payload: {
+    messageText?: string;
+    vaultIds?: string[];
+    priceCoins?: number;
+    resetCheckpoint?: boolean;
+  }
+): Promise<{ job: FourBasedFanScrapeJob; providerUserId: string | null }> {
+  return request(`/api/creators/${creatorId}/4based/fan-scrape/job`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function startFourBasedFanScrapeJob(creatorId: string): Promise<{
+  job: FourBasedFanScrapeJob;
+  serverRunning?: boolean;
+  providerUserId: string | null;
+}> {
+  return request(`/api/creators/${creatorId}/4based/fan-scrape/job/start`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function stopFourBasedFanScrapeJob(creatorId: string): Promise<{
+  job: FourBasedFanScrapeJob;
+  serverRunning?: boolean;
+  providerUserId: string | null;
+}> {
+  return request(`/api/creators/${creatorId}/4based/fan-scrape/job/stop`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
 export async function getMaloumFanAssignedLists(
   creatorId: string,
   memberId: string

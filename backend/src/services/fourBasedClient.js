@@ -607,6 +607,67 @@ async function getChat(creator, chatId) {
   return result.data;
 }
 
+async function listTrendingFileStacks(creator, { offset = 0, limit = 60 } = {}) {
+  const { token, resource, cookies, proxyUrl } = authContext(creator);
+  const safeLimit = Math.min(Math.max(Number(limit) || 60, 1), 100);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const sort = encodeURIComponent(JSON.stringify({ score: 'desc' }));
+  const result = await requestJson({
+    url:
+      `${REST_BASE}/file-stack` +
+      `?offset=${safeOffset}&limit=${safeLimit}` +
+      `&categories=media&sort=${sort}&with_source=true` +
+      `&score_gt=0&price=0&in_trend=true&gender=` +
+      `&locale=en&user_role=creator&user_verified=true`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  return result.data;
+}
+
+async function listFileStackComments(
+  creator,
+  postId,
+  { offset = 0, limit = 20 } = {}
+) {
+  const { token, resource, cookies, proxyUrl } = authContext(creator);
+  if (!postId) {
+    throw new FourBasedApiError('postId is required', 400);
+  }
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const sort = encodeURIComponent(JSON.stringify({ created_at: 'asc' }));
+  const result = await requestJson({
+    url:
+      `${REST_BASE}/file-stack/${encodeURIComponent(postId)}/comment` +
+      `?offset=${safeOffset}&limit=${safeLimit}&sort=${sort}`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  return result.data;
+}
+
+async function getChatByUser(creator, fanId) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  if (!fanId) {
+    throw new FourBasedApiError('fanId is required', 400);
+  }
+  const result = await requestJson({
+    url:
+      `${REST_BASE}/user/${providerUserId}/chat/user/${encodeURIComponent(fanId)}` +
+      `?with_users=true`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  return result.data;
+}
+
 async function getMessages(creator, chatId, { limit = 20, offset = 0 } = {}) {
   const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
   const sort = encodeURIComponent(JSON.stringify({ created_at: 'desc' }));
@@ -1165,6 +1226,9 @@ module.exports = {
   listActivities,
   resetActivities,
   getChat,
+  listTrendingFileStacks,
+  listFileStackComments,
+  getChatByUser,
   getMessages,
   markReceived,
   getPivot,

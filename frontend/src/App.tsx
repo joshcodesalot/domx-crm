@@ -18,6 +18,7 @@ import ChatterMaloum from '@/pages/ChatterMaloum';
 import Chatter4Based from '@/pages/Chatter4Based';
 import MaloumMassMessage from '@/pages/MaloumMassMessage';
 import MaloumFanScraper from '@/pages/MaloumFanScraper';
+import FourBasedFanScraper from '@/pages/FourBasedFanScraper';
 import FourBasedMassMessage from '@/pages/FourBasedMassMessage';
 import MaloumAiBulkReply from '@/pages/MaloumAiBulkReply';
 import FourBasedAiBulkReply from '@/pages/FourBasedAiBulkReply';
@@ -228,6 +229,10 @@ function AppRoutes() {
                 <Route
                   path="/chatter/4based/mass-message"
                   element={<FourBasedMassMessage />}
+                />
+                <Route
+                  path="/chatter/4based/fan-scraper"
+                  element={<FourBasedFanScraper />}
                 />
                 <Route
                   path="/chatter/maloum/ai-bulk-reply"
