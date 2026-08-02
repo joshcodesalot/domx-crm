@@ -17,6 +17,7 @@ import ManageStaff from '@/pages/ManageStaff';
 import ChatterMaloum from '@/pages/ChatterMaloum';
 import Chatter4Based from '@/pages/Chatter4Based';
 import MaloumMassMessage from '@/pages/MaloumMassMessage';
+import MaloumFanScraper from '@/pages/MaloumFanScraper';
 import FourBasedMassMessage from '@/pages/FourBasedMassMessage';
 import MaloumAiBulkReply from '@/pages/MaloumAiBulkReply';
 import FourBasedAiBulkReply from '@/pages/FourBasedAiBulkReply';
@@ -220,6 +221,10 @@ function AppRoutes() {
               </Route>
               <Route element={<PermissionRoute permission="mass_messages.send" />}>
                 <Route path="/chatter/maloum/mass-message" element={<MaloumMassMessage />} />
+                <Route
+                  path="/chatter/maloum/fan-scraper"
+                  element={<MaloumFanScraper />}
+                />
                 <Route
                   path="/chatter/4based/mass-message"
                   element={<FourBasedMassMessage />}

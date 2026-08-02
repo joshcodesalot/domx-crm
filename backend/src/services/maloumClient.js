@@ -454,6 +454,99 @@ async function getChat(creator, chatId) {
   return result.data;
 }
 
+async function createChat(creator, member2) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!member2) {
+    throw new MaloumApiError('member2 is required', 400);
+  }
+  const result = await requestJson({
+    method: 'POST',
+    path: '/chats',
+    proxyUrl,
+    accessToken,
+    timezone,
+    body: { member2: String(member2) },
+  });
+  return result.data;
+}
+
+async function listTopCreators(creator, { limit = 15, next } = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const result = await requestJson({
+    method: 'GET',
+    path: `/top-creators${buildQuery({ limit, next })}`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function getUserProfile(creator, username) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!username) {
+    throw new MaloumApiError('username is required', 400);
+  }
+  const result = await requestJson({
+    method: 'GET',
+    path: `/users/${encodeURIComponent(String(username).trim())}/profile`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function listUserPosts(creator, username, { limit = 15, next } = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!username) {
+    throw new MaloumApiError('username is required', 400);
+  }
+  const result = await requestJson({
+    method: 'GET',
+    path: `/posts/user/${encodeURIComponent(String(username).trim())}${buildQuery({
+      limit,
+      next,
+    })}`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function listPostComments(creator, postId, { limit = 15, next } = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!postId) {
+    throw new MaloumApiError('postId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'GET',
+    path: `/posts/${encodeURIComponent(postId)}/comments${buildQuery({ limit, next })}`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function createChatList(creator, name) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  if (!trimmed) {
+    throw new MaloumApiError('name is required', 400);
+  }
+  const result = await requestJson({
+    method: 'POST',
+    path: '/chat-lists',
+    proxyUrl,
+    accessToken,
+    timezone,
+    body: { name: trimmed },
+  });
+  return result.data;
+}
+
 async function getMessages(creator, chatId, { limit = 15, next } = {}) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!chatId) {
@@ -1188,6 +1281,11 @@ module.exports = {
   isCloudflareBlocked,
   listChats,
   getChat,
+  createChat,
+  listTopCreators,
+  getUserProfile,
+  listUserPosts,
+  listPostComments,
   getMessages,
   markRead,
   getUnreadCount,
@@ -1205,6 +1303,7 @@ module.exports = {
   listSentBroadcasts,
   revokeBroadcast,
   listChatLists,
+  createChatList,
   updateFanNickname,
   updateFanNotes,
   getMemberChatLists,

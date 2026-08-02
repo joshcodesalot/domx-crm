@@ -2303,6 +2303,257 @@ export async function listMaloumChatLists(
   );
 }
 
+export async function createMaloumChatList(
+  creatorId: string,
+  name: string
+): Promise<{ list: MaloumChatListItem; providerUserId: string | null }> {
+  return request(`/api/creators/${creatorId}/maloum/chat-lists`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export interface MaloumTopCreatorItem {
+  rank?: number;
+  user?: {
+    _id?: string;
+    username?: string;
+    isCreator?: boolean;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export async function listMaloumTopCreators(
+  creatorId: string,
+  options: { limit?: number; next?: number } = {}
+): Promise<{
+  creators: MaloumTopCreatorItem[];
+  next: number | null;
+  providerUserId: string | null;
+}> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.next != null) params.set('next', String(options.next));
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/top-creators${query ? `?${query}` : ''}`
+  );
+}
+
+export interface MaloumUserProfile {
+  _id?: string;
+  username?: string;
+  isCreator?: boolean;
+  [key: string]: unknown;
+}
+
+export async function getMaloumUserProfile(
+  creatorId: string,
+  username: string
+): Promise<{ profile: MaloumUserProfile; providerUserId: string | null }> {
+  return request(
+    `/api/creators/${creatorId}/maloum/users/${encodeURIComponent(username)}/profile`
+  );
+}
+
+export interface MaloumFeedPost {
+  _id: string;
+  publishedAt?: string;
+  caption?: string;
+  commentCount?: number;
+  [key: string]: unknown;
+}
+
+export async function listMaloumUserPosts(
+  creatorId: string,
+  username: string,
+  options: { limit?: number; next?: string } = {}
+): Promise<{
+  posts: MaloumFeedPost[];
+  next: string | null;
+  providerUserId: string | null;
+}> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.next) params.set('next', options.next);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/posts/user/${encodeURIComponent(username)}${
+      query ? `?${query}` : ''
+    }`
+  );
+}
+
+export interface MaloumPostComment {
+  _id?: string;
+  text?: string;
+  createdAt?: string;
+  user?: {
+    _id?: string;
+    username?: string;
+    isCreator?: boolean;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export async function listMaloumPostComments(
+  creatorId: string,
+  postId: string,
+  options: { limit?: number; next?: string } = {}
+): Promise<{
+  comments: MaloumPostComment[];
+  next: string | null;
+  providerUserId: string | null;
+}> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.next) params.set('next', options.next);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/posts/${encodeURIComponent(postId)}/comments${
+      query ? `?${query}` : ''
+    }`
+  );
+}
+
+export async function createMaloumChat(
+  creatorId: string,
+  member2: string
+): Promise<{ chat: MaloumChat; providerUserId: string | null }> {
+  return request(`/api/creators/${creatorId}/maloum/chats`, {
+    method: 'POST',
+    body: JSON.stringify({ member2 }),
+  });
+}
+
+export type MaloumFanScrapeSourceMode = 'top_creators' | 'custom_usernames';
+export type MaloumFanScrapeJobStatus =
+  | 'idle'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed';
+
+export interface MaloumFanScrapeCheckpoint {
+  sourceCreators: string[];
+  creatorIndex: number;
+  postIndex: number;
+  posts: string[];
+  commentNext: string | null;
+  processedFans: number;
+  skippedFans: number;
+  failedFans: number;
+  invalidUsernames: string[];
+  lastError: string | null;
+  currentCreatorUsername: string | null;
+  currentPostId: string | null;
+}
+
+export interface MaloumFanScrapeJob {
+  id: string;
+  motherCreatorId: string;
+  targetListId: string | null;
+  targetListName: string | null;
+  status: MaloumFanScrapeJobStatus;
+  sourceMode: MaloumFanScrapeSourceMode;
+  topCreatorsLimit: number;
+  postsPerCreator: number;
+  customUsernames: string[];
+  checkpoint: MaloumFanScrapeCheckpoint;
+  startedAt: string | null;
+  updatedAt: string;
+  createdAt: string;
+  createdByUserId: string | null;
+}
+
+export async function getMaloumFanScrapeJob(creatorId: string): Promise<{
+  job: MaloumFanScrapeJob;
+  scrapedFanCount: number;
+  providerUserId: string | null;
+}> {
+  return request(`/api/creators/${creatorId}/maloum/fan-scrape/job`);
+}
+
+export async function updateMaloumFanScrapeJob(
+  creatorId: string,
+  payload: {
+    targetListId?: string | null;
+    targetListName?: string | null;
+    sourceMode?: MaloumFanScrapeSourceMode;
+    topCreatorsLimit?: number;
+    postsPerCreator?: number;
+    customUsernames?: string[] | string;
+    resetCheckpoint?: boolean;
+  }
+): Promise<{ job: MaloumFanScrapeJob; providerUserId: string | null }> {
+  return request(`/api/creators/${creatorId}/maloum/fan-scrape/job`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function startMaloumFanScrapeJob(creatorId: string): Promise<{
+  job: MaloumFanScrapeJob;
+  providerUserId: string | null;
+}> {
+  return request(`/api/creators/${creatorId}/maloum/fan-scrape/job/start`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function stopMaloumFanScrapeJob(creatorId: string): Promise<{
+  job: MaloumFanScrapeJob;
+  providerUserId: string | null;
+}> {
+  return request(`/api/creators/${creatorId}/maloum/fan-scrape/job/stop`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function checkpointMaloumFanScrapeJob(
+  creatorId: string,
+  payload: {
+    checkpoint?: Partial<MaloumFanScrapeCheckpoint>;
+    status?: MaloumFanScrapeJobStatus;
+  }
+): Promise<{ job: MaloumFanScrapeJob; providerUserId: string | null }> {
+  return request(`/api/creators/${creatorId}/maloum/fan-scrape/job/checkpoint`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function maloumFanScrapeFansExist(
+  creatorId: string,
+  fanIds: string[]
+): Promise<{ existing: string[]; providerUserId: string | null }> {
+  return request(`/api/creators/${creatorId}/maloum/fan-scrape/fans/exists`, {
+    method: 'POST',
+    body: JSON.stringify({ fanIds }),
+  });
+}
+
+export async function upsertMaloumFanScrapeFan(
+  creatorId: string,
+  payload: {
+    fanId: string;
+    chatId?: string | null;
+    username?: string | null;
+    sourceCreatorUsername?: string | null;
+    sourcePostId?: string | null;
+    listId?: string | null;
+  }
+): Promise<{ fan: Record<string, unknown>; providerUserId: string | null }> {
+  return request(`/api/creators/${creatorId}/maloum/fan-scrape/fans`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getMaloumFanAssignedLists(
   creatorId: string,
   memberId: string

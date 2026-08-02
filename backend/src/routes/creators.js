@@ -4917,6 +4917,259 @@ router.get(
   }
 );
 
+router.post(
+  '/:id/maloum/chat-lists',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    const { name } = req.body || {};
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const list = await maloumClient.createChatList(loaded.creator, name);
+      return res.status(201).json({
+        list,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Create Maloum chat list error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/top-creators',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 15, 50);
+      const nextRaw = req.query.next;
+      const next =
+        nextRaw !== undefined && nextRaw !== null && String(nextRaw).trim() !== ''
+          ? Number(nextRaw)
+          : undefined;
+      const result = await maloumClient.listTopCreators(loaded.creator, {
+        limit,
+        next: Number.isFinite(next) ? next : undefined,
+      });
+      res.json({
+        next: result?.next ?? null,
+        creators: Array.isArray(result?.data)
+          ? result.data
+          : Array.isArray(result)
+            ? result
+            : [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'List Maloum top creators error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/users/:username/profile',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id, username } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!username || !String(username).trim()) {
+      return res.status(400).json({ error: 'username is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const profile = await maloumClient.getUserProfile(
+        loaded.creator,
+        String(username).trim()
+      );
+      res.json({
+        profile,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Get Maloum user profile error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/posts/user/:username',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id, username } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!username || !String(username).trim()) {
+      return res.status(400).json({ error: 'username is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 15, 50);
+      const next =
+        typeof req.query.next === 'string' && req.query.next.trim()
+          ? req.query.next.trim()
+          : undefined;
+      const result = await maloumClient.listUserPosts(
+        loaded.creator,
+        String(username).trim(),
+        { limit, next }
+      );
+      res.json({
+        next: result?.next ?? null,
+        posts: Array.isArray(result?.data)
+          ? result.data
+          : Array.isArray(result)
+            ? result
+            : [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'List Maloum user posts error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/posts/:postId/comments',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id, postId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!postId) {
+      return res.status(400).json({ error: 'postId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 15, 50);
+      const next =
+        typeof req.query.next === 'string' && req.query.next.trim()
+          ? req.query.next.trim()
+          : undefined;
+      const result = await maloumClient.listPostComments(loaded.creator, postId, {
+        limit,
+        next,
+      });
+      res.json({
+        next: result?.next ?? null,
+        comments: Array.isArray(result?.data)
+          ? result.data
+          : Array.isArray(result)
+            ? result
+            : [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'List Maloum post comments error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/maloum/chats',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    const { member2 } = req.body || {};
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!member2 || !String(member2).trim()) {
+      return res.status(400).json({ error: 'member2 is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const chat = await maloumClient.createChat(
+        loaded.creator,
+        String(member2).trim()
+      );
+      return res.status(201).json({
+        chat,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Create Maloum chat error:');
+    }
+  }
+);
+
 router.get(
   '/:id/maloum/chat-lists/members/:memberId/assigned',
   authenticate,
