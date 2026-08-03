@@ -410,10 +410,11 @@ async function listFourBasedCreatorIds(excludeId) {
 }
 
 async function resolveImportTargets(job) {
-  const configured = normalizeUuidList(job.targetCreatorIds || []);
-  if (configured.length > 0) return configured;
-  const all = await listFourBasedCreatorIds(null);
-  return all.length > 0 ? all : [job.motherCreatorId];
+  const configured = normalizeUuidList(job.targetCreatorIds || []).filter(
+    (id) => id !== job.motherCreatorId
+  );
+  if (configured.length === 0) return [job.motherCreatorId];
+  return [job.motherCreatorId, ...configured];
 }
 
 async function ensureTrendingPage(creator, motherCreatorId, cp, generation) {

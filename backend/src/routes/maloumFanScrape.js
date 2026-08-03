@@ -398,8 +398,7 @@ router.patch(
         code === '42703' ||
         code === '23514' ||
         /column .* does not exist/i.test(message) ||
-        /violates check constraint/i.test(message) ||
-        /sourceMode/i.test(message)
+        /violates check constraint/i.test(message)
       ) {
         return res.status(400).json({
           error:

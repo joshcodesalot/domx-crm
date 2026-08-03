@@ -644,9 +644,11 @@ async function processFan(creator, motherCreatorId, listId, fan, sourceCreatorUs
 }
 
 async function resolveImportTargets(job) {
-  const configured = normalizeUuidList(job.targetCreatorIds || []);
-  if (configured.length > 0) return configured;
-  return [job.motherCreatorId];
+  const configured = normalizeUuidList(job.targetCreatorIds || []).filter(
+    (id) => id !== job.motherCreatorId
+  );
+  if (configured.length === 0) return [job.motherCreatorId];
+  return [job.motherCreatorId, ...configured];
 }
 
 function missingImportListCreatorIds(job, targetIds) {

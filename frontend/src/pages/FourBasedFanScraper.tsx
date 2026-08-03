@@ -173,6 +173,10 @@ export default function FourBasedFanScraper() {
   const priceCoins = dollarsToCoins(Number(priceDollars) || 0);
   const parsedImportFans = parseFourBasedImportFans(importFansText);
   const parsedImportCount = Object.keys(parsedImportFans).length;
+  const otherCreators = useMemo(
+    () => creators.filter((c) => c.id !== selectedCreatorId),
+    [creators, selectedCreatorId]
+  );
 
   const loadCreators = useCallback(async () => {
     setCreatorsLoading(true);
@@ -201,7 +205,9 @@ export default function FourBasedFanScraper() {
         setSourceMode(result.job.sourceMode || 'trending');
         setMessageText(result.job.messageText || '');
         setPriceDollars(coinsToDollars(result.job.priceCoins || 0));
-        setTargetCreatorIds(result.job.targetCreatorIds || []);
+        setTargetCreatorIds(
+          (result.job.targetCreatorIds || []).filter((id) => id !== creatorId)
+        );
         const fans = result.job.importFans || {};
         setImportFansText(
           Object.keys(fans).length ? JSON.stringify(fans, null, 2) : ''
@@ -567,7 +573,7 @@ export default function FourBasedFanScraper() {
                 </p>
                 <p className="text-lg font-semibold text-gray-900 dark:text-white">
                   {isImportMode
-                    ? `${checkpoint.importCreatorIndex || 0}/${targetCreatorIds.length || creators.length || '—'}`
+                    ? `${checkpoint.importCreatorIndex || 0}/${(targetCreatorIds.length || 0) + 1}`
                     : `${checkpoint.skippedPosts || 0} / ${checkpoint.postIndex}/${checkpoint.currentPagePostIds.length || '—'}`}
                 </p>
               </div>
@@ -638,27 +644,34 @@ export default function FourBasedFanScraper() {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs text-gray-500 dark:text-zinc-500">
-                      Send from creators (empty = all 4based creators)
+                      Also send from other creators (empty = this creator only)
                     </p>
                     <button
                       type="button"
-                      disabled={isRunning}
+                      disabled={isRunning || otherCreators.length === 0}
                       onClick={() =>
                         setTargetCreatorIds(
-                          targetCreatorIds.length === creators.length
+                          targetCreatorIds.length === otherCreators.length &&
+                            otherCreators.length > 0
                             ? []
-                            : creators.map((c) => c.id)
+                            : otherCreators.map((c) => c.id)
                         )
                       }
                       className="text-xs underline underline-offset-2 disabled:opacity-50"
                     >
-                      {targetCreatorIds.length === creators.length
+                      {targetCreatorIds.length === otherCreators.length &&
+                      otherCreators.length > 0
                         ? 'Clear all'
                         : 'Select all'}
                     </button>
                   </div>
                   <div className="rounded-xl border border-gray-200 dark:border-zinc-800 divide-y divide-gray-100 dark:divide-zinc-800/80 max-h-48 overflow-y-auto">
-                    {creators.map((creator) => {
+                    {otherCreators.length === 0 && (
+                      <p className="p-3 text-xs text-gray-500">
+                        No other 4based creators.
+                      </p>
+                    )}
+                    {otherCreators.map((creator) => {
                       const checked = targetCreatorIds.includes(creator.id);
                       return (
                         <label

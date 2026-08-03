@@ -149,13 +149,14 @@ export default function MaloumFanScraper() {
     !isImportMode && (checkpoint.sourceCreators?.length || 0) > 0;
   const parsedCustomCount = normalizeUsernameList(customUsernamesText).length;
   const parsedImportCount = parseMaloumImportIds(importFanIdsText).length;
+  const otherCreators = useMemo(
+    () => creators.filter((c) => c.id !== selectedCreatorId),
+    [creators, selectedCreatorId]
+  );
   const otherSelectedCreators = useMemo(
     () =>
-      creators.filter(
-        (c) =>
-          targetCreatorIds.includes(c.id) && c.id !== selectedCreatorId
-      ),
-    [creators, targetCreatorIds, selectedCreatorId]
+      otherCreators.filter((c) => targetCreatorIds.includes(c.id)),
+    [otherCreators, targetCreatorIds]
   );
 
   const loadCreators = useCallback(async () => {
@@ -191,7 +192,9 @@ export default function MaloumFanScraper() {
           ? JSON.stringify(result.job.importFanIds, null, 2)
           : ''
       );
-      setTargetCreatorIds(result.job.targetCreatorIds || []);
+      setTargetCreatorIds(
+        (result.job.targetCreatorIds || []).filter((id) => id !== creatorId)
+      );
       setTargetCreatorListIds(result.job.targetCreatorListIds || {});
       if (result.job.checkpoint?.lastError && result.job.status === 'failed') {
         setJobError(result.job.checkpoint.lastError);
@@ -648,7 +651,7 @@ export default function MaloumFanScraper() {
                 </p>
                 <p className="text-lg font-semibold text-gray-900 dark:text-white">
                   {isImportMode
-                    ? `${checkpoint.importCreatorIndex || 0}/${targetCreatorIds.length || creators.length || '—'}`
+                    ? `${checkpoint.importCreatorIndex || 0}/${(targetCreatorIds.length || 0) + 1}`
                     : `${checkpoint.skippedPosts || 0} / ${postsDone}/${postsTotal || '—'}`}
                 </p>
               </div>
@@ -757,28 +760,37 @@ export default function MaloumFanScraper() {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs text-gray-500 dark:text-zinc-500">
-                      Add to creators&apos; lists (empty = this creator only)
+                      Add to other creators&apos; lists (empty = this creator only)
                     </p>
                     <button
                       type="button"
-                      disabled={isRunning}
+                      disabled={isRunning || otherCreators.length === 0}
                       onClick={() => {
-                        if (targetCreatorIds.length === creators.length) {
+                        if (
+                          targetCreatorIds.length === otherCreators.length &&
+                          otherCreators.length > 0
+                        ) {
                           setTargetCreatorIds([]);
                           setTargetCreatorListIds({});
                         } else {
-                          setTargetCreatorIds(creators.map((c) => c.id));
+                          setTargetCreatorIds(otherCreators.map((c) => c.id));
                         }
                       }}
                       className="text-xs underline underline-offset-2 disabled:opacity-50"
                     >
-                      {targetCreatorIds.length === creators.length
+                      {targetCreatorIds.length === otherCreators.length &&
+                      otherCreators.length > 0
                         ? 'Clear all'
                         : 'Select all'}
                     </button>
                   </div>
                   <div className="rounded-xl border border-gray-200 dark:border-zinc-800 divide-y divide-gray-100 dark:divide-zinc-800/80 max-h-48 overflow-y-auto">
-                    {creators.map((creator) => {
+                    {otherCreators.length === 0 && (
+                      <p className="p-3 text-xs text-gray-500">
+                        No other Maloum creators.
+                      </p>
+                    )}
+                    {otherCreators.map((creator) => {
                       const checked = targetCreatorIds.includes(creator.id);
                       return (
                         <label
@@ -809,7 +821,6 @@ export default function MaloumFanScraper() {
                           />
                           <span className="truncate">
                             {creator.displayName || creator.username}
-                            {creator.id === selectedCreatorId ? ' (this creator)' : ''}
                           </span>
                         </label>
                       );
