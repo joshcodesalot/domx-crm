@@ -117,62 +117,15 @@ async function loadMaloumCreator(creatorId) {
 }
 
 function defaultCheckpoint() {
-  return {
-    sourceCreators: [],
-    creatorIndex: 0,
-    postIndex: 0,
-    posts: [],
-    commentNext: null,
-    processedFans: 0,
-    skippedFans: 0,
-    failedFans: 0,
-    invalidUsernames: [],
-    lastError: null,
-    currentCreatorUsername: null,
-    currentPostId: null,
-  };
+  return fanScrapeRunner.defaultCheckpoint();
 }
 
 function normalizeCheckpoint(raw) {
-  const base = defaultCheckpoint();
-  if (!raw || typeof raw !== 'object') return base;
-  return {
-    ...base,
-    ...raw,
-    sourceCreators: Array.isArray(raw.sourceCreators) ? raw.sourceCreators : [],
-    posts: Array.isArray(raw.posts) ? raw.posts : [],
-    invalidUsernames: Array.isArray(raw.invalidUsernames)
-      ? raw.invalidUsernames
-      : [],
-    creatorIndex: Number(raw.creatorIndex) || 0,
-    postIndex: Number(raw.postIndex) || 0,
-    processedFans: Number(raw.processedFans) || 0,
-    skippedFans: Number(raw.skippedFans) || 0,
-    failedFans: Number(raw.failedFans) || 0,
-    commentNext:
-      raw.commentNext === undefined || raw.commentNext === null
-        ? null
-        : String(raw.commentNext),
-  };
+  return fanScrapeRunner.normalizeCheckpoint(raw);
 }
 
 function rowToJob(row) {
-  return {
-    id: row.id,
-    motherCreatorId: row.motherCreatorId,
-    targetListId: row.targetListId || null,
-    targetListName: row.targetListName || null,
-    status: row.status,
-    sourceMode: row.sourceMode,
-    topCreatorsLimit: row.topCreatorsLimit,
-    postsPerCreator: row.postsPerCreator,
-    customUsernames: Array.isArray(row.customUsernames) ? row.customUsernames : [],
-    checkpoint: normalizeCheckpoint(row.checkpoint),
-    startedAt: row.startedAt || null,
-    updatedAt: row.updatedAt,
-    createdAt: row.createdAt,
-    createdByUserId: row.createdByUserId || null,
-  };
+  return fanScrapeRunner.rowToJob(row);
 }
 
 function normalizeUsernameList(input) {
@@ -309,6 +262,11 @@ router.patch(
       topCreatorsLimit,
       postsPerCreator,
       customUsernames,
+      distributeToAllCreators,
+      distributeListName,
+      importFanIds,
+      messageText,
+      targetCreatorIds,
       resetCheckpoint,
     } = req.body || {};
 
@@ -324,7 +282,9 @@ router.patch(
       }
 
       const nextSourceMode =
-        sourceMode === 'custom_usernames' || sourceMode === 'top_creators'
+        sourceMode === 'custom_usernames' ||
+        sourceMode === 'top_creators' ||
+        sourceMode === 'import_ids'
           ? sourceMode
           : job.sourceMode;
       const nextTopLimit = Math.min(
@@ -345,6 +305,28 @@ router.patch(
         customUsernames !== undefined
           ? normalizeUsernameList(customUsernames)
           : job.customUsernames;
+      const nextDistribute =
+        distributeToAllCreators !== undefined
+          ? Boolean(distributeToAllCreators)
+          : job.distributeToAllCreators;
+      const nextDistributeListName =
+        distributeListName !== undefined
+          ? String(distributeListName || '').trim() || 'Fan Scrape'
+          : job.distributeListName || 'Fan Scrape';
+      const nextImportFanIds =
+        importFanIds !== undefined
+          ? fanScrapeRunner.normalizeIdList(importFanIds)
+          : job.importFanIds;
+      const nextMessageText =
+        messageText !== undefined
+          ? typeof messageText === 'string'
+            ? messageText
+            : ''
+          : job.messageText;
+      const nextTargetCreatorIds =
+        targetCreatorIds !== undefined
+          ? fanScrapeRunner.normalizeUuidList(targetCreatorIds)
+          : job.targetCreatorIds;
 
       let checkpoint = job.checkpoint;
       let status = job.status;
@@ -361,8 +343,13 @@ router.patch(
              "topCreatorsLimit" = $5,
              "postsPerCreator" = $6,
              "customUsernames" = $7,
-             checkpoint = $8::jsonb,
-             status = $9,
+             "distributeToAllCreators" = $8,
+             "distributeListName" = $9,
+             "importFanIds" = $10,
+             "messageText" = $11,
+             "targetCreatorIds" = $12,
+             checkpoint = $13::jsonb,
+             status = $14,
              "updatedAt" = NOW()
          WHERE "motherCreatorId" = $1
          RETURNING *`,
@@ -382,6 +369,11 @@ router.patch(
           nextTopLimit,
           nextPostsLimit,
           nextUsernames,
+          nextDistribute,
+          nextDistributeListName,
+          nextImportFanIds,
+          nextMessageText,
+          nextTargetCreatorIds,
           JSON.stringify(checkpoint),
           status,
         ]

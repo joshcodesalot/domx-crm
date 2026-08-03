@@ -24,6 +24,12 @@ function defaultCheckpoint() {
     processedFans: 0,
     skippedFans: 0,
     failedFans: 0,
+    skippedPosts: 0,
+    distributedFans: 0,
+    distributeFailed: 0,
+    distributeListCache: {},
+    importFanIndex: 0,
+    importCreatorIndex: 0,
     invalidUsernames: [],
     lastError: null,
     currentCreatorUsername: null,
@@ -35,6 +41,10 @@ function defaultCheckpoint() {
 function normalizeCheckpoint(raw) {
   const base = defaultCheckpoint();
   if (!raw || typeof raw !== 'object') return base;
+  const listCache =
+    raw.distributeListCache && typeof raw.distributeListCache === 'object'
+      ? raw.distributeListCache
+      : {};
   return {
     ...base,
     ...raw,
@@ -48,6 +58,12 @@ function normalizeCheckpoint(raw) {
     processedFans: Number(raw.processedFans) || 0,
     skippedFans: Number(raw.skippedFans) || 0,
     failedFans: Number(raw.failedFans) || 0,
+    skippedPosts: Number(raw.skippedPosts) || 0,
+    distributedFans: Number(raw.distributedFans) || 0,
+    distributeFailed: Number(raw.distributeFailed) || 0,
+    distributeListCache: listCache,
+    importFanIndex: Number(raw.importFanIndex) || 0,
+    importCreatorIndex: Number(raw.importCreatorIndex) || 0,
     commentNext:
       raw.commentNext === undefined || raw.commentNext === null
         ? null
@@ -85,6 +101,63 @@ function normalizeUsernameList(input) {
     out.push(username);
   }
   return out;
+}
+
+function normalizeIdList(input) {
+  if (Array.isArray(input)) {
+    return [...new Set(input.map((v) => String(v).trim()).filter(Boolean))];
+  }
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return [...new Set(parsed.map((v) => String(v).trim()).filter(Boolean))];
+      }
+    } catch {
+      // fall through to whitespace split
+    }
+    return [
+      ...new Set(
+        trimmed
+          .split(/[\n,\s]+/)
+          .map((v) => v.trim())
+          .filter(Boolean)
+      ),
+    ];
+  }
+  return [];
+}
+
+function normalizeUuidList(input) {
+  if (!Array.isArray(input)) return [];
+  return [
+    ...new Set(
+      input
+        .map((v) => String(v).trim())
+        .filter((v) =>
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            v
+          )
+        )
+    ),
+  ];
+}
+
+function isSkippablePostError(err) {
+  const status = err?.status;
+  const message = String(err?.message || '');
+  if (status === 404) return true;
+  if (/could not be found/i.test(message)) return true;
+  if (/post/i.test(message) && /not found/i.test(message)) return true;
+  return false;
+}
+
+function asListArray(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (Array.isArray(raw?.data)) return raw.data;
+  return [];
 }
 
 async function loadMaloumCreator(creatorId) {
@@ -172,6 +245,13 @@ function rowToJob(row) {
     topCreatorsLimit: row.topCreatorsLimit,
     postsPerCreator: row.postsPerCreator,
     customUsernames: Array.isArray(row.customUsernames) ? row.customUsernames : [],
+    distributeToAllCreators: Boolean(row.distributeToAllCreators),
+    distributeListName: row.distributeListName || 'Fan Scrape',
+    importFanIds: Array.isArray(row.importFanIds) ? row.importFanIds : [],
+    messageText: row.messageText || '',
+    targetCreatorIds: Array.isArray(row.targetCreatorIds)
+      ? row.targetCreatorIds
+      : [],
     checkpoint: normalizeCheckpoint(row.checkpoint),
     startedAt: row.startedAt || null,
     updatedAt: row.updatedAt,
@@ -256,6 +336,130 @@ async function upsertFan(motherCreatorId, payload) {
       payload.listId || null,
     ]
   );
+}
+
+async function listMaloumCreatorIds(excludeId) {
+  const result = await pool.query(
+    `SELECT id FROM creators
+     WHERE platform = 'maloum'
+       AND "encryptedAccessToken" IS NOT NULL
+       ${excludeId ? 'AND id <> $1' : ''}
+     ORDER BY "displayName" ASC NULLS LAST`,
+    excludeId ? [excludeId] : []
+  );
+  return result.rows.map((row) => row.id);
+}
+
+async function resolveDistributeListId(recipient, listName, cache) {
+  const key = recipient.id;
+  if (cache[key]) return cache[key];
+
+  const wanted = String(listName || 'Fan Scrape').trim().toLowerCase();
+  let next;
+  for (;;) {
+    const page = await maloumClient.listChatLists(recipient, { limit: 25, next });
+    const data = asListArray(page);
+    const match = data.find(
+      (list) => String(list?.name || '').trim().toLowerCase() === wanted
+    );
+    if (match?._id) {
+      cache[key] = match._id;
+      return match._id;
+    }
+    if (!page?.next || data.length === 0) break;
+    next = page.next;
+    await sleep(STEP_DELAY_MS);
+  }
+
+  const created = await maloumClient.createChatList(
+    recipient,
+    String(listName || 'Fan Scrape').trim() || 'Fan Scrape'
+  );
+  const id = created?._id || null;
+  if (id) cache[key] = id;
+  return id;
+}
+
+async function addFanToCreatorList(
+  recipient,
+  fanId,
+  username,
+  listId,
+  sourceCreatorUsername,
+  sourcePostId
+) {
+  const chat = await maloumClient.createChat(recipient, fanId);
+  const chatId = chat?._id || null;
+  const assignedRaw = await maloumClient.getMemberChatLists(recipient, fanId);
+  const assigned = asListArray(assignedRaw);
+  const currentIds = assigned.map((list) => list._id).filter(Boolean);
+  if (!currentIds.includes(listId)) {
+    await maloumClient.setMemberChatLists(recipient, fanId, [...currentIds, listId]);
+  }
+  await upsertFan(recipient.id, {
+    fanId,
+    chatId,
+    username: username || null,
+    sourceCreatorUsername,
+    sourcePostId,
+    listId,
+  });
+  return chatId;
+}
+
+async function distributeFanToOthers(
+  motherCreatorId,
+  job,
+  fan,
+  sourceCreatorUsername,
+  sourcePostId,
+  cp,
+  generation
+) {
+  const fanId = fan?._id;
+  if (!fanId || !job.distributeToAllCreators) return cp;
+
+  const listName = job.distributeListName || 'Fan Scrape';
+  const cache = { ...(cp.distributeListCache || {}) };
+  const otherIds = await listMaloumCreatorIds(motherCreatorId);
+  let distributedFans = cp.distributedFans || 0;
+  let distributeFailed = cp.distributeFailed || 0;
+
+  for (const recipientId of otherIds) {
+    await assertStillRunning(motherCreatorId, generation);
+    if (await fanExists(recipientId, fanId)) continue;
+    try {
+      const recipient = await loadMaloumCreator(recipientId);
+      const listId = await resolveDistributeListId(recipient, listName, cache);
+      if (!listId) {
+        distributeFailed += 1;
+        continue;
+      }
+      await addFanToCreatorList(
+        recipient,
+        fanId,
+        fan.username || null,
+        listId,
+        sourceCreatorUsername,
+        sourcePostId
+      );
+      distributedFans += 1;
+    } catch (err) {
+      distributeFailed += 1;
+      cp = {
+        ...cp,
+        lastError: err?.message || 'Distribute failed',
+      };
+    }
+    await sleep(STEP_DELAY_MS);
+  }
+
+  return {
+    ...cp,
+    distributeListCache: cache,
+    distributedFans,
+    distributeFailed,
+  };
 }
 
 async function resolveSourceCreators(creator, job, generation) {
@@ -397,26 +601,14 @@ async function processFan(creator, motherCreatorId, listId, fan, sourceCreatorUs
   }
 
   try {
-    const chat = await maloumClient.createChat(creator, fanId);
-    const chatId = chat?._id || null;
-    const assignedRaw = await maloumClient.getMemberChatLists(creator, fanId);
-    const assigned = Array.isArray(assignedRaw)
-      ? assignedRaw
-      : Array.isArray(assignedRaw?.data)
-        ? assignedRaw.data
-        : [];
-    const currentIds = assigned.map((list) => list._id).filter(Boolean);
-    if (!currentIds.includes(listId)) {
-      await maloumClient.setMemberChatLists(creator, fanId, [...currentIds, listId]);
-    }
-    await upsertFan(motherCreatorId, {
+    await addFanToCreatorList(
+      creator,
       fanId,
-      chatId,
-      username: fan.username || null,
-      sourceCreatorUsername,
-      sourcePostId,
+      fan.username || null,
       listId,
-    });
+      sourceCreatorUsername,
+      sourcePostId
+    );
     return {
       ...cp,
       processedFans: cp.processedFans + 1,
@@ -431,146 +623,326 @@ async function processFan(creator, motherCreatorId, listId, fan, sourceCreatorUs
   }
 }
 
-async function runJob(motherCreatorId, generation) {
-  try {
-    const row = await loadJobRow(motherCreatorId);
-    if (!row) return;
-    let job = rowToJob(row);
-    if (job.status !== 'running') return;
+async function resolveImportTargets(job) {
+  const configured = normalizeUuidList(job.targetCreatorIds || []);
+  if (configured.length > 0) return configured;
+  const all = await listMaloumCreatorIds(null);
+  return all.length > 0 ? all : [job.motherCreatorId];
+}
 
-    const creator = await loadMaloumCreator(motherCreatorId);
-    if (!job.targetListId) {
-      await saveCheckpoint(
-        motherCreatorId,
-        { ...job.checkpoint, lastError: 'Select or create a target list first', statusMessage: 'Missing target list' },
-        'failed'
-      );
-      return;
-    }
+async function runImportToLists(motherCreatorId, job, generation) {
+  const fanIds = normalizeIdList(job.importFanIds || []);
+  if (fanIds.length === 0) {
+    await saveCheckpoint(
+      motherCreatorId,
+      {
+        ...job.checkpoint,
+        lastError: 'Paste at least one fan ID to import',
+        statusMessage: 'Missing import fan IDs',
+      },
+      'failed'
+    );
+    return;
+  }
 
-    let cp = await resolveSourceCreators(creator, job, generation);
-    if (cp.sourceCreators.length === 0) {
-      await saveCheckpoint(
-        motherCreatorId,
-        {
-          ...cp,
-          lastError: 'No source creators to scrape',
-          statusMessage: 'No source creators found',
-        },
-        'failed'
-      );
-      return;
-    }
+  if (!job.targetListId) {
+    await saveCheckpoint(
+      motherCreatorId,
+      {
+        ...job.checkpoint,
+        lastError: 'Select or create a target list first',
+        statusMessage: 'Missing target list',
+      },
+      'failed'
+    );
+    return;
+  }
 
-    while (cp.creatorIndex < cp.sourceCreators.length) {
+  const targetIds = await resolveImportTargets(job);
+  const listName = job.distributeListName || 'Fan Scrape';
+  let cp = normalizeCheckpoint(job.checkpoint);
+  const cache = { ...(cp.distributeListCache || {}) };
+  // Mother always uses the explicitly selected list.
+  cache[motherCreatorId] = job.targetListId;
+
+  while (cp.importFanIndex < fanIds.length) {
+    await assertStillRunning(motherCreatorId, generation);
+    const fanId = fanIds[cp.importFanIndex];
+
+    while (cp.importCreatorIndex < targetIds.length) {
       await assertStillRunning(motherCreatorId, generation);
-      const username = cp.sourceCreators[cp.creatorIndex];
+      const recipientId = targetIds[cp.importCreatorIndex];
       cp = {
         ...cp,
-        currentCreatorUsername: username,
+        distributeListCache: cache,
+        statusMessage: `Import list · fan ${cp.importFanIndex + 1}/${fanIds.length} · creator ${cp.importCreatorIndex + 1}/${targetIds.length} · added ${cp.processedFans}`,
       };
-      cp = await ensureCreatorPosts(
-        creator,
-        motherCreatorId,
-        username,
-        job.postsPerCreator || 50,
-        cp,
-        generation
-      );
+      await saveCheckpoint(motherCreatorId, cp, 'running');
 
-      while (cp.postIndex < cp.posts.length) {
-        await assertStillRunning(motherCreatorId, generation);
-        const postId = cp.posts[cp.postIndex];
-        cp = {
-          ...cp,
-          currentPostId: postId,
-          statusMessage: `@${username} · post ${cp.postIndex + 1}/${cp.posts.length} · fans ${cp.processedFans}`,
-        };
-        await saveCheckpoint(motherCreatorId, cp, 'running');
-
-        let commentNext = cp.commentNext || undefined;
-        let pageDone = false;
-        while (!pageDone) {
-          await assertStillRunning(motherCreatorId, generation);
-          await sleep(COMMENT_DELAY_MS);
-          const page = await maloumClient.listPostComments(creator, postId, {
-            limit: 15,
-            next: commentNext,
-          });
-          const comments = Array.isArray(page?.data)
-            ? page.data
-            : Array.isArray(page)
-              ? page
-              : [];
-
-          for (const comment of comments) {
-            await assertStillRunning(motherCreatorId, generation);
-            cp = await processFan(
-              creator,
-              motherCreatorId,
-              job.targetListId,
-              comment?.user,
-              username,
-              postId,
-              cp
-            );
+      if (await fanExists(recipientId, fanId)) {
+        cp = { ...cp, skippedFans: cp.skippedFans + 1 };
+      } else {
+        try {
+          const recipient = await loadMaloumCreator(recipientId);
+          let listId = cache[recipientId];
+          if (!listId) {
+            if (recipientId === motherCreatorId) {
+              listId = job.targetListId;
+              cache[recipientId] = listId;
+            } else {
+              listId = await resolveDistributeListId(recipient, listName, cache);
+            }
+          }
+          if (!listId) {
+            throw new Error('Could not resolve target list');
+          }
+          await addFanToCreatorList(
+            recipient,
+            fanId,
+            null,
+            listId,
+            'import_ids',
+            null
+          );
+          cp = {
+            ...cp,
+            processedFans: cp.processedFans + 1,
+            distributeListCache: cache,
+            lastError: null,
+          };
+          if (recipientId !== motherCreatorId) {
             cp = {
               ...cp,
-              commentNext: page?.next || null,
-              statusMessage: `@${username} · post ${cp.postIndex + 1}/${cp.posts.length} · fans ${cp.processedFans}`,
+              distributedFans: (cp.distributedFans || 0) + 1,
             };
-            await saveCheckpoint(motherCreatorId, cp, 'running');
-            await sleep(STEP_DELAY_MS);
           }
-
-          if (!page?.next || comments.length === 0) {
-            pageDone = true;
-            commentNext = undefined;
-          } else {
-            commentNext = page.next;
-            cp = { ...cp, commentNext: page.next };
-            await saveCheckpoint(motherCreatorId, cp, 'running');
-          }
+        } catch (err) {
+          cp = {
+            ...cp,
+            failedFans: cp.failedFans + 1,
+            distributeListCache: cache,
+            lastError: err?.message || 'Failed to add fan to list',
+          };
         }
-
-        cp = {
-          ...cp,
-          postIndex: cp.postIndex + 1,
-          commentNext: null,
-        };
-        await saveCheckpoint(motherCreatorId, cp, 'running');
       }
 
       cp = {
         ...cp,
-        creatorIndex: cp.creatorIndex + 1,
-        postIndex: 0,
-        posts: [],
+        importCreatorIndex: cp.importCreatorIndex + 1,
+        distributeListCache: cache,
+      };
+      await saveCheckpoint(motherCreatorId, cp, 'running');
+      await sleep(STEP_DELAY_MS);
+    }
+
+    cp = {
+      ...cp,
+      importFanIndex: cp.importFanIndex + 1,
+      importCreatorIndex: 0,
+      distributeListCache: cache,
+    };
+    await saveCheckpoint(motherCreatorId, cp, 'running');
+  }
+
+  cp = {
+    ...cp,
+    lastError: null,
+    distributeListCache: cache,
+    statusMessage: `Completed · ${cp.processedFans} added · ${cp.skippedFans} skipped · ${cp.failedFans} failed`,
+  };
+  await saveCheckpoint(motherCreatorId, cp, 'completed');
+  console.log(
+    `[fan-scrape] import completed mother=${motherCreatorId} processed=${cp.processedFans}`
+  );
+}
+
+async function runListScrape(motherCreatorId, job, generation) {
+  const creator = await loadMaloumCreator(motherCreatorId);
+  if (!job.targetListId) {
+    await saveCheckpoint(
+      motherCreatorId,
+      {
+        ...job.checkpoint,
+        lastError: 'Select or create a target list first',
+        statusMessage: 'Missing target list',
+      },
+      'failed'
+    );
+    return;
+  }
+
+  let cp = await resolveSourceCreators(creator, job, generation);
+  if (cp.sourceCreators.length === 0) {
+    await saveCheckpoint(
+      motherCreatorId,
+      {
+        ...cp,
+        lastError: 'No source creators to scrape',
+        statusMessage: 'No source creators found',
+      },
+      'failed'
+    );
+    return;
+  }
+
+  while (cp.creatorIndex < cp.sourceCreators.length) {
+    await assertStillRunning(motherCreatorId, generation);
+    const username = cp.sourceCreators[cp.creatorIndex];
+    cp = {
+      ...cp,
+      currentCreatorUsername: username,
+    };
+    cp = await ensureCreatorPosts(
+      creator,
+      motherCreatorId,
+      username,
+      job.postsPerCreator || 50,
+      cp,
+      generation
+    );
+
+    while (cp.postIndex < cp.posts.length) {
+      await assertStillRunning(motherCreatorId, generation);
+      const postId = cp.posts[cp.postIndex];
+      cp = {
+        ...cp,
+        currentPostId: postId,
+        statusMessage: `@${username} · post ${cp.postIndex + 1}/${cp.posts.length} · fans ${cp.processedFans}${cp.skippedPosts ? ` · skipped posts ${cp.skippedPosts}` : ''}`,
+      };
+      await saveCheckpoint(motherCreatorId, cp, 'running');
+
+      let commentNext = cp.commentNext || undefined;
+      let pageDone = false;
+      let postSkipped = false;
+
+      while (!pageDone) {
+        await assertStillRunning(motherCreatorId, generation);
+        await sleep(COMMENT_DELAY_MS);
+        let page;
+        try {
+          page = await maloumClient.listPostComments(creator, postId, {
+            limit: 15,
+            next: commentNext,
+          });
+        } catch (err) {
+          if (isSkippablePostError(err)) {
+            cp = {
+              ...cp,
+              skippedPosts: (cp.skippedPosts || 0) + 1,
+              lastError: err?.message || 'Post skipped (locked/missing)',
+              commentNext: null,
+              currentPostId: null,
+              postIndex: cp.postIndex + 1,
+              statusMessage: `@${username} · skipped locked/missing post · fans ${cp.processedFans} · skipped posts ${(cp.skippedPosts || 0)}`,
+            };
+            await saveCheckpoint(motherCreatorId, cp, 'running');
+            postSkipped = true;
+            break;
+          }
+          throw err;
+        }
+
+        const comments = Array.isArray(page?.data)
+          ? page.data
+          : Array.isArray(page)
+            ? page
+            : [];
+
+        for (const comment of comments) {
+          await assertStillRunning(motherCreatorId, generation);
+          const before = cp.processedFans;
+          cp = await processFan(
+            creator,
+            motherCreatorId,
+            job.targetListId,
+            comment?.user,
+            username,
+            postId,
+            cp
+          );
+          if (job.distributeToAllCreators && cp.processedFans > before) {
+            cp = await distributeFanToOthers(
+              motherCreatorId,
+              job,
+              comment?.user,
+              username,
+              postId,
+              cp,
+              generation
+            );
+          }
+          cp = {
+            ...cp,
+            commentNext: page?.next || null,
+            statusMessage: `@${username} · post ${cp.postIndex + 1}/${cp.posts.length} · fans ${cp.processedFans}${cp.distributedFans ? ` · distributed ${cp.distributedFans}` : ''}`,
+          };
+          await saveCheckpoint(motherCreatorId, cp, 'running');
+          await sleep(STEP_DELAY_MS);
+        }
+
+        if (!page?.next || comments.length === 0) {
+          pageDone = true;
+          commentNext = undefined;
+        } else {
+          commentNext = page.next;
+          cp = { ...cp, commentNext: page.next };
+          await saveCheckpoint(motherCreatorId, cp, 'running');
+        }
+      }
+
+      if (postSkipped) continue;
+
+      cp = {
+        ...cp,
+        postIndex: cp.postIndex + 1,
         commentNext: null,
-        currentPostId: null,
       };
       await saveCheckpoint(motherCreatorId, cp, 'running');
     }
 
     cp = {
       ...cp,
-      lastError: null,
-      statusMessage: `Completed · ${cp.processedFans} added · ${cp.skippedFans} skipped · ${cp.failedFans} failed`,
+      creatorIndex: cp.creatorIndex + 1,
+      postIndex: 0,
+      posts: [],
+      commentNext: null,
+      currentPostId: null,
     };
-    await saveCheckpoint(motherCreatorId, cp, 'completed');
-    console.log(`[fan-scrape] completed mother=${motherCreatorId} processed=${cp.processedFans}`);
+    await saveCheckpoint(motherCreatorId, cp, 'running');
+  }
+
+  cp = {
+    ...cp,
+    lastError: null,
+    statusMessage: `Completed · ${cp.processedFans} added · ${cp.skippedFans} skipped · ${cp.failedFans} failed · ${cp.skippedPosts || 0} posts skipped${cp.distributedFans ? ` · ${cp.distributedFans} distributed` : ''}`,
+  };
+  await saveCheckpoint(motherCreatorId, cp, 'completed');
+  console.log(`[fan-scrape] completed mother=${motherCreatorId} processed=${cp.processedFans}`);
+}
+
+async function runJob(motherCreatorId, generation) {
+  try {
+    const row = await loadJobRow(motherCreatorId);
+    if (!row) return;
+    const job = rowToJob(row);
+    if (job.status !== 'running') return;
+
+    if (job.sourceMode === 'import_ids') {
+      await runImportToLists(motherCreatorId, job, generation);
+      return;
+    }
+
+    await runListScrape(motherCreatorId, job, generation);
   } catch (err) {
     if (err?.code === 'ABORTED') {
       const row = await loadJobRow(motherCreatorId);
-      if (row && row.status === 'running') {
-        // Stop was requested via status change; leave as-is if already paused.
-      } else if (row && row.status === 'paused') {
+      if (row && row.status === 'paused') {
         const cp = normalizeCheckpoint(row.checkpoint);
         await saveCheckpoint(
           motherCreatorId,
           {
             ...cp,
-            statusMessage: `Paused · ${cp.processedFans} added`,
+            statusMessage: `Paused · ${cp.processedFans} processed`,
           },
           'paused'
         );
@@ -607,28 +979,39 @@ function isActive(motherCreatorId) {
   return activeRuns.has(motherCreatorId);
 }
 
-/**
- * Mark job running (if needed) and ensure a server loop is active.
- */
 async function startJob(motherCreatorId) {
   const row = await loadJobRow(motherCreatorId);
   if (!row) {
     throw Object.assign(new Error('Fan scrape job not found'), { status: 404 });
   }
   const job = rowToJob(row);
-  if (!job.targetListId) {
-    throw Object.assign(new Error('Select or create a target list first'), {
-      status: 400,
-    });
-  }
-  if (
-    job.sourceMode === 'custom_usernames' &&
-    (!job.customUsernames || job.customUsernames.length === 0) &&
-    (!job.checkpoint.sourceCreators || job.checkpoint.sourceCreators.length === 0)
-  ) {
-    throw Object.assign(new Error('Add at least one creator username'), {
-      status: 400,
-    });
+
+  if (job.sourceMode === 'import_ids') {
+    if (!normalizeIdList(job.importFanIds).length) {
+      throw Object.assign(new Error('Paste at least one fan ID to import'), {
+        status: 400,
+      });
+    }
+    if (!job.targetListId) {
+      throw Object.assign(new Error('Select or create a target list first'), {
+        status: 400,
+      });
+    }
+  } else {
+    if (!job.targetListId) {
+      throw Object.assign(new Error('Select or create a target list first'), {
+        status: 400,
+      });
+    }
+    if (
+      job.sourceMode === 'custom_usernames' &&
+      (!job.customUsernames || job.customUsernames.length === 0) &&
+      (!job.checkpoint.sourceCreators || job.checkpoint.sourceCreators.length === 0)
+    ) {
+      throw Object.assign(new Error('Add at least one creator username'), {
+        status: 400,
+      });
+    }
   }
 
   const updated = await pool.query(
@@ -684,7 +1067,6 @@ async function stopJob(motherCreatorId) {
     [motherCreatorId]
   );
 
-  // In-flight loop exits on next assertStillRunning (DB status !== running).
   return rowToJob(updated.rows[0]);
 }
 
@@ -718,5 +1100,7 @@ module.exports = {
   normalizeCheckpoint,
   defaultCheckpoint,
   normalizeUsernameList,
+  normalizeIdList,
+  normalizeUuidList,
   rowToJob,
 };

@@ -121,9 +121,9 @@ async function getOrCreateJob(motherCreatorId, userId) {
 
   const inserted = await pool.query(
     `INSERT INTO fourbased_fan_scrape_jobs (
-       id, "motherCreatorId", status, "messageText", "vaultIds", "priceCoins",
-       checkpoint, "createdByUserId"
-     ) VALUES ($1, $2, 'idle', '', '{}', 0, $3::jsonb, $4)
+       id, "motherCreatorId", status, "sourceMode", "messageText", "vaultIds", "priceCoins",
+       "importFans", "targetCreatorIds", checkpoint, "createdByUserId"
+     ) VALUES ($1, $2, 'idle', 'trending', '', '{}', 0, '{}'::jsonb, '{}', $3::jsonb, $4)
      RETURNING *`,
     [
       randomUUID(),
@@ -171,7 +171,15 @@ router.patch(
   requirePermission('mass_messages.send'),
   async (req, res) => {
     const { id } = req.params;
-    const { messageText, vaultIds, priceCoins, resetCheckpoint } = req.body || {};
+    const {
+      messageText,
+      vaultIds,
+      priceCoins,
+      sourceMode,
+      importFans,
+      targetCreatorIds,
+      resetCheckpoint,
+    } = req.body || {};
 
     try {
       const loaded = await ensureAccess(req, res, id);
@@ -201,6 +209,18 @@ router.patch(
         priceCoins !== undefined
           ? Math.max(0, Math.floor(Number(priceCoins) || 0))
           : job.priceCoins;
+      const nextSourceMode =
+        sourceMode === 'import_ids' || sourceMode === 'trending'
+          ? sourceMode
+          : job.sourceMode || 'trending';
+      const nextImportFans =
+        importFans !== undefined
+          ? fanScrapeRunner.normalizeImportFans(importFans)
+          : job.importFans || {};
+      const nextTargetCreatorIds =
+        targetCreatorIds !== undefined
+          ? fanScrapeRunner.normalizeUuidList(targetCreatorIds)
+          : job.targetCreatorIds || [];
 
       let checkpoint = job.checkpoint;
       let status = job.status;
@@ -214,8 +234,11 @@ router.patch(
          SET "messageText" = $2,
              "vaultIds" = $3,
              "priceCoins" = $4,
-             checkpoint = $5::jsonb,
-             status = $6,
+             "sourceMode" = $5,
+             "importFans" = $6::jsonb,
+             "targetCreatorIds" = $7,
+             checkpoint = $8::jsonb,
+             status = $9,
              "updatedAt" = NOW()
          WHERE "motherCreatorId" = $1
          RETURNING *`,
@@ -224,6 +247,9 @@ router.patch(
           nextMessage,
           nextVaultIds,
           nextPrice,
+          nextSourceMode,
+          JSON.stringify(nextImportFans),
+          nextTargetCreatorIds,
           JSON.stringify(checkpoint),
           status,
         ]

@@ -2428,7 +2428,10 @@ export async function createMaloumChat(
   });
 }
 
-export type MaloumFanScrapeSourceMode = 'top_creators' | 'custom_usernames';
+export type MaloumFanScrapeSourceMode =
+  | 'top_creators'
+  | 'custom_usernames'
+  | 'import_ids';
 export type MaloumFanScrapeJobStatus =
   | 'idle'
   | 'running'
@@ -2445,6 +2448,11 @@ export interface MaloumFanScrapeCheckpoint {
   processedFans: number;
   skippedFans: number;
   failedFans: number;
+  skippedPosts?: number;
+  distributedFans?: number;
+  distributeFailed?: number;
+  importFanIndex?: number;
+  importCreatorIndex?: number;
   invalidUsernames: string[];
   lastError: string | null;
   currentCreatorUsername: string | null;
@@ -2462,6 +2470,11 @@ export interface MaloumFanScrapeJob {
   topCreatorsLimit: number;
   postsPerCreator: number;
   customUsernames: string[];
+  distributeToAllCreators?: boolean;
+  distributeListName?: string;
+  importFanIds?: string[];
+  messageText?: string;
+  targetCreatorIds?: string[];
   checkpoint: MaloumFanScrapeCheckpoint;
   startedAt: string | null;
   updatedAt: string;
@@ -2487,6 +2500,11 @@ export async function updateMaloumFanScrapeJob(
     topCreatorsLimit?: number;
     postsPerCreator?: number;
     customUsernames?: string[] | string;
+    distributeToAllCreators?: boolean;
+    distributeListName?: string;
+    importFanIds?: string[] | string;
+    messageText?: string;
+    targetCreatorIds?: string[];
     resetCheckpoint?: boolean;
   }
 ): Promise<{ job: MaloumFanScrapeJob; providerUserId: string | null }> {
@@ -2565,6 +2583,8 @@ export type FourBasedFanScrapeJobStatus =
   | 'completed'
   | 'failed';
 
+export type FourBasedFanScrapeSourceMode = 'trending' | 'import_ids';
+
 export interface FourBasedFanScrapeCheckpoint {
   trendingOffset: number;
   currentPagePostIds: string[];
@@ -2573,6 +2593,9 @@ export interface FourBasedFanScrapeCheckpoint {
   processedFans: number;
   skippedFans: number;
   failedFans: number;
+  skippedPosts?: number;
+  importFanIndex?: number;
+  importCreatorIndex?: number;
   lastError: string | null;
   currentPostId: string | null;
   statusMessage?: string | null;
@@ -2583,9 +2606,12 @@ export interface FourBasedFanScrapeJob {
   id: string;
   motherCreatorId: string;
   status: FourBasedFanScrapeJobStatus;
+  sourceMode?: FourBasedFanScrapeSourceMode;
   messageText: string;
   vaultIds: string[];
   priceCoins: number;
+  importFans?: Record<string, string | null>;
+  targetCreatorIds?: string[];
   checkpoint: FourBasedFanScrapeCheckpoint;
   startedAt: string | null;
   updatedAt: string;
@@ -2608,6 +2634,9 @@ export async function updateFourBasedFanScrapeJob(
     messageText?: string;
     vaultIds?: string[];
     priceCoins?: number;
+    sourceMode?: FourBasedFanScrapeSourceMode;
+    importFans?: Record<string, string | null> | string[] | string;
+    targetCreatorIds?: string[];
     resetCheckpoint?: boolean;
   }
 ): Promise<{ job: FourBasedFanScrapeJob; providerUserId: string | null }> {

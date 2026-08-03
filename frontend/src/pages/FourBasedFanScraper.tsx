@@ -26,6 +26,7 @@ import {
   type Creator,
   type FourBasedFanScrapeCheckpoint,
   type FourBasedFanScrapeJob,
+  type FourBasedFanScrapeSourceMode,
   type FourBasedVaultItem,
 } from '@/lib/api';
 
@@ -42,11 +43,52 @@ function emptyCheckpoint(): FourBasedFanScrapeCheckpoint {
     processedFans: 0,
     skippedFans: 0,
     failedFans: 0,
+    skippedPosts: 0,
+    importFanIndex: 0,
+    importCreatorIndex: 0,
     lastError: null,
     currentPostId: null,
     statusMessage: null,
     trendingExhausted: false,
   };
+}
+
+function parseFourBasedImportFans(
+  text: string
+): Record<string, string | null> {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const out: Record<string, string | null> = {};
+      for (const [id, name] of Object.entries(parsed)) {
+        const fanId = String(id).trim();
+        if (!fanId) continue;
+        out[fanId] =
+          name == null || name === ''
+            ? null
+            : String(name).trim() || null;
+      }
+      return out;
+    }
+    if (Array.isArray(parsed)) {
+      const out: Record<string, string | null> = {};
+      for (const item of parsed) {
+        const fanId = String(item).trim();
+        if (fanId) out[fanId] = null;
+      }
+      return out;
+    }
+  } catch {
+    // fall through
+  }
+  const out: Record<string, string | null> = {};
+  for (const part of trimmed.split(/[\n,\s]+/)) {
+    const fanId = part.trim();
+    if (fanId) out[fanId] = null;
+  }
+  return out;
 }
 
 function vaultItemId(item: FourBasedVaultItem): string {
@@ -102,6 +144,10 @@ export default function FourBasedFanScraper() {
   const [jobLoading, setJobLoading] = useState(false);
   const [jobError, setJobError] = useState<string | null>(null);
 
+  const [sourceMode, setSourceMode] =
+    useState<FourBasedFanScrapeSourceMode>('trending');
+  const [importFansText, setImportFansText] = useState('');
+  const [targetCreatorIds, setTargetCreatorIds] = useState<string[]>([]);
   const [messageText, setMessageText] = useState('');
   const [priceDollars, setPriceDollars] = useState('');
   const [selectedVaultItems, setSelectedVaultItems] = useState<FourBasedVaultItem[]>(
@@ -123,7 +169,10 @@ export default function FourBasedFanScraper() {
 
   const checkpoint = job?.checkpoint || emptyCheckpoint();
   const isRunning = job?.status === 'running' || serverRunning;
+  const isImportMode = sourceMode === 'import_ids';
   const priceCoins = dollarsToCoins(Number(priceDollars) || 0);
+  const parsedImportFans = parseFourBasedImportFans(importFansText);
+  const parsedImportCount = Object.keys(parsedImportFans).length;
 
   const loadCreators = useCallback(async () => {
     setCreatorsLoading(true);
@@ -149,8 +198,14 @@ export default function FourBasedFanScraper() {
       setServerRunning(Boolean(result.serverRunning));
       if (result.providerUserId) setProviderUserId(result.providerUserId);
       if (!opts?.quiet) {
+        setSourceMode(result.job.sourceMode || 'trending');
         setMessageText(result.job.messageText || '');
         setPriceDollars(coinsToDollars(result.job.priceCoins || 0));
+        setTargetCreatorIds(result.job.targetCreatorIds || []);
+        const fans = result.job.importFans || {};
+        setImportFansText(
+          Object.keys(fans).length ? JSON.stringify(fans, null, 2) : ''
+        );
       }
       if (result.job.checkpoint?.lastError && result.job.status === 'failed') {
         setJobError(result.job.checkpoint.lastError);
@@ -247,6 +302,12 @@ export default function FourBasedFanScraper() {
           messageText,
           vaultIds: selectedVaultItems.map(vaultItemId).filter(Boolean),
           priceCoins,
+          sourceMode,
+          importFans:
+            sourceMode === 'import_ids'
+              ? parseFourBasedImportFans(importFansText)
+              : {},
+          targetCreatorIds,
           resetCheckpoint: extra?.resetCheckpoint,
         });
         setJob(result.job);
@@ -258,13 +319,26 @@ export default function FourBasedFanScraper() {
         setSavingConfig(false);
       }
     },
-    [selectedCreatorId, messageText, selectedVaultItems, priceCoins, toast]
+    [
+      selectedCreatorId,
+      messageText,
+      selectedVaultItems,
+      priceCoins,
+      sourceMode,
+      importFansText,
+      targetCreatorIds,
+      toast,
+    ]
   );
 
   const handleStart = useCallback(async () => {
     if (!selectedCreatorId || actionBusy || isRunning) return;
     if (!messageText.trim() && selectedVaultItems.length === 0) {
       toast.error('Add a message or vault media');
+      return;
+    }
+    if (sourceMode === 'import_ids' && parsedImportCount === 0) {
+      toast.error('Paste at least one fan ID to import');
       return;
     }
     setActionBusy(true);
@@ -289,6 +363,8 @@ export default function FourBasedFanScraper() {
     isRunning,
     messageText,
     selectedVaultItems.length,
+    sourceMode,
+    parsedImportCount,
     persistConfig,
     toast,
   ]);
@@ -476,15 +552,23 @@ export default function FourBasedFanScraper() {
                 </p>
               </div>
               <div className="rounded-xl border border-gray-200 dark:border-zinc-800 px-3 py-3">
-                <p className="text-[11px] text-gray-500 dark:text-zinc-500">Trending offset</p>
+                <p className="text-[11px] text-gray-500 dark:text-zinc-500">
+                  {isImportMode ? 'Import fans' : 'Trending offset'}
+                </p>
                 <p className="text-lg font-semibold text-gray-900 dark:text-white">
-                  {checkpoint.trendingOffset}
+                  {isImportMode
+                    ? `${checkpoint.importFanIndex || 0}/${parsedImportCount || '—'}`
+                    : checkpoint.trendingOffset}
                 </p>
               </div>
               <div className="rounded-xl border border-gray-200 dark:border-zinc-800 px-3 py-3">
-                <p className="text-[11px] text-gray-500 dark:text-zinc-500">Posts (page)</p>
+                <p className="text-[11px] text-gray-500 dark:text-zinc-500">
+                  {isImportMode ? 'Send creators' : 'Posts skipped / page'}
+                </p>
                 <p className="text-lg font-semibold text-gray-900 dark:text-white">
-                  {checkpoint.postIndex}/{checkpoint.currentPagePostIds.length || '—'}
+                  {isImportMode
+                    ? `${checkpoint.importCreatorIndex || 0}/${targetCreatorIds.length || creators.length || '—'}`
+                    : `${checkpoint.skippedPosts || 0} / ${checkpoint.postIndex}/${checkpoint.currentPagePostIds.length || '—'}`}
                 </p>
               </div>
             </div>
@@ -498,9 +582,111 @@ export default function FourBasedFanScraper() {
               {statusLine}
             </p>
             <p className="text-xs text-gray-500 dark:text-zinc-500">
-              Source: Trending (unlimited). Scraping runs on the DomX API — closing the CRM
-              will not stop it.
+              {isImportMode
+                ? 'Source: Import IDs (cold DM). Runs on the DomX API — closing the CRM will not stop it.'
+                : 'Source: Trending (unlimited). Scraping runs on the DomX API — closing the CRM will not stop it.'}
             </p>
+          </section>
+
+          <section className="space-y-3">
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-zinc-500">
+              Source
+            </h2>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={isRunning}
+                onClick={() => setSourceMode('trending')}
+                className={`px-3 py-1.5 rounded-lg text-sm border ${
+                  sourceMode === 'trending'
+                    ? 'border-gray-900 dark:border-white bg-gray-900 text-white dark:bg-white dark:text-zinc-900'
+                    : 'border-gray-200 dark:border-zinc-700'
+                } disabled:opacity-50`}
+              >
+                Trending
+              </button>
+              <button
+                type="button"
+                disabled={isRunning}
+                onClick={() => setSourceMode('import_ids')}
+                className={`px-3 py-1.5 rounded-lg text-sm border ${
+                  sourceMode === 'import_ids'
+                    ? 'border-gray-900 dark:border-white bg-gray-900 text-white dark:bg-white dark:text-zinc-900'
+                    : 'border-gray-200 dark:border-zinc-700'
+                } disabled:opacity-50`}
+              >
+                Import IDs
+              </button>
+            </div>
+            {isImportMode && (
+              <>
+                <label className="block text-sm space-y-1">
+                  <span className="text-xs text-gray-500 dark:text-zinc-500">
+                    Fan map JSON ({parsedImportCount} parsed) — cold DM only
+                  </span>
+                  <textarea
+                    rows={8}
+                    disabled={isRunning}
+                    value={importFansText}
+                    onChange={(e) => setImportFansText(e.target.value)}
+                    placeholder={
+                      '{\n  "66fae4034d6a02bb6c0b3b4c": "rudolfo99",\n  "66fb6cc3d34866383a059e37": "thor061"\n}'
+                    }
+                    className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm font-mono disabled:opacity-50"
+                  />
+                </label>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs text-gray-500 dark:text-zinc-500">
+                      Send from creators (empty = all 4based creators)
+                    </p>
+                    <button
+                      type="button"
+                      disabled={isRunning}
+                      onClick={() =>
+                        setTargetCreatorIds(
+                          targetCreatorIds.length === creators.length
+                            ? []
+                            : creators.map((c) => c.id)
+                        )
+                      }
+                      className="text-xs underline underline-offset-2 disabled:opacity-50"
+                    >
+                      {targetCreatorIds.length === creators.length
+                        ? 'Clear all'
+                        : 'Select all'}
+                    </button>
+                  </div>
+                  <div className="rounded-xl border border-gray-200 dark:border-zinc-800 divide-y divide-gray-100 dark:divide-zinc-800/80 max-h-48 overflow-y-auto">
+                    {creators.map((creator) => {
+                      const checked = targetCreatorIds.includes(creator.id);
+                      return (
+                        <label
+                          key={creator.id}
+                          className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={isRunning}
+                            checked={checked}
+                            onChange={() =>
+                              setTargetCreatorIds((prev) =>
+                                checked
+                                  ? prev.filter((id) => id !== creator.id)
+                                  : [...prev, creator.id]
+                              )
+                            }
+                          />
+                          <span className="truncate">
+                            {creator.displayName || creator.username}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
           </section>
 
           <section className="space-y-3">

@@ -64,12 +64,36 @@ function emptyCheckpoint(): MaloumFanScrapeCheckpoint {
     processedFans: 0,
     skippedFans: 0,
     failedFans: 0,
+    skippedPosts: 0,
+    distributedFans: 0,
+    distributeFailed: 0,
     invalidUsernames: [],
     lastError: null,
     currentCreatorUsername: null,
     currentPostId: null,
     statusMessage: null,
   };
+}
+
+function parseMaloumImportIds(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      return [...new Set(parsed.map((v) => String(v).trim()).filter(Boolean))];
+    }
+  } catch {
+    // fall through
+  }
+  return [
+    ...new Set(
+      trimmed
+        .split(/[\n,\s]+/)
+        .map((v) => v.trim())
+        .filter(Boolean)
+    ),
+  ];
 }
 
 export default function MaloumFanScraper() {
@@ -94,6 +118,10 @@ export default function MaloumFanScraper() {
   const [topCreatorsLimit, setTopCreatorsLimit] = useState(50);
   const [postsPerCreator, setPostsPerCreator] = useState(50);
   const [customUsernamesText, setCustomUsernamesText] = useState('');
+  const [distributeToAllCreators, setDistributeToAllCreators] = useState(false);
+  const [distributeListName, setDistributeListName] = useState('Fan Scrape');
+  const [importFanIdsText, setImportFanIdsText] = useState('');
+  const [targetCreatorIds, setTargetCreatorIds] = useState<string[]>([]);
   const [savingConfig, setSavingConfig] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
 
@@ -104,8 +132,11 @@ export default function MaloumFanScraper() {
 
   const checkpoint = job?.checkpoint || emptyCheckpoint();
   const isRunning = job?.status === 'running' || serverRunning;
-  const sourceLocked = (checkpoint.sourceCreators?.length || 0) > 0;
+  const isImportMode = sourceMode === 'import_ids';
+  const sourceLocked =
+    !isImportMode && (checkpoint.sourceCreators?.length || 0) > 0;
   const parsedCustomCount = normalizeUsernameList(customUsernamesText).length;
+  const parsedImportCount = parseMaloumImportIds(importFanIdsText).length;
 
   const loadCreators = useCallback(async () => {
     setCreatorsLoading(true);
@@ -133,6 +164,14 @@ export default function MaloumFanScraper() {
       setTopCreatorsLimit(result.job.topCreatorsLimit);
       setPostsPerCreator(result.job.postsPerCreator);
       setCustomUsernamesText((result.job.customUsernames || []).join('\n'));
+      setDistributeToAllCreators(Boolean(result.job.distributeToAllCreators));
+      setDistributeListName(result.job.distributeListName || 'Fan Scrape');
+      setImportFanIdsText(
+        (result.job.importFanIds || []).length
+          ? JSON.stringify(result.job.importFanIds, null, 2)
+          : ''
+      );
+      setTargetCreatorIds(result.job.targetCreatorIds || []);
       if (result.job.checkpoint?.lastError && result.job.status === 'failed') {
         setJobError(result.job.checkpoint.lastError);
       }
@@ -203,6 +242,13 @@ export default function MaloumFanScraper() {
               : [],
           targetListId: job?.targetListId ?? null,
           targetListName: job?.targetListName ?? null,
+          distributeToAllCreators,
+          distributeListName,
+          importFanIds:
+            sourceMode === 'import_ids'
+              ? parseMaloumImportIds(importFanIdsText)
+              : [],
+          targetCreatorIds,
           resetCheckpoint: extra?.resetCheckpoint,
         });
         setJob(result.job);
@@ -222,6 +268,10 @@ export default function MaloumFanScraper() {
       customUsernamesText,
       job?.targetListId,
       job?.targetListName,
+      distributeToAllCreators,
+      distributeListName,
+      importFanIdsText,
+      targetCreatorIds,
       toast,
     ]
   );
@@ -286,6 +336,12 @@ export default function MaloumFanScraper() {
     try {
       const saved = await persistConfig();
       if (!saved) return;
+      if (saved.sourceMode === 'import_ids') {
+        if (!(saved.importFanIds || []).length) {
+          toast.error('Paste at least one fan ID to import');
+          return;
+        }
+      }
       if (!saved.targetListId) {
         toast.error('Select or create a target list first');
         return;
@@ -490,18 +546,34 @@ export default function MaloumFanScraper() {
                 </p>
               </div>
               <div className="rounded-xl border border-gray-200 dark:border-zinc-800 px-3 py-3">
-                <p className="text-[11px] text-gray-500 dark:text-zinc-500">Creators</p>
+                <p className="text-[11px] text-gray-500 dark:text-zinc-500">
+                  {isImportMode ? 'Import fans' : 'Creators'}
+                </p>
                 <p className="text-lg font-semibold text-gray-900 dark:text-white">
-                  {creatorsDone}/{creatorsTotal || '—'}
+                  {isImportMode
+                    ? `${checkpoint.importFanIndex || 0}/${parsedImportCount || '—'}`
+                    : `${creatorsDone}/${creatorsTotal || '—'}`}
                 </p>
               </div>
               <div className="rounded-xl border border-gray-200 dark:border-zinc-800 px-3 py-3">
-                <p className="text-[11px] text-gray-500 dark:text-zinc-500">Posts (current)</p>
+                <p className="text-[11px] text-gray-500 dark:text-zinc-500">
+                  {isImportMode ? 'Creators targeted' : 'Posts skipped / current'}
+                </p>
                 <p className="text-lg font-semibold text-gray-900 dark:text-white">
-                  {postsDone}/{postsTotal || '—'}
+                  {isImportMode
+                    ? `${checkpoint.importCreatorIndex || 0}/${targetCreatorIds.length || creators.length || '—'}`
+                    : `${checkpoint.skippedPosts || 0} / ${postsDone}/${postsTotal || '—'}`}
                 </p>
               </div>
             </div>
+            {!isImportMode && (checkpoint.distributedFans || 0) > 0 && (
+              <p className="text-xs text-gray-500 dark:text-zinc-500">
+                Distributed to other creators: {checkpoint.distributedFans}
+                {(checkpoint.distributeFailed || 0) > 0
+                  ? ` · ${checkpoint.distributeFailed} distribute failures`
+                  : ''}
+              </p>
+            )}
             <p className="text-sm text-gray-600 dark:text-zinc-400">
               Status:{' '}
               <span className="font-medium text-gray-900 dark:text-white">
@@ -566,61 +638,183 @@ export default function MaloumFanScraper() {
               >
                 Custom usernames
               </button>
+              <button
+                type="button"
+                disabled={isRunning}
+                onClick={() => setSourceMode('import_ids')}
+                className={`px-3 py-1.5 rounded-lg text-sm border ${
+                  sourceMode === 'import_ids'
+                    ? 'border-gray-900 dark:border-white bg-gray-900 text-white dark:bg-white dark:text-zinc-900'
+                    : 'border-gray-200 dark:border-zinc-700'
+                } disabled:opacity-50`}
+              >
+                Import IDs
+              </button>
             </div>
 
-            {sourceMode === 'top_creators' ? (
-              <label className="block text-sm space-y-1 max-w-xs">
-                <span className="text-xs text-gray-500 dark:text-zinc-500">
-                  Top creators limit
-                </span>
-                <input
-                  type="number"
-                  min={1}
-                  max={200}
-                  disabled={isRunning || sourceLocked}
-                  value={topCreatorsLimit}
-                  onChange={(e) =>
-                    setTopCreatorsLimit(
-                      Math.min(200, Math.max(1, Number(e.target.value) || 50))
-                    )
-                  }
-                  className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm disabled:opacity-50"
-                />
-              </label>
+            {sourceMode === 'import_ids' ? (
+              <>
+                <label className="block text-sm space-y-1">
+                  <span className="text-xs text-gray-500 dark:text-zinc-500">
+                    Fan IDs JSON array ({parsedImportCount} parsed) — add to lists only
+                  </span>
+                  <textarea
+                    rows={8}
+                    disabled={isRunning}
+                    value={importFanIdsText}
+                    onChange={(e) => setImportFanIdsText(e.target.value)}
+                    placeholder={'["63efe68732ab5388bc029607", "641347a4a740eeb4f352a9be"]'}
+                    className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm font-mono disabled:opacity-50"
+                  />
+                </label>
+                <label className="block text-sm space-y-1 max-w-xs">
+                  <span className="text-xs text-gray-500 dark:text-zinc-500">
+                    List name on other creators
+                  </span>
+                  <input
+                    type="text"
+                    disabled={isRunning}
+                    value={distributeListName}
+                    onChange={(e) => setDistributeListName(e.target.value)}
+                    placeholder="Fan Scrape"
+                    className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm disabled:opacity-50"
+                  />
+                </label>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs text-gray-500 dark:text-zinc-500">
+                      Add to creators&apos; lists (empty = all Maloum creators)
+                    </p>
+                    <button
+                      type="button"
+                      disabled={isRunning}
+                      onClick={() =>
+                        setTargetCreatorIds(
+                          targetCreatorIds.length === creators.length
+                            ? []
+                            : creators.map((c) => c.id)
+                        )
+                      }
+                      className="text-xs underline underline-offset-2 disabled:opacity-50"
+                    >
+                      {targetCreatorIds.length === creators.length
+                        ? 'Clear all'
+                        : 'Select all'}
+                    </button>
+                  </div>
+                  <div className="rounded-xl border border-gray-200 dark:border-zinc-800 divide-y divide-gray-100 dark:divide-zinc-800/80 max-h-48 overflow-y-auto">
+                    {creators.map((creator) => {
+                      const checked = targetCreatorIds.includes(creator.id);
+                      return (
+                        <label
+                          key={creator.id}
+                          className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={isRunning}
+                            checked={checked}
+                            onChange={() =>
+                              setTargetCreatorIds((prev) =>
+                                checked
+                                  ? prev.filter((id) => id !== creator.id)
+                                  : [...prev, creator.id]
+                              )
+                            }
+                          />
+                          <span className="truncate">
+                            {creator.displayName || creator.username}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
             ) : (
-              <label className="block text-sm space-y-1">
-                <span className="text-xs text-gray-500 dark:text-zinc-500">
-                  Creator usernames ({parsedCustomCount} parsed)
-                </span>
-                <textarea
-                  rows={6}
-                  disabled={isRunning || sourceLocked}
-                  value={customUsernamesText}
-                  onChange={(e) => setCustomUsernamesText(e.target.value)}
-                  placeholder={'stella4twenty\ncreator2\nhttps://app.maloum.com/creator/name'}
-                  className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm font-mono disabled:opacity-50"
-                />
-              </label>
-            )}
+              <>
+                {sourceMode === 'top_creators' ? (
+                  <label className="block text-sm space-y-1 max-w-xs">
+                    <span className="text-xs text-gray-500 dark:text-zinc-500">
+                      Top creators limit
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={200}
+                      disabled={isRunning || sourceLocked}
+                      value={topCreatorsLimit}
+                      onChange={(e) =>
+                        setTopCreatorsLimit(
+                          Math.min(200, Math.max(1, Number(e.target.value) || 50))
+                        )
+                      }
+                      className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm disabled:opacity-50"
+                    />
+                  </label>
+                ) : (
+                  <label className="block text-sm space-y-1">
+                    <span className="text-xs text-gray-500 dark:text-zinc-500">
+                      Creator usernames ({parsedCustomCount} parsed)
+                    </span>
+                    <textarea
+                      rows={6}
+                      disabled={isRunning || sourceLocked}
+                      value={customUsernamesText}
+                      onChange={(e) => setCustomUsernamesText(e.target.value)}
+                      placeholder={
+                        'stella4twenty\ncreator2\nhttps://app.maloum.com/creator/name'
+                      }
+                      className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm font-mono disabled:opacity-50"
+                    />
+                  </label>
+                )}
 
-            <label className="block text-sm space-y-1 max-w-xs">
-              <span className="text-xs text-gray-500 dark:text-zinc-500">
-                Posts per creator
-              </span>
-              <input
-                type="number"
-                min={1}
-                max={200}
-                disabled={isRunning || sourceLocked}
-                value={postsPerCreator}
-                onChange={(e) =>
-                  setPostsPerCreator(
-                    Math.min(200, Math.max(1, Number(e.target.value) || 50))
-                  )
-                }
-                className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm disabled:opacity-50"
-              />
-            </label>
+                <label className="block text-sm space-y-1 max-w-xs">
+                  <span className="text-xs text-gray-500 dark:text-zinc-500">
+                    Posts per creator
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={200}
+                    disabled={isRunning || sourceLocked}
+                    value={postsPerCreator}
+                    onChange={(e) =>
+                      setPostsPerCreator(
+                        Math.min(200, Math.max(1, Number(e.target.value) || 50))
+                      )
+                    }
+                    className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm disabled:opacity-50"
+                  />
+                </label>
+
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    disabled={isRunning}
+                    checked={distributeToAllCreators}
+                    onChange={(e) => setDistributeToAllCreators(e.target.checked)}
+                  />
+                  <span>Add scraped fans to all Maloum creators&apos; lists</span>
+                </label>
+                {distributeToAllCreators && (
+                  <label className="block text-sm space-y-1 max-w-xs">
+                    <span className="text-xs text-gray-500 dark:text-zinc-500">
+                      List name on other creators
+                    </span>
+                    <input
+                      type="text"
+                      disabled={isRunning}
+                      value={distributeListName}
+                      onChange={(e) => setDistributeListName(e.target.value)}
+                      placeholder="Fan Scrape"
+                      className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm disabled:opacity-50"
+                    />
+                  </label>
+                )}
+              </>
+            )}
 
             {sourceLocked && (
               <p className="text-xs text-amber-600 dark:text-amber-400">
@@ -631,7 +825,7 @@ export default function MaloumFanScraper() {
 
           <section className="space-y-3">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-zinc-500">
-              Target list
+              {isImportMode ? 'Target list (this mother)' : 'Target list'}
             </h2>
             <div className="flex flex-wrap gap-2 items-end">
               <label className="block text-sm space-y-1 flex-1 min-w-[200px]">
