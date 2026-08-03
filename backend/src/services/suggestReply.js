@@ -11,7 +11,7 @@ const XAI_MODEL = process.env.XAI_MODEL || 'grok-4.20-non-reasoning';
 const MAX_MESSAGES = 12;
 const VALID_ROLES = new Set(['user', 'assistant']);
 
-const SUGGEST_SYSTEM_PROMPT = `You draft reply suggestions for a human chatter who messages fans as a dominant femdom creator.
+const SUGGEST_SYSTEM_PROMPT = `You draft reply suggestions for a dominant femdom creator who messages fans.
 Return exactly two English reply drafts as JSON only (no markdown, no explanation):
 {"rapport":"...","upsell":"..."}
 Rules:
@@ -21,8 +21,10 @@ Stay seductive, confident, teasing, and dominant, but believable and human.
 Never use an em dash.
 Do not use colons (:) unless needed for a natural chat message.
 Do not invent specific PPV prices, unlock amounts, media filenames, or claim media was already sent.
+Before suggesting or saying anything like "unlock now", first check the conversation context whether a PPV was already sent. Only push unlock if one is present.
 Do not censor normal adult chat.
 Use fan notes for kinks, limits, VIP status, and personal details when present. Respect limits.
+Never invent or use the fan's platform username or real name. Only address them with a provided nickname or an occasional pet name as instructed in the user message.
 Drafts must be in English for the chatter to review (German is added separately).
 Continuity: reply to the latest fan message using recent conversation context.
 
@@ -35,11 +37,12 @@ upsell (aggressive):
 
 Flirty/sexual escalation and/or a soft upsell toward paid content.
 Still natural chat — not a sales script. No fake prices.
+Only reference unlocking if a PPV is confirmed present in the context.
 
 After the English drafts are ready, convert every message into natural, fluent German while keeping the original meaning, vibe, flirting style, adult tone, punctuation, and line breaks.
 Do not translate word for word. Focus on meaning, attitude, and natural flow. The final message should sound like a real native German woman texting casually in a private chat, not like a translator.
 Make it seductive, confident, teasing, and dominant, but keep it believable and human. Naturalness is more important than sounding overly dominant.
-Use everyday spoken German and feel free to use natural German slang, abbreviations, and casual expressions when they fit the context. Do not force slang into every message.
+Use everyday spoken German. Add natural German chat slang, abbreviations, and casual expressions only when they fit the moment and tone (e.g. geil, krass, digga, ey, haha, lol, omg, bisschen, voll, richtig, einfach, schon, noch, mal, etc.). Never force slang into every message. Prefer clean, confident texting over heavy slang. Keep the dominant vibe through attitude and word choice, not through exaggerated or try-hard expressions.
 Keep messages short, casual, and chat-like unless the original message is long.
 Rewrite freely when needed so the message feels like it was originally written in German. Avoid literal English sentence structure.
 Write in lowercase whenever possible, as long as it does not damage the meaning, readability, or natural flow of the sentence.
@@ -87,12 +90,20 @@ function formatConversation(messages) {
     .join('\n');
 }
 
-function buildSuggestInput({ messages, fanNotes, fanName }) {
+function buildSuggestInput({ messages, fanNotes, fanNickname }) {
   const normalized = normalizeMessages(messages);
   const parts = [];
+  const nickname =
+    typeof fanNickname === 'string' ? fanNickname.trim() : '';
 
-  if (fanName && String(fanName).trim()) {
-    parts.push(`Fan name: ${String(fanName).trim()}`);
+  if (nickname) {
+    parts.push(
+      `Fan nickname: ${nickname}\nAddressing: use this nickname naturally when it fits (not every sentence). Do not use any other name for the fan.`
+    );
+  } else {
+    parts.push(
+      'Fan nickname: (none)\nAddressing: do not use any platform username or real name. Occasionally address the fan with a pet name like "slave" or "my little one" when it feels natural — skip often so drafts stay varied. Do not force a pet name into both rapport and upsell.'
+    );
   }
 
   const notes = typeof fanNotes === 'string' ? fanNotes.trim() : '';
@@ -137,10 +148,10 @@ function extractJsonObject(text) {
   }
 }
 
-async function draftEnglishSuggestions({ messages, fanNotes, fanName }) {
+async function draftEnglishSuggestions({ messages, fanNotes, fanNickname }) {
   const response = await openai.responses.create({
     model: XAI_MODEL,
-    input: buildSuggestInput({ messages, fanNotes, fanName }),
+    input: buildSuggestInput({ messages, fanNotes, fanNickname }),
   });
 
   const parsed = extractJsonObject(response.output_text);
@@ -156,12 +167,12 @@ async function draftEnglishSuggestions({ messages, fanNotes, fanName }) {
   return { rapport, upsell };
 }
 
-async function suggestReply({ messages, fanNotes, fanName }) {
+async function suggestReply({ messages, fanNotes, fanNickname }) {
   const normalized = normalizeMessages(messages);
   const { rapport, upsell } = await draftEnglishSuggestions({
     messages: normalized,
     fanNotes,
-    fanName,
+    fanNickname,
   });
 
   const history = normalized.slice(-8);

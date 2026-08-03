@@ -2838,7 +2838,7 @@ export interface SuggestReplyOption {
 export async function suggestReply(payload: {
   messages: TranslateHistoryItem[];
   fanNotes?: string;
-  fanName?: string;
+  fanNickname?: string;
 }): Promise<{ suggestions: SuggestReplyOption[] }> {
   const result = await request<{ suggestions: SuggestReplyOption[] }>(
     '/api/suggest-reply',
@@ -2847,7 +2847,7 @@ export async function suggestReply(payload: {
       body: JSON.stringify({
         messages: payload.messages,
         fanNotes: payload.fanNotes || '',
-        fanName: payload.fanName || '',
+        fanNickname: payload.fanNickname || '',
       }),
     }
   );

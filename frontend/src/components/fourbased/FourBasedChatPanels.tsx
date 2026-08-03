@@ -1198,6 +1198,8 @@ export function FourBasedChatThread({
   const creatorId = creator.id;
   const canEditVaultNotes = hasPermission('vault.notes.edit');
   const canManageScripts = hasPermission('scripts.manage');
+  const canUseSuggestReply =
+    user?.role === 'owner' || user?.role === 'manager';
 
   const [chat, setChat] = useState<FourBasedChat | null>(initialChat);
   const [providerUserId, setProviderUserId] = useState<string | null>(
@@ -1462,6 +1464,17 @@ export function FourBasedChatThread({
       return notes;
     } catch {
       return '';
+    }
+  }, [creatorId, fan.id]);
+
+  const getSuggestFanNickname = useCallback(async () => {
+    if (!fan.id) return null;
+    try {
+      const result = await getFourBasedPivot(creatorId, fan.id);
+      const alias = (result.alias || '').trim();
+      return alias || null;
+    } catch {
+      return null;
     }
   }, [creatorId, fan.id]);
 
@@ -2913,13 +2926,15 @@ export function FourBasedChatThread({
           onInsert={(emoji) => setDraft((d) => d + emoji)}
           trailing={
             <div className="flex items-center gap-0.5">
-              <SuggestReplyToolbarButton
-                disabled={sending || translatingOutgoing || messages.length === 0}
-                getMessages={getSuggestMessages}
-                getFanNotes={getSuggestFanNotes}
-                fanName={fan.name || null}
-                onApply={applySuggestedReply}
-              />
+              {canUseSuggestReply && (
+                <SuggestReplyToolbarButton
+                  disabled={sending || translatingOutgoing || messages.length === 0}
+                  getMessages={getSuggestMessages}
+                  getFanNotes={getSuggestFanNotes}
+                  getFanNickname={getSuggestFanNickname}
+                  onApply={applySuggestedReply}
+                />
+              )}
               <ScriptToolbarButton
                 creatorId={creatorId}
                 platform="4based"

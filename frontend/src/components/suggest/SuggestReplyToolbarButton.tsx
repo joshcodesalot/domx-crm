@@ -18,7 +18,10 @@ export interface SuggestReplyToolbarButtonProps {
   getMessages: () => TranslateHistoryItem[];
   /** Optional async loader for fan notes (e.g. 4Based pivot). */
   getFanNotes?: () => Promise<string> | string;
-  fanName?: string | null;
+  /** Optional async loader for fan nickname/alias (e.g. 4Based pivot). */
+  getFanNickname?: () => Promise<string | null> | string | null;
+  /** Static nickname when already known (e.g. Maloum chatPartner.nickname). */
+  fanNickname?: string | null;
   onApply: (payload: SuggestReplyApplyPayload) => void;
 }
 
@@ -26,7 +29,8 @@ export default function SuggestReplyToolbarButton({
   disabled = false,
   getMessages,
   getFanNotes,
-  fanName = null,
+  getFanNickname,
+  fanNickname = null,
   onApply,
 }: SuggestReplyToolbarButtonProps) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -53,10 +57,14 @@ export default function SuggestReplyToolbarButton({
       if (getFanNotes) {
         fanNotes = (await getFanNotes()) || '';
       }
+      let nickname = fanNickname || '';
+      if (getFanNickname) {
+        nickname = (await getFanNickname()) || '';
+      }
       const result = await suggestReply({
         messages,
         fanNotes,
-        fanName: fanName || undefined,
+        fanNickname: nickname || undefined,
       });
       setSuggestions(result.suggestions);
     } catch (err) {
@@ -64,7 +72,7 @@ export default function SuggestReplyToolbarButton({
     } finally {
       setLoading(false);
     }
-  }, [getMessages, getFanNotes, fanName]);
+  }, [getMessages, getFanNotes, getFanNickname, fanNickname]);
 
   useEffect(() => {
     if (!open) return;

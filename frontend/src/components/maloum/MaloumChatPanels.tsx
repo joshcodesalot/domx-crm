@@ -893,6 +893,8 @@ export function MaloumChatThread({
   const creatorId = creator.id;
   const canEditVaultNotes = hasPermission('vault.notes.edit');
   const canManageScripts = hasPermission('scripts.manage');
+  const canUseSuggestReply =
+    user?.role === 'owner' || user?.role === 'manager';
 
   const [chat, setChat] = useState<MaloumChat | null>(initialChat);
   const [providerUserId, setProviderUserId] = useState<string | null>(
@@ -2320,13 +2322,15 @@ export function MaloumChatThread({
           onInsert={(emoji) => setDraft((d) => d + emoji)}
           trailing={
             <div className="flex items-center gap-0.5">
-              <SuggestReplyToolbarButton
-                disabled={sending || translatingOutgoing || messages.length === 0}
-                getMessages={getSuggestMessages}
-                getFanNotes={getSuggestFanNotes}
-                fanName={partnerName(chat)}
-                onApply={applySuggestedReply}
-              />
+              {canUseSuggestReply && (
+                <SuggestReplyToolbarButton
+                  disabled={sending || translatingOutgoing || messages.length === 0}
+                  getMessages={getSuggestMessages}
+                  getFanNotes={getSuggestFanNotes}
+                  fanNickname={chat?.chatPartner?.nickname || null}
+                  onApply={applySuggestedReply}
+                />
+              )}
               <ScriptToolbarButton
                 creatorId={creatorId}
                 platform="maloum"

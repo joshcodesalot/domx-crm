@@ -316,16 +316,11 @@ export default function AiBulkReplyPage({
       try {
         const result =
           platform === 'maloum'
-            ? await draftMaloumSuggestReply(
-                selectedCreatorId,
-                chat.chatId,
-                chat.fanName
-              )
+            ? await draftMaloumSuggestReply(selectedCreatorId, chat.chatId)
             : await draftFourBasedSuggestReply(
                 selectedCreatorId,
                 chat.chatId,
                 chat.fanId,
-                chat.fanName,
                 providerUserId
               );
         return makeReadyRow(chat, result.suggestions);

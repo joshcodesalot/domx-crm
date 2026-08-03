@@ -167,8 +167,7 @@ function fourBasedMessagesToHistory(
 
 export async function draftMaloumSuggestReply(
   creatorId: string,
-  chatId: string,
-  fanName: string
+  chatId: string
 ): Promise<{ suggestions: SuggestReplyOption[] }> {
   const [messagesResult, chatResult] = await Promise.all([
     getMaloumMessages(creatorId, chatId, { limit: 20 }),
@@ -186,11 +185,15 @@ export async function draftMaloumSuggestReply(
     typeof chatResult?.chat?.chatPartner?.notes === 'string'
       ? chatResult.chat.chatPartner.notes
       : '';
+  const fanNickname =
+    typeof chatResult?.chat?.chatPartner?.nickname === 'string'
+      ? chatResult.chat.chatPartner.nickname.trim()
+      : '';
 
   return suggestReply({
     messages: history,
     fanNotes: sanitizeFanNotes(notesFromChat),
-    fanName,
+    fanNickname,
   });
 }
 
@@ -198,7 +201,6 @@ export async function draftFourBasedSuggestReply(
   creatorId: string,
   chatId: string,
   fanId: string | null,
-  fanName: string,
   providerUserIdHint: string | null
 ): Promise<{ suggestions: SuggestReplyOption[] }> {
   const messagesResult = await getFourBasedMessages(creatorId, chatId, {
@@ -216,19 +218,22 @@ export async function draftFourBasedSuggestReply(
   }
 
   let fanNotes = '';
+  let fanNickname = '';
   if (fanId) {
     try {
       const pivot = await getFourBasedPivot(creatorId, fanId);
       fanNotes = sanitizeFanNotes(pivot.note);
+      fanNickname = (pivot.alias || '').trim();
     } catch {
       fanNotes = '';
+      fanNickname = '';
     }
   }
 
   return suggestReply({
     messages: history,
     fanNotes,
-    fanName,
+    fanNickname,
   });
 }
 
