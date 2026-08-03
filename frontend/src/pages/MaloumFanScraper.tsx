@@ -122,6 +122,18 @@ export default function MaloumFanScraper() {
   const [distributeListName, setDistributeListName] = useState('Fan Scrape');
   const [importFanIdsText, setImportFanIdsText] = useState('');
   const [targetCreatorIds, setTargetCreatorIds] = useState<string[]>([]);
+  const [targetCreatorListIds, setTargetCreatorListIds] = useState<
+    Record<string, string>
+  >({});
+  const [otherCreatorLists, setOtherCreatorLists] = useState<
+    Record<string, MaloumChatListItem[]>
+  >({});
+  const [otherCreatorListsNext, setOtherCreatorListsNext] = useState<
+    Record<string, string | null>
+  >({});
+  const [otherCreatorListsLoading, setOtherCreatorListsLoading] = useState<
+    Record<string, boolean>
+  >({});
   const [savingConfig, setSavingConfig] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
 
@@ -137,6 +149,14 @@ export default function MaloumFanScraper() {
     !isImportMode && (checkpoint.sourceCreators?.length || 0) > 0;
   const parsedCustomCount = normalizeUsernameList(customUsernamesText).length;
   const parsedImportCount = parseMaloumImportIds(importFanIdsText).length;
+  const otherSelectedCreators = useMemo(
+    () =>
+      creators.filter(
+        (c) =>
+          targetCreatorIds.includes(c.id) && c.id !== selectedCreatorId
+      ),
+    [creators, targetCreatorIds, selectedCreatorId]
+  );
 
   const loadCreators = useCallback(async () => {
     setCreatorsLoading(true);
@@ -172,6 +192,7 @@ export default function MaloumFanScraper() {
           : ''
       );
       setTargetCreatorIds(result.job.targetCreatorIds || []);
+      setTargetCreatorListIds(result.job.targetCreatorListIds || {});
       if (result.job.checkpoint?.lastError && result.job.status === 'failed') {
         setJobError(result.job.checkpoint.lastError);
       }
@@ -209,6 +230,45 @@ export default function MaloumFanScraper() {
     [selectedCreatorId, toast]
   );
 
+  const loadOtherCreatorLists = useCallback(
+    async (
+      creatorId: string,
+      opts?: { append?: boolean; next?: string | null }
+    ) => {
+      const append = Boolean(opts?.append);
+      setOtherCreatorListsLoading((prev) => ({ ...prev, [creatorId]: true }));
+      try {
+        const result = await listMaloumChatLists(creatorId, {
+          limit: 25,
+          next: opts?.next || undefined,
+        });
+        setOtherCreatorLists((prev) => ({
+          ...prev,
+          [creatorId]: append
+            ? [...(prev[creatorId] || []), ...(result.lists || [])]
+            : result.lists || [],
+        }));
+        setOtherCreatorListsNext((prev) => ({
+          ...prev,
+          [creatorId]: result.next || null,
+        }));
+      } catch (err) {
+        if (!append) {
+          setOtherCreatorLists((prev) => ({ ...prev, [creatorId]: [] }));
+        }
+        toast.error(
+          err instanceof Error ? err.message : 'Failed to load creator lists'
+        );
+      } finally {
+        setOtherCreatorListsLoading((prev) => ({
+          ...prev,
+          [creatorId]: false,
+        }));
+      }
+    },
+    [toast]
+  );
+
   useEffect(() => {
     void loadCreators();
   }, [loadCreators]);
@@ -218,6 +278,22 @@ export default function MaloumFanScraper() {
     void loadJob(selectedCreatorId);
     void loadChatLists();
   }, [selectedCreatorId, loadJob, loadChatLists]);
+
+  useEffect(() => {
+    if (!isImportMode || !otherSelectedCreators.length) return;
+    for (const creator of otherSelectedCreators) {
+      if (otherCreatorLists[creator.id] || otherCreatorListsLoading[creator.id]) {
+        continue;
+      }
+      void loadOtherCreatorLists(creator.id);
+    }
+  }, [
+    isImportMode,
+    otherSelectedCreators,
+    otherCreatorLists,
+    otherCreatorListsLoading,
+    loadOtherCreatorLists,
+  ]);
 
   useEffect(() => {
     if (!selectedCreatorId || !isRunning) return;
@@ -249,9 +325,11 @@ export default function MaloumFanScraper() {
               ? parseMaloumImportIds(importFanIdsText)
               : [],
           targetCreatorIds,
+          targetCreatorListIds,
           resetCheckpoint: extra?.resetCheckpoint,
         });
         setJob(result.job);
+        setTargetCreatorListIds(result.job.targetCreatorListIds || {});
         return result.job;
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Failed to save settings');
@@ -272,6 +350,7 @@ export default function MaloumFanScraper() {
       distributeListName,
       importFanIdsText,
       targetCreatorIds,
+      targetCreatorListIds,
       toast,
     ]
   );
@@ -339,6 +418,14 @@ export default function MaloumFanScraper() {
       if (saved.sourceMode === 'import_ids') {
         if (!(saved.importFanIds || []).length) {
           toast.error('Paste at least one fan ID to import');
+          return;
+        }
+        const listMap = saved.targetCreatorListIds || {};
+        const missing = (saved.targetCreatorIds || []).filter(
+          (id) => id !== selectedCreatorId && !listMap[id]
+        );
+        if (missing.length > 0) {
+          toast.error('Select a list for each selected creator');
           return;
         }
       }
@@ -667,34 +754,22 @@ export default function MaloumFanScraper() {
                     className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm font-mono disabled:opacity-50"
                   />
                 </label>
-                <label className="block text-sm space-y-1 max-w-xs">
-                  <span className="text-xs text-gray-500 dark:text-zinc-500">
-                    List name on other creators
-                  </span>
-                  <input
-                    type="text"
-                    disabled={isRunning}
-                    value={distributeListName}
-                    onChange={(e) => setDistributeListName(e.target.value)}
-                    placeholder="Fan Scrape"
-                    className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-3 py-2 text-sm disabled:opacity-50"
-                  />
-                </label>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs text-gray-500 dark:text-zinc-500">
-                      Add to creators&apos; lists (empty = all Maloum creators)
+                      Add to creators&apos; lists (empty = this creator only)
                     </p>
                     <button
                       type="button"
                       disabled={isRunning}
-                      onClick={() =>
-                        setTargetCreatorIds(
-                          targetCreatorIds.length === creators.length
-                            ? []
-                            : creators.map((c) => c.id)
-                        )
-                      }
+                      onClick={() => {
+                        if (targetCreatorIds.length === creators.length) {
+                          setTargetCreatorIds([]);
+                          setTargetCreatorListIds({});
+                        } else {
+                          setTargetCreatorIds(creators.map((c) => c.id));
+                        }
+                      }}
                       className="text-xs underline underline-offset-2 disabled:opacity-50"
                     >
                       {targetCreatorIds.length === creators.length
@@ -714,22 +789,107 @@ export default function MaloumFanScraper() {
                             type="checkbox"
                             disabled={isRunning}
                             checked={checked}
-                            onChange={() =>
-                              setTargetCreatorIds((prev) =>
-                                checked
-                                  ? prev.filter((id) => id !== creator.id)
-                                  : [...prev, creator.id]
-                              )
-                            }
+                            onChange={() => {
+                              if (checked) {
+                                setTargetCreatorIds((prev) =>
+                                  prev.filter((id) => id !== creator.id)
+                                );
+                                setTargetCreatorListIds((maps) => {
+                                  const next = { ...maps };
+                                  delete next[creator.id];
+                                  return next;
+                                });
+                              } else {
+                                setTargetCreatorIds((prev) => [
+                                  ...prev,
+                                  creator.id,
+                                ]);
+                              }
+                            }}
                           />
                           <span className="truncate">
                             {creator.displayName || creator.username}
+                            {creator.id === selectedCreatorId ? ' (this creator)' : ''}
                           </span>
                         </label>
                       );
                     })}
                   </div>
                 </div>
+                {otherSelectedCreators.length > 0 && (
+                  <div className="space-y-3">
+                    <p className="text-xs text-gray-500 dark:text-zinc-500">
+                      Select a list on each other creator
+                    </p>
+                    {otherSelectedCreators.map((creator) => {
+                      const lists = otherCreatorLists[creator.id] || [];
+                      const loading = Boolean(otherCreatorListsLoading[creator.id]);
+                      const next = otherCreatorListsNext[creator.id] || null;
+                      const selectedListId = targetCreatorListIds[creator.id] || null;
+                      return (
+                        <div key={creator.id} className="space-y-1.5">
+                          <p className="text-xs font-medium text-gray-700 dark:text-zinc-300 truncate">
+                            {creator.displayName || creator.username}
+                          </p>
+                          <div className="rounded-xl border border-gray-200 dark:border-zinc-800 divide-y divide-gray-100 dark:divide-zinc-800/80 max-h-40 overflow-y-auto">
+                            {loading && lists.length === 0 && (
+                              <p className="p-3 text-xs text-gray-500">Loading lists…</p>
+                            )}
+                            {!loading && lists.length === 0 && (
+                              <p className="p-3 text-xs text-gray-500">No lists found.</p>
+                            )}
+                            {lists.map((list) => {
+                              const selected = selectedListId === list._id;
+                              return (
+                                <button
+                                  key={list._id}
+                                  type="button"
+                                  disabled={isRunning}
+                                  onClick={() =>
+                                    setTargetCreatorListIds((prev) => ({
+                                      ...prev,
+                                      [creator.id]: list._id,
+                                    }))
+                                  }
+                                  className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between gap-2 disabled:opacity-50 ${
+                                    selected
+                                      ? 'bg-gray-100 dark:bg-zinc-800/60'
+                                      : 'hover:bg-gray-50 dark:hover:bg-zinc-900/50'
+                                  }`}
+                                >
+                                  <span className="truncate text-gray-900 dark:text-white">
+                                    {list.name || list._id}
+                                  </span>
+                                  <span className="text-[11px] text-gray-500 shrink-0">
+                                    {typeof list.totalMemberCount === 'number'
+                                      ? `${list.totalMemberCount} members`
+                                      : ''}
+                                    {selected ? ' · selected' : ''}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {next && (
+                            <button
+                              type="button"
+                              disabled={loading || isRunning}
+                              onClick={() =>
+                                void loadOtherCreatorLists(creator.id, {
+                                  append: true,
+                                  next,
+                                })
+                              }
+                              className="text-xs text-gray-600 dark:text-zinc-400 underline underline-offset-2 disabled:opacity-50"
+                            >
+                              Load more lists
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </>
             ) : (
               <>

@@ -2475,6 +2475,7 @@ export interface MaloumFanScrapeJob {
   importFanIds?: string[];
   messageText?: string;
   targetCreatorIds?: string[];
+  targetCreatorListIds?: Record<string, string>;
   checkpoint: MaloumFanScrapeCheckpoint;
   startedAt: string | null;
   updatedAt: string;
@@ -2505,6 +2506,7 @@ export async function updateMaloumFanScrapeJob(
     importFanIds?: string[] | string;
     messageText?: string;
     targetCreatorIds?: string[];
+    targetCreatorListIds?: Record<string, string>;
     resetCheckpoint?: boolean;
   }
 ): Promise<{ job: MaloumFanScrapeJob; providerUserId: string | null }> {

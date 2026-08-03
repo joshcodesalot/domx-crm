@@ -267,6 +267,7 @@ router.patch(
       importFanIds,
       messageText,
       targetCreatorIds,
+      targetCreatorListIds,
       resetCheckpoint,
     } = req.body || {};
 
@@ -327,6 +328,10 @@ router.patch(
         targetCreatorIds !== undefined
           ? fanScrapeRunner.normalizeUuidList(targetCreatorIds)
           : job.targetCreatorIds;
+      const nextTargetCreatorListIds =
+        targetCreatorListIds !== undefined
+          ? fanScrapeRunner.normalizeTargetCreatorListIds(targetCreatorListIds)
+          : job.targetCreatorListIds || {};
 
       let checkpoint = job.checkpoint;
       let status = job.status;
@@ -348,8 +353,9 @@ router.patch(
              "importFanIds" = $10,
              "messageText" = $11,
              "targetCreatorIds" = $12,
-             checkpoint = $13::jsonb,
-             status = $14,
+             "targetCreatorListIds" = $13::jsonb,
+             checkpoint = $14::jsonb,
+             status = $15,
              "updatedAt" = NOW()
          WHERE "motherCreatorId" = $1
          RETURNING *`,
@@ -374,6 +380,7 @@ router.patch(
           nextImportFanIds,
           nextMessageText,
           nextTargetCreatorIds,
+          JSON.stringify(nextTargetCreatorListIds),
           JSON.stringify(checkpoint),
           status,
         ]
@@ -385,6 +392,20 @@ router.patch(
       });
     } catch (err) {
       console.error('Patch fan scrape job error:', err);
+      const code = err?.code;
+      const message = String(err?.message || '');
+      if (
+        code === '42703' ||
+        code === '23514' ||
+        /column .* does not exist/i.test(message) ||
+        /violates check constraint/i.test(message) ||
+        /sourceMode/i.test(message)
+      ) {
+        return res.status(400).json({
+          error:
+            'Database schema outdated — run migrations (npm run migrate in backend)',
+        });
+      }
       return res.status(500).json({ error: 'Internal server error' });
     }
   }

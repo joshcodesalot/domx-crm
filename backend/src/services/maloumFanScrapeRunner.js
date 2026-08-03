@@ -145,6 +145,25 @@ function normalizeUuidList(input) {
   ];
 }
 
+function normalizeTargetCreatorListIds(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const out = {};
+  for (const [rawKey, rawValue] of Object.entries(input)) {
+    const key = String(rawKey || '').trim();
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        key
+      )
+    ) {
+      continue;
+    }
+    const listId = String(rawValue || '').trim();
+    if (!listId) continue;
+    out[key] = listId;
+  }
+  return out;
+}
+
 function isSkippablePostError(err) {
   const status = err?.status;
   const message = String(err?.message || '');
@@ -252,6 +271,7 @@ function rowToJob(row) {
     targetCreatorIds: Array.isArray(row.targetCreatorIds)
       ? row.targetCreatorIds
       : [],
+    targetCreatorListIds: normalizeTargetCreatorListIds(row.targetCreatorListIds),
     checkpoint: normalizeCheckpoint(row.checkpoint),
     startedAt: row.startedAt || null,
     updatedAt: row.updatedAt,
@@ -626,8 +646,17 @@ async function processFan(creator, motherCreatorId, listId, fan, sourceCreatorUs
 async function resolveImportTargets(job) {
   const configured = normalizeUuidList(job.targetCreatorIds || []);
   if (configured.length > 0) return configured;
-  const all = await listMaloumCreatorIds(null);
-  return all.length > 0 ? all : [job.motherCreatorId];
+  return [job.motherCreatorId];
+}
+
+function missingImportListCreatorIds(job, targetIds) {
+  const listMap = normalizeTargetCreatorListIds(job.targetCreatorListIds);
+  const missing = [];
+  for (const recipientId of targetIds) {
+    if (recipientId === job.motherCreatorId) continue;
+    if (!listMap[recipientId]) missing.push(recipientId);
+  }
+  return missing;
 }
 
 async function runImportToLists(motherCreatorId, job, generation) {
@@ -659,11 +688,28 @@ async function runImportToLists(motherCreatorId, job, generation) {
   }
 
   const targetIds = await resolveImportTargets(job);
-  const listName = job.distributeListName || 'Fan Scrape';
+  const missingLists = missingImportListCreatorIds(job, targetIds);
+  if (missingLists.length > 0) {
+    await saveCheckpoint(
+      motherCreatorId,
+      {
+        ...job.checkpoint,
+        lastError: 'Select a list for each selected creator',
+        statusMessage: 'Missing per-creator lists',
+      },
+      'failed'
+    );
+    return;
+  }
+
+  const listMap = normalizeTargetCreatorListIds(job.targetCreatorListIds);
   let cp = normalizeCheckpoint(job.checkpoint);
   const cache = { ...(cp.distributeListCache || {}) };
   // Mother always uses the explicitly selected list.
   cache[motherCreatorId] = job.targetListId;
+  for (const [creatorId, listId] of Object.entries(listMap)) {
+    cache[creatorId] = listId;
+  }
 
   while (cp.importFanIndex < fanIds.length) {
     await assertStillRunning(motherCreatorId, generation);
@@ -690,11 +736,12 @@ async function runImportToLists(motherCreatorId, job, generation) {
               listId = job.targetListId;
               cache[recipientId] = listId;
             } else {
-              listId = await resolveDistributeListId(recipient, listName, cache);
+              listId = listMap[recipientId] || null;
+              if (listId) cache[recipientId] = listId;
             }
           }
           if (!listId) {
-            throw new Error('Could not resolve target list');
+            throw new Error('Select a list for each selected creator');
           }
           await addFanToCreatorList(
             recipient,
@@ -997,6 +1044,13 @@ async function startJob(motherCreatorId) {
         status: 400,
       });
     }
+    const targetIds = await resolveImportTargets(job);
+    if (missingImportListCreatorIds(job, targetIds).length > 0) {
+      throw Object.assign(
+        new Error('Select a list for each selected creator'),
+        { status: 400 }
+      );
+    }
   } else {
     if (!job.targetListId) {
       throw Object.assign(new Error('Select or create a target list first'), {
@@ -1102,5 +1156,6 @@ module.exports = {
   normalizeUsernameList,
   normalizeIdList,
   normalizeUuidList,
+  normalizeTargetCreatorListIds,
   rowToJob,
 };
