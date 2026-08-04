@@ -26,6 +26,7 @@ const {
 const { emitToUser, emitToUsers } = require('../services/userEventBus');
 const fourBasedClient = require('../services/fourBasedClient');
 const maloumClient = require('../services/maloumClient');
+const { applyModeration } = require('../services/contentModeration');
 const messagingDashboard = require('./messagingDashboard');
 const {
   connectCreatorById,
@@ -3623,6 +3624,9 @@ router.post(
       vaults,
       priceCoins,
       localId,
+      fanId,
+      fanUsername,
+      englishText,
     } = req.body || {};
 
     if (!isValidUuid(id)) {
@@ -3644,8 +3648,32 @@ router.post(
       }
 
       const text = typeof message === 'string' ? message : '';
+      const englishDraft = typeof englishText === 'string' ? englishText : '';
       const resolvedLocalId =
         typeof localId === 'string' && localId.trim() ? localId.trim() : randomUUID();
+
+      if (text.trim() || englishDraft.trim()) {
+        const moderation = await applyModeration({
+          germanText: text,
+          englishText: englishDraft,
+          userId: req.user.id,
+          creatorId: id,
+          platform: '4based',
+          chatId,
+          fanId: typeof fanId === 'string' ? fanId : null,
+          fanUsername: typeof fanUsername === 'string' ? fanUsername : null,
+          creatorName: loaded.creator?.displayName || null,
+          chatterName: req.user.name || null,
+        });
+        if (moderation.blocked) {
+          return res.status(403).json({
+            error: moderation.message,
+            code: 'CONTENT_BLOCKED',
+            matchedKeyword: moderation.matchedKeyword,
+            matchedStage: moderation.matchedStage,
+          });
+        }
+      }
 
       const hasVaults = Array.isArray(vaults) && vaults.length > 0;
 
@@ -4678,6 +4706,9 @@ router.post(
       media,
       priceNet,
       optimisticMessageId,
+      fanId,
+      fanUsername,
+      englishText,
     } = req.body || {};
 
     if (!isValidUuid(id)) {
@@ -4700,10 +4731,34 @@ router.post(
 
       const bodyText =
         typeof text === 'string' ? text : typeof message === 'string' ? message : '';
+      const englishDraft = typeof englishText === 'string' ? englishText : '';
       const resolvedOptimisticId =
         typeof optimisticMessageId === 'string' && optimisticMessageId.trim()
           ? optimisticMessageId.trim()
           : randomUUID();
+
+      if (bodyText.trim() || englishDraft.trim()) {
+        const moderation = await applyModeration({
+          germanText: bodyText,
+          englishText: englishDraft,
+          userId: req.user.id,
+          creatorId: id,
+          platform: 'maloum',
+          chatId,
+          fanId: typeof fanId === 'string' ? fanId : null,
+          fanUsername: typeof fanUsername === 'string' ? fanUsername : null,
+          creatorName: loaded.creator?.displayName || null,
+          chatterName: req.user.name || null,
+        });
+        if (moderation.blocked) {
+          return res.status(403).json({
+            error: moderation.message,
+            code: 'CONTENT_BLOCKED',
+            matchedKeyword: moderation.matchedKeyword,
+            matchedStage: moderation.matchedStage,
+          });
+        }
+      }
 
       if (Array.isArray(media) && media.length > 0) {
         const net = Number(priceNet) || 0;

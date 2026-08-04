@@ -16,6 +16,8 @@ const messagingDashboardRoutes = require('./routes/messagingDashboard');
 const translateRoutes = require('./routes/translate');
 const suggestReplyRoutes = require('./routes/suggestReply');
 const eventsRoutes = require('./routes/events');
+const moderationRoutes = require('./routes/moderation');
+const activityRoutes = require('./routes/activity');
 const {
   startMaloumTokenRefreshScheduler,
 } = require('./services/maloumTokenRefresh');
@@ -63,6 +65,8 @@ app.use('/api/messaging-dashboard', messagingDashboardRoutes);
 app.use('/api/translate-to-german', translateRoutes);
 app.use('/api/suggest-reply', suggestReplyRoutes);
 app.use('/api/events', eventsRoutes);
+app.use('/api/moderation', moderationRoutes);
+app.use('/api/activity', activityRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });

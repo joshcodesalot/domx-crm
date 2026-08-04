@@ -27,6 +27,9 @@ import FourBasedNotifications from '@/pages/FourBasedNotifications';
 import MessagePro from '@/pages/MessagePro';
 import MessagePro4Based from '@/pages/MessagePro4Based';
 import MessagingDashboard from '@/pages/MessagingDashboard';
+import KeywordModeration from '@/pages/KeywordModeration';
+import ModerationAlertsListener from '@/components/ModerationAlertsListener';
+import ActivityHeartbeatListener from '@/components/ActivityHeartbeatListener';
 
 /**
  * Keeps the 4based chat panel mounted after first visit so loaded chats/media
@@ -189,6 +192,8 @@ function AppRoutes() {
         <PersistentMaloumPanel />
         <PersistentMessageProPanel />
         <PersistentMessagePro4BasedPanel />
+        <ModerationAlertsListener />
+        <ActivityHeartbeatListener />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/setup" element={<SetupOwner />} />
@@ -201,6 +206,15 @@ function AppRoutes() {
               </Route>
               <Route element={<PermissionRoute permission="staff.view" />}>
                 <Route path="/staff/manage" element={<ManageStaff />} />
+              </Route>
+              <Route
+                element={
+                  <PermissionRoute
+                    anyOf={['moderation.manage', 'moderation.review']}
+                  />
+                }
+              >
+                <Route path="/staff/moderation" element={<KeywordModeration />} />
               </Route>
               <Route element={<PermissionRoute permission="creators.view" />}>
                 {/* Placeholder — real panel is mounted by PersistentMaloumPanel */}

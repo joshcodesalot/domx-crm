@@ -3,7 +3,7 @@ import Sidebar from '@/components/Sidebar';
 
 interface AppLayoutProps {
   title: string;
-  activePage?: 'dashboard' | 'analytics' | 'creators' | 'staff';
+  activePage?: 'dashboard' | 'analytics' | 'creators' | 'staff' | 'moderation';
   children: ReactNode;
 }
 

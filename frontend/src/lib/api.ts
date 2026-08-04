@@ -380,6 +380,36 @@ function isDomxAuthFailure(status: number, error: unknown): boolean {
   );
 }
 
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  matchedKeyword?: string;
+  matchedStage?: string;
+
+  constructor(
+    message: string,
+    options: {
+      status: number;
+      code?: string;
+      matchedKeyword?: string;
+      matchedStage?: string;
+    }
+  ) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = options.status;
+    this.code = options.code;
+    this.matchedKeyword = options.matchedKeyword;
+    this.matchedStage = options.matchedStage;
+  }
+}
+
+export function isContentBlockedError(
+  err: unknown
+): err is ApiError & { code: 'CONTENT_BLOCKED' } {
+  return err instanceof ApiError && err.code === 'CONTENT_BLOCKED';
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {}
@@ -407,7 +437,18 @@ async function request<T>(
   }
 
   if (!response.ok) {
-    throw new Error((data as { error?: string }).error || 'Request failed');
+    const payload = data as {
+      error?: string;
+      code?: string;
+      matchedKeyword?: string;
+      matchedStage?: string;
+    };
+    throw new ApiError(payload.error || 'Request failed', {
+      status: response.status,
+      code: payload.code,
+      matchedKeyword: payload.matchedKeyword,
+      matchedStage: payload.matchedStage,
+    });
   }
 
   return data as T;
@@ -755,6 +796,117 @@ export async function getMaloumSentMessages(filters: {
   const path = query ? `/api/maloum-sent-messages?${query}` : '/api/maloum-sent-messages';
 
   return request<MaloumSentMessagesResponse>(path);
+}
+
+export interface CurrencyAmount {
+  currency: 'EUR' | 'USD';
+  amount: number;
+}
+
+export interface OverviewChatterStats {
+  chatterId: string;
+  chatterName: string;
+  avgResponseTimeSeconds: number | null;
+  dailySales: CurrencyAmount[];
+  totalSales: CurrencyAmount[];
+}
+
+export interface OverviewDailySalesDay {
+  date: string;
+  amounts: CurrencyAmount[];
+}
+
+export interface OverviewAnalyticsResponse {
+  dailySales: CurrencyAmount[];
+  totalSales: CurrencyAmount[];
+  avgResponseTimeSeconds: number | null;
+  dailySalesByDay: OverviewDailySalesDay[];
+  chatters: OverviewChatterStats[];
+  responseWindow: { startDate: string; endDate: string };
+  lastUpdated: string;
+}
+
+export type PresenceStatus = 'online' | 'idle' | 'away';
+
+export interface PresenceChatter {
+  userId: string;
+  userName: string;
+  status: PresenceStatus;
+  lastInputAt: string | null;
+  lastHeartbeatAt: string | null;
+  activeSecondsToday: number;
+}
+
+export interface ActivityPresenceResponse {
+  chatters: PresenceChatter[];
+  onlineCount: number;
+  idleCount: number;
+  awayCount: number;
+  lastUpdated: string;
+}
+
+export interface ActivityHeartbeatResponse {
+  ok: boolean;
+  status: PresenceStatus;
+  lastInputAt: string | null;
+  lastHeartbeatAt: string;
+  activeSecondsToday: number;
+}
+
+export async function getOverviewAnalytics(filters: {
+  startDate?: string;
+  endDate?: string;
+} = {}): Promise<OverviewAnalyticsResponse> {
+  const params = new URLSearchParams();
+  if (filters.startDate) params.set('startDate', filters.startDate);
+  if (filters.endDate) params.set('endDate', filters.endDate);
+  const query = params.toString();
+  const path = query
+    ? `/api/messaging-dashboard/overview?${query}`
+    : '/api/messaging-dashboard/overview';
+  return request<OverviewAnalyticsResponse>(path);
+}
+
+export async function postActivityHeartbeat(body: {
+  lastInputAt: string | null;
+}): Promise<ActivityHeartbeatResponse> {
+  return request<ActivityHeartbeatResponse>('/api/activity/heartbeat', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getActivityPresence(): Promise<ActivityPresenceResponse> {
+  return request<ActivityPresenceResponse>('/api/activity/presence');
+}
+
+export interface ActivityHistoryDay {
+  date: string;
+  activeSeconds: number;
+}
+
+export interface ActivityHistoryChatter {
+  userId: string;
+  userName: string;
+  days: ActivityHistoryDay[];
+  activeSecondsPeriod: number;
+}
+
+export interface ActivityHistoryResponse {
+  days: number;
+  startDate: string;
+  endDate: string;
+  teamByDay: ActivityHistoryDay[];
+  chatters: ActivityHistoryChatter[];
+  lastUpdated: string;
+}
+
+export async function getActivityHistory(
+  days = 14
+): Promise<ActivityHistoryResponse> {
+  const params = new URLSearchParams();
+  params.set('days', String(days));
+  return request<ActivityHistoryResponse>(`/api/activity/history?${params.toString()}`);
 }
 
 export async function getMessagingDashboard(filters: {
@@ -1338,6 +1490,9 @@ export async function sendFourBasedMessage(
     message: string;
     fileStackId?: string | null;
     localId?: string;
+    fanId?: string | null;
+    fanUsername?: string | null;
+    englishText?: string | null;
   }
 ): Promise<{ message: FourBasedMessage; localId: string }> {
   return request(
@@ -1377,6 +1532,9 @@ export async function sendFourBasedPpv(
     }>;
     priceCoins: number;
     localId?: string;
+    fanId?: string | null;
+    fanUsername?: string | null;
+    englishText?: string | null;
   }
 ): Promise<{
   message: FourBasedMessage;
@@ -2138,6 +2296,9 @@ export async function sendMaloumMessage(
     }>;
     priceNet?: number;
     optimisticMessageId?: string;
+    fanId?: string | null;
+    fanUsername?: string | null;
+    englishText?: string | null;
   }
 ): Promise<{
   messageId: string;
@@ -2855,5 +3016,137 @@ export async function suggestReply(payload: {
     throw new Error('Suggest reply returned incomplete suggestions');
   }
   return result;
+}
+
+// ── Content moderation ─────────────────────────────────────────────────────
+
+export type ModerationAction =
+  | 'block_warn'
+  | 'notify_management'
+  | 'log_for_review';
+
+export type ModerationMatchMode = 'contains' | 'whole_word';
+
+export type ModerationEventStatus = 'open' | 'reviewed' | 'dismissed';
+
+export type ModerationMatchedStage = 'english' | 'german';
+
+export interface KeywordRule {
+  id: string;
+  name: string;
+  englishKeywords: string[];
+  germanKeywords: string[];
+  keywords: string[];
+  matchMode: ModerationMatchMode;
+  caseSensitive: boolean;
+  actions: ModerationAction[];
+  enabled: boolean;
+  createdBy: string | null;
+  updatedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ModerationEvent {
+  id: string;
+  ruleId: string | null;
+  matchedKeyword: string;
+  matchedStage: ModerationMatchedStage | null;
+  actionsTaken: ModerationAction[];
+  userId: string | null;
+  chatterName: string | null;
+  chatterEmail: string | null;
+  creatorId: string | null;
+  creatorName: string | null;
+  creatorUsername: string | null;
+  platform: 'maloum' | '4based';
+  chatId: string | null;
+  fanId: string | null;
+  fanUsername: string | null;
+  messageText: string;
+  englishMessageText: string;
+  blocked: boolean;
+  notified: boolean;
+  status: ModerationEventStatus;
+  reviewedBy: string | null;
+  reviewedByName: string | null;
+  reviewedAt: string | null;
+  createdAt: string;
+}
+
+export async function getKeywordRules(): Promise<{ rules: KeywordRule[] }> {
+  return request('/api/moderation/rules');
+}
+
+export async function createKeywordRule(input: {
+  name?: string;
+  englishKeywords?: string[];
+  germanKeywords?: string[];
+  englishKeywordText?: string;
+  germanKeywordText?: string;
+  keywords?: string[];
+  keywordText?: string;
+  actions: ModerationAction[];
+  matchMode?: ModerationMatchMode;
+  caseSensitive?: boolean;
+  enabled?: boolean;
+}): Promise<{ rule: KeywordRule }> {
+  return request('/api/moderation/rules', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateKeywordRule(
+  id: string,
+  input: {
+    name?: string;
+    englishKeywords?: string[];
+    germanKeywords?: string[];
+    englishKeywordText?: string;
+    germanKeywordText?: string;
+    keywords?: string[];
+    keywordText?: string;
+    actions?: ModerationAction[];
+    matchMode?: ModerationMatchMode;
+    caseSensitive?: boolean;
+    enabled?: boolean;
+  }
+): Promise<{ rule: KeywordRule }> {
+  return request(`/api/moderation/rules/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteKeywordRule(id: string): Promise<{ ok: boolean }> {
+  return request(`/api/moderation/rules/${id}`, { method: 'DELETE' });
+}
+
+export async function getModerationEvents(params?: {
+  status?: ModerationEventStatus | '';
+  platform?: 'maloum' | '4based' | '';
+  search?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ events: ModerationEvent[] }> {
+  const searchParams = new URLSearchParams();
+  if (params?.status) searchParams.set('status', params.status);
+  if (params?.platform) searchParams.set('platform', params.platform);
+  if (params?.search) searchParams.set('search', params.search);
+  if (params?.limit != null) searchParams.set('limit', String(params.limit));
+  if (params?.offset != null) searchParams.set('offset', String(params.offset));
+  const qs = searchParams.toString();
+  return request(`/api/moderation/events${qs ? `?${qs}` : ''}`);
+}
+
+export async function updateModerationEvent(
+  id: string,
+  status: ModerationEventStatus
+): Promise<{ event: ModerationEvent }> {
+  return request(`/api/moderation/events/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
 }
 

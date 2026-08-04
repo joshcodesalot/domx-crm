@@ -1212,6 +1212,266 @@ router.get(
   }
 );
 
+function currencyAmountRowsToList(rows) {
+  return rows.map((row) => ({
+    currency: String(row.currency || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR',
+    amount: Number(row.amount) || 0,
+  }));
+}
+
+function mergeCurrencyAmounts(...lists) {
+  const map = new Map();
+  for (const list of lists) {
+    for (const item of list || []) {
+      const currency = item.currency === 'USD' ? 'USD' : 'EUR';
+      map.set(currency, (map.get(currency) || 0) + (Number(item.amount) || 0));
+    }
+  }
+  return Array.from(map.entries())
+    .map(([currency, amount]) => ({ currency, amount }))
+    .sort((a, b) => a.currency.localeCompare(b.currency));
+}
+
+router.get(
+  '/overview',
+  authenticate,
+  requirePermission('analytics.view'),
+  async (req, res) => {
+    try {
+      const { startDate, endDate } = req.query;
+
+      let responseStart = null;
+      let responseEnd = null;
+
+      if (startDate) {
+        const dateValue = String(startDate);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+          return res.status(400).json({ error: 'Invalid startDate' });
+        }
+        responseStart = dateValue;
+      }
+
+      if (endDate) {
+        const dateValue = String(endDate);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+          return res.status(400).json({ error: 'Invalid endDate' });
+        }
+        responseEnd = dateValue;
+      }
+
+      // Default avg response window: last 30 days (UTC dates)
+      if (!responseStart || !responseEnd) {
+        const end = new Date();
+        const start = new Date();
+        start.setUTCDate(start.getUTCDate() - 30);
+        responseEnd = responseEnd || end.toISOString().slice(0, 10);
+        responseStart = responseStart || start.toISOString().slice(0, 10);
+      }
+
+      const [
+        dailySalesResult,
+        totalSalesResult,
+        avgResponseResult,
+        dailyByDayResult,
+        chatterAvgResult,
+        chatterSalesResult,
+        chatterNamesResult,
+      ] = await Promise.all([
+        pool.query(
+          `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+           FROM messaging_dashboard_entries
+           WHERE purchased = true
+             AND "priceNet" IS NOT NULL
+             AND ("sentAt" AT TIME ZONE 'UTC')::date = (NOW() AT TIME ZONE 'UTC')::date
+           GROUP BY 1`
+        ),
+        pool.query(
+          `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+           FROM messaging_dashboard_entries
+           WHERE purchased = true
+             AND "priceNet" IS NOT NULL
+           GROUP BY 1`
+        ),
+        pool.query(
+          `SELECT AVG("responseTimeSeconds")::float AS avg
+           FROM messaging_dashboard_entries
+           WHERE "responseTimeSeconds" IS NOT NULL
+             AND ("sentAt" AT TIME ZONE 'UTC')::date >= $1::date
+             AND ("sentAt" AT TIME ZONE 'UTC')::date <= $2::date`,
+          [responseStart, responseEnd]
+        ),
+        pool.query(
+          `WITH days AS (
+             SELECT generate_series(
+               ((NOW() AT TIME ZONE 'UTC')::date - 13),
+               (NOW() AT TIME ZONE 'UTC')::date,
+               '1 day'::interval
+             )::date AS day
+           )
+           SELECT d.day::text AS date,
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+           FROM days d
+           LEFT JOIN messaging_dashboard_entries m
+             ON (m."sentAt" AT TIME ZONE 'UTC')::date = d.day
+            AND m.purchased = true
+            AND m."priceNet" IS NOT NULL
+           GROUP BY d.day, 2
+           ORDER BY d.day ASC`
+        ),
+        pool.query(
+          `SELECT m."chatterId",
+                  AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
+           FROM messaging_dashboard_entries m
+           WHERE m."responseTimeSeconds" IS NOT NULL
+             AND (m."sentAt" AT TIME ZONE 'UTC')::date >= $1::date
+             AND (m."sentAt" AT TIME ZONE 'UTC')::date <= $2::date
+           GROUP BY m."chatterId"`,
+          [responseStart, responseEnd]
+        ),
+        pool.query(
+          `SELECT m."chatterId",
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m.purchased = true
+                      AND m."priceNet" IS NOT NULL
+                      AND (m."sentAt" AT TIME ZONE 'UTC')::date = (NOW() AT TIME ZONE 'UTC')::date
+                  ), 0)::float AS "dailySales",
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                  ), 0)::float AS "totalSales"
+           FROM messaging_dashboard_entries m
+           GROUP BY m."chatterId", 2`
+        ),
+        pool.query(
+          `SELECT u.id AS "chatterId", u.name AS "chatterName"
+           FROM users u
+           WHERE u.role = 'chatter' AND u.status = 'active'
+           ORDER BY u.name ASC`
+        ),
+      ]);
+
+      const dailySales = currencyAmountRowsToList(dailySalesResult.rows);
+      const totalSales = currencyAmountRowsToList(totalSalesResult.rows);
+
+      const dayMap = new Map();
+      for (const row of dailyByDayResult.rows) {
+        const date = String(row.date).slice(0, 10);
+        if (!dayMap.has(date)) {
+          dayMap.set(date, []);
+        }
+        if (row.currency != null && Number(row.amount) > 0) {
+          dayMap.get(date).push({
+            currency:
+              String(row.currency).toUpperCase() === 'USD' ? 'USD' : 'EUR',
+            amount: Number(row.amount) || 0,
+          });
+        }
+      }
+
+      const dailySalesByDay = [];
+      for (let i = 13; i >= 0; i -= 1) {
+        const d = new Date();
+        d.setUTCHours(0, 0, 0, 0);
+        d.setUTCDate(d.getUTCDate() - i);
+        const date = d.toISOString().slice(0, 10);
+        dailySalesByDay.push({
+          date,
+          amounts: mergeCurrencyAmounts(dayMap.get(date) || []),
+        });
+      }
+
+      const statsByChatter = new Map();
+      for (const row of chatterAvgResult.rows) {
+        statsByChatter.set(row.chatterId, {
+          avgResponseTimeSeconds:
+            row.avgResponseTimeSeconds != null
+              ? Number(row.avgResponseTimeSeconds)
+              : null,
+          dailySales: [],
+          totalSales: [],
+        });
+      }
+      for (const row of chatterSalesResult.rows) {
+        if (!statsByChatter.has(row.chatterId)) {
+          statsByChatter.set(row.chatterId, {
+            avgResponseTimeSeconds: null,
+            dailySales: [],
+            totalSales: [],
+          });
+        }
+        const entry = statsByChatter.get(row.chatterId);
+        const currency =
+          String(row.currency || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR';
+        const daily = Number(row.dailySales) || 0;
+        const total = Number(row.totalSales) || 0;
+        if (daily > 0) {
+          entry.dailySales.push({ currency, amount: daily });
+        }
+        if (total > 0) {
+          entry.totalSales.push({ currency, amount: total });
+        }
+      }
+
+      const namedIds = new Set(chatterNamesResult.rows.map((r) => r.chatterId));
+      const chatters = chatterNamesResult.rows.map((row) => {
+        const stats = statsByChatter.get(row.chatterId);
+        return {
+          chatterId: row.chatterId,
+          chatterName: row.chatterName,
+          avgResponseTimeSeconds: stats?.avgResponseTimeSeconds ?? null,
+          dailySales: mergeCurrencyAmounts(stats?.dailySales || []),
+          totalSales: mergeCurrencyAmounts(stats?.totalSales || []),
+        };
+      });
+
+      const missingIds = [...statsByChatter.keys()].filter((id) => !namedIds.has(id));
+      if (missingIds.length > 0) {
+        const nameResult = await pool.query(
+          `SELECT id AS "chatterId", name AS "chatterName"
+           FROM users
+           WHERE id = ANY($1::uuid[])`,
+          [missingIds]
+        );
+        const nameById = new Map(
+          nameResult.rows.map((row) => [row.chatterId, row.chatterName])
+        );
+        for (const chatterId of missingIds) {
+          const stats = statsByChatter.get(chatterId);
+          chatters.push({
+            chatterId,
+            chatterName: nameById.get(chatterId) || 'Unknown',
+            avgResponseTimeSeconds: stats.avgResponseTimeSeconds,
+            dailySales: mergeCurrencyAmounts(stats.dailySales),
+            totalSales: mergeCurrencyAmounts(stats.totalSales),
+          });
+        }
+      }
+
+      chatters.sort((a, b) => a.chatterName.localeCompare(b.chatterName));
+
+      const avgRaw = avgResponseResult.rows[0]?.avg;
+      res.json({
+        dailySales,
+        totalSales,
+        avgResponseTimeSeconds:
+          avgRaw != null && !Number.isNaN(Number(avgRaw))
+            ? Number(avgRaw)
+            : null,
+        dailySalesByDay,
+        chatters,
+        responseWindow: { startDate: responseStart, endDate: responseEnd },
+        lastUpdated: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('messaging dashboard overview failed:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
 router.get(
   '/',
   authenticate,

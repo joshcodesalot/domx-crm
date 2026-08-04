@@ -54,6 +54,7 @@ import {
   listVaultMediaNotes,
   markScriptSent,
   recordMaloumVaultSent,
+  isContentBlockedError,
   sendMaloumMessage,
   translateToGerman,
   type Creator,
@@ -1673,6 +1674,9 @@ export function MaloumChatThread({
         media: mediaPayload,
         priceNet: mediaPayload && priceNet > 0 ? priceNet : undefined,
         optimisticMessageId,
+        fanId: partnerId(chat),
+        fanUsername: partnerName(chat),
+        englishText: englishDraft || null,
       });
 
       const messageId = result.messageId || result.message?._id;
@@ -1783,7 +1787,18 @@ export function MaloumChatThread({
         scrollToBottom();
       });
     } catch (err) {
-      setSendError(err instanceof Error ? err.message : 'Failed to send');
+      if (isContentBlockedError(err)) {
+        setSendError(err.message);
+        void confirm({
+          title: 'Message blocked',
+          message: err.message,
+          confirmLabel: 'OK',
+          cancelLabel: 'Close',
+          variant: 'default',
+        });
+      } else {
+        setSendError(err instanceof Error ? err.message : 'Failed to send');
+      }
     } finally {
       setSending(false);
       setTranslatingOutgoing(false);
@@ -1802,6 +1817,7 @@ export function MaloumChatThread({
     creatorId,
     chatId,
     user,
+    confirm,
     creator,
     chat,
     currency,

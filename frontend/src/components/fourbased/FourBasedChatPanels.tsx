@@ -63,6 +63,7 @@ import {
   pickFourBasedSourceUrl,
   pinFourBasedChat,
   resolveFourBasedMediaSrc,
+  isContentBlockedError,
   sendFourBasedMessage,
   sendFourBasedPpv,
   translateToGerman,
@@ -1984,6 +1985,9 @@ export function FourBasedChatThread({
           vaults: vaultEntries,
           priceCoins: coinsForLog,
           localId,
+          fanId: fan.id || null,
+          fanUsername: fan.name || null,
+          englishText: englishDraft || null,
         });
         sentMessage = result.message;
         sentFileStackId =
@@ -1998,6 +2002,9 @@ export function FourBasedChatThread({
         const result = await sendFourBasedMessage(creatorId, chatId, {
           message: messageToSend,
           localId,
+          fanId: fan.id || null,
+          fanUsername: fan.name || null,
+          englishText: englishDraft || null,
         });
         sentMessage = result.message;
       }
@@ -2086,7 +2093,18 @@ export function FourBasedChatThread({
         scrollToBottom();
       });
     } catch (err) {
-      setSendError(err instanceof Error ? err.message : 'Failed to send');
+      if (isContentBlockedError(err)) {
+        setSendError(err.message);
+        void confirm({
+          title: 'Message blocked',
+          message: err.message,
+          confirmLabel: 'OK',
+          cancelLabel: 'Close',
+          variant: 'default',
+        });
+      } else {
+        setSendError(err instanceof Error ? err.message : 'Failed to send');
+      }
     } finally {
       setSending(false);
       setTranslatingOutgoing(false);

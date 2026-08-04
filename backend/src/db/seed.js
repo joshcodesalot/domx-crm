@@ -23,6 +23,8 @@ const PERMISSIONS = [
   { slug: 'mass_messages.send', name: 'Send Mass Messages', category: 'App', description: 'Send and manage Maloum mass messages (Managers and above)' },
   { slug: 'vault.notes.edit', name: 'Edit Vault Media Notes', category: 'App', description: 'Create and edit notes on vault images and videos (Team Leaders and above)' },
   { slug: 'scripts.manage', name: 'Manage Chat Scripts', category: 'App', description: 'Create, edit, and remove chat scripts and folders (Managers and above)' },
+  { slug: 'moderation.manage', name: 'Manage Keyword Rules', category: 'App', description: 'Create, edit, and remove keyword moderation rules (Managers and above)' },
+  { slug: 'moderation.review', name: 'Review Moderation Events', category: 'App', description: 'View and resolve keyword moderation review queue (Managers and above)' },
 ];
 
 const DEFAULT_MATRIX = {
@@ -33,6 +35,8 @@ const DEFAULT_MATRIX = {
     'mass_messages.send',
     'vault.notes.edit',
     'scripts.manage',
+    'moderation.manage',
+    'moderation.review',
   ],
   manager: [
     'dashboard.view', 'analytics.view', 'creators.view', 'creators.manage',
@@ -41,6 +45,8 @@ const DEFAULT_MATRIX = {
     'mass_messages.send',
     'vault.notes.edit',
     'scripts.manage',
+    'moderation.manage',
+    'moderation.review',
   ],
   team_leader: [
     'dashboard.view', 'analytics.view', 'creators.view',

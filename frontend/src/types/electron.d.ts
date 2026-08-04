@@ -34,6 +34,21 @@ export type StaffSyncEvent =
       optimisticMessageId: string | null;
       chatterId: string;
       chatterName: string;
+    }
+  | {
+      type: 'moderation:alert';
+      eventId?: string | null;
+      matchedKeyword?: string | null;
+      chatterName?: string | null;
+      creatorName?: string | null;
+      platform?: string | null;
+      fanUsername?: string | null;
+      messageText?: string | null;
+    }
+  | {
+      type: 'moderation:warned';
+      matchedKeyword?: string | null;
+      message?: string | null;
     };
 
 export type UpdaterStatus =

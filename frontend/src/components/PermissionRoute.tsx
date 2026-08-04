@@ -2,10 +2,14 @@ import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 
 interface PermissionRouteProps {
-  permission: string;
+  permission?: string;
+  anyOf?: string[];
 }
 
-export default function PermissionRoute({ permission }: PermissionRouteProps) {
+export default function PermissionRoute({
+  permission,
+  anyOf,
+}: PermissionRouteProps) {
   const { isAuthenticated, isLoading, hasPermission } = useAuth();
 
   if (isLoading) {
@@ -20,7 +24,13 @@ export default function PermissionRoute({ permission }: PermissionRouteProps) {
     return <Navigate to="/login" replace />;
   }
 
-  if (!hasPermission(permission)) {
+  const allowed = anyOf?.length
+    ? anyOf.some((slug) => hasPermission(slug))
+    : permission
+      ? hasPermission(permission)
+      : false;
+
+  if (!allowed) {
     return <Navigate to="/dashboard" replace />;
   }
 

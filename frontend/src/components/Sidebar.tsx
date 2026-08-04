@@ -7,6 +7,7 @@ import {
   Megaphone,
   MessageSquare,
   PanelsTopLeft,
+  ShieldAlert,
   Sparkles,
   UserCog,
   UserSearch,
@@ -19,7 +20,13 @@ import maloumIcon from '@/assets/maloum_icon.png';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 
 interface SidebarProps {
-  activePage?: 'dashboard' | 'analytics' | 'chatter' | 'creators' | 'staff';
+  activePage?:
+    | 'dashboard'
+    | 'analytics'
+    | 'chatter'
+    | 'creators'
+    | 'staff'
+    | 'moderation';
 }
 
 export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
@@ -407,6 +414,17 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             title="Manage Staff"
           >
             <UserCog className="w-5 h-5" />
+          </button>
+        )}
+        {(hasPermission('moderation.manage') ||
+          hasPermission('moderation.review')) && (
+          <button
+            type="button"
+            onClick={() => navigate('/staff/moderation')}
+            className={navClass('moderation')}
+            title="Keyword Moderation"
+          >
+            <ShieldAlert className="w-5 h-5" />
           </button>
         )}
       </nav>
