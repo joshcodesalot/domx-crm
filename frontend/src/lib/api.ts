@@ -809,6 +809,15 @@ export interface OverviewChatterStats {
   avgResponseTimeSeconds: number | null;
   dailySales: CurrencyAmount[];
   totalSales: CurrencyAmount[];
+  monthlyRevenue?: CurrencyAmount[];
+  messagesSent?: number;
+  ppvsSent?: number;
+  ppvsUnlocked?: number;
+  goldenRatio?: number;
+  ppvConversionRate?: number;
+  activeSecondsTotal?: number;
+  revenuePerHour?: CurrencyAmount[];
+  messagesPerHour?: number;
 }
 
 export interface OverviewDailySalesDay {
@@ -817,8 +826,20 @@ export interface OverviewDailySalesDay {
 }
 
 export interface OverviewAnalyticsResponse {
+  scope?: 'team' | 'self';
   dailySales: CurrencyAmount[];
   totalSales: CurrencyAmount[];
+  totalRevenue?: CurrencyAmount[];
+  monthlyRevenue?: CurrencyAmount[];
+  totalMessagesSent?: number;
+  ppvsSent?: number;
+  ppvsUnlocked?: number;
+  goldenRatio?: number;
+  ppvConversionRate?: number;
+  keystrokesTotal?: number;
+  activeSecondsTotal?: number;
+  revenuePerHour?: CurrencyAmount[];
+  messagesPerHour?: number;
   avgResponseTimeSeconds: number | null;
   dailySalesByDay: OverviewDailySalesDay[];
   chatters: OverviewChatterStats[];
@@ -831,13 +852,17 @@ export type PresenceStatus = 'online' | 'idle' | 'away';
 export interface PresenceChatter {
   userId: string;
   userName: string;
+  role?: string;
   status: PresenceStatus;
   lastInputAt: string | null;
   lastHeartbeatAt: string | null;
   activeSecondsToday: number;
+  idleSecondsToday?: number;
+  keystrokesToday?: number;
 }
 
 export interface ActivityPresenceResponse {
+  scope?: 'team' | 'self';
   chatters: PresenceChatter[];
   onlineCount: number;
   idleCount: number;
@@ -851,6 +876,8 @@ export interface ActivityHeartbeatResponse {
   lastInputAt: string | null;
   lastHeartbeatAt: string;
   activeSecondsToday: number;
+  idleSecondsToday?: number;
+  keystrokesToday?: number;
 }
 
 export async function getOverviewAnalytics(filters: {
@@ -867,8 +894,40 @@ export async function getOverviewAnalytics(filters: {
   return request<OverviewAnalyticsResponse>(path);
 }
 
+export interface LeaderboardEntry {
+  rank: number;
+  userId: string;
+  userName: string;
+  maskedValue: string;
+}
+
+export interface LeaderboardViewerRank {
+  rank: number;
+  maskedValue: string;
+}
+
+export interface LeaderboardResponse {
+  topResponseTime: LeaderboardEntry[];
+  topSales: LeaderboardEntry[];
+  topPpvsUnlocked: LeaderboardEntry[];
+  topGoldenRatio: LeaderboardEntry[];
+  viewerRank: {
+    responseTime: LeaderboardViewerRank | null;
+    sales: LeaderboardViewerRank | null;
+    ppvsUnlocked: LeaderboardViewerRank | null;
+    goldenRatio: LeaderboardViewerRank | null;
+  };
+  responseWindow: { startDate: string; endDate: string };
+  lastUpdated: string;
+}
+
+export async function getLeaderboard(): Promise<LeaderboardResponse> {
+  return request<LeaderboardResponse>('/api/messaging-dashboard/leaderboard');
+}
+
 export async function postActivityHeartbeat(body: {
   lastInputAt: string | null;
+  keystrokeDelta?: number;
 }): Promise<ActivityHeartbeatResponse> {
   return request<ActivityHeartbeatResponse>('/api/activity/heartbeat', {
     method: 'POST',
@@ -883,6 +942,8 @@ export async function getActivityPresence(): Promise<ActivityPresenceResponse> {
 export interface ActivityHistoryDay {
   date: string;
   activeSeconds: number;
+  idleSeconds?: number;
+  keystrokes?: number;
 }
 
 export interface ActivityHistoryChatter {
@@ -890,12 +951,15 @@ export interface ActivityHistoryChatter {
   userName: string;
   days: ActivityHistoryDay[];
   activeSecondsPeriod: number;
+  idleSecondsPeriod?: number;
+  keystrokesPeriod?: number;
 }
 
 export interface ActivityHistoryResponse {
   days: number;
   startDate: string;
   endDate: string;
+  scope?: 'team' | 'self';
   teamByDay: ActivityHistoryDay[];
   chatters: ActivityHistoryChatter[];
   lastUpdated: string;
@@ -909,6 +973,38 @@ export async function getActivityHistory(
   return request<ActivityHistoryResponse>(`/api/activity/history?${params.toString()}`);
 }
 
+export interface AnalyticsSeriesDay {
+  date: string;
+  messagesSent: number;
+  ppvsSent: number;
+  ppvsUnlocked: number;
+  goldenRatio: number;
+  ppvConversionRate: number;
+  revenue: CurrencyAmount[];
+  activeSeconds: number;
+  idleSeconds: number;
+  keystrokes: number;
+}
+
+export interface AnalyticsSeriesResponse {
+  scope: 'team' | 'self';
+  days: number;
+  startDate: string;
+  endDate: string;
+  series: AnalyticsSeriesDay[];
+  lastUpdated: string;
+}
+
+export async function getAnalyticsSeries(
+  days = 7
+): Promise<AnalyticsSeriesResponse> {
+  const params = new URLSearchParams();
+  params.set('days', String(days));
+  return request<AnalyticsSeriesResponse>(
+    `/api/messaging-dashboard/series?${params.toString()}`
+  );
+}
+
 export async function getMessagingDashboard(filters: {
   startDate?: string;
   endDate?: string;
@@ -916,6 +1012,7 @@ export async function getMessagingDashboard(filters: {
   creatorId?: string;
   platform?: 'maloum' | '4based';
   purchased?: boolean;
+  contentType?: 'chat_product';
   page?: number;
   limit?: number;
 } = {}): Promise<MessagingDashboardResponse> {
@@ -943,6 +1040,10 @@ export async function getMessagingDashboard(filters: {
 
   if (typeof filters.purchased === 'boolean') {
     params.set('purchased', String(filters.purchased));
+  }
+
+  if (filters.contentType) {
+    params.set('contentType', filters.contentType);
   }
 
   if (filters.page) {

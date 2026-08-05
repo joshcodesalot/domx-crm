@@ -3,6 +3,7 @@ import {
   BarChart2,
   Bell,
   LayoutGrid,
+  LineChart,
   LogOut,
   Megaphone,
   MessageSquare,
@@ -23,6 +24,7 @@ interface SidebarProps {
   activePage?:
     | 'dashboard'
     | 'analytics'
+    | 'charts'
     | 'chatter'
     | 'creators'
     | 'staff'
@@ -192,12 +194,22 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             <LayoutGrid className="w-5 h-5" />
           </button>
         )}
+        {(hasPermission('analytics.view') || hasPermission('analytics.self')) && (
+          <button
+            type="button"
+            onClick={() => navigate('/dashboard/charts')}
+            className={navClass('charts')}
+            title="Charts"
+          >
+            <LineChart className="w-5 h-5" />
+          </button>
+        )}
         {hasPermission('analytics.view') && (
           <button
             type="button"
             onClick={() => navigate('/dashboard/messaging')}
             className={navClass('analytics')}
-            title="Analytics"
+            title="Messaging Analytics"
           >
             <BarChart2 className="w-5 h-5" />
           </button>

@@ -141,6 +141,7 @@ export default function MessagingDashboard() {
   const [platform, setPlatform] = useState('');
   const [creatorId, setCreatorId] = useState('');
   const [purchased, setPurchased] = useState('');
+  const [contentType, setContentType] = useState('');
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(20);
 
@@ -192,6 +193,7 @@ export default function MessagingDashboard() {
             platform === 'maloum' || platform === '4based' ? platform : undefined,
           purchased:
             purchased === 'true' ? true : purchased === 'false' ? false : undefined,
+          contentType: contentType === 'chat_product' ? 'chat_product' : undefined,
           page,
           limit,
         });
@@ -208,7 +210,7 @@ export default function MessagingDashboard() {
         setRefreshing(false);
       }
     },
-    [startDate, endDate, chatterId, creatorId, platform, purchased, page, limit]
+    [startDate, endDate, chatterId, creatorId, platform, purchased, contentType, page, limit]
   );
 
   useEffect(() => {
@@ -246,6 +248,7 @@ export default function MessagingDashboard() {
     setPlatform('');
     setCreatorId('');
     setPurchased('');
+    setContentType('');
     setPage(1);
     setLimit(20);
   }
@@ -304,7 +307,7 @@ export default function MessagingDashboard() {
             </button>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
             <label className="space-y-1">
               <span className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                 Platform
@@ -362,6 +365,23 @@ export default function MessagingDashboard() {
                     {creator.displayName}
                   </option>
                 ))}
+              </select>
+            </label>
+
+            <label className="space-y-1">
+              <span className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Type
+              </span>
+              <select
+                value={contentType}
+                onChange={(event) => {
+                  setContentType(event.target.value);
+                  setPage(1);
+                }}
+                className={selectClassName}
+              >
+                <option value="">All</option>
+                <option value="chat_product">PPV only</option>
               </select>
             </label>
 

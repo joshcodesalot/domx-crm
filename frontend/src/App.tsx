@@ -27,6 +27,7 @@ import FourBasedNotifications from '@/pages/FourBasedNotifications';
 import MessagePro from '@/pages/MessagePro';
 import MessagePro4Based from '@/pages/MessagePro4Based';
 import MessagingDashboard from '@/pages/MessagingDashboard';
+import AnalyticsCharts from '@/pages/AnalyticsCharts';
 import KeywordModeration from '@/pages/KeywordModeration';
 import ModerationAlertsListener from '@/components/ModerationAlertsListener';
 import ActivityHeartbeatListener from '@/components/ActivityHeartbeatListener';
@@ -201,6 +202,13 @@ function AppRoutes() {
           <Route element={<ProtectedRoute />}>
             <Route element={<CreatorBootProvider />}>
               <Route path="/dashboard" element={<Dashboard />} />
+              <Route
+                element={
+                  <PermissionRoute anyOf={['analytics.view', 'analytics.self']} />
+                }
+              >
+                <Route path="/dashboard/charts" element={<AnalyticsCharts />} />
+              </Route>
               <Route element={<PermissionRoute permission="analytics.view" />}>
                 <Route path="/dashboard/messaging" element={<MessagingDashboard />} />
               </Route>

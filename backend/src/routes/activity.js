@@ -2,6 +2,10 @@ const express = require('express');
 const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/authorize');
+const {
+  getAnalyticsScope,
+  TRACKED_STAFF_ROLES,
+} = require('../services/analyticsScope');
 
 const router = express.Router();
 
@@ -9,6 +13,7 @@ const ONLINE_MS = 2 * 60 * 1000;
 const IDLE_MS = 10 * 60 * 1000;
 const HEARTBEAT_FRESH_MS = 2 * 60 * 1000;
 const MAX_ACTIVE_INTERVAL_SECONDS = 60;
+const MAX_KEYSTROKE_DELTA = 5000;
 
 function utcDateString(date = new Date()) {
   return date.toISOString().slice(0, 10);
@@ -19,6 +24,12 @@ function parseInputAt(value) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed;
+}
+
+function parseKeystrokeDelta(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(MAX_KEYSTROKE_DELTA, Math.floor(n));
 }
 
 function derivePresenceStatus(row, now = Date.now()) {
@@ -46,15 +57,29 @@ function derivePresenceStatus(row, now = Date.now()) {
   return 'away';
 }
 
+function buildUtcDateRange(days) {
+  const dates = [];
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const d = new Date();
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() - i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
 router.post('/heartbeat', authenticate, async (req, res) => {
   try {
     const userId = req.user.id;
     const clientInputAt = parseInputAt(req.body?.lastInputAt);
+    const keystrokeDelta = parseKeystrokeDelta(req.body?.keystrokeDelta);
     const now = new Date();
     const today = utcDateString(now);
 
     const existing = await pool.query(
-      `SELECT "lastInputAt", "lastHeartbeatAt", "activeSecondsToday", "activeSecondsDate"
+      `SELECT "lastInputAt", "lastHeartbeatAt",
+              "activeSecondsToday", "idleSecondsToday", "keystrokesToday",
+              "activeSecondsDate"
        FROM user_activity_presence
        WHERE "userId" = $1`,
       [userId]
@@ -62,6 +87,8 @@ router.post('/heartbeat', authenticate, async (req, res) => {
 
     const prev = existing.rows[0] || null;
     let activeSecondsToday = 0;
+    let idleSecondsToday = 0;
+    let keystrokesToday = 0;
     let activeSecondsDate = today;
 
     if (prev) {
@@ -74,6 +101,8 @@ router.post('/heartbeat', authenticate, async (req, res) => {
 
       if (prevDate === today) {
         activeSecondsToday = Number(prev.activeSecondsToday) || 0;
+        idleSecondsToday = Number(prev.idleSecondsToday) || 0;
+        keystrokesToday = Number(prev.keystrokesToday) || 0;
       }
 
       const prevHeartbeat = prev.lastHeartbeatAt
@@ -87,13 +116,20 @@ router.post('/heartbeat', authenticate, async (req, res) => {
             )
           : 0;
 
-      const effectiveInputAt = clientInputAt || (prev.lastInputAt ? new Date(prev.lastInputAt) : null);
+      const effectiveInputAt =
+        clientInputAt || (prev.lastInputAt ? new Date(prev.lastInputAt) : null);
       const hadRecentInput =
         effectiveInputAt != null &&
-        now.getTime() - effectiveInputAt.getTime() <= MAX_ACTIVE_INTERVAL_SECONDS * 1000;
+        now.getTime() - effectiveInputAt.getTime() <=
+          MAX_ACTIVE_INTERVAL_SECONDS * 1000;
 
-      if (hadRecentInput && intervalSeconds > 0) {
-        activeSecondsToday += intervalSeconds;
+      if (intervalSeconds > 0) {
+        if (hadRecentInput) {
+          activeSecondsToday += intervalSeconds;
+        } else {
+          // Session present (fresh heartbeat chain) but no recent input → idle
+          idleSecondsToday += intervalSeconds;
+        }
       }
     } else if (clientInputAt) {
       const ageSeconds = Math.floor((now.getTime() - clientInputAt.getTime()) / 1000);
@@ -102,6 +138,8 @@ router.post('/heartbeat', authenticate, async (req, res) => {
       }
     }
 
+    keystrokesToday += keystrokeDelta;
+
     const lastInputAt =
       clientInputAt ||
       (prev?.lastInputAt ? new Date(prev.lastInputAt) : null);
@@ -109,8 +147,9 @@ router.post('/heartbeat', authenticate, async (req, res) => {
     const result = await pool.query(
       `INSERT INTO user_activity_presence (
          "userId", "lastInputAt", "lastHeartbeatAt",
-         "activeSecondsToday", "activeSecondsDate", "updatedAt"
-       ) VALUES ($1, $2, $3, $4, $5::date, $3)
+         "activeSecondsToday", "idleSecondsToday", "keystrokesToday",
+         "activeSecondsDate", "updatedAt"
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7::date, $3)
        ON CONFLICT ("userId") DO UPDATE SET
          "lastInputAt" = CASE
            WHEN EXCLUDED."lastInputAt" IS NOT NULL
@@ -123,29 +162,40 @@ router.post('/heartbeat', authenticate, async (req, res) => {
          END,
          "lastHeartbeatAt" = EXCLUDED."lastHeartbeatAt",
          "activeSecondsToday" = EXCLUDED."activeSecondsToday",
+         "idleSecondsToday" = EXCLUDED."idleSecondsToday",
+         "keystrokesToday" = EXCLUDED."keystrokesToday",
          "activeSecondsDate" = EXCLUDED."activeSecondsDate",
          "updatedAt" = EXCLUDED."updatedAt"
        RETURNING "userId", "lastInputAt", "lastHeartbeatAt",
-                 "activeSecondsToday", "activeSecondsDate"`,
+                 "activeSecondsToday", "idleSecondsToday", "keystrokesToday",
+                 "activeSecondsDate"`,
       [
         userId,
         lastInputAt ? lastInputAt.toISOString() : null,
         now.toISOString(),
         activeSecondsToday,
+        idleSecondsToday,
+        keystrokesToday,
         activeSecondsDate,
       ]
     );
 
     const row = result.rows[0];
-    const seconds = Number(row.activeSecondsToday) || 0;
+    const activeSeconds = Number(row.activeSecondsToday) || 0;
+    const idleSeconds = Number(row.idleSecondsToday) || 0;
+    const keystrokes = Number(row.keystrokesToday) || 0;
 
     await pool.query(
-      `INSERT INTO user_activity_daily ("userId", day, "activeSeconds", "updatedAt")
-       VALUES ($1, $2::date, $3, $4)
+      `INSERT INTO user_activity_daily (
+         "userId", day, "activeSeconds", "idleSeconds", keystrokes, "updatedAt"
+       )
+       VALUES ($1, $2::date, $3, $4, $5, $6)
        ON CONFLICT ("userId", day) DO UPDATE SET
          "activeSeconds" = EXCLUDED."activeSeconds",
+         "idleSeconds" = EXCLUDED."idleSeconds",
+         keystrokes = EXCLUDED.keystrokes,
          "updatedAt" = EXCLUDED."updatedAt"`,
-      [userId, activeSecondsDate, seconds, now.toISOString()]
+      [userId, activeSecondsDate, activeSeconds, idleSeconds, keystrokes, now.toISOString()]
     );
 
     res.json({
@@ -153,7 +203,9 @@ router.post('/heartbeat', authenticate, async (req, res) => {
       status: derivePresenceStatus(row, now.getTime()),
       lastInputAt: row.lastInputAt,
       lastHeartbeatAt: row.lastHeartbeatAt,
-      activeSecondsToday: seconds,
+      activeSecondsToday: activeSeconds,
+      idleSecondsToday: idleSeconds,
+      keystrokesToday: keystrokes,
     });
   } catch (err) {
     console.error('activity heartbeat failed:', err);
@@ -161,23 +213,13 @@ router.post('/heartbeat', authenticate, async (req, res) => {
   }
 });
 
-function buildUtcDateRange(days) {
-  const dates = [];
-  for (let i = days - 1; i >= 0; i -= 1) {
-    const d = new Date();
-    d.setUTCHours(0, 0, 0, 0);
-    d.setUTCDate(d.getUTCDate() - i);
-    dates.push(d.toISOString().slice(0, 10));
-  }
-  return dates;
-}
-
 router.get(
   '/history',
   authenticate,
-  requirePermission('analytics.view'),
+  requirePermission('analytics.view', 'analytics.self'),
   async (req, res) => {
     try {
+      const scope = getAnalyticsScope(req.user);
       const parsedDays = Math.min(
         Math.max(Number.parseInt(String(req.query.days || '14'), 10) || 14, 1),
         90
@@ -186,45 +228,88 @@ router.get(
       const startDate = dateRange[0];
       const endDate = dateRange[dateRange.length - 1];
 
-      const [chattersResult, dailyResult] = await Promise.all([
-        pool.query(
-          `SELECT u.id AS "userId", u.name AS "userName"
-           FROM users u
-           WHERE u.role = 'chatter' AND u.status = 'active'
-           ORDER BY u.name ASC`
-        ),
-        pool.query(
-          `SELECT d."userId",
-                  d.day::text AS date,
-                  COALESCE(d."activeSeconds", 0)::int AS "activeSeconds"
-           FROM user_activity_daily d
-           JOIN users u ON u.id = d."userId"
-           WHERE u.role = 'chatter'
-             AND d.day >= $1::date
-             AND d.day <= $2::date`,
-          [startDate, endDate]
-        ),
-      ]);
+      let staffQuery;
+      let staffParams;
+      let dailyQuery;
+      let dailyParams;
 
-      const secondsByUserDay = new Map();
-      for (const row of dailyResult.rows) {
-        const date = String(row.date).slice(0, 10);
-        secondsByUserDay.set(`${row.userId}:${date}`, Number(row.activeSeconds) || 0);
+      if (scope.mode === 'team') {
+        staffQuery = `SELECT u.id AS "userId", u.name AS "userName"
+                      FROM users u
+                      WHERE u.role = ANY($1::text[]) AND u.status = 'active'
+                      ORDER BY u.name ASC`;
+        staffParams = [TRACKED_STAFF_ROLES];
+        dailyQuery = `SELECT d."userId",
+                             d.day::text AS date,
+                             COALESCE(d."activeSeconds", 0)::int AS "activeSeconds",
+                             COALESCE(d."idleSeconds", 0)::int AS "idleSeconds",
+                             COALESCE(d.keystrokes, 0)::int AS keystrokes
+                      FROM user_activity_daily d
+                      JOIN users u ON u.id = d."userId"
+                      WHERE u.role = ANY($1::text[])
+                        AND d.day >= $2::date
+                        AND d.day <= $3::date`;
+        dailyParams = [TRACKED_STAFF_ROLES, startDate, endDate];
+      } else {
+        staffQuery = `SELECT u.id AS "userId", u.name AS "userName"
+                      FROM users u
+                      WHERE u.id = ANY($1::uuid[])
+                      ORDER BY u.name ASC`;
+        staffParams = [scope.userIds];
+        dailyQuery = `SELECT d."userId",
+                             d.day::text AS date,
+                             COALESCE(d."activeSeconds", 0)::int AS "activeSeconds",
+                             COALESCE(d."idleSeconds", 0)::int AS "idleSeconds",
+                             COALESCE(d.keystrokes, 0)::int AS keystrokes
+                      FROM user_activity_daily d
+                      WHERE d."userId" = ANY($1::uuid[])
+                        AND d.day >= $2::date
+                        AND d.day <= $3::date`;
+        dailyParams = [scope.userIds, startDate, endDate];
       }
 
-      const teamTotals = new Map(dateRange.map((date) => [date, 0]));
-      const chatters = chattersResult.rows.map((chatter) => {
+      const [staffResult, dailyResult] = await Promise.all([
+        pool.query(staffQuery, staffParams),
+        pool.query(dailyQuery, dailyParams),
+      ]);
+
+      const metricsByUserDay = new Map();
+      for (const row of dailyResult.rows) {
+        const date = String(row.date).slice(0, 10);
+        metricsByUserDay.set(`${row.userId}:${date}`, {
+          activeSeconds: Number(row.activeSeconds) || 0,
+          idleSeconds: Number(row.idleSeconds) || 0,
+          keystrokes: Number(row.keystrokes) || 0,
+        });
+      }
+
+      const teamTotals = new Map(
+        dateRange.map((date) => [
+          date,
+          { activeSeconds: 0, idleSeconds: 0, keystrokes: 0 },
+        ])
+      );
+
+      const chatters = staffResult.rows.map((staff) => {
         const days = dateRange.map((date) => {
-          const activeSeconds =
-            secondsByUserDay.get(`${chatter.userId}:${date}`) || 0;
-          teamTotals.set(date, (teamTotals.get(date) || 0) + activeSeconds);
-          return { date, activeSeconds };
+          const metrics = metricsByUserDay.get(`${staff.userId}:${date}`) || {
+            activeSeconds: 0,
+            idleSeconds: 0,
+            keystrokes: 0,
+          };
+          const totals = teamTotals.get(date);
+          totals.activeSeconds += metrics.activeSeconds;
+          totals.idleSeconds += metrics.idleSeconds;
+          totals.keystrokes += metrics.keystrokes;
+          return { date, ...metrics };
         });
         return {
-          userId: chatter.userId,
-          userName: chatter.userName,
+          userId: staff.userId,
+          userName: staff.userName,
           days,
           activeSecondsPeriod: days.reduce((sum, d) => sum + d.activeSeconds, 0),
+          idleSecondsPeriod: days.reduce((sum, d) => sum + d.idleSeconds, 0),
+          keystrokesPeriod: days.reduce((sum, d) => sum + d.keystrokes, 0),
         };
       });
 
@@ -232,9 +317,10 @@ router.get(
         days: parsedDays,
         startDate,
         endDate,
+        scope: scope.mode,
         teamByDay: dateRange.map((date) => ({
           date,
-          activeSeconds: teamTotals.get(date) || 0,
+          ...teamTotals.get(date),
         })),
         chatters,
         lastUpdated: new Date().toISOString(),
@@ -249,37 +335,84 @@ router.get(
 router.get(
   '/presence',
   authenticate,
-  requirePermission('analytics.view'),
-  async (_req, res) => {
+  requirePermission('analytics.view', 'analytics.self'),
+  async (req, res) => {
     try {
-      const result = await pool.query(
-        `SELECT u.id AS "userId",
-                u.name AS "userName",
-                u.role,
-                p."lastInputAt",
-                p."lastHeartbeatAt",
-                CASE
-                  WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
-                  THEN COALESCE(p."activeSecondsToday", 0)
-                  ELSE 0
-                END AS "activeSecondsToday"
-         FROM users u
-         LEFT JOIN user_activity_presence p ON p."userId" = u.id
-         WHERE u.role = 'chatter' AND u.status = 'active'
-         ORDER BY u.name ASC`
-      );
+      const scope = getAnalyticsScope(req.user);
+
+      let query;
+      let params;
+      if (scope.mode === 'team') {
+        query = `SELECT u.id AS "userId",
+                        u.name AS "userName",
+                        u.role,
+                        p."lastInputAt",
+                        p."lastHeartbeatAt",
+                        CASE
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          THEN COALESCE(p."activeSecondsToday", 0)
+                          ELSE 0
+                        END AS "activeSecondsToday",
+                        CASE
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          THEN COALESCE(p."idleSecondsToday", 0)
+                          ELSE 0
+                        END AS "idleSecondsToday",
+                        CASE
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          THEN COALESCE(p."keystrokesToday", 0)
+                          ELSE 0
+                        END AS "keystrokesToday"
+                 FROM users u
+                 LEFT JOIN user_activity_presence p ON p."userId" = u.id
+                 WHERE u.role = ANY($1::text[]) AND u.status = 'active'
+                 ORDER BY u.name ASC`;
+        params = [TRACKED_STAFF_ROLES];
+      } else {
+        query = `SELECT u.id AS "userId",
+                        u.name AS "userName",
+                        u.role,
+                        p."lastInputAt",
+                        p."lastHeartbeatAt",
+                        CASE
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          THEN COALESCE(p."activeSecondsToday", 0)
+                          ELSE 0
+                        END AS "activeSecondsToday",
+                        CASE
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          THEN COALESCE(p."idleSecondsToday", 0)
+                          ELSE 0
+                        END AS "idleSecondsToday",
+                        CASE
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          THEN COALESCE(p."keystrokesToday", 0)
+                          ELSE 0
+                        END AS "keystrokesToday"
+                 FROM users u
+                 LEFT JOIN user_activity_presence p ON p."userId" = u.id
+                 WHERE u.id = ANY($1::uuid[])
+                 ORDER BY u.name ASC`;
+        params = [scope.userIds];
+      }
+
+      const result = await pool.query(query, params);
 
       const now = Date.now();
       const chatters = result.rows.map((row) => ({
         userId: row.userId,
         userName: row.userName,
+        role: row.role,
         status: derivePresenceStatus(row, now),
         lastInputAt: row.lastInputAt,
         lastHeartbeatAt: row.lastHeartbeatAt,
         activeSecondsToday: Number(row.activeSecondsToday) || 0,
+        idleSecondsToday: Number(row.idleSecondsToday) || 0,
+        keystrokesToday: Number(row.keystrokesToday) || 0,
       }));
 
       res.json({
+        scope: scope.mode,
         chatters,
         onlineCount: chatters.filter((c) => c.status === 'online').length,
         idleCount: chatters.filter((c) => c.status === 'idle').length,

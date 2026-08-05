@@ -8,8 +8,55 @@ const {
   userCanAccessCreator,
 } = require('../services/creatorAccess');
 const { emitToUsers } = require('../services/userEventBus');
+const {
+  getAnalyticsScope,
+  TRACKED_STAFF_ROLES,
+} = require('../services/analyticsScope');
+const {
+  maskMoneyAmounts,
+  maskDuration,
+  maskPercent,
+  maskCount,
+} = require('../services/leaderboardMask');
 
 const { requireElectronServiceKey } = require('../middleware/electronServiceKey');
+
+function ratePercent(numerator, denominator) {
+  const n = Number(numerator) || 0;
+  const d = Number(denominator) || 0;
+  if (d <= 0) return 0;
+  return Math.round((n / d) * 10000) / 100;
+}
+
+function perHourRate(value, activeSeconds) {
+  const hours = (Number(activeSeconds) || 0) / 3600;
+  if (hours <= 0) return 0;
+  return Math.round(((Number(value) || 0) / hours) * 100) / 100;
+}
+
+function revenuePerHourAmounts(amounts, activeSeconds) {
+  const hours = (Number(activeSeconds) || 0) / 3600;
+  if (hours <= 0 || !amounts || amounts.length === 0) {
+    return [];
+  }
+  return amounts
+    .map((item) => ({
+      currency: item.currency,
+      amount: Math.round(((Number(item.amount) || 0) / hours) * 100) / 100,
+    }))
+    .filter((item) => item.amount > 0);
+}
+
+function buildUtcDateRange(days) {
+  const dates = [];
+  for (let i = days - 1; i >= 0; i -= 1) {
+    const d = new Date();
+    d.setUTCHours(0, 0, 0, 0);
+    d.setUTCDate(d.getUTCDate() - i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates;
+}
 
 const router = express.Router();
 
@@ -1235,9 +1282,10 @@ function mergeCurrencyAmounts(...lists) {
 router.get(
   '/overview',
   authenticate,
-  requirePermission('analytics.view'),
+  requirePermission('analytics.view', 'analytics.self'),
   async (req, res) => {
     try {
+      const scope = getAnalyticsScope(req.user);
       const { startDate, endDate } = req.query;
 
       let responseStart = null;
@@ -1268,14 +1316,42 @@ router.get(
         responseStart = responseStart || start.toISOString().slice(0, 10);
       }
 
+      const chatterClause =
+        scope.mode === 'self' ? ' AND "chatterId" = ANY($1::uuid[])' : '';
+      const mChatterClause =
+        scope.mode === 'self' ? ' AND m."chatterId" = ANY($1::uuid[])' : '';
+      const selfParams = scope.mode === 'self' ? [scope.userIds] : [];
+
+      const staffListQuery =
+        scope.mode === 'team'
+          ? pool.query(
+              `SELECT u.id AS "chatterId", u.name AS "chatterName"
+               FROM users u
+               WHERE u.role = ANY($1::text[]) AND u.status = 'active'
+               ORDER BY u.name ASC`,
+              [TRACKED_STAFF_ROLES]
+            )
+          : pool.query(
+              `SELECT u.id AS "chatterId", u.name AS "chatterName"
+               FROM users u
+               WHERE u.id = ANY($1::uuid[])
+               ORDER BY u.name ASC`,
+              [scope.userIds]
+            );
+
       const [
         dailySalesResult,
         totalSalesResult,
+        monthlySalesResult,
         avgResponseResult,
         dailyByDayResult,
+        messageStatsResult,
         chatterAvgResult,
         chatterSalesResult,
+        chatterMessageStatsResult,
         chatterNamesResult,
+        keystrokesResult,
+        chatterActiveResult,
       ] = await Promise.all([
         pool.query(
           `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
@@ -1284,7 +1360,9 @@ router.get(
            WHERE purchased = true
              AND "priceNet" IS NOT NULL
              AND ("sentAt" AT TIME ZONE 'UTC')::date = (NOW() AT TIME ZONE 'UTC')::date
-           GROUP BY 1`
+             ${chatterClause}
+           GROUP BY 1`,
+          selfParams
         ),
         pool.query(
           `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
@@ -1292,44 +1370,111 @@ router.get(
            FROM messaging_dashboard_entries
            WHERE purchased = true
              AND "priceNet" IS NOT NULL
-           GROUP BY 1`
+             ${chatterClause}
+           GROUP BY 1`,
+          selfParams
         ),
         pool.query(
-          `SELECT AVG("responseTimeSeconds")::float AS avg
+          `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
            FROM messaging_dashboard_entries
-           WHERE "responseTimeSeconds" IS NOT NULL
-             AND ("sentAt" AT TIME ZONE 'UTC')::date >= $1::date
-             AND ("sentAt" AT TIME ZONE 'UTC')::date <= $2::date`,
-          [responseStart, responseEnd]
+           WHERE purchased = true
+             AND "priceNet" IS NOT NULL
+             AND date_trunc('month', "sentAt" AT TIME ZONE 'UTC')
+                 = date_trunc('month', NOW() AT TIME ZONE 'UTC')
+             ${chatterClause}
+           GROUP BY 1`,
+          selfParams
         ),
         pool.query(
-          `WITH days AS (
-             SELECT generate_series(
-               ((NOW() AT TIME ZONE 'UTC')::date - 13),
-               (NOW() AT TIME ZONE 'UTC')::date,
-               '1 day'::interval
-             )::date AS day
-           )
-           SELECT d.day::text AS date,
-                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
-           FROM days d
-           LEFT JOIN messaging_dashboard_entries m
-             ON (m."sentAt" AT TIME ZONE 'UTC')::date = d.day
-            AND m.purchased = true
-            AND m."priceNet" IS NOT NULL
-           GROUP BY d.day, 2
-           ORDER BY d.day ASC`
+          scope.mode === 'self'
+            ? `SELECT AVG("responseTimeSeconds")::float AS avg
+               FROM messaging_dashboard_entries
+               WHERE "responseTimeSeconds" IS NOT NULL
+                 AND ("sentAt" AT TIME ZONE 'UTC')::date >= $2::date
+                 AND ("sentAt" AT TIME ZONE 'UTC')::date <= $3::date
+                 AND "chatterId" = ANY($1::uuid[])`
+            : `SELECT AVG("responseTimeSeconds")::float AS avg
+               FROM messaging_dashboard_entries
+               WHERE "responseTimeSeconds" IS NOT NULL
+                 AND ("sentAt" AT TIME ZONE 'UTC')::date >= $1::date
+                 AND ("sentAt" AT TIME ZONE 'UTC')::date <= $2::date`,
+          scope.mode === 'self'
+            ? [scope.userIds, responseStart, responseEnd]
+            : [responseStart, responseEnd]
         ),
         pool.query(
-          `SELECT m."chatterId",
-                  AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
-           FROM messaging_dashboard_entries m
-           WHERE m."responseTimeSeconds" IS NOT NULL
-             AND (m."sentAt" AT TIME ZONE 'UTC')::date >= $1::date
-             AND (m."sentAt" AT TIME ZONE 'UTC')::date <= $2::date
-           GROUP BY m."chatterId"`,
-          [responseStart, responseEnd]
+          scope.mode === 'self'
+            ? `WITH days AS (
+                 SELECT generate_series(
+                   ((NOW() AT TIME ZONE 'UTC')::date - 13),
+                   (NOW() AT TIME ZONE 'UTC')::date,
+                   '1 day'::interval
+                 )::date AS day
+               )
+               SELECT d.day::text AS date,
+                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+               FROM days d
+               LEFT JOIN messaging_dashboard_entries m
+                 ON (m."sentAt" AT TIME ZONE 'UTC')::date = d.day
+                AND m.purchased = true
+                AND m."priceNet" IS NOT NULL
+                AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY d.day, 2
+               ORDER BY d.day ASC`
+            : `WITH days AS (
+                 SELECT generate_series(
+                   ((NOW() AT TIME ZONE 'UTC')::date - 13),
+                   (NOW() AT TIME ZONE 'UTC')::date,
+                   '1 day'::interval
+                 )::date AS day
+               )
+               SELECT d.day::text AS date,
+                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+               FROM days d
+               LEFT JOIN messaging_dashboard_entries m
+                 ON (m."sentAt" AT TIME ZONE 'UTC')::date = d.day
+                AND m.purchased = true
+                AND m."priceNet" IS NOT NULL
+               GROUP BY d.day, 2
+               ORDER BY d.day ASC`,
+          selfParams
+        ),
+        pool.query(
+          `SELECT
+             COUNT(*) FILTER (
+               WHERE "contentType" IN ('text', 'media', 'chat_product')
+             )::int AS "messagesSent",
+             COUNT(*) FILTER (WHERE "contentType" = 'chat_product')::int AS "ppvsSent",
+             COUNT(*) FILTER (
+               WHERE "contentType" = 'chat_product' AND purchased = true
+             )::int AS "ppvsUnlocked"
+           FROM messaging_dashboard_entries
+           WHERE TRUE ${chatterClause}`,
+          selfParams
+        ),
+        pool.query(
+          scope.mode === 'self'
+            ? `SELECT m."chatterId",
+                      AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
+               FROM messaging_dashboard_entries m
+               WHERE m."responseTimeSeconds" IS NOT NULL
+                 AND (m."sentAt" AT TIME ZONE 'UTC')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE 'UTC')::date <= $3::date
+                 AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY m."chatterId"`
+            : `SELECT m."chatterId",
+                      AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
+               FROM messaging_dashboard_entries m
+               WHERE m."responseTimeSeconds" IS NOT NULL
+                 AND (m."sentAt" AT TIME ZONE 'UTC')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE 'UTC')::date <= $2::date
+               GROUP BY m."chatterId"`,
+          scope.mode === 'self'
+            ? [scope.userIds, responseStart, responseEnd]
+            : [responseStart, responseEnd]
         ),
         pool.query(
           `SELECT m."chatterId",
@@ -1341,20 +1486,91 @@ router.get(
                   ), 0)::float AS "dailySales",
                   COALESCE(SUM(ABS(m."priceNet")) FILTER (
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
-                  ), 0)::float AS "totalSales"
+                  ), 0)::float AS "totalSales",
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m.purchased = true
+                      AND m."priceNet" IS NOT NULL
+                      AND date_trunc('month', m."sentAt" AT TIME ZONE 'UTC')
+                          = date_trunc('month', NOW() AT TIME ZONE 'UTC')
+                  ), 0)::float AS "monthlySales"
            FROM messaging_dashboard_entries m
-           GROUP BY m."chatterId", 2`
+           WHERE TRUE ${mChatterClause}
+           GROUP BY m."chatterId", 2`,
+          selfParams
         ),
         pool.query(
-          `SELECT u.id AS "chatterId", u.name AS "chatterName"
-           FROM users u
-           WHERE u.role = 'chatter' AND u.status = 'active'
-           ORDER BY u.name ASC`
+          `SELECT m."chatterId",
+                  COUNT(*) FILTER (
+                    WHERE m."contentType" IN ('text', 'media', 'chat_product')
+                  )::int AS "messagesSent",
+                  COUNT(*) FILTER (WHERE m."contentType" = 'chat_product')::int AS "ppvsSent",
+                  COUNT(*) FILTER (
+                    WHERE m."contentType" = 'chat_product' AND m.purchased = true
+                  )::int AS "ppvsUnlocked"
+           FROM messaging_dashboard_entries m
+           WHERE TRUE ${mChatterClause}
+           GROUP BY m."chatterId"`,
+          selfParams
         ),
+        staffListQuery,
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT COALESCE(SUM(keystrokes), 0)::int AS keystrokes,
+                      COALESCE(SUM("activeSeconds"), 0)::int AS "activeSeconds"
+               FROM user_activity_daily
+               WHERE "userId" = ANY($1::uuid[])`,
+              [scope.userIds]
+            )
+          : pool.query(
+              `SELECT COALESCE(SUM(d.keystrokes), 0)::int AS keystrokes,
+                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds"
+               FROM user_activity_daily d
+               JOIN users u ON u.id = d."userId"
+               WHERE u.role = ANY($1::text[])`,
+              [TRACKED_STAFF_ROLES]
+            ),
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT d."userId" AS "chatterId",
+                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds"
+               FROM user_activity_daily d
+               WHERE d."userId" = ANY($1::uuid[])
+               GROUP BY d."userId"`,
+              [scope.userIds]
+            )
+          : pool.query(
+              `SELECT d."userId" AS "chatterId",
+                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds"
+               FROM user_activity_daily d
+               JOIN users u ON u.id = d."userId"
+               WHERE u.role = ANY($1::text[])
+               GROUP BY d."userId"`,
+              [TRACKED_STAFF_ROLES]
+            ),
       ]);
 
       const dailySales = currencyAmountRowsToList(dailySalesResult.rows);
       const totalSales = currencyAmountRowsToList(totalSalesResult.rows);
+      const monthlyRevenue = currencyAmountRowsToList(monthlySalesResult.rows);
+
+      const msgStats = messageStatsResult.rows[0] || {};
+      const messagesSent = Number(msgStats.messagesSent) || 0;
+      const ppvsSent = Number(msgStats.ppvsSent) || 0;
+      const ppvsUnlocked = Number(msgStats.ppvsUnlocked) || 0;
+      const goldenRatio = ratePercent(ppvsSent, messagesSent);
+      const ppvConversionRate = ratePercent(ppvsUnlocked, ppvsSent);
+      const keystrokesTotal = Number(keystrokesResult.rows[0]?.keystrokes) || 0;
+      const activeSecondsTotal = Number(keystrokesResult.rows[0]?.activeSeconds) || 0;
+      const revenuePerHour = revenuePerHourAmounts(totalSales, activeSecondsTotal);
+      const messagesPerHour = perHourRate(messagesSent, activeSecondsTotal);
+
+      const activeSecondsByChatter = new Map();
+      for (const row of chatterActiveResult.rows) {
+        activeSecondsByChatter.set(
+          row.chatterId,
+          Number(row.activeSeconds) || 0
+        );
+      }
 
       const dayMap = new Map();
       for (const row of dailyByDayResult.rows) {
@@ -1392,6 +1608,12 @@ router.get(
               : null,
           dailySales: [],
           totalSales: [],
+          monthlyRevenue: [],
+          messagesSent: 0,
+          ppvsSent: 0,
+          ppvsUnlocked: 0,
+          goldenRatio: 0,
+          ppvConversionRate: 0,
         });
       }
       for (const row of chatterSalesResult.rows) {
@@ -1400,6 +1622,12 @@ router.get(
             avgResponseTimeSeconds: null,
             dailySales: [],
             totalSales: [],
+            monthlyRevenue: [],
+            messagesSent: 0,
+            ppvsSent: 0,
+            ppvsUnlocked: 0,
+            goldenRatio: 0,
+            ppvConversionRate: 0,
           });
         }
         const entry = statsByChatter.get(row.chatterId);
@@ -1407,23 +1635,60 @@ router.get(
           String(row.currency || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR';
         const daily = Number(row.dailySales) || 0;
         const total = Number(row.totalSales) || 0;
+        const monthly = Number(row.monthlySales) || 0;
         if (daily > 0) {
           entry.dailySales.push({ currency, amount: daily });
         }
         if (total > 0) {
           entry.totalSales.push({ currency, amount: total });
         }
+        if (monthly > 0) {
+          entry.monthlyRevenue.push({ currency, amount: monthly });
+        }
+      }
+      for (const row of chatterMessageStatsResult.rows) {
+        if (!statsByChatter.has(row.chatterId)) {
+          statsByChatter.set(row.chatterId, {
+            avgResponseTimeSeconds: null,
+            dailySales: [],
+            totalSales: [],
+            monthlyRevenue: [],
+            messagesSent: 0,
+            ppvsSent: 0,
+            ppvsUnlocked: 0,
+            goldenRatio: 0,
+            ppvConversionRate: 0,
+          });
+        }
+        const entry = statsByChatter.get(row.chatterId);
+        entry.messagesSent = Number(row.messagesSent) || 0;
+        entry.ppvsSent = Number(row.ppvsSent) || 0;
+        entry.ppvsUnlocked = Number(row.ppvsUnlocked) || 0;
+        entry.goldenRatio = ratePercent(entry.ppvsSent, entry.messagesSent);
+        entry.ppvConversionRate = ratePercent(entry.ppvsUnlocked, entry.ppvsSent);
       }
 
       const namedIds = new Set(chatterNamesResult.rows.map((r) => r.chatterId));
       const chatters = chatterNamesResult.rows.map((row) => {
         const stats = statsByChatter.get(row.chatterId);
+        const activeSeconds = activeSecondsByChatter.get(row.chatterId) || 0;
+        const totalSalesMerged = mergeCurrencyAmounts(stats?.totalSales || []);
+        const messagesSentForChatter = stats?.messagesSent || 0;
         return {
           chatterId: row.chatterId,
           chatterName: row.chatterName,
           avgResponseTimeSeconds: stats?.avgResponseTimeSeconds ?? null,
           dailySales: mergeCurrencyAmounts(stats?.dailySales || []),
-          totalSales: mergeCurrencyAmounts(stats?.totalSales || []),
+          totalSales: totalSalesMerged,
+          monthlyRevenue: mergeCurrencyAmounts(stats?.monthlyRevenue || []),
+          messagesSent: messagesSentForChatter,
+          ppvsSent: stats?.ppvsSent || 0,
+          ppvsUnlocked: stats?.ppvsUnlocked || 0,
+          goldenRatio: stats?.goldenRatio || 0,
+          ppvConversionRate: stats?.ppvConversionRate || 0,
+          activeSecondsTotal: activeSeconds,
+          revenuePerHour: revenuePerHourAmounts(totalSalesMerged, activeSeconds),
+          messagesPerHour: perHourRate(messagesSentForChatter, activeSeconds),
         };
       });
 
@@ -1440,12 +1705,23 @@ router.get(
         );
         for (const chatterId of missingIds) {
           const stats = statsByChatter.get(chatterId);
+          const activeSeconds = activeSecondsByChatter.get(chatterId) || 0;
+          const totalSalesMerged = mergeCurrencyAmounts(stats.totalSales);
           chatters.push({
             chatterId,
             chatterName: nameById.get(chatterId) || 'Unknown',
             avgResponseTimeSeconds: stats.avgResponseTimeSeconds,
             dailySales: mergeCurrencyAmounts(stats.dailySales),
-            totalSales: mergeCurrencyAmounts(stats.totalSales),
+            totalSales: totalSalesMerged,
+            monthlyRevenue: mergeCurrencyAmounts(stats.monthlyRevenue),
+            messagesSent: stats.messagesSent,
+            ppvsSent: stats.ppvsSent,
+            ppvsUnlocked: stats.ppvsUnlocked,
+            goldenRatio: stats.goldenRatio,
+            ppvConversionRate: stats.ppvConversionRate,
+            activeSecondsTotal: activeSeconds,
+            revenuePerHour: revenuePerHourAmounts(totalSalesMerged, activeSeconds),
+            messagesPerHour: perHourRate(stats.messagesSent, activeSeconds),
           });
         }
       }
@@ -1454,8 +1730,20 @@ router.get(
 
       const avgRaw = avgResponseResult.rows[0]?.avg;
       res.json({
+        scope: scope.mode,
         dailySales,
         totalSales,
+        totalRevenue: totalSales,
+        monthlyRevenue,
+        totalMessagesSent: messagesSent,
+        ppvsSent,
+        ppvsUnlocked,
+        goldenRatio,
+        ppvConversionRate,
+        keystrokesTotal,
+        activeSecondsTotal,
+        revenuePerHour,
+        messagesPerHour,
         avgResponseTimeSeconds:
           avgRaw != null && !Number.isNaN(Number(avgRaw))
             ? Number(avgRaw)
@@ -1473,6 +1761,369 @@ router.get(
 );
 
 router.get(
+  '/leaderboard',
+  authenticate,
+  requirePermission('analytics.view', 'analytics.self'),
+  async (req, res) => {
+    try {
+      const viewerId = req.user.id;
+      const end = new Date();
+      const start = new Date();
+      start.setUTCDate(start.getUTCDate() - 30);
+      const responseStart = start.toISOString().slice(0, 10);
+      const responseEnd = end.toISOString().slice(0, 10);
+
+      const [
+        staffResult,
+        responseResult,
+        salesResult,
+        messageStatsResult,
+      ] = await Promise.all([
+        pool.query(
+          `SELECT u.id AS "userId", u.name AS "userName"
+           FROM users u
+           WHERE u.role = ANY($1::text[]) AND u.status = 'active'
+           ORDER BY u.name ASC`,
+          [TRACKED_STAFF_ROLES]
+        ),
+        pool.query(
+          `SELECT m."chatterId" AS "userId",
+                  AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
+           FROM messaging_dashboard_entries m
+           JOIN users u ON u.id = m."chatterId"
+           WHERE u.role = ANY($1::text[])
+             AND m."responseTimeSeconds" IS NOT NULL
+             AND (m."sentAt" AT TIME ZONE 'UTC')::date >= $2::date
+             AND (m."sentAt" AT TIME ZONE 'UTC')::date <= $3::date
+           GROUP BY m."chatterId"`,
+          [TRACKED_STAFF_ROLES, responseStart, responseEnd]
+        ),
+        pool.query(
+          `SELECT m."chatterId" AS "userId",
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+           FROM messaging_dashboard_entries m
+           JOIN users u ON u.id = m."chatterId"
+           WHERE u.role = ANY($1::text[])
+             AND m.purchased = true
+             AND m."priceNet" IS NOT NULL
+           GROUP BY m."chatterId", 2`,
+          [TRACKED_STAFF_ROLES]
+        ),
+        pool.query(
+          `SELECT m."chatterId" AS "userId",
+                  COUNT(*) FILTER (
+                    WHERE m."contentType" IN ('text', 'media', 'chat_product')
+                  )::int AS "messagesSent",
+                  COUNT(*) FILTER (WHERE m."contentType" = 'chat_product')::int AS "ppvsSent",
+                  COUNT(*) FILTER (
+                    WHERE m."contentType" = 'chat_product' AND m.purchased = true
+                  )::int AS "ppvsUnlocked"
+           FROM messaging_dashboard_entries m
+           JOIN users u ON u.id = m."chatterId"
+           WHERE u.role = ANY($1::text[])
+           GROUP BY m."chatterId"`,
+          [TRACKED_STAFF_ROLES]
+        ),
+      ]);
+
+      const byId = new Map();
+      for (const row of staffResult.rows) {
+        byId.set(row.userId, {
+          userId: row.userId,
+          userName: row.userName,
+          avgResponseTimeSeconds: null,
+          sales: [],
+          salesTotal: 0,
+          messagesSent: 0,
+          ppvsSent: 0,
+          ppvsUnlocked: 0,
+          goldenRatio: 0,
+        });
+      }
+
+      for (const row of responseResult.rows) {
+        const entry = byId.get(row.userId);
+        if (!entry) continue;
+        entry.avgResponseTimeSeconds =
+          row.avgResponseTimeSeconds != null
+            ? Number(row.avgResponseTimeSeconds)
+            : null;
+      }
+
+      for (const row of salesResult.rows) {
+        const entry = byId.get(row.userId);
+        if (!entry) continue;
+        const currency =
+          String(row.currency || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR';
+        const amount = Number(row.amount) || 0;
+        if (amount > 0) {
+          entry.sales.push({ currency, amount });
+          entry.salesTotal += amount;
+        }
+      }
+
+      for (const row of messageStatsResult.rows) {
+        const entry = byId.get(row.userId);
+        if (!entry) continue;
+        entry.messagesSent = Number(row.messagesSent) || 0;
+        entry.ppvsSent = Number(row.ppvsSent) || 0;
+        entry.ppvsUnlocked = Number(row.ppvsUnlocked) || 0;
+        entry.goldenRatio = ratePercent(entry.ppvsSent, entry.messagesSent);
+      }
+
+      const staff = [...byId.values()];
+
+      function toEntry(rank, person, maskedValue) {
+        return {
+          rank,
+          userId: person.userId,
+          userName: person.userName,
+          maskedValue,
+        };
+      }
+
+      function buildTop(list, limit = 5) {
+        return list.slice(0, limit).map((person, index) =>
+          toEntry(index + 1, person, person._masked)
+        );
+      }
+
+      function findViewer(list, maskFn) {
+        const idx = list.findIndex((p) => p.userId === viewerId);
+        if (idx < 0) return null;
+        return {
+          rank: idx + 1,
+          maskedValue: maskFn(list[idx]),
+        };
+      }
+
+      const responseSorted = staff
+        .filter((p) => p.avgResponseTimeSeconds != null)
+        .sort(
+          (a, b) =>
+            a.avgResponseTimeSeconds - b.avgResponseTimeSeconds ||
+            a.userName.localeCompare(b.userName)
+        )
+        .map((p) => ({
+          ...p,
+          _masked: maskDuration(p.avgResponseTimeSeconds),
+        }));
+
+      const salesSorted = staff
+        .filter((p) => p.salesTotal > 0)
+        .sort(
+          (a, b) =>
+            b.salesTotal - a.salesTotal || a.userName.localeCompare(b.userName)
+        )
+        .map((p) => ({
+          ...p,
+          sales: mergeCurrencyAmounts(p.sales),
+          _masked: maskMoneyAmounts(mergeCurrencyAmounts(p.sales)),
+        }));
+
+      const ppvSorted = staff
+        .filter((p) => p.ppvsUnlocked > 0)
+        .sort(
+          (a, b) =>
+            b.ppvsUnlocked - a.ppvsUnlocked ||
+            a.userName.localeCompare(b.userName)
+        )
+        .map((p) => ({
+          ...p,
+          _masked: maskCount(p.ppvsUnlocked),
+        }));
+
+      const goldenSorted = staff
+        .filter((p) => p.messagesSent > 0)
+        .sort(
+          (a, b) =>
+            b.goldenRatio - a.goldenRatio || a.userName.localeCompare(b.userName)
+        )
+        .map((p) => ({
+          ...p,
+          _masked: maskPercent(p.goldenRatio),
+        }));
+
+      res.json({
+        topResponseTime: buildTop(responseSorted),
+        topSales: buildTop(salesSorted),
+        topPpvsUnlocked: buildTop(ppvSorted),
+        topGoldenRatio: buildTop(goldenSorted),
+        viewerRank: {
+          responseTime: findViewer(responseSorted, (p) =>
+            maskDuration(p.avgResponseTimeSeconds)
+          ),
+          sales: findViewer(salesSorted, (p) =>
+            maskMoneyAmounts(mergeCurrencyAmounts(p.sales))
+          ),
+          ppvsUnlocked: findViewer(ppvSorted, (p) => maskCount(p.ppvsUnlocked)),
+          goldenRatio: findViewer(goldenSorted, (p) =>
+            maskPercent(p.goldenRatio)
+          ),
+        },
+        responseWindow: { startDate: responseStart, endDate: responseEnd },
+        lastUpdated: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('messaging dashboard leaderboard failed:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/series',
+  authenticate,
+  requirePermission('analytics.view', 'analytics.self'),
+  async (req, res) => {
+    try {
+      const scope = getAnalyticsScope(req.user);
+      const parsedDays = Math.min(
+        Math.max(Number.parseInt(String(req.query.days || '7'), 10) || 7, 1),
+        90
+      );
+      const dateRange = buildUtcDateRange(parsedDays);
+      const startDate = dateRange[0];
+      const endDate = dateRange[dateRange.length - 1];
+
+      const chatterClause =
+        scope.mode === 'self' ? ' AND m."chatterId" = ANY($3::uuid[])' : '';
+      const messageParams =
+        scope.mode === 'self'
+          ? [startDate, endDate, scope.userIds]
+          : [startDate, endDate];
+
+      const [messageSeriesResult, activitySeriesResult] = await Promise.all([
+        pool.query(
+          `SELECT (m."sentAt" AT TIME ZONE 'UTC')::date::text AS date,
+                  COUNT(*) FILTER (
+                    WHERE m."contentType" IN ('text', 'media', 'chat_product')
+                  )::int AS "messagesSent",
+                  COUNT(*) FILTER (WHERE m."contentType" = 'chat_product')::int AS "ppvsSent",
+                  COUNT(*) FILTER (
+                    WHERE m."contentType" = 'chat_product' AND m.purchased = true
+                  )::int AS "ppvsUnlocked",
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                  ), 0)::float AS revenue
+           FROM messaging_dashboard_entries m
+           WHERE (m."sentAt" AT TIME ZONE 'UTC')::date >= $1::date
+             AND (m."sentAt" AT TIME ZONE 'UTC')::date <= $2::date
+             ${chatterClause}
+           GROUP BY 1, 5
+           ORDER BY 1 ASC`,
+          messageParams
+        ),
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT d.day::text AS date,
+                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds",
+                      COALESCE(SUM(d."idleSeconds"), 0)::int AS "idleSeconds",
+                      COALESCE(SUM(d.keystrokes), 0)::int AS keystrokes
+               FROM user_activity_daily d
+               WHERE d."userId" = ANY($1::uuid[])
+                 AND d.day >= $2::date
+                 AND d.day <= $3::date
+               GROUP BY d.day
+               ORDER BY d.day ASC`,
+              [scope.userIds, startDate, endDate]
+            )
+          : pool.query(
+              `SELECT d.day::text AS date,
+                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds",
+                      COALESCE(SUM(d."idleSeconds"), 0)::int AS "idleSeconds",
+                      COALESCE(SUM(d.keystrokes), 0)::int AS keystrokes
+               FROM user_activity_daily d
+               JOIN users u ON u.id = d."userId"
+               WHERE u.role = ANY($1::text[])
+                 AND d.day >= $2::date
+                 AND d.day <= $3::date
+               GROUP BY d.day
+               ORDER BY d.day ASC`,
+              [TRACKED_STAFF_ROLES, startDate, endDate]
+            ),
+      ]);
+
+      const messageAgg = new Map();
+      for (const row of messageSeriesResult.rows) {
+        const date = String(row.date).slice(0, 10);
+        if (!messageAgg.has(date)) {
+          messageAgg.set(date, {
+            messagesSent: 0,
+            ppvsSent: 0,
+            ppvsUnlocked: 0,
+            revenue: [],
+          });
+        }
+        const entry = messageAgg.get(date);
+        // Counts are partitioned by currency in GROUP BY — sum across currencies
+        entry.messagesSent += Number(row.messagesSent) || 0;
+        entry.ppvsSent += Number(row.ppvsSent) || 0;
+        entry.ppvsUnlocked += Number(row.ppvsUnlocked) || 0;
+        const amount = Number(row.revenue) || 0;
+        if (amount > 0) {
+          entry.revenue.push({
+            currency:
+              String(row.currency || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR',
+            amount,
+          });
+        }
+      }
+
+      const activityByDay = new Map();
+      for (const row of activitySeriesResult.rows) {
+        const date = String(row.date).slice(0, 10);
+        activityByDay.set(date, {
+          activeSeconds: Number(row.activeSeconds) || 0,
+          idleSeconds: Number(row.idleSeconds) || 0,
+          keystrokes: Number(row.keystrokes) || 0,
+        });
+      }
+
+      const days = dateRange.map((date) => {
+        const msg = messageAgg.get(date) || {
+          messagesSent: 0,
+          ppvsSent: 0,
+          ppvsUnlocked: 0,
+          revenue: [],
+        };
+        const act = activityByDay.get(date) || {
+          activeSeconds: 0,
+          idleSeconds: 0,
+          keystrokes: 0,
+        };
+        return {
+          date,
+          messagesSent: msg.messagesSent,
+          ppvsSent: msg.ppvsSent,
+          ppvsUnlocked: msg.ppvsUnlocked,
+          goldenRatio: ratePercent(msg.ppvsSent, msg.messagesSent),
+          ppvConversionRate: ratePercent(msg.ppvsUnlocked, msg.ppvsSent),
+          revenue: mergeCurrencyAmounts(msg.revenue),
+          activeSeconds: act.activeSeconds,
+          idleSeconds: act.idleSeconds,
+          keystrokes: act.keystrokes,
+        };
+      });
+
+      res.json({
+        scope: scope.mode,
+        days: parsedDays,
+        startDate,
+        endDate,
+        series: days,
+        lastUpdated: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('messaging dashboard series failed:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
   '/',
   authenticate,
   requirePermission('analytics.view'),
@@ -1484,6 +2135,7 @@ router.get(
       creatorId,
       platform,
       purchased,
+      contentType,
       page = '1',
       limit = '20',
     } = req.query;
@@ -1541,6 +2193,16 @@ router.get(
     if (purchased === 'true' || purchased === 'false') {
       conditions.push(`m.purchased = $${paramIndex}`);
       values.push(purchased === 'true');
+      paramIndex += 1;
+    }
+
+    if (contentType != null && String(contentType).trim() !== '') {
+      const typeValue = String(contentType).trim();
+      if (typeValue !== 'chat_product') {
+        return res.status(400).json({ error: 'Invalid contentType' });
+      }
+      conditions.push(`m."contentType" = $${paramIndex}`);
+      values.push(typeValue);
       paramIndex += 1;
     }
 

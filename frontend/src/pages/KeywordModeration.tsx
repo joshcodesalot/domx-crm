@@ -61,6 +61,20 @@ function actionLabels(actions: ModerationAction[]): string {
     .join(', ');
 }
 
+function statusBadgeClass(status: ModerationEventStatus): string {
+  switch (status) {
+    case 'open':
+      return 'bg-amber-100 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300';
+    case 'reviewed':
+      return 'bg-green-100 text-green-700 dark:bg-green-500/10 dark:text-green-400';
+    case 'dismissed':
+      return 'bg-gray-100 text-gray-600 dark:bg-white/5 dark:text-gray-400';
+  }
+}
+
+const eventActionBtnClass =
+  'text-xs px-2 py-1 rounded-md border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors';
+
 interface RuleFormState {
   name: string;
   englishKeywordText: string;
@@ -502,36 +516,40 @@ export default function KeywordModeration() {
                           <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
                             {formatDate(event.createdAt)}
                           </td>
-                          <td className="px-4 py-3 text-right space-y-1">
-                            <div className="text-xs text-gray-500 mb-1 capitalize">
-                              {event.status}
-                            </div>
-                            {event.status === 'open' ? (
-                              <div className="flex flex-col items-end gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => void setEventStatus(event, 'reviewed')}
-                                  className="text-xs text-gray-700 dark:text-gray-200 hover:underline"
-                                >
-                                  Mark reviewed
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void setEventStatus(event, 'dismissed')}
-                                  className="text-xs text-gray-500 hover:underline"
-                                >
-                                  Dismiss
-                                </button>
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => void setEventStatus(event, 'open')}
-                                className="text-xs text-gray-500 hover:underline"
+                          <td className="px-4 py-3 text-right">
+                            <div className="inline-flex flex-col items-end gap-2">
+                              <span
+                                className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium capitalize ${statusBadgeClass(event.status)}`}
                               >
-                                Reopen
-                              </button>
-                            )}
+                                {event.status}
+                              </span>
+                              {event.status === 'open' ? (
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => void setEventStatus(event, 'reviewed')}
+                                    className={eventActionBtnClass}
+                                  >
+                                    Reviewed
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void setEventStatus(event, 'dismissed')}
+                                    className={eventActionBtnClass}
+                                  >
+                                    Dismiss
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => void setEventStatus(event, 'open')}
+                                  className={eventActionBtnClass}
+                                >
+                                  Reopen
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );

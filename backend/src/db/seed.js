@@ -9,7 +9,8 @@ const ROLES = [
 
 const PERMISSIONS = [
   { slug: 'dashboard.view', name: 'View Dashboard', category: 'App', description: 'Access the dashboard overview' },
-  { slug: 'analytics.view', name: 'View Analytics', category: 'App', description: 'Access analytics pages' },
+  { slug: 'analytics.view', name: 'View Analytics', category: 'App', description: 'Access team analytics pages (Managers and above)' },
+  { slug: 'analytics.self', name: 'View Own Analytics', category: 'App', description: 'Access personal performance charts and metrics' },
   { slug: 'creators.view', name: 'View Creators', category: 'App', description: 'View creator listings' },
   { slug: 'creators.manage', name: 'Manage Creators', category: 'App', description: 'Create and edit creators' },
   { slug: 'staff.view', name: 'View Staff', category: 'Staff', description: 'View staff list' },
@@ -29,7 +30,7 @@ const PERMISSIONS = [
 
 const DEFAULT_MATRIX = {
   owner: [
-    'dashboard.view', 'analytics.view', 'creators.view', 'creators.manage',
+    'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view', 'creators.manage',
     'staff.view', 'staff.create', 'staff.edit', 'staff.deactivate', 'staff.delete', 'staff.assign_role',
     'roles.view', 'roles.manage',
     'mass_messages.send',
@@ -39,7 +40,7 @@ const DEFAULT_MATRIX = {
     'moderation.review',
   ],
   manager: [
-    'dashboard.view', 'analytics.view', 'creators.view', 'creators.manage',
+    'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view', 'creators.manage',
     'staff.view', 'staff.create', 'staff.edit', 'staff.deactivate', 'staff.delete', 'staff.assign_role',
     'roles.view',
     'mass_messages.send',
@@ -49,11 +50,11 @@ const DEFAULT_MATRIX = {
     'moderation.review',
   ],
   team_leader: [
-    'dashboard.view', 'analytics.view', 'creators.view',
+    'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view',
     'staff.view',
     'vault.notes.edit',
   ],
-  chatter: ['dashboard.view', 'creators.view'],
+  chatter: ['dashboard.view', 'analytics.self', 'creators.view'],
 };
 
 async function seedRolesAndPermissions(db = pool) {

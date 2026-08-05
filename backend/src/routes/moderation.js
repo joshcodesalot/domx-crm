@@ -346,7 +346,7 @@ router.patch('/events/:id', authenticate, requirePermission('moderation.review')
     const result = await pool.query(
       `UPDATE moderation_events
        SET status = $1,
-           "reviewedBy" = CASE WHEN $1 = 'open' THEN NULL ELSE $2 END,
+           "reviewedBy" = CASE WHEN $1 = 'open' THEN NULL ELSE $2::uuid END,
            "reviewedAt" = CASE WHEN $1 = 'open' THEN NULL ELSE NOW() END
        WHERE id = $3
        RETURNING *`,

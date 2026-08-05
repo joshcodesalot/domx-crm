@@ -11,6 +11,7 @@ const INPUT_THROTTLE_MS = 1_000;
  */
 export function useActivityHeartbeat(enabled: boolean): void {
   const lastInputAtRef = useRef<number | null>(null);
+  const keystrokeCountRef = useRef(0);
   const enabledRef = useRef(enabled);
 
   useEffect(() => {
@@ -35,21 +36,29 @@ export function useActivityHeartbeat(enabled: boolean): void {
       }, INPUT_THROTTLE_MS);
     };
 
-    const events = ['keydown', 'click'] as const;
+    const onKeydown = () => {
+      keystrokeCountRef.current += 1;
+      markInput();
+    };
 
-    for (const eventName of events) {
-      window.addEventListener(eventName, markInput, { passive: true });
-    }
+    window.addEventListener('keydown', onKeydown, { passive: true });
+    window.addEventListener('click', markInput, { passive: true });
 
     const sendHeartbeat = () => {
       if (!enabledRef.current) return;
 
       const lastInputAt = lastInputAtRef.current;
-      const payload =
-        lastInputAt != null ? new Date(lastInputAt).toISOString() : null;
+      const keystrokeDelta = keystrokeCountRef.current;
+      keystrokeCountRef.current = 0;
 
-      void postActivityHeartbeat({ lastInputAt: payload }).catch(() => {
-        // Silent — presence is best-effort
+      const payload = {
+        lastInputAt: lastInputAt != null ? new Date(lastInputAt).toISOString() : null,
+        keystrokeDelta,
+      };
+
+      void postActivityHeartbeat(payload).catch(() => {
+        // Restore count on failure so we don't lose strokes silently forever
+        keystrokeCountRef.current += keystrokeDelta;
       });
     };
 
@@ -66,9 +75,8 @@ export function useActivityHeartbeat(enabled: boolean): void {
     document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
-      for (const eventName of events) {
-        window.removeEventListener(eventName, markInput);
-      }
+      window.removeEventListener('keydown', onKeydown);
+      window.removeEventListener('click', markInput);
       document.removeEventListener('visibilitychange', onVisibility);
       window.clearInterval(intervalId);
       if (throttleTimer != null) {
