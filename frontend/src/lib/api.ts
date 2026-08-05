@@ -840,6 +840,7 @@ export interface OverviewAnalyticsResponse {
   activeSecondsTotal?: number;
   revenuePerHour?: CurrencyAmount[];
   messagesPerHour?: number;
+  activityMetricsCutover?: string;
   avgResponseTimeSeconds: number | null;
   dailySalesByDay: OverviewDailySalesDay[];
   chatters: OverviewChatterStats[];

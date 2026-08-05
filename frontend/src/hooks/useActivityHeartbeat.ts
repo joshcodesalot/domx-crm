@@ -8,6 +8,7 @@ const INPUT_THROTTLE_MS = 1_000;
  * Silently reports click/keydown activity so managers can see online/idle/away.
  * Mount once while authenticated — does not log key content.
  * Intentionally ignores mousemove (easy to fake with idle mouse jiggle).
+ * In Electron, keystrokes come from main-process before-input-event (macOS-safe).
  */
 export function useActivityHeartbeat(enabled: boolean): void {
   const lastInputAtRef = useRef<number | null>(null);
@@ -36,12 +37,20 @@ export function useActivityHeartbeat(enabled: boolean): void {
       }, INPUT_THROTTLE_MS);
     };
 
-    const onKeydown = () => {
+    const onKeyActivity = () => {
       keystrokeCountRef.current += 1;
       markInput();
     };
 
-    window.addEventListener('keydown', onKeydown, { passive: true });
+    const useElectronKeys = typeof window.electronAPI?.onActivityKeydown === 'function';
+    let unsubscribeElectronKeys: (() => void) | undefined;
+
+    if (useElectronKeys) {
+      unsubscribeElectronKeys = window.electronAPI!.onActivityKeydown!(onKeyActivity);
+    } else {
+      window.addEventListener('keydown', onKeyActivity, { passive: true });
+    }
+
     window.addEventListener('click', markInput, { passive: true });
 
     const sendHeartbeat = () => {
@@ -75,7 +84,10 @@ export function useActivityHeartbeat(enabled: boolean): void {
     document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
-      window.removeEventListener('keydown', onKeydown);
+      unsubscribeElectronKeys?.();
+      if (!useElectronKeys) {
+        window.removeEventListener('keydown', onKeyActivity);
+      }
       window.removeEventListener('click', markInput);
       document.removeEventListener('visibilitychange', onVisibility);
       window.clearInterval(intervalId);

@@ -55,6 +55,7 @@ const {
   startUpdateChecks,
 } = require('./ipc/updater');
 const { applyWebContentsGuards } = require('./webContentsGuards');
+const { attachActivityKeyListener } = require('./activityKeyListener');
 const { loadMaloumPartitionSession } = require('./maloumPartitionSession');
 const {
   openMessageProWindow,
@@ -97,6 +98,7 @@ function createWindow() {
   });
 
   applyWebContentsGuards(win.webContents);
+  attachActivityKeyListener(win.webContents);
 
   win.on('closed', () => {
     if (mainWindow === win) {

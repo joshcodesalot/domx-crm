@@ -1,6 +1,7 @@
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
 const { applyWebContentsGuards } = require('./webContentsGuards');
+const { attachActivityKeyListener } = require('./activityKeyListener');
 
 const isDev = !app.isPackaged;
 
@@ -66,6 +67,7 @@ function openMessageProWindow(platform = 'maloum') {
   });
 
   applyWebContentsGuards(win.webContents);
+  attachActivityKeyListener(win.webContents);
   windowsByRoute.set(route, win);
 
   win.once('ready-to-show', () => {

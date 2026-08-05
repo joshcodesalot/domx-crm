@@ -14,6 +14,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('maloum:load-partition-session', payload),
   openMessageProWindow: (platform) =>
     ipcRenderer.invoke('messagepro:open-window', platform || 'maloum'),
+  onActivityKeydown: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('activity:keydown', listener);
+    return () => ipcRenderer.removeListener('activity:keydown', listener);
+  },
   onUpdaterChecking: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('updater:checking', listener);

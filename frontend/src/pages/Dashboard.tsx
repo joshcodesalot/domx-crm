@@ -492,16 +492,29 @@ export default function Dashboard() {
               <MetricCard
                 label="Keystrokes"
                 value={formatCount(overview?.keystrokesTotal)}
+                hint={
+                  overview?.activityMetricsCutover
+                    ? `Since activity tracking (UTC ${overview.activityMetricsCutover})`
+                    : 'Since activity tracking cutover'
+                }
               />
               <MetricCard
                 label="Revenue per Hour"
                 value={formatCurrencyAmounts(overview?.revenuePerHour)}
-                hint="Total revenue ÷ active hours"
+                hint={
+                  overview?.activityMetricsCutover
+                    ? `Purchased revenue ÷ active hours since UTC ${overview.activityMetricsCutover}`
+                    : 'Purchased revenue ÷ active hours since activity tracking'
+                }
               />
               <MetricCard
                 label="Messages per Hour"
                 value={formatRate(overview?.messagesPerHour)}
-                hint="Messages sent ÷ active hours"
+                hint={
+                  overview?.activityMetricsCutover
+                    ? `Messages ÷ active hours since UTC ${overview.activityMetricsCutover}`
+                    : 'Messages ÷ active hours since activity tracking'
+                }
               />
               {showTeamWidgets ? (
                 <MetricCard label="Online Chatters" value={String(onlineCount)} />

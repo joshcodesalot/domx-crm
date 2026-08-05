@@ -21,6 +21,10 @@ const {
 
 const { requireElectronServiceKey } = require('../middleware/electronServiceKey');
 
+/** UTC date when activity tracking shipped (v1.6.27). Used for rate metrics only. */
+const ACTIVITY_METRICS_CUTOVER =
+  process.env.ACTIVITY_METRICS_CUTOVER || '2026-08-04';
+
 function ratePercent(numerator, denominator) {
   const n = Number(numerator) || 0;
   const d = Number(denominator) || 0;
@@ -1346,9 +1350,13 @@ router.get(
         avgResponseResult,
         dailyByDayResult,
         messageStatsResult,
+        cutoverSalesResult,
+        cutoverMessagesResult,
         chatterAvgResult,
         chatterSalesResult,
         chatterMessageStatsResult,
+        chatterCutoverSalesResult,
+        chatterCutoverMessagesResult,
         chatterNamesResult,
         keystrokesResult,
         chatterActiveResult,
@@ -1455,6 +1463,45 @@ router.get(
            WHERE TRUE ${chatterClause}`,
           selfParams
         ),
+        // Cutover revenue for per-hour rates only
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries
+               WHERE purchased = true
+                 AND "priceNet" IS NOT NULL
+                 AND ("sentAt" AT TIME ZONE 'UTC')::date >= $2::date
+                 AND "chatterId" = ANY($1::uuid[])
+               GROUP BY 1`,
+              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
+            )
+          : pool.query(
+              `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries
+               WHERE purchased = true
+                 AND "priceNet" IS NOT NULL
+                 AND ("sentAt" AT TIME ZONE 'UTC')::date >= $1::date
+               GROUP BY 1`,
+              [ACTIVITY_METRICS_CUTOVER]
+            ),
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT COUNT(*)::int AS "messagesSent"
+               FROM messaging_dashboard_entries
+               WHERE "contentType" IN ('text', 'media', 'chat_product')
+                 AND ("sentAt" AT TIME ZONE 'UTC')::date >= $2::date
+                 AND "chatterId" = ANY($1::uuid[])`,
+              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
+            )
+          : pool.query(
+              `SELECT COUNT(*)::int AS "messagesSent"
+               FROM messaging_dashboard_entries
+               WHERE "contentType" IN ('text', 'media', 'chat_product')
+                 AND ("sentAt" AT TIME ZONE 'UTC')::date >= $1::date`,
+              [ACTIVITY_METRICS_CUTOVER]
+            ),
         pool.query(
           scope.mode === 'self'
             ? `SELECT m."chatterId",
@@ -1512,22 +1559,68 @@ router.get(
            GROUP BY m."chatterId"`,
           selfParams
         ),
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT m."chatterId",
+                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries m
+               WHERE m.purchased = true
+                 AND m."priceNet" IS NOT NULL
+                 AND (m."sentAt" AT TIME ZONE 'UTC')::date >= $2::date
+                 AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY m."chatterId", 2`,
+              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
+            )
+          : pool.query(
+              `SELECT m."chatterId",
+                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries m
+               WHERE m.purchased = true
+                 AND m."priceNet" IS NOT NULL
+                 AND (m."sentAt" AT TIME ZONE 'UTC')::date >= $1::date
+               GROUP BY m."chatterId", 2`,
+              [ACTIVITY_METRICS_CUTOVER]
+            ),
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT m."chatterId",
+                      COUNT(*)::int AS "messagesSent"
+               FROM messaging_dashboard_entries m
+               WHERE m."contentType" IN ('text', 'media', 'chat_product')
+                 AND (m."sentAt" AT TIME ZONE 'UTC')::date >= $2::date
+                 AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY m."chatterId"`,
+              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
+            )
+          : pool.query(
+              `SELECT m."chatterId",
+                      COUNT(*)::int AS "messagesSent"
+               FROM messaging_dashboard_entries m
+               WHERE m."contentType" IN ('text', 'media', 'chat_product')
+                 AND (m."sentAt" AT TIME ZONE 'UTC')::date >= $1::date
+               GROUP BY m."chatterId"`,
+              [ACTIVITY_METRICS_CUTOVER]
+            ),
         staffListQuery,
         scope.mode === 'self'
           ? pool.query(
               `SELECT COALESCE(SUM(keystrokes), 0)::int AS keystrokes,
                       COALESCE(SUM("activeSeconds"), 0)::int AS "activeSeconds"
                FROM user_activity_daily
-               WHERE "userId" = ANY($1::uuid[])`,
-              [scope.userIds]
+               WHERE "userId" = ANY($1::uuid[])
+                 AND day >= $2::date`,
+              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
             )
           : pool.query(
               `SELECT COALESCE(SUM(d.keystrokes), 0)::int AS keystrokes,
                       COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds"
                FROM user_activity_daily d
                JOIN users u ON u.id = d."userId"
-               WHERE u.role = ANY($1::text[])`,
-              [TRACKED_STAFF_ROLES]
+               WHERE u.role = ANY($1::text[])
+                 AND d.day >= $2::date`,
+              [TRACKED_STAFF_ROLES, ACTIVITY_METRICS_CUTOVER]
             ),
         scope.mode === 'self'
           ? pool.query(
@@ -1535,8 +1628,9 @@ router.get(
                       COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds"
                FROM user_activity_daily d
                WHERE d."userId" = ANY($1::uuid[])
+                 AND d.day >= $2::date
                GROUP BY d."userId"`,
-              [scope.userIds]
+              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
             )
           : pool.query(
               `SELECT d."userId" AS "chatterId",
@@ -1544,14 +1638,18 @@ router.get(
                FROM user_activity_daily d
                JOIN users u ON u.id = d."userId"
                WHERE u.role = ANY($1::text[])
+                 AND d.day >= $2::date
                GROUP BY d."userId"`,
-              [TRACKED_STAFF_ROLES]
+              [TRACKED_STAFF_ROLES, ACTIVITY_METRICS_CUTOVER]
             ),
       ]);
 
       const dailySales = currencyAmountRowsToList(dailySalesResult.rows);
       const totalSales = currencyAmountRowsToList(totalSalesResult.rows);
       const monthlyRevenue = currencyAmountRowsToList(monthlySalesResult.rows);
+      const cutoverSales = currencyAmountRowsToList(cutoverSalesResult.rows);
+      const cutoverMessagesSent =
+        Number(cutoverMessagesResult.rows[0]?.messagesSent) || 0;
 
       const msgStats = messageStatsResult.rows[0] || {};
       const messagesSent = Number(msgStats.messagesSent) || 0;
@@ -1561,14 +1659,37 @@ router.get(
       const ppvConversionRate = ratePercent(ppvsUnlocked, ppvsSent);
       const keystrokesTotal = Number(keystrokesResult.rows[0]?.keystrokes) || 0;
       const activeSecondsTotal = Number(keystrokesResult.rows[0]?.activeSeconds) || 0;
-      const revenuePerHour = revenuePerHourAmounts(totalSales, activeSecondsTotal);
-      const messagesPerHour = perHourRate(messagesSent, activeSecondsTotal);
+      const revenuePerHour = revenuePerHourAmounts(cutoverSales, activeSecondsTotal);
+      const messagesPerHour = perHourRate(cutoverMessagesSent, activeSecondsTotal);
 
       const activeSecondsByChatter = new Map();
       for (const row of chatterActiveResult.rows) {
         activeSecondsByChatter.set(
           row.chatterId,
           Number(row.activeSeconds) || 0
+        );
+      }
+
+      const cutoverSalesByChatter = new Map();
+      for (const row of chatterCutoverSalesResult.rows) {
+        if (!cutoverSalesByChatter.has(row.chatterId)) {
+          cutoverSalesByChatter.set(row.chatterId, []);
+        }
+        const amount = Number(row.amount) || 0;
+        if (amount > 0) {
+          cutoverSalesByChatter.get(row.chatterId).push({
+            currency:
+              String(row.currency || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR',
+            amount,
+          });
+        }
+      }
+
+      const cutoverMessagesByChatter = new Map();
+      for (const row of chatterCutoverMessagesResult.rows) {
+        cutoverMessagesByChatter.set(
+          row.chatterId,
+          Number(row.messagesSent) || 0
         );
       }
 
@@ -1673,7 +1794,11 @@ router.get(
         const stats = statsByChatter.get(row.chatterId);
         const activeSeconds = activeSecondsByChatter.get(row.chatterId) || 0;
         const totalSalesMerged = mergeCurrencyAmounts(stats?.totalSales || []);
+        const cutoverSalesMerged = mergeCurrencyAmounts(
+          cutoverSalesByChatter.get(row.chatterId) || []
+        );
         const messagesSentForChatter = stats?.messagesSent || 0;
+        const cutoverMessages = cutoverMessagesByChatter.get(row.chatterId) || 0;
         return {
           chatterId: row.chatterId,
           chatterName: row.chatterName,
@@ -1687,8 +1812,8 @@ router.get(
           goldenRatio: stats?.goldenRatio || 0,
           ppvConversionRate: stats?.ppvConversionRate || 0,
           activeSecondsTotal: activeSeconds,
-          revenuePerHour: revenuePerHourAmounts(totalSalesMerged, activeSeconds),
-          messagesPerHour: perHourRate(messagesSentForChatter, activeSeconds),
+          revenuePerHour: revenuePerHourAmounts(cutoverSalesMerged, activeSeconds),
+          messagesPerHour: perHourRate(cutoverMessages, activeSeconds),
         };
       });
 
@@ -1707,6 +1832,10 @@ router.get(
           const stats = statsByChatter.get(chatterId);
           const activeSeconds = activeSecondsByChatter.get(chatterId) || 0;
           const totalSalesMerged = mergeCurrencyAmounts(stats.totalSales);
+          const cutoverSalesMerged = mergeCurrencyAmounts(
+            cutoverSalesByChatter.get(chatterId) || []
+          );
+          const cutoverMessages = cutoverMessagesByChatter.get(chatterId) || 0;
           chatters.push({
             chatterId,
             chatterName: nameById.get(chatterId) || 'Unknown',
@@ -1720,8 +1849,8 @@ router.get(
             goldenRatio: stats.goldenRatio,
             ppvConversionRate: stats.ppvConversionRate,
             activeSecondsTotal: activeSeconds,
-            revenuePerHour: revenuePerHourAmounts(totalSalesMerged, activeSeconds),
-            messagesPerHour: perHourRate(stats.messagesSent, activeSeconds),
+            revenuePerHour: revenuePerHourAmounts(cutoverSalesMerged, activeSeconds),
+            messagesPerHour: perHourRate(cutoverMessages, activeSeconds),
           });
         }
       }
@@ -1744,6 +1873,7 @@ router.get(
         activeSecondsTotal,
         revenuePerHour,
         messagesPerHour,
+        activityMetricsCutover: ACTIVITY_METRICS_CUTOVER,
         avgResponseTimeSeconds:
           avgRaw != null && !Number.isNaN(Number(avgRaw))
             ? Number(avgRaw)
