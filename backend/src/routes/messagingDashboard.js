@@ -27,6 +27,7 @@ const {
 const {
   EXTENDED_MESSAGE_STATS_SELECT,
   SERIES_MESSAGE_SELECT,
+  SERIES_CURRENCY_EXPR,
   parseExtendedMessageStats,
   salesPerMessage,
   revenuePerFan,
@@ -2651,7 +2652,7 @@ router.get(
            WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
              AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
              ${chatterClause}
-           GROUP BY 1, 7
+           GROUP BY (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date, ${SERIES_CURRENCY_EXPR}
            ORDER BY 1 ASC`,
           messageParams
         ),
@@ -2693,7 +2694,9 @@ router.get(
                WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
                  AND m."chatterId" = ANY($3::uuid[])
-               GROUP BY m."chatterId", 2, 9
+               GROUP BY m."chatterId",
+                        (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date,
+                        ${SERIES_CURRENCY_EXPR}
                ORDER BY 2 ASC`,
               [startDate, endDate, scope.userIds]
             )
@@ -2706,7 +2709,9 @@ router.get(
                WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
                  AND u.role = ANY($3::text[])
-               GROUP BY m."chatterId", 2, 9
+               GROUP BY m."chatterId",
+                        (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date,
+                        ${SERIES_CURRENCY_EXPR}
                ORDER BY 2 ASC`,
               [startDate, endDate, TRACKED_STAFF_ROLES]
             ),
@@ -3427,7 +3432,7 @@ router.get(
            AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
            ${chatterClause}
            ${creatorClause}
-         GROUP BY 1, 7
+         GROUP BY (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date, ${SERIES_CURRENCY_EXPR}
          ORDER BY 1 ASC`,
         messageParams
       );

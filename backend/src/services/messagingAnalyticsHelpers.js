@@ -164,6 +164,9 @@ const EXTENDED_MESSAGE_STATS_SELECT = `
   )::float AS "medianPpvPrice"
 `;
 
+const SERIES_CURRENCY_EXPR =
+  `UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR'))`;
+
 const SERIES_MESSAGE_SELECT = `
   COUNT(*) FILTER (
     WHERE m."contentType" IN ('text', 'media', 'chat_product')
@@ -180,7 +183,7 @@ const SERIES_MESSAGE_SELECT = `
     WHERE m."fanId" IS NOT NULL
       AND m."contentType" IN ('text', 'media', 'chat_product')
   )::int AS "uniqueFansMessaged",
-  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+  ${SERIES_CURRENCY_EXPR} AS currency,
   COALESCE(SUM(ABS(m."priceNet")) FILTER (
     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
   ), 0)::float AS revenue,
@@ -250,6 +253,7 @@ module.exports = {
   buildHourOfDayFromRows,
   EXTENDED_MESSAGE_STATS_SELECT,
   SERIES_MESSAGE_SELECT,
+  SERIES_CURRENCY_EXPR,
   parseExtendedMessageStats,
   periodDateClause,
 };
