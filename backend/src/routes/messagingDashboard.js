@@ -37,6 +37,15 @@ const {
   normalizeCurrency,
   ratePercent: helperRatePercent,
 } = require('../services/messagingAnalyticsHelpers');
+const {
+  loadSchedulesByUserId,
+  scheduleMetaForWeek,
+  expandShiftWindows,
+  expandTodayWindows,
+  buildWindowValuesClause,
+  duringScheduledHoursPredicate,
+  scheduleDowJoin,
+} = require('../services/workSchedule');
 
 const { requireElectronServiceKey } = require('../middleware/electronServiceKey');
 
@@ -1331,6 +1340,229 @@ router.get(
               [scope.userIds]
             );
 
+      const chatterNamesResult = await staffListQuery;
+      const staffIds = chatterNamesResult.rows.map((row) => row.chatterId);
+      const schedulesByUser = await loadSchedulesByUserId(staffIds);
+      const todayWindows = await expandTodayWindows(staffIds, schedulesByUser);
+      const periodWindows = await expandShiftWindows(
+        staffIds,
+        periodStart,
+        periodEnd,
+        schedulesByUser
+      );
+      const todayWindowClause = buildWindowValuesClause(
+        todayWindows,
+        scope.mode === 'self' ? 2 : 1
+      );
+      const chatterTodayWindowClause = buildWindowValuesClause(
+        todayWindows,
+        scope.mode === 'self' ? 2 : 1
+      );
+      const periodWindowClause = buildWindowValuesClause(
+        periodWindows,
+        scope.mode === 'self' ? 2 : 1
+      );
+      const hoursPredicate = duringScheduledHoursPredicate('m', 'uws');
+      const hoursJoin = scheduleDowJoin('m', 'uws');
+
+      const emptyAvgQuery = () =>
+        pool.query(`SELECT NULL::float AS avg`);
+      const emptyChatterAvgQuery = () =>
+        pool.query(
+          `SELECT NULL::uuid AS "chatterId", NULL::float AS "avgResponseTimeSeconds" WHERE false`
+        );
+
+      const avgResponseQuery = !periodWindowClause
+        ? emptyAvgQuery()
+        : scope.mode === 'self'
+          ? pool.query(
+              `WITH windows("userId", "windowStart", "windowEnd") AS (
+                 VALUES ${periodWindowClause.sql}
+               )
+               SELECT AVG(m."responseTimeSeconds")::float AS avg
+               FROM messaging_dashboard_entries m
+               WHERE m."responseTimeSeconds" IS NOT NULL
+                 AND m."chatterId" = ANY($1::uuid[])
+                 AND EXISTS (
+                   SELECT 1 FROM windows w
+                   WHERE w."userId" = m."chatterId"
+                     AND m."sentAt" >= w."windowStart"
+                     AND m."sentAt" < w."windowEnd"
+                 )`,
+              [scope.userIds, ...periodWindowClause.params]
+            )
+          : pool.query(
+              `WITH windows("userId", "windowStart", "windowEnd") AS (
+                 VALUES ${periodWindowClause.sql}
+               )
+               SELECT AVG(m."responseTimeSeconds")::float AS avg
+               FROM messaging_dashboard_entries m
+               WHERE m."responseTimeSeconds" IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1 FROM windows w
+                   WHERE w."userId" = m."chatterId"
+                     AND m."sentAt" >= w."windowStart"
+                     AND m."sentAt" < w."windowEnd"
+                 )`,
+              periodWindowClause.params
+            );
+
+      const chatterAvgQuery = !periodWindowClause
+        ? emptyChatterAvgQuery()
+        : scope.mode === 'self'
+          ? pool.query(
+              `WITH windows("userId", "windowStart", "windowEnd") AS (
+                 VALUES ${periodWindowClause.sql}
+               )
+               SELECT m."chatterId",
+                      AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
+               FROM messaging_dashboard_entries m
+               WHERE m."responseTimeSeconds" IS NOT NULL
+                 AND m."chatterId" = ANY($1::uuid[])
+                 AND EXISTS (
+                   SELECT 1 FROM windows w
+                   WHERE w."userId" = m."chatterId"
+                     AND m."sentAt" >= w."windowStart"
+                     AND m."sentAt" < w."windowEnd"
+                 )
+               GROUP BY m."chatterId"`,
+              [scope.userIds, ...periodWindowClause.params]
+            )
+          : pool.query(
+              `WITH windows("userId", "windowStart", "windowEnd") AS (
+                 VALUES ${periodWindowClause.sql}
+               )
+               SELECT m."chatterId",
+                      AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
+               FROM messaging_dashboard_entries m
+               WHERE m."responseTimeSeconds" IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1 FROM windows w
+                   WHERE w."userId" = m."chatterId"
+                     AND m."sentAt" >= w."windowStart"
+                     AND m."sentAt" < w."windowEnd"
+                 )
+               GROUP BY m."chatterId"`,
+              periodWindowClause.params
+            );
+
+      const emptyCurrencyQuery = () =>
+        pool.query(
+          `SELECT NULL::text AS currency, 0::float AS amount WHERE false`
+        );
+
+      const dailySalesQuery = !todayWindowClause
+        ? scope.mode === 'self'
+          ? emptyCurrencyQuery()
+          : pool.query(
+              `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries
+               WHERE purchased = true
+                 AND "priceNet" IS NOT NULL
+                 AND "chatterId" IS NULL
+                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date
+                     = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
+               GROUP BY 1`
+            )
+        : scope.mode === 'self'
+          ? pool.query(
+              `WITH windows("userId", "windowStart", "windowEnd") AS (
+                 VALUES ${todayWindowClause.sql}
+               )
+               SELECT UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries m
+               WHERE m.purchased = true
+                 AND m."priceNet" IS NOT NULL
+                 AND m."chatterId" = ANY($1::uuid[])
+                 AND EXISTS (
+                   SELECT 1 FROM windows w
+                   WHERE w."userId" = m."chatterId"
+                     AND m."sentAt" >= w."windowStart"
+                     AND m."sentAt" < w."windowEnd"
+                 )
+               GROUP BY 1`,
+              [scope.userIds, ...todayWindowClause.params]
+            )
+          : pool.query(
+              `WITH windows("userId", "windowStart", "windowEnd") AS (
+                 VALUES ${todayWindowClause.sql}
+               )
+               SELECT UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries m
+               WHERE m.purchased = true
+                 AND m."priceNet" IS NOT NULL
+                 AND (
+                   EXISTS (
+                     SELECT 1 FROM windows w
+                     WHERE w."userId" = m."chatterId"
+                       AND m."sentAt" >= w."windowStart"
+                       AND m."sentAt" < w."windowEnd"
+                   )
+                   OR (
+                     m."chatterId" IS NULL
+                     AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date
+                         = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
+                   )
+                 )
+               GROUP BY 1`,
+              todayWindowClause.params
+            );
+
+      const chatterSalesQuery = !chatterTodayWindowClause
+        ? pool.query(
+            `SELECT m."chatterId",
+                    UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                    0::float AS "dailySales",
+                    COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                    ), 0)::float AS "totalSales",
+                    COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      WHERE m.purchased = true
+                        AND m."priceNet" IS NOT NULL
+                        AND date_trunc('month', m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')
+                            = date_trunc('month', NOW() AT TIME ZONE '${BUSINESS_TZ}')
+                    ), 0)::float AS "monthlySales"
+             FROM messaging_dashboard_entries m
+             WHERE TRUE ${mChatterClause}
+             GROUP BY m."chatterId", 2`,
+            selfParams
+          )
+        : pool.query(
+            `WITH windows("userId", "windowStart", "windowEnd") AS (
+               VALUES ${chatterTodayWindowClause.sql}
+             )
+             SELECT m."chatterId",
+                    UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                    COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      WHERE m.purchased = true
+                        AND m."priceNet" IS NOT NULL
+                        AND EXISTS (
+                          SELECT 1 FROM windows w
+                          WHERE w."userId" = m."chatterId"
+                            AND m."sentAt" >= w."windowStart"
+                            AND m."sentAt" < w."windowEnd"
+                        )
+                    ), 0)::float AS "dailySales",
+                    COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                    ), 0)::float AS "totalSales",
+                    COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      WHERE m.purchased = true
+                        AND m."priceNet" IS NOT NULL
+                        AND date_trunc('month', m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')
+                            = date_trunc('month', NOW() AT TIME ZONE '${BUSINESS_TZ}')
+                    ), 0)::float AS "monthlySales"
+             FROM messaging_dashboard_entries m
+             WHERE TRUE ${mChatterClause}
+             GROUP BY m."chatterId", 2`,
+            scope.mode === 'self'
+              ? [scope.userIds, ...chatterTodayWindowClause.params]
+              : chatterTodayWindowClause.params
+          );
+
       const [
         dailySalesResult,
         totalSalesResult,
@@ -1345,7 +1577,6 @@ router.get(
         chatterMessageStatsResult,
         chatterCutoverSalesResult,
         chatterCutoverMessagesResult,
-        chatterNamesResult,
         keystrokesResult,
         chatterActiveResult,
         tipPpvSalesResult,
@@ -1357,17 +1588,7 @@ router.get(
         chatterPeriodStatsResult,
         chatterPeriodSalesResult,
       ] = await Promise.all([
-        pool.query(
-          `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
-           FROM messaging_dashboard_entries
-           WHERE purchased = true
-             AND "priceNet" IS NOT NULL
-             AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
-             ${chatterClause}
-           GROUP BY 1`,
-          selfParams
-        ),
+        dailySalesQuery,
         // Period sales (Period Sales card / totalRevenue)
         scope.mode === 'self'
           ? pool.query(
@@ -1405,21 +1626,7 @@ router.get(
            GROUP BY 1`,
           selfParams
         ),
-        pool.query(
-          scope.mode === 'self'
-            ? `SELECT AVG("responseTimeSeconds")::float AS avg
-               FROM messaging_dashboard_entries
-               WHERE "responseTimeSeconds" IS NOT NULL
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
-                 AND "chatterId" = ANY($1::uuid[])`
-            : `SELECT AVG("responseTimeSeconds")::float AS avg
-               FROM messaging_dashboard_entries
-               WHERE "responseTimeSeconds" IS NOT NULL
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date`,
-          periodSelfParams
-        ),
+        avgResponseQuery,
         pool.query(
           scope.mode === 'self'
             ? `WITH days AS (
@@ -1427,28 +1634,28 @@ router.get(
                )
                SELECT d.day::text AS date,
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS amount
                FROM days d
                LEFT JOIN messaging_dashboard_entries m
                  ON (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date = d.day
-                AND m.purchased = true
-                AND m."priceNet" IS NOT NULL
                 AND m."chatterId" = ANY($1::uuid[])
                GROUP BY d.day, 2
-               ORDER BY d.day ASC`
+               ORDER BY d.day`
             : `WITH days AS (
                  SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS day
                )
                SELECT d.day::text AS date,
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS amount
                FROM days d
                LEFT JOIN messaging_dashboard_entries m
                  ON (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date = d.day
-                AND m.purchased = true
-                AND m."priceNet" IS NOT NULL
                GROUP BY d.day, 2
-               ORDER BY d.day ASC`,
+               ORDER BY d.day`,
           periodSelfParams
         ),
         // Period message / PPV counts + extended metrics
@@ -1511,59 +1718,21 @@ router.get(
                  AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date`,
               [periodStart, periodEnd]
             ),
-        pool.query(
-          scope.mode === 'self'
-            ? `SELECT m."chatterId",
-                      AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
-               FROM messaging_dashboard_entries m
-               WHERE m."responseTimeSeconds" IS NOT NULL
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
-                 AND m."chatterId" = ANY($1::uuid[])
-               GROUP BY m."chatterId"`
-            : `SELECT m."chatterId",
-                      AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
-               FROM messaging_dashboard_entries m
-               WHERE m."responseTimeSeconds" IS NOT NULL
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
-               GROUP BY m."chatterId"`,
-          periodSelfParams
-        ),
-        // Staff Performance sales: today / all-time / month (unchanged)
-        pool.query(
-          `SELECT m."chatterId",
-                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
-                    WHERE m.purchased = true
-                      AND m."priceNet" IS NOT NULL
-                      AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
-                  ), 0)::float AS "dailySales",
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
-                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
-                  ), 0)::float AS "totalSales",
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
-                    WHERE m.purchased = true
-                      AND m."priceNet" IS NOT NULL
-                      AND date_trunc('month', m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')
-                          = date_trunc('month', NOW() AT TIME ZONE '${BUSINESS_TZ}')
-                  ), 0)::float AS "monthlySales"
-           FROM messaging_dashboard_entries m
-           WHERE TRUE ${mChatterClause}
-           GROUP BY m."chatterId", 2`,
-          selfParams
-        ),
-        // Staff Performance message/PPV: all-time (unchanged)
+        chatterAvgQuery,
+        chatterSalesQuery,
+        // Staff Performance message/PPV: messages filtered to scheduled hours
         pool.query(
           `SELECT m."chatterId",
                   COUNT(*) FILTER (
                     WHERE m."contentType" IN ('text', 'media', 'chat_product')
+                      AND ${hoursPredicate}
                   )::int AS "messagesSent",
                   COUNT(*) FILTER (WHERE m."contentType" = 'chat_product')::int AS "ppvsSent",
                   COUNT(*) FILTER (
                     WHERE m."contentType" = 'chat_product' AND m.purchased = true
                   )::int AS "ppvsUnlocked"
            FROM messaging_dashboard_entries m
+           ${hoursJoin}
            WHERE TRUE ${mChatterClause}
            GROUP BY m."chatterId"`,
           selfParams
@@ -1613,7 +1782,6 @@ router.get(
                GROUP BY m."chatterId"`,
               [ACTIVITY_METRICS_CUTOVER]
             ),
-        staffListQuery,
         // Period keystrokes / active / idle for team cards
         scope.mode === 'self'
           ? pool.query(
@@ -1942,6 +2110,124 @@ router.get(
             ),
       ]);
 
+      // Override team + per-chatter p50/p90 with shift-scoped response times
+      let scheduleP50 = null;
+      let scheduleP90 = null;
+      const schedulePercentilesByChatter = new Map();
+      if (periodWindowClause) {
+        const percentileParams =
+          scope.mode === 'self'
+            ? [scope.userIds, ...periodWindowClause.params]
+            : periodWindowClause.params;
+        const teamPercentileSql =
+          scope.mode === 'self'
+            ? `WITH windows("userId", "windowStart", "windowEnd") AS (
+                 VALUES ${periodWindowClause.sql}
+               )
+               SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (
+                        ORDER BY m."responseTimeSeconds"
+                      )::float AS "p50ResponseSeconds",
+                      PERCENTILE_CONT(0.9) WITHIN GROUP (
+                        ORDER BY m."responseTimeSeconds"
+                      )::float AS "p90ResponseSeconds"
+               FROM messaging_dashboard_entries m
+               WHERE m."responseTimeSeconds" IS NOT NULL
+                 AND m."chatterId" = ANY($1::uuid[])
+                 AND EXISTS (
+                   SELECT 1 FROM windows w
+                   WHERE w."userId" = m."chatterId"
+                     AND m."sentAt" >= w."windowStart"
+                     AND m."sentAt" < w."windowEnd"
+                 )`
+            : `WITH windows("userId", "windowStart", "windowEnd") AS (
+                 VALUES ${periodWindowClause.sql}
+               )
+               SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (
+                        ORDER BY m."responseTimeSeconds"
+                      )::float AS "p50ResponseSeconds",
+                      PERCENTILE_CONT(0.9) WITHIN GROUP (
+                        ORDER BY m."responseTimeSeconds"
+                      )::float AS "p90ResponseSeconds"
+               FROM messaging_dashboard_entries m
+               WHERE m."responseTimeSeconds" IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1 FROM windows w
+                   WHERE w."userId" = m."chatterId"
+                     AND m."sentAt" >= w."windowStart"
+                     AND m."sentAt" < w."windowEnd"
+                 )`;
+        const chatterPercentileSql =
+          scope.mode === 'self'
+            ? `WITH windows("userId", "windowStart", "windowEnd") AS (
+                 VALUES ${periodWindowClause.sql}
+               )
+               SELECT m."chatterId",
+                      PERCENTILE_CONT(0.5) WITHIN GROUP (
+                        ORDER BY m."responseTimeSeconds"
+                      )::float AS "p50ResponseSeconds",
+                      PERCENTILE_CONT(0.9) WITHIN GROUP (
+                        ORDER BY m."responseTimeSeconds"
+                      )::float AS "p90ResponseSeconds"
+               FROM messaging_dashboard_entries m
+               WHERE m."responseTimeSeconds" IS NOT NULL
+                 AND m."chatterId" = ANY($1::uuid[])
+                 AND EXISTS (
+                   SELECT 1 FROM windows w
+                   WHERE w."userId" = m."chatterId"
+                     AND m."sentAt" >= w."windowStart"
+                     AND m."sentAt" < w."windowEnd"
+                 )
+               GROUP BY m."chatterId"`
+            : `WITH windows("userId", "windowStart", "windowEnd") AS (
+                 VALUES ${periodWindowClause.sql}
+               )
+               SELECT m."chatterId",
+                      PERCENTILE_CONT(0.5) WITHIN GROUP (
+                        ORDER BY m."responseTimeSeconds"
+                      )::float AS "p50ResponseSeconds",
+                      PERCENTILE_CONT(0.9) WITHIN GROUP (
+                        ORDER BY m."responseTimeSeconds"
+                      )::float AS "p90ResponseSeconds"
+               FROM messaging_dashboard_entries m
+               WHERE m."responseTimeSeconds" IS NOT NULL
+                 AND EXISTS (
+                   SELECT 1 FROM windows w
+                   WHERE w."userId" = m."chatterId"
+                     AND m."sentAt" >= w."windowStart"
+                     AND m."sentAt" < w."windowEnd"
+                 )
+               GROUP BY m."chatterId"`;
+        const [teamPercentileResult, chatterPercentileResult] = await Promise.all([
+          pool.query(teamPercentileSql, percentileParams),
+          pool.query(chatterPercentileSql, percentileParams),
+        ]);
+        const teamRow = teamPercentileResult.rows[0] || {};
+        scheduleP50 =
+          teamRow.p50ResponseSeconds != null &&
+          !Number.isNaN(Number(teamRow.p50ResponseSeconds))
+            ? Number(teamRow.p50ResponseSeconds)
+            : null;
+        scheduleP90 =
+          teamRow.p90ResponseSeconds != null &&
+          !Number.isNaN(Number(teamRow.p90ResponseSeconds))
+            ? Number(teamRow.p90ResponseSeconds)
+            : null;
+        for (const row of chatterPercentileResult.rows) {
+          schedulePercentilesByChatter.set(row.chatterId, {
+            p50ResponseSeconds:
+              row.p50ResponseSeconds != null &&
+              !Number.isNaN(Number(row.p50ResponseSeconds))
+                ? Number(row.p50ResponseSeconds)
+                : null,
+            p90ResponseSeconds:
+              row.p90ResponseSeconds != null &&
+              !Number.isNaN(Number(row.p90ResponseSeconds))
+                ? Number(row.p90ResponseSeconds)
+                : null,
+          });
+        }
+      }
+
       const dailySales = currencyAmountRowsToList(dailySalesResult.rows);
       const totalSales = currencyAmountRowsToList(totalSalesResult.rows);
       const monthlyRevenue = currencyAmountRowsToList(monthlySalesResult.rows);
@@ -1960,13 +2246,18 @@ router.get(
         videoPpvs,
         uniqueFansMessaged,
         fansWhoUnlocked,
-        p50ResponseSeconds,
-        p90ResponseSeconds,
         avgPpvPrice,
         medianPpvPrice,
         goldenRatio,
         ppvConversionRate,
       } = msgStats;
+      const useScheduleResponseTimes = staffIds.length > 0;
+      const p50ResponseSeconds = useScheduleResponseTimes
+        ? scheduleP50
+        : msgStats.p50ResponseSeconds;
+      const p90ResponseSeconds = useScheduleResponseTimes
+        ? scheduleP90
+        : msgStats.p90ResponseSeconds;
 
       const tipSales = [];
       const ppvSales = [];
@@ -2060,8 +2351,16 @@ router.get(
 
       const periodExtrasByChatter = new Map();
       for (const row of chatterPeriodStatsResult.rows) {
+        const parsed = parseExtendedMessageStats(row);
+        const scheduled = schedulePercentilesByChatter.get(row.chatterId);
         periodExtrasByChatter.set(row.chatterId, {
-          ...parseExtendedMessageStats(row),
+          ...parsed,
+          p50ResponseSeconds: useScheduleResponseTimes
+            ? scheduled?.p50ResponseSeconds ?? null
+            : parsed.p50ResponseSeconds,
+          p90ResponseSeconds: useScheduleResponseTimes
+            ? scheduled?.p90ResponseSeconds ?? null
+            : parsed.p90ResponseSeconds,
           tipSales: [],
           ppvSales: [],
           periodSales: [],
@@ -2223,6 +2522,7 @@ router.get(
         const tipSalesMerged = mergeCurrencyAmounts(periodExtras?.tipSales || []);
         const ppvSalesMergedChatter = mergeCurrencyAmounts(periodExtras?.ppvSales || []);
         const periodSalesMerged = mergeCurrencyAmounts(periodExtras?.periodSales || []);
+        const scheduleMeta = scheduleMetaForWeek(schedulesByUser.get(row.chatterId));
         return {
           chatterId: row.chatterId,
           chatterName: row.chatterName,
@@ -2254,6 +2554,8 @@ router.get(
           p90ResponseSeconds: periodExtras?.p90ResponseSeconds ?? null,
           avgPpvPrice: periodExtras?.avgPpvPrice ?? null,
           medianPpvPrice: periodExtras?.medianPpvPrice ?? null,
+          scheduleApplied: scheduleMeta.scheduleApplied,
+          shiftLabel: scheduleMeta.shiftLabel,
         };
       });
 
@@ -2281,6 +2583,7 @@ router.get(
           const tipSalesMerged = mergeCurrencyAmounts(periodExtras?.tipSales || []);
           const ppvSalesMergedChatter = mergeCurrencyAmounts(periodExtras?.ppvSales || []);
           const periodSalesMerged = mergeCurrencyAmounts(periodExtras?.periodSales || []);
+          const scheduleMeta = scheduleMetaForWeek(schedulesByUser.get(chatterId));
           chatters.push({
             chatterId,
             chatterName: nameById.get(chatterId) || 'Unknown',
@@ -2312,6 +2615,8 @@ router.get(
             p90ResponseSeconds: periodExtras?.p90ResponseSeconds ?? null,
             avgPpvPrice: periodExtras?.avgPpvPrice ?? null,
             medianPpvPrice: periodExtras?.medianPpvPrice ?? null,
+            scheduleApplied: scheduleMeta.scheduleApplied,
+            shiftLabel: scheduleMeta.shiftLabel,
           });
         }
       }
@@ -2383,62 +2688,96 @@ router.get(
       const periodStart = monthStartDateString();
       const periodEnd = calendarDateString();
 
-      const [
-        staffResult,
-        responseResult,
-        salesResult,
-        messageStatsResult,
-      ] = await Promise.all([
-        pool.query(
-          `SELECT u.id AS "userId", u.name AS "userName"
-           FROM users u
-           WHERE u.role = ANY($1::text[]) AND u.status = 'active'
-           ORDER BY u.name ASC`,
-          [TRACKED_STAFF_ROLES]
-        ),
-        pool.query(
-          `SELECT m."chatterId" AS "userId",
-                  AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
-           FROM messaging_dashboard_entries m
-           JOIN users u ON u.id = m."chatterId"
-           WHERE u.role = ANY($1::text[])
-             AND m."responseTimeSeconds" IS NOT NULL
-             AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-             AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
-           GROUP BY m."chatterId"`,
-          [TRACKED_STAFF_ROLES, periodStart, periodEnd]
-        ),
-        pool.query(
-          `SELECT m."chatterId" AS "userId",
-                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
-           FROM messaging_dashboard_entries m
-           JOIN users u ON u.id = m."chatterId"
-           WHERE u.role = ANY($1::text[])
-             AND m.purchased = true
-             AND m."priceNet" IS NOT NULL
-             AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-             AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
-           GROUP BY m."chatterId", 2`,
-          [TRACKED_STAFF_ROLES, periodStart, periodEnd]
-        ),
-        pool.query(
-          `SELECT m."chatterId" AS "userId",
-                  COUNT(*) FILTER (
-                    WHERE m."contentType" IN ('text', 'media', 'chat_product')
-                  )::int AS "messagesSent",
-                  COUNT(*) FILTER (WHERE m."contentType" = 'chat_product')::int AS "ppvsSent",
-                  COUNT(*) FILTER (
-                    WHERE m."contentType" = 'chat_product' AND m.purchased = true
-                  )::int AS "ppvsUnlocked"
-           FROM messaging_dashboard_entries m
-           JOIN users u ON u.id = m."chatterId"
-           WHERE u.role = ANY($1::text[])
-             AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-             AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
-           GROUP BY m."chatterId"`,
-          [TRACKED_STAFF_ROLES, periodStart, periodEnd]
-        ),
+      const staffResult = await pool.query(
+        `SELECT u.id AS "userId", u.name AS "userName"
+         FROM users u
+         WHERE u.role = ANY($1::text[]) AND u.status = 'active'
+         ORDER BY u.name ASC`,
+        [TRACKED_STAFF_ROLES]
+      );
+      const staffIds = staffResult.rows.map((row) => row.userId);
+      const schedulesByUser = await loadSchedulesByUserId(staffIds);
+      const mtdWindows = await expandShiftWindows(
+        staffIds,
+        periodStart,
+        periodEnd,
+        schedulesByUser
+      );
+      // $1 = TRACKED_STAFF_ROLES; window userIds start at $2
+      const windowClause = buildWindowValuesClause(mtdWindows, 2);
+
+      const emptyLeaderboardAgg = () =>
+        Promise.resolve({ rows: [] });
+
+      const windowExistsSql = windowClause
+        ? `EXISTS (
+             SELECT 1 FROM windows w
+             WHERE w."userId" = m."chatterId"
+               AND m."sentAt" >= w."windowStart"
+               AND m."sentAt" < w."windowEnd"
+           )`
+        : 'FALSE';
+
+      const windowsCte = windowClause
+        ? `WITH windows("userId", "windowStart", "windowEnd") AS (
+             VALUES ${windowClause.sql}
+           )`
+        : '';
+
+      const leaderboardParams = windowClause
+        ? [TRACKED_STAFF_ROLES, ...windowClause.params]
+        : [TRACKED_STAFF_ROLES];
+
+      const [responseResult, salesResult, messageStatsResult] = await Promise.all([
+        windowClause
+          ? pool.query(
+              `${windowsCte}
+               SELECT m."chatterId" AS "userId",
+                      AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
+               FROM messaging_dashboard_entries m
+               JOIN users u ON u.id = m."chatterId"
+               WHERE u.role = ANY($1::text[])
+                 AND m."responseTimeSeconds" IS NOT NULL
+                 AND ${windowExistsSql}
+               GROUP BY m."chatterId"`,
+              leaderboardParams
+            )
+          : emptyLeaderboardAgg(),
+        windowClause
+          ? pool.query(
+              `${windowsCte}
+               SELECT m."chatterId" AS "userId",
+                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries m
+               JOIN users u ON u.id = m."chatterId"
+               WHERE u.role = ANY($1::text[])
+                 AND m.purchased = true
+                 AND m."priceNet" IS NOT NULL
+                 AND ${windowExistsSql}
+               GROUP BY m."chatterId", 2`,
+              leaderboardParams
+            )
+          : emptyLeaderboardAgg(),
+        windowClause
+          ? pool.query(
+              `${windowsCte}
+               SELECT m."chatterId" AS "userId",
+                      COUNT(*) FILTER (
+                        WHERE m."contentType" IN ('text', 'media', 'chat_product')
+                      )::int AS "messagesSent",
+                      COUNT(*) FILTER (WHERE m."contentType" = 'chat_product')::int AS "ppvsSent",
+                      COUNT(*) FILTER (
+                        WHERE m."contentType" = 'chat_product' AND m.purchased = true
+                      )::int AS "ppvsUnlocked"
+               FROM messaging_dashboard_entries m
+               JOIN users u ON u.id = m."chatterId"
+               WHERE u.role = ANY($1::text[])
+                 AND ${windowExistsSql}
+               GROUP BY m."chatterId"`,
+              leaderboardParams
+            )
+          : emptyLeaderboardAgg(),
       ]);
 
       const byId = new Map();
@@ -2580,6 +2919,7 @@ router.get(
           startDate: periodStart,
           endDate: periodEnd,
           timeZone: BUSINESS_TZ,
+          usesScheduledHours: true,
         },
         lastUpdated: new Date().toISOString(),
       });

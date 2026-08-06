@@ -15,6 +15,12 @@ const {
 } = require('../services/rbac');
 const { emitToUser } = require('../services/userEventBus');
 const { generateTempPassword } = require('../services/passwordUtils');
+const {
+  loadSchedulesByUserId,
+  parseScheduleDaysPayload,
+  formatTimeShort,
+  isOvernight,
+} = require('../services/workSchedule');
 
 const router = express.Router();
 
@@ -338,6 +344,108 @@ router.delete('/:id', authenticate, requirePermission('staff.delete'), async (re
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+router.get(
+  '/:id/schedule',
+  authenticate,
+  requirePermission('staff.view'),
+  async (req, res) => {
+    const { id } = req.params;
+
+    try {
+      const staffMember = await getUserById(id);
+      if (!staffMember) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const byUser = await loadSchedulesByUserId([id]);
+      const week = byUser.get(id);
+      const days = week
+        ? [...week.values()]
+            .sort((a, b) => a.dayOfWeek - b.dayOfWeek)
+            .map((d) => ({
+              dayOfWeek: d.dayOfWeek,
+              startTime: formatTimeShort(d.startTime),
+              endTime: formatTimeShort(d.endTime),
+              overnight: isOvernight(d.startTime, d.endTime),
+            }))
+        : [];
+
+      res.json({
+        userId: id,
+        timeZone: 'Asia/Manila',
+        days,
+      });
+    } catch (err) {
+      console.error('Get staff schedule error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.put(
+  '/:id/schedule',
+  authenticate,
+  requirePermission('staff.edit'),
+  async (req, res) => {
+    const { id } = req.params;
+    const parsed = parseScheduleDaysPayload(req.body?.days);
+
+    if (!parsed.ok) {
+      return res.status(400).json({ error: parsed.error });
+    }
+
+    try {
+      const actor = await getUserById(req.user.id);
+      const check = await canManageUser(actor, id);
+      if (!check.allowed) {
+        return res.status(403).json({ error: check.reason });
+      }
+
+      const staffMember = await getUserById(id);
+      if (!staffMember) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`DELETE FROM user_work_schedules WHERE "userId" = $1`, [id]);
+
+        for (const day of parsed.days) {
+          await client.query(
+            `INSERT INTO user_work_schedules ("userId", "dayOfWeek", "startTime", "endTime")
+             VALUES ($1, $2, $3::time, $4::time)`,
+            [id, day.dayOfWeek, day.startTime, day.endTime]
+          );
+        }
+
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+
+      const days = parsed.days.map((d) => ({
+        dayOfWeek: d.dayOfWeek,
+        startTime: formatTimeShort(d.startTime),
+        endTime: formatTimeShort(d.endTime),
+        overnight: isOvernight(d.startTime, d.endTime),
+      }));
+
+      res.json({
+        userId: id,
+        timeZone: 'Asia/Manila',
+        days,
+      });
+    } catch (err) {
+      console.error('Update staff schedule error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
 
 router.get(
   '/:id/creators',

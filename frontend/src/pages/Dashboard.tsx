@@ -530,7 +530,7 @@ export default function Dashboard() {
               <MetricCard
                 label="Daily Sales"
                 value={formatCurrencyAmounts(overview?.dailySales)}
-                hint="Purchased revenue today (Asia/Manila)"
+                hint="Purchased revenue during each chatter’s scheduled shift today (Asia/Manila)"
               />
               <MetricCard
                 label="Period Sales"
@@ -547,7 +547,7 @@ export default function Dashboard() {
               <MetricCard
                 label="Avg Response Time"
                 value={formatResponseTime(overview?.avgResponseTimeSeconds)}
-                hint={`Average response time for ${periodLabel}`}
+                hint={`Average response time for ${periodLabel} (scheduled hours)`}
               />
               <MetricCard
                 label="Messages Sent"
@@ -631,12 +631,12 @@ export default function Dashboard() {
               <MetricCard
                 label="p50 Response"
                 value={formatResponseTime(overview?.p50ResponseSeconds ?? null)}
-                hint={`Median response time for ${periodLabel}`}
+                hint={`Median response time for ${periodLabel} (scheduled hours)`}
               />
               <MetricCard
                 label="p90 Response"
                 value={formatResponseTime(overview?.p90ResponseSeconds ?? null)}
-                hint={`90th percentile response time for ${periodLabel}`}
+                hint={`90th percentile response time for ${periodLabel} (scheduled hours)`}
               />
               <MetricCard
                 label="Idle %"
@@ -789,33 +789,34 @@ export default function Dashboard() {
             <div>
               <h3 className="text-sm font-medium mb-1">Leaderboard</h3>
               <p className="text-xs text-gray-400 mb-4">
-                Team rankings with partially hidden totals
+                Team rankings with partially hidden totals. Rankings use each
+                chatter&apos;s scheduled hours (PHT); no schedule means all day.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <LeaderboardCard
                   title="Top Response Time"
-                  hint="Fastest average response (last 30 days)"
+                  hint="Fastest average response this month (scheduled hours)"
                   entries={leaderboard?.topResponseTime || []}
                   viewerRank={leaderboard?.viewerRank?.responseTime}
                   viewerId={user.id}
                 />
                 <LeaderboardCard
                   title="Top Sales"
-                  hint="Highest all-time purchased revenue"
+                  hint="Highest purchased revenue this month (scheduled hours)"
                   entries={leaderboard?.topSales || []}
                   viewerRank={leaderboard?.viewerRank?.sales}
                   viewerId={user.id}
                 />
                 <LeaderboardCard
                   title="Top PPVs Unlocked"
-                  hint="Most unlocked direct PPVs"
+                  hint="Most unlocked direct PPVs this month (scheduled hours)"
                   entries={leaderboard?.topPpvsUnlocked || []}
                   viewerRank={leaderboard?.viewerRank?.ppvsUnlocked}
                   viewerId={user.id}
                 />
                 <LeaderboardCard
                   title="Top Golden Ratio"
-                  hint="Highest PPVs sent ÷ DMs sent"
+                  hint="Highest PPVs sent ÷ DMs sent this month (scheduled hours)"
                   entries={leaderboard?.topGoldenRatio || []}
                   viewerRank={leaderboard?.viewerRank?.goldenRatio}
                   viewerId={user.id}
@@ -842,7 +843,11 @@ export default function Dashboard() {
 
             {showTeamWidgets ? (
               <div>
-                <h3 className="text-sm font-medium mb-4">Staff Performance</h3>
+                <h3 className="text-sm font-medium mb-1">Staff Performance</h3>
+                <p className="text-xs text-gray-400 mb-4">
+                  Daily sales count during each person&apos;s scheduled shift today;
+                  messages count only during scheduled hours
+                </p>
                 <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden">
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
@@ -890,7 +895,12 @@ export default function Dashboard() {
                               className="border-t border-gray-100 dark:border-white/5"
                             >
                               <td className="px-4 py-3 font-medium whitespace-nowrap">
-                                {row.chatterName}
+                                <div>{row.chatterName}</div>
+                                <div className="text-xs font-normal text-gray-400">
+                                  {row.scheduleApplied
+                                    ? row.shiftLabel || 'Scheduled'
+                                    : 'All day'}
+                                </div>
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap">
                                 {formatResponseTime(row.avgResponseTimeSeconds)}

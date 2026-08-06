@@ -3,6 +3,7 @@ import { Plus, Shield, Users } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import AssignStaffCreatorsModal from '@/components/AssignStaffCreatorsModal';
 import StaffCredentialsModal from '@/components/StaffCredentialsModal';
+import StaffScheduleModal from '@/components/StaffScheduleModal';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import {
@@ -84,6 +85,7 @@ export default function ManageStaff() {
   const [error, setError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [assignCreatorsMember, setAssignCreatorsMember] = useState<User | null>(null);
+  const [scheduleMember, setScheduleMember] = useState<User | null>(null);
   const [credentials, setCredentials] = useState<CredentialsState | null>(null);
   const [form, setForm] = useState<StaffFormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
@@ -362,6 +364,11 @@ export default function ManageStaff() {
                     const manageable = canManageMember(member);
                     const showCreatorAssign =
                       canAssignCreators && CREATOR_ASSIGNABLE_ROLES.has(member.role);
+                    const showSchedule = CREATOR_ASSIGNABLE_ROLES.has(member.role);
+                    const showManageActions =
+                      member.id !== user?.id &&
+                      manageable &&
+                      (canEdit || canDeactivate || canDelete);
 
                     return (
                       <tr
@@ -407,8 +414,17 @@ export default function ManageStaff() {
                           {formatDate(member.lastLoginAt)}
                         </td>
                         <td className="px-4 py-3 text-right">
-                          {(member.id !== user?.id || showCreatorAssign) && (
+                          {(showSchedule || showCreatorAssign || showManageActions) && (
                             <div className="flex items-center justify-end gap-2 flex-wrap">
+                              {showSchedule && (
+                                <button
+                                  type="button"
+                                  onClick={() => setScheduleMember(member)}
+                                  className="px-2 py-1 text-xs rounded border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5"
+                                >
+                                  Schedule
+                                </button>
+                              )}
                               {showCreatorAssign && (
                                 <button
                                   type="button"
@@ -418,7 +434,7 @@ export default function ManageStaff() {
                                   Assign Creators
                                 </button>
                               )}
-                              {member.id !== user?.id && manageable && (
+                              {showManageActions && (
                                 <>
                                   {canEdit && (
                                     <button
@@ -584,6 +600,14 @@ export default function ManageStaff() {
             onSaved={() => {
               void loadStaff();
             }}
+          />
+        )}
+
+        {scheduleMember && (
+          <StaffScheduleModal
+            member={scheduleMember}
+            canEdit={canEdit && canManageMember(scheduleMember)}
+            onClose={() => setScheduleMember(null)}
           />
         )}
 

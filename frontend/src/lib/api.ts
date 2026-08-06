@@ -554,6 +554,33 @@ export async function resetStaffPassword(id: string): Promise<StaffCredentialsRe
   });
 }
 
+export interface StaffScheduleDay {
+  dayOfWeek: number;
+  startTime: string;
+  endTime: string;
+  overnight?: boolean;
+}
+
+export interface StaffScheduleResponse {
+  userId: string;
+  timeZone: string;
+  days: StaffScheduleDay[];
+}
+
+export async function getStaffSchedule(id: string): Promise<StaffScheduleResponse> {
+  return request<StaffScheduleResponse>(`/api/staff/${id}/schedule`);
+}
+
+export async function updateStaffSchedule(
+  id: string,
+  days: Array<{ dayOfWeek: number; startTime: string; endTime: string }>
+): Promise<StaffScheduleResponse> {
+  return request<StaffScheduleResponse>(`/api/staff/${id}/schedule`, {
+    method: 'PUT',
+    body: JSON.stringify({ days }),
+  });
+}
+
 export interface StaffAssignedCreator {
   id: string;
   displayName: string;
@@ -831,6 +858,8 @@ export interface OverviewChatterStats {
   p90ResponseSeconds?: number | null;
   avgPpvPrice?: number | null;
   medianPpvPrice?: number | null;
+  scheduleApplied?: boolean;
+  shiftLabel?: string | null;
 }
 
 export interface OverviewPriceBand {
@@ -993,7 +1022,13 @@ export interface LeaderboardResponse {
     ppvsUnlocked: LeaderboardViewerRank | null;
     goldenRatio: LeaderboardViewerRank | null;
   };
-  responseWindow: { startDate: string; endDate: string };
+  period?: {
+    startDate: string;
+    endDate: string;
+    timeZone: string;
+    usesScheduledHours?: boolean;
+  };
+  responseWindow?: { startDate: string; endDate: string };
   lastUpdated: string;
 }
 
