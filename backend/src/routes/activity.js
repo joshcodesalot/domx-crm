@@ -9,7 +9,7 @@ const {
 const {
   BUSINESS_TZ,
   calendarDateString,
-  buildDateRange,
+  resolveAnalyticsPeriod,
 } = require('../services/businessTimezone');
 
 const router = express.Router();
@@ -210,13 +210,19 @@ router.get(
   async (req, res) => {
     try {
       const scope = getAnalyticsScope(req.user);
-      const parsedDays = Math.min(
-        Math.max(Number.parseInt(String(req.query.days || '14'), 10) || 14, 1),
-        90
+      const period = resolveAnalyticsPeriod(
+        {
+          startDate: req.query.startDate,
+          endDate: req.query.endDate,
+          days: req.query.days,
+        },
+        90,
+        { allowAnyDays: true, defaultDays: 14 }
       );
-      const dateRange = buildDateRange(parsedDays);
-      const startDate = dateRange[0];
-      const endDate = dateRange[dateRange.length - 1];
+      const dateRange = period.dates;
+      const startDate = period.startDate;
+      const endDate = period.endDate;
+      const parsedDays = period.days;
 
       let staffQuery;
       let staffParams;

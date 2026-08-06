@@ -25,6 +25,7 @@ interface SidebarProps {
     | 'dashboard'
     | 'analytics'
     | 'charts'
+    | 'creatorAnalytics'
     | 'chatter'
     | 'creators'
     | 'staff'
@@ -194,7 +195,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             <LayoutGrid className="w-5 h-5" />
           </button>
         )}
-        {(hasPermission('analytics.view') || hasPermission('analytics.self')) && (
+        {(user?.role === 'owner' || user?.role === 'manager') && (
           <button
             type="button"
             onClick={() => navigate('/dashboard/charts')}
@@ -202,6 +203,16 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             title="Charts"
           >
             <LineChart className="w-5 h-5" />
+          </button>
+        )}
+        {(user?.role === 'owner' || user?.role === 'manager') && (
+          <button
+            type="button"
+            onClick={() => navigate('/dashboard/creator-analytics')}
+            className={navClass('creatorAnalytics')}
+            title="Creator Analytics"
+          >
+            <Users className="w-5 h-5" />
           </button>
         )}
         {hasPermission('analytics.view') && (

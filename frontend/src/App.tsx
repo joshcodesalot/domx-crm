@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import ForcedUpdateOverlay from '@/components/ForcedUpdateOverlay';
 import PermissionRoute from '@/components/PermissionRoute';
+import RoleRoute from '@/components/RoleRoute';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { ConfirmDialogProvider } from '@/context/ConfirmDialogContext';
@@ -28,6 +29,7 @@ import MessagePro from '@/pages/MessagePro';
 import MessagePro4Based from '@/pages/MessagePro4Based';
 import MessagingDashboard from '@/pages/MessagingDashboard';
 import AnalyticsCharts from '@/pages/AnalyticsCharts';
+import CreatorAnalytics from '@/pages/CreatorAnalytics';
 import KeywordModeration from '@/pages/KeywordModeration';
 import ModerationAlertsListener from '@/components/ModerationAlertsListener';
 import ActivityHeartbeatListener from '@/components/ActivityHeartbeatListener';
@@ -202,12 +204,12 @@ function AppRoutes() {
           <Route element={<ProtectedRoute />}>
             <Route element={<CreatorBootProvider />}>
               <Route path="/dashboard" element={<Dashboard />} />
-              <Route
-                element={
-                  <PermissionRoute anyOf={['analytics.view', 'analytics.self']} />
-                }
-              >
+              <Route element={<RoleRoute roles={['owner', 'manager']} />}>
                 <Route path="/dashboard/charts" element={<AnalyticsCharts />} />
+                <Route
+                  path="/dashboard/creator-analytics"
+                  element={<CreatorAnalytics />}
+                />
               </Route>
               <Route element={<PermissionRoute permission="analytics.view" />}>
                 <Route path="/dashboard/messaging" element={<MessagingDashboard />} />

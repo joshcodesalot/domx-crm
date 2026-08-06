@@ -51,9 +51,108 @@ function buildDateRange(days) {
   return dates;
 }
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const PRESET_PERIOD_DAYS = new Set([1, 3, 5, 7]);
+
+function isValidDateString(value) {
+  return DATE_RE.test(String(value || ''));
+}
+
+/**
+ * Inclusive YYYY-MM-DD list from start to end (calendar arithmetic, no TZ shift).
+ * @param {string} startDate
+ * @param {string} endDate
+ * @returns {string[]}
+ */
+function buildDateRangeBetween(startDate, endDate) {
+  if (!isValidDateString(startDate) || !isValidDateString(endDate)) {
+    return [];
+  }
+  let start = startDate;
+  let end = endDate;
+  if (start > end) {
+    const tmp = start;
+    start = end;
+    end = tmp;
+  }
+  const [sy, sm, sd] = start.split('-').map(Number);
+  const [ey, em, ed] = end.split('-').map(Number);
+  const dates = [];
+  const cursor = new Date(Date.UTC(sy, sm - 1, sd, 12, 0, 0));
+  const last = new Date(Date.UTC(ey, em - 1, ed, 12, 0, 0));
+  while (cursor.getTime() <= last.getTime()) {
+    const y = cursor.getUTCFullYear();
+    const m = String(cursor.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(cursor.getUTCDate()).padStart(2, '0');
+    dates.push(`${y}-${m}-${dd}`);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+/**
+ * Resolve analytics period from query-like inputs.
+ * Prefer explicit start/end; else days; else default 7. Caps span at maxDays.
+ * @param {{ startDate?: string, endDate?: string, days?: string|number }} input
+ * @param {number} [maxDays=90]
+ * @param {{ allowAnyDays?: boolean, defaultDays?: number }} [options]
+ * @returns {{ startDate: string, endDate: string, dates: string[], days: number }}
+ */
+function resolveAnalyticsPeriod(input = {}, maxDays = 90, options = {}) {
+  const cap = Math.max(1, Math.floor(Number(maxDays) || 90));
+  const defaultDays = PRESET_PERIOD_DAYS.has(options.defaultDays)
+    ? options.defaultDays
+    : Number.isFinite(Number(options.defaultDays)) && Number(options.defaultDays) >= 1
+      ? Math.min(Math.floor(Number(options.defaultDays)), cap)
+      : 7;
+  let start = null;
+  let end = null;
+
+  if (isValidDateString(input.startDate) && isValidDateString(input.endDate)) {
+    start = String(input.startDate);
+    end = String(input.endDate);
+    if (start > end) {
+      const tmp = start;
+      start = end;
+      end = tmp;
+    }
+    let dates = buildDateRangeBetween(start, end);
+    if (dates.length > cap) {
+      dates = dates.slice(dates.length - cap);
+      start = dates[0];
+      end = dates[dates.length - 1];
+    }
+    return {
+      startDate: start,
+      endDate: end,
+      dates,
+      days: dates.length,
+    };
+  }
+
+  const parsedDays = Number.parseInt(String(input.days ?? ''), 10);
+  let count = defaultDays;
+  if (Number.isFinite(parsedDays) && parsedDays >= 1) {
+    if (options.allowAnyDays || PRESET_PERIOD_DAYS.has(parsedDays)) {
+      count = Math.min(parsedDays, cap);
+    }
+  }
+  const dates = buildDateRange(count);
+  return {
+    startDate: dates[0],
+    endDate: dates[dates.length - 1],
+    dates,
+    days: dates.length,
+  };
+}
+
 module.exports = {
   BUSINESS_TZ,
   calendarDateString,
   monthStartDateString,
   buildDateRange,
+  buildDateRangeBetween,
+  isValidDateString,
+  resolveAnalyticsPeriod,
+  PRESET_PERIOD_DAYS,
 };

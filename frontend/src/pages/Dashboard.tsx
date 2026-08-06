@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, Link } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import PeriodDaysToggle, {
-  periodDaysLabel,
+  formatPeriodRangeLabel,
+  rangeFromPresetDays,
   type ChartPeriodDays,
 } from '@/components/PeriodDaysToggle';
 import { useAuth } from '@/context/AuthContext';
@@ -20,6 +21,7 @@ import {
   type LeaderboardViewerRank,
   type OverviewAnalyticsResponse,
   type OverviewChatterStats,
+  type OverviewCreatorStats,
   type PresenceChatter,
   type PresenceStatus,
 } from '@/lib/api';
@@ -283,10 +285,18 @@ export default function Dashboard() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardResponse | null>(null);
   const [presenceById, setPresenceById] = useState<Record<string, PresenceChatter>>({});
   const [onlineCount, setOnlineCount] = useState(0);
-  const [chartDays, setChartDays] = useState<ChartPeriodDays>(7);
+  const defaultRange = useMemo(() => rangeFromPresetDays(7), []);
+  const [presetDays, setPresetDays] = useState<ChartPeriodDays | null>(7);
+  const [startDate, setStartDate] = useState(defaultRange.startDate);
+  const [endDate, setEndDate] = useState(defaultRange.endDate);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const periodLabel = useMemo(
+    () => formatPeriodRangeLabel(startDate, endDate),
+    [startDate, endDate]
+  );
 
   const loadData = useCallback(
     async (options: { silent?: boolean } = {}) => {
@@ -300,11 +310,20 @@ export default function Dashboard() {
       setError(null);
 
       try {
+        const rangeFilters =
+          presetDays != null
+            ? { days: presetDays, startDate, endDate }
+            : { startDate, endDate };
+
         const [overviewResult, presenceResult, historyResult, leaderboardResult] =
           await Promise.all([
-            getOverviewAnalytics({ days: chartDays }),
+            getOverviewAnalytics(rangeFilters),
             getActivityPresence(),
-            getActivityHistory(chartDays),
+            getActivityHistory(
+              presetDays != null
+                ? { days: presetDays }
+                : { startDate, endDate }
+            ),
             getLeaderboard(),
           ]);
 
@@ -325,8 +344,25 @@ export default function Dashboard() {
         setRefreshing(false);
       }
     },
-    [canViewAnalytics, chartDays]
+    [canViewAnalytics, presetDays, startDate, endDate]
   );
+
+  const handlePresetChange = (days: ChartPeriodDays) => {
+    const range = rangeFromPresetDays(days);
+    setPresetDays(days);
+    setStartDate(range.startDate);
+    setEndDate(range.endDate);
+  };
+
+  const handleStartDateChange = (value: string) => {
+    setPresetDays(null);
+    setStartDate(value);
+  };
+
+  const handleEndDateChange = (value: string) => {
+    setPresetDays(null);
+    setEndDate(value);
+  };
 
   useEffect(() => {
     if (!canViewAnalytics) {
@@ -435,10 +471,32 @@ export default function Dashboard() {
           {canViewAnalytics ? (
             <div className="flex flex-col items-start gap-2 sm:items-end">
               <PeriodDaysToggle
-                value={chartDays}
-                onChange={setChartDays}
+                value={presetDays}
+                onChange={handlePresetChange}
                 disabled={loading || refreshing}
               />
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  From
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => handleStartDateChange(e.target.value)}
+                    disabled={loading || refreshing}
+                    className="rounded-md border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-2 py-1.5 text-sm text-gray-700 dark:text-gray-200 disabled:opacity-50"
+                  />
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                  To
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => handleEndDateChange(e.target.value)}
+                    disabled={loading || refreshing}
+                    className="rounded-md border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-2 py-1.5 text-sm text-gray-700 dark:text-gray-200 disabled:opacity-50"
+                  />
+                </label>
+              </div>
               <button
                 type="button"
                 onClick={() => void loadData({ silent: true })}
@@ -472,66 +530,128 @@ export default function Dashboard() {
               <MetricCard
                 label="Daily Sales"
                 value={formatCurrencyAmounts(overview?.dailySales)}
+                hint="Purchased revenue today (Asia/Manila)"
               />
               <MetricCard
-                label="Total Revenue"
+                label="Period Sales"
                 value={formatCurrencyAmounts(
                   overview?.totalRevenue || overview?.totalSales
                 )}
+                hint={`Purchased revenue for ${periodLabel}`}
               />
               <MetricCard
                 label="Monthly Revenue"
                 value={formatCurrencyAmounts(overview?.monthlyRevenue)}
+                hint="Purchased revenue this calendar month (Asia/Manila)"
               />
               <MetricCard
                 label="Avg Response Time"
                 value={formatResponseTime(overview?.avgResponseTimeSeconds)}
+                hint={`Average response time for ${periodLabel}`}
               />
               <MetricCard
-                label="Total Messages Sent"
+                label="Messages Sent"
                 value={formatCount(overview?.totalMessagesSent)}
+                hint={`Direct messages sent in ${periodLabel}`}
               />
               <MetricCard
                 label="Sent PPV"
                 value={formatCount(overview?.ppvsSent)}
-                hint="Direct PPVs sent (all-time)"
+                hint={`Direct PPVs sent in ${periodLabel}`}
               />
               <MetricCard
                 label="PPV Conversion Rate"
                 value={formatPercent(overview?.ppvConversionRate)}
-                hint="Direct PPVs unlocked ÷ direct PPVs sent × 100 (by send date)"
+                hint={`Unlocked ÷ sent for ${periodLabel}`}
               />
               <MetricCard
                 label="Golden Ratio"
                 value={formatPercent(overview?.goldenRatio)}
-                hint="PPVs sent ÷ direct messages sent × 100"
+                hint={`PPVs sent ÷ DMs sent for ${periodLabel}`}
               />
               <MetricCard
                 label="Keystrokes"
                 value={formatCount(overview?.keystrokesTotal)}
-                hint={
-                  overview?.activityMetricsCutover
-                    ? `Since activity tracking (UTC ${overview.activityMetricsCutover})`
-                    : 'Since activity tracking cutover'
-                }
+                hint={`Keystrokes in ${periodLabel}`}
               />
               <MetricCard
                 label="Revenue per Hour"
                 value={formatCurrencyAmounts(overview?.revenuePerHour)}
-                hint={
-                  overview?.activityMetricsCutover
-                    ? `Purchased revenue ÷ active hours since UTC ${overview.activityMetricsCutover}`
-                    : 'Purchased revenue ÷ active hours since activity tracking'
-                }
+                hint={`Period sales ÷ active hours for ${periodLabel}`}
               />
               <MetricCard
                 label="Messages per Hour"
                 value={formatRate(overview?.messagesPerHour)}
-                hint={
-                  overview?.activityMetricsCutover
-                    ? `Messages ÷ active hours since UTC ${overview.activityMetricsCutover}`
-                    : 'Messages ÷ active hours since activity tracking'
+                hint={`Period messages ÷ active hours for ${periodLabel}`}
+              />
+              <MetricCard
+                label="Tip Sales"
+                value={formatCurrencyAmounts(overview?.tipSales)}
+                hint={`Tip revenue for ${periodLabel}`}
+              />
+              <MetricCard
+                label="PPV Sales"
+                value={formatCurrencyAmounts(overview?.ppvSales)}
+                hint={`Unlocked PPV revenue for ${periodLabel}`}
+              />
+              <MetricCard
+                label="Unique Fans"
+                value={formatCount(overview?.uniqueFansMessaged)}
+                hint={`Distinct fans messaged in ${periodLabel}`}
+              />
+              <MetricCard
+                label="Fans Who Unlocked"
+                value={formatCount(overview?.fansWhoUnlocked)}
+                hint={`Fans who unlocked a PPV in ${periodLabel}`}
+              />
+              <MetricCard
+                label="Pending PPVs"
+                value={formatCount(overview?.pendingPpvs)}
+                hint={`Sent PPVs not yet unlocked in ${periodLabel}`}
+              />
+              <MetricCard
+                label="Avg PPV Price"
+                value={
+                  overview?.avgPpvPrice != null
+                    ? overview.avgPpvPrice.toFixed(2)
+                    : '--'
                 }
+                hint={`Average listed PPV price for ${periodLabel}`}
+              />
+              <MetricCard
+                label="Revenue per Fan"
+                value={formatCurrencyAmounts(overview?.revenuePerFan)}
+                hint={`PPV sales ÷ fans who unlocked for ${periodLabel}`}
+              />
+              <MetricCard
+                label="Sales per Message"
+                value={formatCurrencyAmounts(overview?.salesPerMessage)}
+                hint={`Period sales ÷ messages for ${periodLabel}`}
+              />
+              <MetricCard
+                label="p50 Response"
+                value={formatResponseTime(overview?.p50ResponseSeconds ?? null)}
+                hint={`Median response time for ${periodLabel}`}
+              />
+              <MetricCard
+                label="p90 Response"
+                value={formatResponseTime(overview?.p90ResponseSeconds ?? null)}
+                hint={`90th percentile response time for ${periodLabel}`}
+              />
+              <MetricCard
+                label="Idle %"
+                value={formatPercent(overview?.idlePercent)}
+                hint={`Idle ÷ (active + idle) for ${periodLabel}`}
+              />
+              <MetricCard
+                label="Free Media"
+                value={formatCount(overview?.freeMediaSent)}
+                hint={`Free media sends in ${periodLabel}`}
+              />
+              <MetricCard
+                label="Photo / Video PPVs"
+                value={`${formatCount(overview?.photoPpvs)} / ${formatCount(overview?.videoPpvs)}`}
+                hint={`Photo-only vs video PPVs sent in ${periodLabel}`}
               />
               {showTeamWidgets ? (
                 <MetricCard label="Online Chatters" value={String(onlineCount)} />
@@ -541,7 +661,7 @@ export default function Dashboard() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div className={showTeamWidgets ? 'lg:col-span-2' : 'lg:col-span-3'}>
                 <h3 className="text-sm font-medium mb-4">
-                  Daily Sales ({periodDaysLabel(chartDays)})
+                  Daily Sales ({periodLabel})
                 </h3>
                 {overview?.dailySalesByDay?.length ? (
                   <DailySalesBars days={overview.dailySalesByDay} />
@@ -580,6 +700,91 @@ export default function Dashboard() {
                 </div>
               ) : null}
             </div>
+
+            {showTeamWidgets ? (
+              <div>
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-medium mb-1">Creators</h3>
+                    <p className="text-xs text-gray-400">
+                      Period performance by creator
+                    </p>
+                  </div>
+                  <Link
+                    to="/dashboard/creator-analytics"
+                    className="text-xs text-gray-600 dark:text-gray-300 underline-offset-2 hover:underline"
+                  >
+                    Open creator analytics
+                  </Link>
+                </div>
+                <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-gray-50 dark:bg-white/[0.02] text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                        <tr>
+                          <th className="px-4 py-3 font-medium">Creator</th>
+                          <th className="px-4 py-3 font-medium">Sales</th>
+                          <th className="px-4 py-3 font-medium">Messages</th>
+                          <th className="px-4 py-3 font-medium">PPVs</th>
+                          <th className="px-4 py-3 font-medium">Fans</th>
+                          <th className="px-4 py-3 font-medium">Conv.</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(overview?.creators || []).length === 0 ? (
+                          <tr>
+                            <td
+                              colSpan={6}
+                              className="px-4 py-10 text-center text-gray-400"
+                            >
+                              No creator data for this period
+                            </td>
+                          </tr>
+                        ) : (
+                          (overview?.creators || [])
+                            .slice()
+                            .sort(
+                              (a: OverviewCreatorStats, b: OverviewCreatorStats) =>
+                                dayTotal(b.totalSales) - dayTotal(a.totalSales)
+                            )
+                            .slice(0, 10)
+                            .map((creator) => (
+                              <tr
+                                key={creator.creatorId}
+                                className="border-t border-gray-100 dark:border-white/5"
+                              >
+                                <td className="px-4 py-3 font-medium whitespace-nowrap">
+                                  <Link
+                                    to={`/dashboard/creator-analytics?creatorId=${creator.creatorId}`}
+                                    className="hover:underline"
+                                  >
+                                    {creator.creatorName}
+                                  </Link>
+                                </td>
+                                <td className="px-4 py-3 whitespace-nowrap">
+                                  {formatCurrencyAmounts(creator.totalSales)}
+                                </td>
+                                <td className="px-4 py-3 whitespace-nowrap">
+                                  {formatCount(creator.messagesSent)}
+                                </td>
+                                <td className="px-4 py-3 whitespace-nowrap">
+                                  {formatCount(creator.ppvsSent)}
+                                </td>
+                                <td className="px-4 py-3 whitespace-nowrap">
+                                  {formatCount(creator.uniqueFansMessaged)}
+                                </td>
+                                <td className="px-4 py-3 whitespace-nowrap">
+                                  {formatPercent(creator.ppvConversionRate)}
+                                </td>
+                              </tr>
+                            ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             <div>
               <h3 className="text-sm font-medium mb-1">Leaderboard</h3>
@@ -620,7 +825,7 @@ export default function Dashboard() {
 
             <div>
               <h3 className="text-sm font-medium mb-4">
-                Day Activity Time ({periodDaysLabel(chartDays)})
+                Day Activity Time ({periodLabel})
               </h3>
               <p className="text-xs text-gray-400 mb-3">
                 {isTeamScope ? 'Team' : 'Your'} active (dark) and idle (amber) time from
@@ -658,7 +863,13 @@ export default function Dashboard() {
                           <th className="px-4 py-3 font-medium">Idle Today</th>
                           <th className="px-4 py-3 font-medium">Keys Today</th>
                           <th className="px-4 py-3 font-medium">
-                            Active ({chartDays}d)
+                            Active (
+                            {presetDays != null
+                              ? `${presetDays}d`
+                              : history?.days
+                                ? `${history.days}d`
+                                : 'period'}
+                            )
                           </th>
                         </tr>
                       </thead>

@@ -816,8 +816,59 @@ export interface OverviewChatterStats {
   goldenRatio?: number;
   ppvConversionRate?: number;
   activeSecondsTotal?: number;
+  idleSecondsTotal?: number;
+  idlePercent?: number;
   revenuePerHour?: CurrencyAmount[];
   messagesPerHour?: number;
+  tipSales?: CurrencyAmount[];
+  ppvSales?: CurrencyAmount[];
+  periodSales?: CurrencyAmount[];
+  salesPerMessage?: CurrencyAmount[];
+  uniqueFansMessaged?: number;
+  fansWhoUnlocked?: number;
+  pendingPpvs?: number;
+  p50ResponseSeconds?: number | null;
+  p90ResponseSeconds?: number | null;
+  avgPpvPrice?: number | null;
+  medianPpvPrice?: number | null;
+}
+
+export interface OverviewPriceBand {
+  band: string;
+  label: string;
+  sent: number;
+  unlocked: number;
+  unlockRate: number;
+}
+
+export interface OverviewHourOfDay {
+  hour: number;
+  messagesSent: number;
+  salesCount: number;
+  salesAmount: number;
+}
+
+export interface OverviewCreatorStats {
+  creatorId: string;
+  creatorName: string;
+  creatorUsername?: string | null;
+  creatorAvatarUrl?: string | null;
+  platform?: 'maloum' | '4based' | null;
+  messagesSent: number;
+  ppvsSent: number;
+  ppvsUnlocked: number;
+  pendingPpvs?: number;
+  uniqueFansMessaged?: number;
+  fansWhoUnlocked?: number;
+  goldenRatio?: number;
+  ppvConversionRate?: number;
+  totalSales: CurrencyAmount[];
+  tipSales?: CurrencyAmount[];
+  ppvSales?: CurrencyAmount[];
+  revenuePerFan?: CurrencyAmount[];
+  salesPerMessage?: CurrencyAmount[];
+  avgPpvPrice?: number | null;
+  medianPpvPrice?: number | null;
 }
 
 export interface OverviewDailySalesDay {
@@ -828,19 +879,40 @@ export interface OverviewDailySalesDay {
 export interface OverviewAnalyticsResponse {
   scope?: 'team' | 'self';
   chartDays?: number;
+  period?: { startDate: string; endDate: string };
   dailySales: CurrencyAmount[];
   totalSales: CurrencyAmount[];
   totalRevenue?: CurrencyAmount[];
   monthlyRevenue?: CurrencyAmount[];
+  tipSales?: CurrencyAmount[];
+  ppvSales?: CurrencyAmount[];
   totalMessagesSent?: number;
   ppvsSent?: number;
   ppvsUnlocked?: number;
+  pendingPpvs?: number;
+  freeMediaSent?: number;
+  photoPpvs?: number;
+  videoPpvs?: number;
+  uniqueFansMessaged?: number;
+  fansWhoUnlocked?: number;
   goldenRatio?: number;
   ppvConversionRate?: number;
+  avgPpvPrice?: number | null;
+  medianPpvPrice?: number | null;
+  revenuePerFan?: CurrencyAmount[];
+  salesPerMessage?: CurrencyAmount[];
+  p50ResponseSeconds?: number | null;
+  p90ResponseSeconds?: number | null;
   keystrokesTotal?: number;
   activeSecondsTotal?: number;
+  idleSecondsTotal?: number;
+  idlePercent?: number;
   revenuePerHour?: CurrencyAmount[];
   messagesPerHour?: number;
+  unlockRateByPriceBand?: OverviewPriceBand[];
+  hourOfDay?: OverviewHourOfDay[];
+  salesByPlatform?: { platform: string; amounts: CurrencyAmount[] }[];
+  creators?: OverviewCreatorStats[];
   activityMetricsCutover?: string;
   avgResponseTimeSeconds: number | null;
   dailySalesByDay: OverviewDailySalesDay[];
@@ -970,10 +1042,18 @@ export interface ActivityHistoryResponse {
 }
 
 export async function getActivityHistory(
-  days = 14
+  daysOrOptions: number | { days?: number; startDate?: string; endDate?: string } = 14
 ): Promise<ActivityHistoryResponse> {
   const params = new URLSearchParams();
-  params.set('days', String(days));
+  if (typeof daysOrOptions === 'number') {
+    params.set('days', String(daysOrOptions));
+  } else {
+    if (daysOrOptions.startDate) params.set('startDate', daysOrOptions.startDate);
+    if (daysOrOptions.endDate) params.set('endDate', daysOrOptions.endDate);
+    if (daysOrOptions.days != null && !daysOrOptions.startDate) {
+      params.set('days', String(daysOrOptions.days));
+    }
+  }
   return request<ActivityHistoryResponse>(`/api/activity/history?${params.toString()}`);
 }
 
@@ -982,11 +1062,19 @@ export interface AnalyticsSeriesDay {
   messagesSent: number;
   ppvsSent: number;
   ppvsUnlocked: number;
+  pendingPpvs?: number;
+  freeMediaSent?: number;
+  uniqueFansMessaged?: number;
   goldenRatio: number;
   ppvConversionRate: number;
   revenue: CurrencyAmount[];
+  tipRevenue?: CurrencyAmount[];
+  ppvRevenue?: CurrencyAmount[];
+  salesPerMessage?: CurrencyAmount[];
+  salesPerMessageValue?: number;
   activeSeconds: number;
   idleSeconds: number;
+  idlePercent?: number;
   keystrokes: number;
 }
 
@@ -1007,12 +1095,133 @@ export interface AnalyticsSeriesResponse {
 }
 
 export async function getAnalyticsSeries(
-  days = 7
+  daysOrOptions: number | { days?: number; startDate?: string; endDate?: string } = 7
 ): Promise<AnalyticsSeriesResponse> {
   const params = new URLSearchParams();
-  params.set('days', String(days));
+  if (typeof daysOrOptions === 'number') {
+    params.set('days', String(daysOrOptions));
+  } else {
+    if (daysOrOptions.startDate) params.set('startDate', daysOrOptions.startDate);
+    if (daysOrOptions.endDate) params.set('endDate', daysOrOptions.endDate);
+    if (daysOrOptions.days != null && !daysOrOptions.startDate) {
+      params.set('days', String(daysOrOptions.days));
+    }
+  }
   return request<AnalyticsSeriesResponse>(
     `/api/messaging-dashboard/series?${params.toString()}`
+  );
+}
+
+export interface CreatorSalesByChatter {
+  chatterId: string;
+  chatterName: string;
+  amounts: CurrencyAmount[];
+}
+
+export interface CreatorOverviewSummary {
+  messagesSent: number;
+  ppvsSent: number;
+  ppvsUnlocked: number;
+  pendingPpvs: number;
+  freeMediaSent: number;
+  photoPpvs: number;
+  videoPpvs: number;
+  uniqueFansMessaged: number;
+  fansWhoUnlocked: number;
+  goldenRatio: number;
+  ppvConversionRate: number;
+  avgPpvPrice: number | null;
+  medianPpvPrice: number | null;
+  p50ResponseSeconds: number | null;
+  p90ResponseSeconds: number | null;
+  totalSales: CurrencyAmount[];
+  tipSales: CurrencyAmount[];
+  ppvSales: CurrencyAmount[];
+  revenuePerFan: CurrencyAmount[];
+  salesPerMessage: CurrencyAmount[];
+  unlockRateByPriceBand: OverviewPriceBand[];
+  hourOfDay: OverviewHourOfDay[];
+  dailySalesByDay: OverviewDailySalesDay[];
+  topFans: { fanId: string; fanUsername: string | null; amounts: CurrencyAmount[] }[];
+  salesByChatter: CreatorSalesByChatter[];
+  salesByPlatform: { platform: string; amounts: CurrencyAmount[] }[];
+}
+
+export interface CreatorOverviewCreator extends OverviewCreatorStats {
+  salesByChatter?: CreatorSalesByChatter[];
+  salesByPlatform?: { platform: string; amounts: CurrencyAmount[] }[];
+}
+
+export interface CreatorOverviewResponse {
+  scope: 'team' | 'self';
+  period: { startDate: string; endDate: string };
+  chartDays: number;
+  creatorId: string | null;
+  summary: CreatorOverviewSummary;
+  creators: CreatorOverviewCreator[];
+  selected: CreatorOverviewCreator | null;
+  lastUpdated: string;
+}
+
+export async function getCreatorOverview(filters: {
+  startDate?: string;
+  endDate?: string;
+  days?: number;
+  creatorId?: string;
+} = {}): Promise<CreatorOverviewResponse> {
+  const params = new URLSearchParams();
+  if (filters.startDate) params.set('startDate', filters.startDate);
+  if (filters.endDate) params.set('endDate', filters.endDate);
+  if (filters.days != null) params.set('days', String(filters.days));
+  if (filters.creatorId) params.set('creatorId', filters.creatorId);
+  const query = params.toString();
+  return request<CreatorOverviewResponse>(
+    query
+      ? `/api/messaging-dashboard/creator-overview?${query}`
+      : '/api/messaging-dashboard/creator-overview'
+  );
+}
+
+export interface CreatorSeriesDay {
+  date: string;
+  messagesSent: number;
+  ppvsSent: number;
+  ppvsUnlocked: number;
+  pendingPpvs: number;
+  freeMediaSent: number;
+  uniqueFansMessaged: number;
+  goldenRatio: number;
+  ppvConversionRate: number;
+  revenue: CurrencyAmount[];
+  tipRevenue: CurrencyAmount[];
+  ppvRevenue: CurrencyAmount[];
+}
+
+export interface CreatorSeriesResponse {
+  scope: 'team' | 'self';
+  days: number;
+  startDate: string;
+  endDate: string;
+  creatorId: string | null;
+  series: CreatorSeriesDay[];
+  lastUpdated: string;
+}
+
+export async function getCreatorSeries(filters: {
+  startDate?: string;
+  endDate?: string;
+  days?: number;
+  creatorId?: string;
+} = {}): Promise<CreatorSeriesResponse> {
+  const params = new URLSearchParams();
+  if (filters.startDate) params.set('startDate', filters.startDate);
+  if (filters.endDate) params.set('endDate', filters.endDate);
+  if (filters.days != null && !filters.startDate) {
+    params.set('days', String(filters.days));
+  }
+  if (filters.creatorId) params.set('creatorId', filters.creatorId);
+  return request<CreatorSeriesResponse>(
+    `/api/messaging-dashboard/creator-series?${params.toString()}`
   );
 }
 
@@ -1023,7 +1232,7 @@ export async function getMessagingDashboard(filters: {
   creatorId?: string;
   platform?: 'maloum' | '4based';
   purchased?: boolean;
-  contentType?: 'chat_product';
+  contentType?: 'chat_product' | 'tip';
   page?: number;
   limit?: number;
 } = {}): Promise<MessagingDashboardResponse> {

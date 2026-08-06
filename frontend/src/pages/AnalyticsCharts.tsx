@@ -3,7 +3,8 @@ import { Navigate, Link } from 'react-router-dom';
 import { Info, RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import PeriodDaysToggle, {
-  periodDaysLabel,
+  formatPeriodRangeLabel,
+  rangeFromPresetDays,
   type ChartPeriodDays,
 } from '@/components/PeriodDaysToggle';
 import { useAuth } from '@/context/AuthContext';
@@ -414,26 +415,36 @@ function MetricLineChart({
 
 export default function AnalyticsCharts() {
   const { user, hasPermission } = useAuth();
-  const canView =
-    hasPermission('analytics.view') || hasPermission('analytics.self');
   const isTeamScope = user?.role === 'owner' || user?.role === 'manager';
   const canViewMessaging = hasPermission('analytics.view');
 
   const [data, setData] = useState<AnalyticsSeriesResponse | null>(null);
-  const [chartDays, setChartDays] = useState<ChartPeriodDays>(7);
+  const defaultRange = useMemo(() => rangeFromPresetDays(7), []);
+  const [presetDays, setPresetDays] = useState<ChartPeriodDays | null>(7);
+  const [startDate, setStartDate] = useState(defaultRange.startDate);
+  const [endDate, setEndDate] = useState(defaultRange.endDate);
   const [staffFilter, setStaffFilter] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const periodLabel = useMemo(
+    () => formatPeriodRangeLabel(startDate, endDate),
+    [startDate, endDate]
+  );
+
   const load = useCallback(
     async (options: { silent?: boolean } = {}) => {
-      if (!canView) return;
+      if (!isTeamScope) return;
       if (!options.silent) setLoading(true);
       else setRefreshing(true);
       setError(null);
       try {
-        const result = await getAnalyticsSeries(chartDays);
+        const result = await getAnalyticsSeries(
+          presetDays != null
+            ? { days: presetDays }
+            : { startDate, endDate }
+        );
         setData(result);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load charts');
@@ -442,12 +453,29 @@ export default function AnalyticsCharts() {
         setRefreshing(false);
       }
     },
-    [canView, chartDays]
+    [isTeamScope, presetDays, startDate, endDate]
   );
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const handlePresetChange = (days: ChartPeriodDays) => {
+    const range = rangeFromPresetDays(days);
+    setPresetDays(days);
+    setStartDate(range.startDate);
+    setEndDate(range.endDate);
+  };
+
+  const handleStartDateChange = (value: string) => {
+    setPresetDays(null);
+    setStartDate(value);
+  };
+
+  const handleEndDateChange = (value: string) => {
+    setPresetDays(null);
+    setEndDate(value);
+  };
 
   const byStaff = data?.byStaff || [];
 
@@ -472,7 +500,7 @@ export default function AnalyticsCharts() {
     return <Navigate to="/login" replace />;
   }
 
-  if (!canView) {
+  if (!isTeamScope) {
     return <Navigate to="/dashboard" replace />;
   }
 
@@ -481,11 +509,9 @@ export default function AnalyticsCharts() {
       <div className="max-w-5xl mx-auto">
         <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h2 className="text-2xl font-semibold mb-1">
-              {isTeamScope ? 'Team Charts' : 'Your Charts'}
-            </h2>
+            <h2 className="text-2xl font-semibold mb-1">Team Charts</h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              Last {periodDaysLabel(chartDays)} (Asia/Manila)
+              {periodLabel} (Asia/Manila)
               {canViewMessaging ? (
                 <>
                   {' · '}
@@ -501,10 +527,32 @@ export default function AnalyticsCharts() {
           </div>
           <div className="flex flex-col items-start gap-2 sm:items-end">
             <PeriodDaysToggle
-              value={chartDays}
-              onChange={setChartDays}
+              value={presetDays}
+              onChange={handlePresetChange}
               disabled={loading || refreshing}
             />
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                From
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => handleStartDateChange(e.target.value)}
+                  disabled={loading || refreshing}
+                  className="rounded-md border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-2 py-1.5 text-sm text-gray-700 dark:text-gray-200 disabled:opacity-50"
+                />
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                To
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => handleEndDateChange(e.target.value)}
+                  disabled={loading || refreshing}
+                  className="rounded-md border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-2 py-1.5 text-sm text-gray-700 dark:text-gray-200 disabled:opacity-50"
+                />
+              </label>
+            </div>
             {isTeamScope ? (
               <select
                 value={staffFilter}
@@ -672,6 +720,115 @@ export default function AnalyticsCharts() {
                 }
                 colorClass="stroke-emerald-500"
                 fillClass="fill-emerald-500"
+              />
+            </ChartCard>
+
+            <ChartCard title="Tip revenue" hint="Revenue from tip entries">
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
+                getValue={(d) =>
+                  (d.tipRevenue || []).reduce(
+                    (sum, r) => sum + (Number(r.amount) || 0),
+                    0
+                  )
+                }
+                formatSingle={(d, v) =>
+                  `${dayLabel(d.date)} | Tips: ${formatCurrencyAmounts(d.tipRevenue)} (${v.toFixed(2)})`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | Tips: ${v.toFixed(2)}`
+                }
+                colorClass="stroke-amber-500"
+                fillClass="fill-amber-500"
+              />
+            </ChartCard>
+
+            <ChartCard title="Unique fans messaged">
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
+                getValue={(d) => d.uniqueFansMessaged || 0}
+                formatSingle={(d, v) =>
+                  `${dayLabel(d.date)} | Unique fans: ${Math.round(v)}`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | Unique fans: ${Math.round(v)}`
+                }
+                colorClass="stroke-indigo-500"
+                fillClass="fill-indigo-500"
+              />
+            </ChartCard>
+
+            <ChartCard title="Pending PPVs" hint="Sent PPVs not yet unlocked">
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
+                getValue={(d) => d.pendingPpvs || 0}
+                formatSingle={(d, v) =>
+                  `${dayLabel(d.date)} | Pending: ${Math.round(v)}`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | Pending: ${Math.round(v)}`
+                }
+                colorClass="stroke-rose-400"
+                fillClass="fill-rose-400"
+              />
+            </ChartCard>
+
+            <ChartCard title="Sales per message">
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
+                getValue={(d) => d.salesPerMessageValue || 0}
+                formatSingle={(d, v) =>
+                  `${dayLabel(d.date)} | ${v.toFixed(2)} per message`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | ${v.toFixed(2)} / msg`
+                }
+                colorClass="stroke-lime-500"
+                fillClass="fill-lime-500"
+              />
+            </ChartCard>
+
+            <ChartCard title="Idle %" hint="Idle ÷ (active + idle)">
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
+                getValue={(d) => d.idlePercent || 0}
+                formatSingle={(d, v) =>
+                  `${dayLabel(d.date)} | Idle: ${v.toFixed(1)}%`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | Idle: ${v.toFixed(1)}%`
+                }
+                yMax={100}
+                yTickFormat={(v) => `${v}%`}
+                colorClass="stroke-amber-400"
+                fillClass="fill-amber-400"
+              />
+            </ChartCard>
+
+            <ChartCard title="Free media sent">
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
+                getValue={(d) => d.freeMediaSent || 0}
+                formatSingle={(d, v) =>
+                  `${dayLabel(d.date)} | Free media: ${Math.round(v)}`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | Free media: ${Math.round(v)}`
+                }
+                colorClass="stroke-cyan-500"
+                fillClass="fill-cyan-500"
               />
             </ChartCard>
           </div>

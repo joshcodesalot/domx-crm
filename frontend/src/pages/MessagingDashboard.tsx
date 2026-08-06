@@ -44,6 +44,21 @@ function purchasedBadgeClass(purchased: boolean): string {
     : 'bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400';
 }
 
+function formatContentTypeLabel(contentType: string): string {
+  switch (contentType) {
+    case 'chat_product':
+      return 'PPV';
+    case 'tip':
+      return 'Tip';
+    case 'media':
+      return 'Media';
+    case 'text':
+      return 'Text';
+    default:
+      return contentType || '--';
+  }
+}
+
 function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
   const sentTime = formatSentTime(entry.sentAt);
   const mediaLabel = formatMediaLabel(entry);
@@ -83,6 +98,11 @@ function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
             ) : null}
           </div>
         </div>
+      </td>
+      <td className="px-4 py-3 align-top whitespace-nowrap">
+        <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 dark:bg-white/10 dark:text-gray-300">
+          {formatContentTypeLabel(entry.contentType)}
+        </span>
       </td>
       <td className="px-4 py-3 align-top max-w-[220px]">
         <div className="line-clamp-2" title={entry.englishMessage || undefined}>
@@ -193,7 +213,10 @@ export default function MessagingDashboard() {
             platform === 'maloum' || platform === '4based' ? platform : undefined,
           purchased:
             purchased === 'true' ? true : purchased === 'false' ? false : undefined,
-          contentType: contentType === 'chat_product' ? 'chat_product' : undefined,
+          contentType:
+            contentType === 'chat_product' || contentType === 'tip'
+              ? contentType
+              : undefined,
           page,
           limit,
         });
@@ -382,6 +405,7 @@ export default function MessagingDashboard() {
               >
                 <option value="">All</option>
                 <option value="chat_product">PPV only</option>
+                <option value="tip">Tips only</option>
               </select>
             </label>
 
@@ -472,6 +496,7 @@ export default function MessagingDashboard() {
                 <th className="px-4 py-3 text-left font-medium">Sender</th>
                 <th className="px-4 py-3 text-left font-medium">Chatter Sales</th>
                 <th className="px-4 py-3 text-left font-medium">Creator</th>
+                <th className="px-4 py-3 text-left font-medium">Type</th>
                 <th className="px-4 py-3 text-left font-medium">English Message</th>
                 <th className="px-4 py-3 text-left font-medium">German Translated Message</th>
                 <th className="px-4 py-3 text-left font-medium">Response Time</th>
@@ -485,13 +510,13 @@ export default function MessagingDashboard() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-12 text-center text-gray-500 dark:text-gray-400">
+                  <td colSpan={12} className="px-4 py-12 text-center text-gray-500 dark:text-gray-400">
                     Loading messaging dashboard...
                   </td>
                 </tr>
               ) : entries.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-12 text-center text-gray-500 dark:text-gray-400">
+                  <td colSpan={12} className="px-4 py-12 text-center text-gray-500 dark:text-gray-400">
                     No messages found for the selected filters.
                   </td>
                 </tr>

@@ -22,8 +22,20 @@ const {
   BUSINESS_TZ,
   calendarDateString,
   monthStartDateString,
-  buildDateRange,
+  resolveAnalyticsPeriod,
 } = require('../services/businessTimezone');
+const {
+  EXTENDED_MESSAGE_STATS_SELECT,
+  SERIES_MESSAGE_SELECT,
+  parseExtendedMessageStats,
+  salesPerMessage,
+  revenuePerFan,
+  idlePercent,
+  buildPriceBandsFromRows,
+  buildHourOfDayFromRows,
+  normalizeCurrency,
+  ratePercent: helperRatePercent,
+} = require('../services/messagingAnalyticsHelpers');
 
 const { requireElectronServiceKey } = require('../middleware/electronServiceKey');
 
@@ -31,19 +43,8 @@ const { requireElectronServiceKey } = require('../middleware/electronServiceKey'
 const ACTIVITY_METRICS_CUTOVER =
   process.env.ACTIVITY_METRICS_CUTOVER || '2026-08-04';
 
-const CHART_PERIOD_DAYS = new Set([1, 3, 5, 7]);
-
-function parseChartDays(value, fallback = 7) {
-  const n = Number.parseInt(String(value ?? fallback), 10);
-  if (CHART_PERIOD_DAYS.has(n)) return n;
-  return fallback;
-}
-
 function ratePercent(numerator, denominator) {
-  const n = Number(numerator) || 0;
-  const d = Number(denominator) || 0;
-  if (d <= 0) return 0;
-  return Math.round((n / d) * 10000) / 100;
+  return helperRatePercent(numerator, denominator);
 }
 
 function perHourRate(value, activeSeconds) {
@@ -1293,40 +1294,24 @@ router.get(
   async (req, res) => {
     try {
       const scope = getAnalyticsScope(req.user);
-      const { startDate, endDate } = req.query;
-      const chartDays = parseChartDays(req.query.days, 7);
-
-      let responseStart = null;
-      let responseEnd = null;
-
-      if (startDate) {
-        const dateValue = String(startDate);
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
-          return res.status(400).json({ error: 'Invalid startDate' });
-        }
-        responseStart = dateValue;
-      }
-
-      if (endDate) {
-        const dateValue = String(endDate);
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
-          return res.status(400).json({ error: 'Invalid endDate' });
-        }
-        responseEnd = dateValue;
-      }
-
-      // Default avg response window: last 30 days (Asia/Manila dates)
-      if (!responseStart || !responseEnd) {
-        const range = buildDateRange(31);
-        responseEnd = responseEnd || calendarDateString();
-        responseStart = responseStart || range[0];
-      }
+      const period = resolveAnalyticsPeriod({
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+        days: req.query.days,
+      });
+      const periodStart = period.startDate;
+      const periodEnd = period.endDate;
+      const chartDays = period.days;
 
       const chatterClause =
         scope.mode === 'self' ? ' AND "chatterId" = ANY($1::uuid[])' : '';
       const mChatterClause =
         scope.mode === 'self' ? ' AND m."chatterId" = ANY($1::uuid[])' : '';
       const selfParams = scope.mode === 'self' ? [scope.userIds] : [];
+      const periodSelfParams =
+        scope.mode === 'self'
+          ? [scope.userIds, periodStart, periodEnd]
+          : [periodStart, periodEnd];
 
       const staffListQuery =
         scope.mode === 'team'
@@ -1362,6 +1347,14 @@ router.get(
         chatterNamesResult,
         keystrokesResult,
         chatterActiveResult,
+        tipPpvSalesResult,
+        priceBandResult,
+        hourOfDayResult,
+        salesByPlatformResult,
+        creatorStatsResult,
+        creatorSalesResult,
+        chatterPeriodStatsResult,
+        chatterPeriodSalesResult,
       ] = await Promise.all([
         pool.query(
           `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
@@ -1374,16 +1367,31 @@ router.get(
            GROUP BY 1`,
           selfParams
         ),
-        pool.query(
-          `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
-           FROM messaging_dashboard_entries
-           WHERE purchased = true
-             AND "priceNet" IS NOT NULL
-             ${chatterClause}
-           GROUP BY 1`,
-          selfParams
-        ),
+        // Period sales (Period Sales card / totalRevenue)
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries
+               WHERE purchased = true
+                 AND "priceNet" IS NOT NULL
+                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND "chatterId" = ANY($1::uuid[])
+               GROUP BY 1`,
+              [scope.userIds, periodStart, periodEnd]
+            )
+          : pool.query(
+              `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries
+               WHERE purchased = true
+                 AND "priceNet" IS NOT NULL
+                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               GROUP BY 1`,
+              [periodStart, periodEnd]
+            ),
         pool.query(
           `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
                   COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
@@ -1409,18 +1417,12 @@ router.get(
                WHERE "responseTimeSeconds" IS NOT NULL
                  AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
                  AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date`,
-          scope.mode === 'self'
-            ? [scope.userIds, responseStart, responseEnd]
-            : [responseStart, responseEnd]
+          periodSelfParams
         ),
         pool.query(
           scope.mode === 'self'
             ? `WITH days AS (
-                 SELECT generate_series(
-                   ((NOW() AT TIME ZONE '${BUSINESS_TZ}')::date - $2::int),
-                   (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date,
-                   '1 day'::interval
-                 )::date AS day
+                 SELECT generate_series($2::date, $3::date, '1 day'::interval)::date AS day
                )
                SELECT d.day::text AS date,
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
@@ -1434,11 +1436,7 @@ router.get(
                GROUP BY d.day, 2
                ORDER BY d.day ASC`
             : `WITH days AS (
-                 SELECT generate_series(
-                   ((NOW() AT TIME ZONE '${BUSINESS_TZ}')::date - $1::int),
-                   (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date,
-                   '1 day'::interval
-                 )::date AS day
+                 SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS day
                )
                SELECT d.day::text AS date,
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
@@ -1450,24 +1448,26 @@ router.get(
                 AND m."priceNet" IS NOT NULL
                GROUP BY d.day, 2
                ORDER BY d.day ASC`,
-          scope.mode === 'self'
-            ? [scope.userIds, chartDays - 1]
-            : [chartDays - 1]
+          periodSelfParams
         ),
-        pool.query(
-          `SELECT
-             COUNT(*) FILTER (
-               WHERE "contentType" IN ('text', 'media', 'chat_product')
-             )::int AS "messagesSent",
-             COUNT(*) FILTER (WHERE "contentType" = 'chat_product')::int AS "ppvsSent",
-             COUNT(*) FILTER (
-               WHERE "contentType" = 'chat_product' AND purchased = true
-             )::int AS "ppvsUnlocked"
-           FROM messaging_dashboard_entries
-           WHERE TRUE ${chatterClause}`,
-          selfParams
-        ),
-        // Cutover revenue for per-hour rates only
+        // Period message / PPV counts + extended metrics
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT ${EXTENDED_MESSAGE_STATS_SELECT}
+               FROM messaging_dashboard_entries m
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND m."chatterId" = ANY($1::uuid[])`,
+              [scope.userIds, periodStart, periodEnd]
+            )
+          : pool.query(
+              `SELECT ${EXTENDED_MESSAGE_STATS_SELECT}
+               FROM messaging_dashboard_entries m
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date`,
+              [periodStart, periodEnd]
+            ),
+        // Period revenue for per-hour rates (team cards)
         scope.mode === 'self'
           ? pool.query(
               `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
@@ -1476,9 +1476,10 @@ router.get(
                WHERE purchased = true
                  AND "priceNet" IS NOT NULL
                  AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
                  AND "chatterId" = ANY($1::uuid[])
                GROUP BY 1`,
-              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
+              [scope.userIds, periodStart, periodEnd]
             )
           : pool.query(
               `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
@@ -1487,8 +1488,9 @@ router.get(
                WHERE purchased = true
                  AND "priceNet" IS NOT NULL
                  AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
                GROUP BY 1`,
-              [ACTIVITY_METRICS_CUTOVER]
+              [periodStart, periodEnd]
             ),
         scope.mode === 'self'
           ? pool.query(
@@ -1496,15 +1498,17 @@ router.get(
                FROM messaging_dashboard_entries
                WHERE "contentType" IN ('text', 'media', 'chat_product')
                  AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
                  AND "chatterId" = ANY($1::uuid[])`,
-              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
+              [scope.userIds, periodStart, periodEnd]
             )
           : pool.query(
               `SELECT COUNT(*)::int AS "messagesSent"
                FROM messaging_dashboard_entries
                WHERE "contentType" IN ('text', 'media', 'chat_product')
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date`,
-              [ACTIVITY_METRICS_CUTOVER]
+                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date`,
+              [periodStart, periodEnd]
             ),
         pool.query(
           scope.mode === 'self'
@@ -1523,10 +1527,9 @@ router.get(
                  AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
                GROUP BY m."chatterId"`,
-          scope.mode === 'self'
-            ? [scope.userIds, responseStart, responseEnd]
-            : [responseStart, responseEnd]
+          periodSelfParams
         ),
+        // Staff Performance sales: today / all-time / month (unchanged)
         pool.query(
           `SELECT m."chatterId",
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
@@ -1549,6 +1552,7 @@ router.get(
            GROUP BY m."chatterId", 2`,
           selfParams
         ),
+        // Staff Performance message/PPV: all-time (unchanged)
         pool.query(
           `SELECT m."chatterId",
                   COUNT(*) FILTER (
@@ -1563,6 +1567,7 @@ router.get(
            GROUP BY m."chatterId"`,
           selfParams
         ),
+        // Staff Performance /hr: still since activity cutover
         scope.mode === 'self'
           ? pool.query(
               `SELECT m."chatterId",
@@ -1608,28 +1613,35 @@ router.get(
               [ACTIVITY_METRICS_CUTOVER]
             ),
         staffListQuery,
+        // Period keystrokes / active / idle for team cards
         scope.mode === 'self'
           ? pool.query(
               `SELECT COALESCE(SUM(keystrokes), 0)::int AS keystrokes,
-                      COALESCE(SUM("activeSeconds"), 0)::int AS "activeSeconds"
+                      COALESCE(SUM("activeSeconds"), 0)::int AS "activeSeconds",
+                      COALESCE(SUM("idleSeconds"), 0)::int AS "idleSeconds"
                FROM user_activity_daily
                WHERE "userId" = ANY($1::uuid[])
-                 AND day >= $2::date`,
-              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
+                 AND day >= $2::date
+                 AND day <= $3::date`,
+              [scope.userIds, periodStart, periodEnd]
             )
           : pool.query(
               `SELECT COALESCE(SUM(d.keystrokes), 0)::int AS keystrokes,
-                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds"
+                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds",
+                      COALESCE(SUM(d."idleSeconds"), 0)::int AS "idleSeconds"
                FROM user_activity_daily d
                JOIN users u ON u.id = d."userId"
                WHERE u.role = ANY($1::text[])
-                 AND d.day >= $2::date`,
-              [TRACKED_STAFF_ROLES, ACTIVITY_METRICS_CUTOVER]
+                 AND d.day >= $2::date
+                 AND d.day <= $3::date`,
+              [TRACKED_STAFF_ROLES, periodStart, periodEnd]
             ),
+        // Staff Performance /hr active seconds: since cutover
         scope.mode === 'self'
           ? pool.query(
               `SELECT d."userId" AS "chatterId",
-                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds"
+                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds",
+                      COALESCE(SUM(d."idleSeconds"), 0)::int AS "idleSeconds"
                FROM user_activity_daily d
                WHERE d."userId" = ANY($1::uuid[])
                  AND d.day >= $2::date
@@ -1638,7 +1650,8 @@ router.get(
             )
           : pool.query(
               `SELECT d."userId" AS "chatterId",
-                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds"
+                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds",
+                      COALESCE(SUM(d."idleSeconds"), 0)::int AS "idleSeconds"
                FROM user_activity_daily d
                JOIN users u ON u.id = d."userId"
                WHERE u.role = ANY($1::text[])
@@ -1646,32 +1659,440 @@ router.get(
                GROUP BY d."userId"`,
               [TRACKED_STAFF_ROLES, ACTIVITY_METRICS_CUTOVER]
             ),
+        // Tip vs PPV sales (period)
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT
+                  CASE
+                    WHEN m."contentType" = 'tip' THEN 'tip'
+                    WHEN m."contentType" = 'chat_product' AND m.purchased = true THEN 'ppv'
+                    ELSE NULL
+                  END AS kind,
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries m
+               WHERE m."priceNet" IS NOT NULL
+                 AND (
+                   m."contentType" = 'tip'
+                   OR (m."contentType" = 'chat_product' AND m.purchased = true)
+                 )
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY 1, 2`,
+              [scope.userIds, periodStart, periodEnd]
+            )
+          : pool.query(
+              `SELECT
+                  CASE
+                    WHEN m."contentType" = 'tip' THEN 'tip'
+                    WHEN m."contentType" = 'chat_product' AND m.purchased = true THEN 'ppv'
+                    ELSE NULL
+                  END AS kind,
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries m
+               WHERE m."priceNet" IS NOT NULL
+                 AND (
+                   m."contentType" = 'tip'
+                   OR (m."contentType" = 'chat_product' AND m.purchased = true)
+                 )
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               GROUP BY 1, 2`,
+              [periodStart, periodEnd]
+            ),
+        // Unlock rate by price band
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT
+                  CASE
+                    WHEN ABS(m."priceNet") < 10 THEN 'under_10'
+                    WHEN ABS(m."priceNet") < 30 THEN '10_to_30'
+                    ELSE '30_plus'
+                  END AS band,
+                  COUNT(*)::int AS sent,
+                  COUNT(*) FILTER (WHERE m.purchased = true)::int AS unlocked
+               FROM messaging_dashboard_entries m
+               WHERE m."contentType" = 'chat_product'
+                 AND m."priceNet" IS NOT NULL
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY 1`,
+              [scope.userIds, periodStart, periodEnd]
+            )
+          : pool.query(
+              `SELECT
+                  CASE
+                    WHEN ABS(m."priceNet") < 10 THEN 'under_10'
+                    WHEN ABS(m."priceNet") < 30 THEN '10_to_30'
+                    ELSE '30_plus'
+                  END AS band,
+                  COUNT(*)::int AS sent,
+                  COUNT(*) FILTER (WHERE m.purchased = true)::int AS unlocked
+               FROM messaging_dashboard_entries m
+               WHERE m."contentType" = 'chat_product'
+                 AND m."priceNet" IS NOT NULL
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               GROUP BY 1`,
+              [periodStart, periodEnd]
+            ),
+        // Hour-of-day heatmap
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT
+                  EXTRACT(HOUR FROM m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::int AS hour,
+                  COUNT(*) FILTER (
+                    WHERE m."contentType" IN ('text', 'media', 'chat_product')
+                  )::int AS "messagesSent",
+                  COUNT(*) FILTER (
+                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                  )::int AS "salesCount",
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                  ), 0)::float AS "salesAmount"
+               FROM messaging_dashboard_entries m
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY 1
+               ORDER BY 1`,
+              [scope.userIds, periodStart, periodEnd]
+            )
+          : pool.query(
+              `SELECT
+                  EXTRACT(HOUR FROM m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::int AS hour,
+                  COUNT(*) FILTER (
+                    WHERE m."contentType" IN ('text', 'media', 'chat_product')
+                  )::int AS "messagesSent",
+                  COUNT(*) FILTER (
+                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                  )::int AS "salesCount",
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                  ), 0)::float AS "salesAmount"
+               FROM messaging_dashboard_entries m
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               GROUP BY 1
+               ORDER BY 1`,
+              [periodStart, periodEnd]
+            ),
+        // Sales by platform
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT c.platform,
+                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries m
+               JOIN creators c ON c.id = m."creatorId"
+               WHERE m.purchased = true
+                 AND m."priceNet" IS NOT NULL
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY c.platform, 2`,
+              [scope.userIds, periodStart, periodEnd]
+            )
+          : pool.query(
+              `SELECT c.platform,
+                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+               FROM messaging_dashboard_entries m
+               JOIN creators c ON c.id = m."creatorId"
+               WHERE m.purchased = true
+                 AND m."priceNet" IS NOT NULL
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               GROUP BY c.platform, 2`,
+              [periodStart, periodEnd]
+            ),
+        // Creator comparison counts (period, no currency split)
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT m."creatorId",
+                      MAX(m."creatorName") AS "creatorName",
+                      MAX(m."creatorUsername") AS "creatorUsername",
+                      MAX(m."creatorAvatarUrl") AS "creatorAvatarUrl",
+                      MAX(c.platform) AS platform,
+                      ${EXTENDED_MESSAGE_STATS_SELECT}
+               FROM messaging_dashboard_entries m
+               JOIN creators c ON c.id = m."creatorId"
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY m."creatorId"`,
+              [scope.userIds, periodStart, periodEnd]
+            )
+          : pool.query(
+              `SELECT m."creatorId",
+                      MAX(m."creatorName") AS "creatorName",
+                      MAX(m."creatorUsername") AS "creatorUsername",
+                      MAX(m."creatorAvatarUrl") AS "creatorAvatarUrl",
+                      MAX(c.platform) AS platform,
+                      ${EXTENDED_MESSAGE_STATS_SELECT}
+               FROM messaging_dashboard_entries m
+               JOIN creators c ON c.id = m."creatorId"
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               GROUP BY m."creatorId"`,
+              [periodStart, periodEnd]
+            ),
+        // Creator comparison sales by currency
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT m."creatorId",
+                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "totalSalesAmount",
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "tipSalesAmount",
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "ppvSalesAmount"
+               FROM messaging_dashboard_entries m
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY m."creatorId", 2`,
+              [scope.userIds, periodStart, periodEnd]
+            )
+          : pool.query(
+              `SELECT m."creatorId",
+                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "totalSalesAmount",
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "tipSalesAmount",
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "ppvSalesAmount"
+               FROM messaging_dashboard_entries m
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               GROUP BY m."creatorId", 2`,
+              [periodStart, periodEnd]
+            ),
+        // Period chatter extended stats (counts)
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT m."chatterId",
+                      ${EXTENDED_MESSAGE_STATS_SELECT}
+               FROM messaging_dashboard_entries m
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY m."chatterId"`,
+              [scope.userIds, periodStart, periodEnd]
+            )
+          : pool.query(
+              `SELECT m."chatterId",
+                      ${EXTENDED_MESSAGE_STATS_SELECT}
+               FROM messaging_dashboard_entries m
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               GROUP BY m."chatterId"`,
+              [periodStart, periodEnd]
+            ),
+        // Period chatter tip/ppv sales by currency
+        scope.mode === 'self'
+          ? pool.query(
+              `SELECT m."chatterId",
+                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "tipSalesAmount",
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "ppvSalesAmount",
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "periodSalesAmount"
+               FROM messaging_dashboard_entries m
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND m."chatterId" = ANY($1::uuid[])
+               GROUP BY m."chatterId", 2`,
+              [scope.userIds, periodStart, periodEnd]
+            )
+          : pool.query(
+              `SELECT m."chatterId",
+                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "tipSalesAmount",
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "ppvSalesAmount",
+                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                      ), 0)::float AS "periodSalesAmount"
+               FROM messaging_dashboard_entries m
+               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               GROUP BY m."chatterId", 2`,
+              [periodStart, periodEnd]
+            ),
       ]);
 
       const dailySales = currencyAmountRowsToList(dailySalesResult.rows);
       const totalSales = currencyAmountRowsToList(totalSalesResult.rows);
       const monthlyRevenue = currencyAmountRowsToList(monthlySalesResult.rows);
-      const cutoverSales = currencyAmountRowsToList(cutoverSalesResult.rows);
-      const cutoverMessagesSent =
+      const periodRateSales = currencyAmountRowsToList(cutoverSalesResult.rows);
+      const periodRateMessages =
         Number(cutoverMessagesResult.rows[0]?.messagesSent) || 0;
 
-      const msgStats = messageStatsResult.rows[0] || {};
-      const messagesSent = Number(msgStats.messagesSent) || 0;
-      const ppvsSent = Number(msgStats.ppvsSent) || 0;
-      const ppvsUnlocked = Number(msgStats.ppvsUnlocked) || 0;
-      const goldenRatio = ratePercent(ppvsSent, messagesSent);
-      const ppvConversionRate = ratePercent(ppvsUnlocked, ppvsSent);
+      const msgStats = parseExtendedMessageStats(messageStatsResult.rows[0] || {});
+      const {
+        messagesSent,
+        ppvsSent,
+        ppvsUnlocked,
+        pendingPpvs,
+        freeMediaSent,
+        photoPpvs,
+        videoPpvs,
+        uniqueFansMessaged,
+        fansWhoUnlocked,
+        p50ResponseSeconds,
+        p90ResponseSeconds,
+        avgPpvPrice,
+        medianPpvPrice,
+        goldenRatio,
+        ppvConversionRate,
+      } = msgStats;
+
+      const tipSales = [];
+      const ppvSales = [];
+      for (const row of tipPpvSalesResult.rows) {
+        const amount = Number(row.amount) || 0;
+        if (amount <= 0 || !row.kind) continue;
+        const item = {
+          currency: normalizeCurrency(row.currency),
+          amount,
+        };
+        if (row.kind === 'tip') tipSales.push(item);
+        else if (row.kind === 'ppv') ppvSales.push(item);
+      }
+      const tipSalesMerged = mergeCurrencyAmounts(tipSales);
+      const ppvSalesMerged = mergeCurrencyAmounts(ppvSales);
+
       const keystrokesTotal = Number(keystrokesResult.rows[0]?.keystrokes) || 0;
       const activeSecondsTotal = Number(keystrokesResult.rows[0]?.activeSeconds) || 0;
-      const revenuePerHour = revenuePerHourAmounts(cutoverSales, activeSecondsTotal);
-      const messagesPerHour = perHourRate(cutoverMessagesSent, activeSecondsTotal);
+      const idleSecondsTotal = Number(keystrokesResult.rows[0]?.idleSeconds) || 0;
+      const revenuePerHour = revenuePerHourAmounts(periodRateSales, activeSecondsTotal);
+      const messagesPerHour = perHourRate(periodRateMessages, activeSecondsTotal);
+      const salesPerMessageAmounts = salesPerMessage(totalSales, messagesSent);
+      const revenuePerFanAmounts = revenuePerFan(ppvSalesMerged, fansWhoUnlocked);
+      const idlePercentValue = idlePercent(activeSecondsTotal, idleSecondsTotal);
+      const unlockRateByPriceBand = buildPriceBandsFromRows(priceBandResult.rows);
+      const hourOfDay = buildHourOfDayFromRows(hourOfDayResult.rows);
+
+      const salesByPlatformMap = new Map();
+      for (const row of salesByPlatformResult.rows) {
+        const platform = row.platform === '4based' ? '4based' : 'maloum';
+        if (!salesByPlatformMap.has(platform)) {
+          salesByPlatformMap.set(platform, []);
+        }
+        const amount = Number(row.amount) || 0;
+        if (amount > 0) {
+          salesByPlatformMap.get(platform).push({
+            currency: normalizeCurrency(row.currency),
+            amount,
+          });
+        }
+      }
+      const salesByPlatform = [...salesByPlatformMap.entries()].map(
+        ([platform, amounts]) => ({
+          platform,
+          amounts: mergeCurrencyAmounts(amounts),
+        })
+      );
+
+      const creatorsById = new Map();
+      for (const row of creatorStatsResult.rows) {
+        const stats = parseExtendedMessageStats(row);
+        creatorsById.set(row.creatorId, {
+          creatorId: row.creatorId,
+          creatorName: row.creatorName,
+          creatorUsername: row.creatorUsername || null,
+          creatorAvatarUrl: row.creatorAvatarUrl || null,
+          platform: row.platform === '4based' ? '4based' : row.platform === 'maloum' ? 'maloum' : null,
+          ...stats,
+          totalSales: [],
+          tipSales: [],
+          ppvSales: [],
+        });
+      }
+      for (const row of creatorSalesResult.rows) {
+        if (!creatorsById.has(row.creatorId)) continue;
+        const entry = creatorsById.get(row.creatorId);
+        const currency = normalizeCurrency(row.currency);
+        const totalAmt = Number(row.totalSalesAmount) || 0;
+        const tipAmt = Number(row.tipSalesAmount) || 0;
+        const ppvAmt = Number(row.ppvSalesAmount) || 0;
+        if (totalAmt > 0) entry.totalSales.push({ currency, amount: totalAmt });
+        if (tipAmt > 0) entry.tipSales.push({ currency, amount: tipAmt });
+        if (ppvAmt > 0) entry.ppvSales.push({ currency, amount: ppvAmt });
+      }
+      const creators = [...creatorsById.values()]
+        .map((entry) => ({
+          ...entry,
+          totalSales: mergeCurrencyAmounts(entry.totalSales),
+          tipSales: mergeCurrencyAmounts(entry.tipSales),
+          ppvSales: mergeCurrencyAmounts(entry.ppvSales),
+          revenuePerFan: revenuePerFan(
+            mergeCurrencyAmounts(entry.ppvSales),
+            entry.fansWhoUnlocked
+          ),
+          salesPerMessage: salesPerMessage(
+            mergeCurrencyAmounts(entry.totalSales),
+            entry.messagesSent
+          ),
+        }))
+        .sort((a, b) => a.creatorName.localeCompare(b.creatorName));
+
+      const periodExtrasByChatter = new Map();
+      for (const row of chatterPeriodStatsResult.rows) {
+        periodExtrasByChatter.set(row.chatterId, {
+          ...parseExtendedMessageStats(row),
+          tipSales: [],
+          ppvSales: [],
+          periodSales: [],
+        });
+      }
+      for (const row of chatterPeriodSalesResult.rows) {
+        if (!periodExtrasByChatter.has(row.chatterId)) {
+          periodExtrasByChatter.set(row.chatterId, {
+            ...parseExtendedMessageStats({}),
+            tipSales: [],
+            ppvSales: [],
+            periodSales: [],
+          });
+        }
+        const entry = periodExtrasByChatter.get(row.chatterId);
+        const currency = normalizeCurrency(row.currency);
+        const tipAmt = Number(row.tipSalesAmount) || 0;
+        const ppvAmt = Number(row.ppvSalesAmount) || 0;
+        const periodAmt = Number(row.periodSalesAmount) || 0;
+        if (tipAmt > 0) entry.tipSales.push({ currency, amount: tipAmt });
+        if (ppvAmt > 0) entry.ppvSales.push({ currency, amount: ppvAmt });
+        if (periodAmt > 0) entry.periodSales.push({ currency, amount: periodAmt });
+      }
 
       const activeSecondsByChatter = new Map();
+      const idleSecondsByChatter = new Map();
       for (const row of chatterActiveResult.rows) {
         activeSecondsByChatter.set(
           row.chatterId,
           Number(row.activeSeconds) || 0
         );
+        idleSecondsByChatter.set(row.chatterId, Number(row.idleSeconds) || 0);
       }
 
       const cutoverSalesByChatter = new Map();
@@ -1712,7 +2133,7 @@ router.get(
         }
       }
 
-      const dailySalesByDay = buildDateRange(chartDays).map((date) => ({
+      const dailySalesByDay = period.dates.map((date) => ({
         date,
         amounts: mergeCurrencyAmounts(dayMap.get(date) || []),
       }));
@@ -1790,12 +2211,17 @@ router.get(
       const chatters = chatterNamesResult.rows.map((row) => {
         const stats = statsByChatter.get(row.chatterId);
         const activeSeconds = activeSecondsByChatter.get(row.chatterId) || 0;
+        const idleSeconds = idleSecondsByChatter.get(row.chatterId) || 0;
         const totalSalesMerged = mergeCurrencyAmounts(stats?.totalSales || []);
         const cutoverSalesMerged = mergeCurrencyAmounts(
           cutoverSalesByChatter.get(row.chatterId) || []
         );
         const messagesSentForChatter = stats?.messagesSent || 0;
         const cutoverMessages = cutoverMessagesByChatter.get(row.chatterId) || 0;
+        const periodExtras = periodExtrasByChatter.get(row.chatterId);
+        const tipSalesMerged = mergeCurrencyAmounts(periodExtras?.tipSales || []);
+        const ppvSalesMergedChatter = mergeCurrencyAmounts(periodExtras?.ppvSales || []);
+        const periodSalesMerged = mergeCurrencyAmounts(periodExtras?.periodSales || []);
         return {
           chatterId: row.chatterId,
           chatterName: row.chatterName,
@@ -1809,8 +2235,24 @@ router.get(
           goldenRatio: stats?.goldenRatio || 0,
           ppvConversionRate: stats?.ppvConversionRate || 0,
           activeSecondsTotal: activeSeconds,
+          idleSecondsTotal: idleSeconds,
+          idlePercent: idlePercent(activeSeconds, idleSeconds),
           revenuePerHour: revenuePerHourAmounts(cutoverSalesMerged, activeSeconds),
           messagesPerHour: perHourRate(cutoverMessages, activeSeconds),
+          tipSales: tipSalesMerged,
+          ppvSales: ppvSalesMergedChatter,
+          periodSales: periodSalesMerged,
+          salesPerMessage: salesPerMessage(
+            periodSalesMerged,
+            periodExtras?.messagesSent || 0
+          ),
+          uniqueFansMessaged: periodExtras?.uniqueFansMessaged || 0,
+          fansWhoUnlocked: periodExtras?.fansWhoUnlocked || 0,
+          pendingPpvs: periodExtras?.pendingPpvs || 0,
+          p50ResponseSeconds: periodExtras?.p50ResponseSeconds ?? null,
+          p90ResponseSeconds: periodExtras?.p90ResponseSeconds ?? null,
+          avgPpvPrice: periodExtras?.avgPpvPrice ?? null,
+          medianPpvPrice: periodExtras?.medianPpvPrice ?? null,
         };
       });
 
@@ -1828,11 +2270,16 @@ router.get(
         for (const chatterId of missingIds) {
           const stats = statsByChatter.get(chatterId);
           const activeSeconds = activeSecondsByChatter.get(chatterId) || 0;
+          const idleSeconds = idleSecondsByChatter.get(chatterId) || 0;
           const totalSalesMerged = mergeCurrencyAmounts(stats.totalSales);
           const cutoverSalesMerged = mergeCurrencyAmounts(
             cutoverSalesByChatter.get(chatterId) || []
           );
           const cutoverMessages = cutoverMessagesByChatter.get(chatterId) || 0;
+          const periodExtras = periodExtrasByChatter.get(chatterId);
+          const tipSalesMerged = mergeCurrencyAmounts(periodExtras?.tipSales || []);
+          const ppvSalesMergedChatter = mergeCurrencyAmounts(periodExtras?.ppvSales || []);
+          const periodSalesMerged = mergeCurrencyAmounts(periodExtras?.periodSales || []);
           chatters.push({
             chatterId,
             chatterName: nameById.get(chatterId) || 'Unknown',
@@ -1846,8 +2293,24 @@ router.get(
             goldenRatio: stats.goldenRatio,
             ppvConversionRate: stats.ppvConversionRate,
             activeSecondsTotal: activeSeconds,
+            idleSecondsTotal: idleSeconds,
+            idlePercent: idlePercent(activeSeconds, idleSeconds),
             revenuePerHour: revenuePerHourAmounts(cutoverSalesMerged, activeSeconds),
             messagesPerHour: perHourRate(cutoverMessages, activeSeconds),
+            tipSales: tipSalesMerged,
+            ppvSales: ppvSalesMergedChatter,
+            periodSales: periodSalesMerged,
+            salesPerMessage: salesPerMessage(
+              periodSalesMerged,
+              periodExtras?.messagesSent || 0
+            ),
+            uniqueFansMessaged: periodExtras?.uniqueFansMessaged || 0,
+            fansWhoUnlocked: periodExtras?.fansWhoUnlocked || 0,
+            pendingPpvs: periodExtras?.pendingPpvs || 0,
+            p50ResponseSeconds: periodExtras?.p50ResponseSeconds ?? null,
+            p90ResponseSeconds: periodExtras?.p90ResponseSeconds ?? null,
+            avgPpvPrice: periodExtras?.avgPpvPrice ?? null,
+            medianPpvPrice: periodExtras?.medianPpvPrice ?? null,
           });
         }
       }
@@ -1858,19 +2321,40 @@ router.get(
       res.json({
         scope: scope.mode,
         chartDays,
+        period: { startDate: periodStart, endDate: periodEnd },
         dailySales,
         totalSales,
         totalRevenue: totalSales,
         monthlyRevenue,
+        tipSales: tipSalesMerged,
+        ppvSales: ppvSalesMerged,
         totalMessagesSent: messagesSent,
         ppvsSent,
         ppvsUnlocked,
+        pendingPpvs,
+        freeMediaSent,
+        photoPpvs,
+        videoPpvs,
+        uniqueFansMessaged,
+        fansWhoUnlocked,
         goldenRatio,
         ppvConversionRate,
+        avgPpvPrice,
+        medianPpvPrice,
+        revenuePerFan: revenuePerFanAmounts,
+        salesPerMessage: salesPerMessageAmounts,
+        p50ResponseSeconds,
+        p90ResponseSeconds,
         keystrokesTotal,
         activeSecondsTotal,
+        idleSecondsTotal,
+        idlePercent: idlePercentValue,
         revenuePerHour,
         messagesPerHour,
+        unlockRateByPriceBand,
+        hourOfDay,
+        salesByPlatform,
+        creators,
         activityMetricsCutover: ACTIVITY_METRICS_CUTOVER,
         avgResponseTimeSeconds:
           avgRaw != null && !Number.isNaN(Number(avgRaw))
@@ -1878,7 +2362,7 @@ router.get(
             : null,
         dailySalesByDay,
         chatters,
-        responseWindow: { startDate: responseStart, endDate: responseEnd },
+        responseWindow: { startDate: periodStart, endDate: periodEnd },
         lastUpdated: new Date().toISOString(),
       });
     } catch (err) {
@@ -2108,17 +2592,26 @@ router.get(
 router.get(
   '/series',
   authenticate,
-  requirePermission('analytics.view', 'analytics.self'),
+  requirePermission('analytics.view'),
   async (req, res) => {
     try {
       const scope = getAnalyticsScope(req.user);
-      const parsedDays = Math.min(
-        Math.max(Number.parseInt(String(req.query.days || '7'), 10) || 7, 1),
-        90
+      if (scope.mode !== 'team') {
+        return res.status(403).json({ error: 'Team analytics access required' });
+      }
+      const period = resolveAnalyticsPeriod(
+        {
+          startDate: req.query.startDate,
+          endDate: req.query.endDate,
+          days: req.query.days,
+        },
+        90,
+        { allowAnyDays: true, defaultDays: 7 }
       );
-      const dateRange = buildDateRange(parsedDays);
-      const startDate = dateRange[0];
-      const endDate = dateRange[dateRange.length - 1];
+      const dateRange = period.dates;
+      const startDate = period.startDate;
+      const endDate = period.endDate;
+      const parsedDays = period.days;
 
       const chatterClause =
         scope.mode === 'self' ? ' AND m."chatterId" = ANY($3::uuid[])' : '';
@@ -2153,22 +2646,12 @@ router.get(
       ] = await Promise.all([
         pool.query(
           `SELECT (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date::text AS date,
-                  COUNT(*) FILTER (
-                    WHERE m."contentType" IN ('text', 'media', 'chat_product')
-                  )::int AS "messagesSent",
-                  COUNT(*) FILTER (WHERE m."contentType" = 'chat_product')::int AS "ppvsSent",
-                  COUNT(*) FILTER (
-                    WHERE m."contentType" = 'chat_product' AND m.purchased = true
-                  )::int AS "ppvsUnlocked",
-                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
-                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
-                  ), 0)::float AS revenue
+                  ${SERIES_MESSAGE_SELECT}
            FROM messaging_dashboard_entries m
            WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
              AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
              ${chatterClause}
-           GROUP BY 1, 5
+           GROUP BY 1, 7
            ORDER BY 1 ASC`,
           messageParams
         ),
@@ -2205,45 +2688,25 @@ router.get(
           ? pool.query(
               `SELECT m."chatterId",
                       (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date::text AS date,
-                      COUNT(*) FILTER (
-                        WHERE m."contentType" IN ('text', 'media', 'chat_product')
-                      )::int AS "messagesSent",
-                      COUNT(*) FILTER (WHERE m."contentType" = 'chat_product')::int AS "ppvsSent",
-                      COUNT(*) FILTER (
-                        WHERE m."contentType" = 'chat_product' AND m.purchased = true
-                      )::int AS "ppvsUnlocked",
-                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
-                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
-                      ), 0)::float AS revenue
+                      ${SERIES_MESSAGE_SELECT}
                FROM messaging_dashboard_entries m
                WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
                  AND m."chatterId" = ANY($3::uuid[])
-               GROUP BY m."chatterId", 2, 6
+               GROUP BY m."chatterId", 2, 9
                ORDER BY 2 ASC`,
               [startDate, endDate, scope.userIds]
             )
           : pool.query(
               `SELECT m."chatterId",
                       (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date::text AS date,
-                      COUNT(*) FILTER (
-                        WHERE m."contentType" IN ('text', 'media', 'chat_product')
-                      )::int AS "messagesSent",
-                      COUNT(*) FILTER (WHERE m."contentType" = 'chat_product')::int AS "ppvsSent",
-                      COUNT(*) FILTER (
-                        WHERE m."contentType" = 'chat_product' AND m.purchased = true
-                      )::int AS "ppvsUnlocked",
-                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
-                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
-                      ), 0)::float AS revenue
+                      ${SERIES_MESSAGE_SELECT}
                FROM messaging_dashboard_entries m
                JOIN users u ON u.id = m."chatterId"
                WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
                  AND u.role = ANY($3::text[])
-               GROUP BY m."chatterId", 2, 6
+               GROUP BY m."chatterId", 2, 9
                ORDER BY 2 ASC`,
               [startDate, endDate, TRACKED_STAFF_ROLES]
             ),
@@ -2283,7 +2746,12 @@ router.get(
             messagesSent: 0,
             ppvsSent: 0,
             ppvsUnlocked: 0,
+            pendingPpvs: 0,
+            freeMediaSent: 0,
+            uniqueFansMessaged: 0,
             revenue: [],
+            tipRevenue: [],
+            ppvRevenue: [],
           });
         }
         const entry = messageAgg.get(date);
@@ -2291,14 +2759,16 @@ router.get(
         entry.messagesSent += Number(row.messagesSent) || 0;
         entry.ppvsSent += Number(row.ppvsSent) || 0;
         entry.ppvsUnlocked += Number(row.ppvsUnlocked) || 0;
+        entry.pendingPpvs += Number(row.pendingPpvs) || 0;
+        entry.freeMediaSent += Number(row.freeMediaSent) || 0;
+        entry.uniqueFansMessaged += Number(row.uniqueFansMessaged) || 0;
         const amount = Number(row.revenue) || 0;
-        if (amount > 0) {
-          entry.revenue.push({
-            currency:
-              String(row.currency || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR',
-            amount,
-          });
-        }
+        const tipAmount = Number(row.tipRevenue) || 0;
+        const ppvAmount = Number(row.ppvRevenue) || 0;
+        const currency = normalizeCurrency(row.currency);
+        if (amount > 0) entry.revenue.push({ currency, amount });
+        if (tipAmount > 0) entry.tipRevenue.push({ currency, amount: tipAmount });
+        if (ppvAmount > 0) entry.ppvRevenue.push({ currency, amount: ppvAmount });
       }
 
       const activityByDay = new Map();
@@ -2317,23 +2787,46 @@ router.get(
             messagesSent: 0,
             ppvsSent: 0,
             ppvsUnlocked: 0,
+            pendingPpvs: 0,
+            freeMediaSent: 0,
+            uniqueFansMessaged: 0,
             revenue: [],
+            tipRevenue: [],
+            ppvRevenue: [],
           };
           const act = actByDate.get(date) || {
             activeSeconds: 0,
             idleSeconds: 0,
             keystrokes: 0,
           };
+          const revenue = mergeCurrencyAmounts(msg.revenue);
+          const tipRevenue = mergeCurrencyAmounts(msg.tipRevenue);
+          const ppvRevenue = mergeCurrencyAmounts(msg.ppvRevenue);
           return {
             date,
             messagesSent: msg.messagesSent,
             ppvsSent: msg.ppvsSent,
             ppvsUnlocked: msg.ppvsUnlocked,
+            pendingPpvs: msg.pendingPpvs,
+            freeMediaSent: msg.freeMediaSent,
+            uniqueFansMessaged: msg.uniqueFansMessaged,
             goldenRatio: ratePercent(msg.ppvsSent, msg.messagesSent),
             ppvConversionRate: ratePercent(msg.ppvsUnlocked, msg.ppvsSent),
-            revenue: mergeCurrencyAmounts(msg.revenue),
+            revenue,
+            tipRevenue,
+            ppvRevenue,
+            salesPerMessage: salesPerMessage(revenue, msg.messagesSent),
+            salesPerMessageValue:
+              msg.messagesSent > 0
+                ? Math.round(
+                    (revenue.reduce((s, r) => s + (Number(r.amount) || 0), 0) /
+                      msg.messagesSent) *
+                      100
+                  ) / 100
+                : 0,
             activeSeconds: act.activeSeconds,
             idleSeconds: act.idleSeconds,
+            idlePercent: idlePercent(act.activeSeconds, act.idleSeconds),
             keystrokes: act.keystrokes,
           };
         });
@@ -2349,21 +2842,28 @@ router.get(
             messagesSent: 0,
             ppvsSent: 0,
             ppvsUnlocked: 0,
+            pendingPpvs: 0,
+            freeMediaSent: 0,
+            uniqueFansMessaged: 0,
             revenue: [],
+            tipRevenue: [],
+            ppvRevenue: [],
           });
         }
         const entry = msgByStaffDay.get(key);
         entry.messagesSent += Number(row.messagesSent) || 0;
         entry.ppvsSent += Number(row.ppvsSent) || 0;
         entry.ppvsUnlocked += Number(row.ppvsUnlocked) || 0;
+        entry.pendingPpvs += Number(row.pendingPpvs) || 0;
+        entry.freeMediaSent += Number(row.freeMediaSent) || 0;
+        entry.uniqueFansMessaged += Number(row.uniqueFansMessaged) || 0;
         const amount = Number(row.revenue) || 0;
-        if (amount > 0) {
-          entry.revenue.push({
-            currency:
-              String(row.currency || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR',
-            amount,
-          });
-        }
+        const tipAmount = Number(row.tipRevenue) || 0;
+        const ppvAmount = Number(row.ppvRevenue) || 0;
+        const currency = normalizeCurrency(row.currency);
+        if (amount > 0) entry.revenue.push({ currency, amount });
+        if (tipAmount > 0) entry.tipRevenue.push({ currency, amount: tipAmount });
+        if (ppvAmount > 0) entry.ppvRevenue.push({ currency, amount: ppvAmount });
       }
 
       const actByStaffDay = new Map();
@@ -2403,6 +2903,606 @@ router.get(
       });
     } catch (err) {
       console.error('messaging dashboard series failed:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/creator-overview',
+  authenticate,
+  requirePermission('analytics.view'),
+  async (req, res) => {
+    try {
+      const scope = getAnalyticsScope(req.user);
+      if (scope.mode !== 'team') {
+        return res.status(403).json({ error: 'Team analytics access required' });
+      }
+      const period = resolveAnalyticsPeriod({
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+        days: req.query.days,
+      });
+      const periodStart = period.startDate;
+      const periodEnd = period.endDate;
+      const creatorIdFilter =
+        typeof req.query.creatorId === 'string' && isValidUuid(req.query.creatorId)
+          ? req.query.creatorId
+          : null;
+
+      const chatterClause =
+        scope.mode === 'self' ? ' AND m."chatterId" = ANY($1::uuid[])' : '';
+      const creatorClause = creatorIdFilter
+        ? scope.mode === 'self'
+          ? ' AND m."creatorId" = $4'
+          : ' AND m."creatorId" = $3'
+        : '';
+
+      const baseParams =
+        scope.mode === 'self'
+          ? creatorIdFilter
+            ? [scope.userIds, periodStart, periodEnd, creatorIdFilter]
+            : [scope.userIds, periodStart, periodEnd]
+          : creatorIdFilter
+            ? [periodStart, periodEnd, creatorIdFilter]
+            : [periodStart, periodEnd];
+
+      const dateClause =
+        scope.mode === 'self'
+          ? `(m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+             AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date`
+          : `(m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+             AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date`;
+
+      const [
+        creatorStatsResult,
+        creatorSalesResult,
+        salesByChatterResult,
+        salesByPlatformResult,
+        priceBandResult,
+        hourOfDayResult,
+        dailySalesResult,
+        topFansResult,
+        aggregateStatsResult,
+        tipPpvSalesResult,
+      ] = await Promise.all([
+        pool.query(
+          `SELECT m."creatorId",
+                  MAX(m."creatorName") AS "creatorName",
+                  MAX(m."creatorUsername") AS "creatorUsername",
+                  MAX(m."creatorAvatarUrl") AS "creatorAvatarUrl",
+                  MAX(c.platform) AS platform,
+                  ${EXTENDED_MESSAGE_STATS_SELECT}
+           FROM messaging_dashboard_entries m
+           JOIN creators c ON c.id = m."creatorId"
+           WHERE ${dateClause}
+             ${chatterClause}
+             ${creatorClause}
+           GROUP BY m."creatorId"
+           ORDER BY MAX(m."creatorName") ASC`,
+          baseParams
+        ),
+        pool.query(
+          `SELECT m."creatorId",
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                  ), 0)::float AS "totalSalesAmount",
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
+                  ), 0)::float AS "tipSalesAmount",
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
+                  ), 0)::float AS "ppvSalesAmount"
+           FROM messaging_dashboard_entries m
+           WHERE ${dateClause}
+             ${chatterClause}
+             ${creatorClause}
+           GROUP BY m."creatorId", 2`,
+          baseParams
+        ),
+        pool.query(
+          `SELECT m."creatorId",
+                  m."chatterId",
+                  MAX(m."chatterName") AS "chatterName",
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                  ), 0)::float AS amount
+           FROM messaging_dashboard_entries m
+           WHERE ${dateClause}
+             ${chatterClause}
+             ${creatorClause}
+           GROUP BY m."creatorId", m."chatterId", 4`,
+          baseParams
+        ),
+        pool.query(
+          `SELECT m."creatorId",
+                  c.platform,
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                  ), 0)::float AS amount
+           FROM messaging_dashboard_entries m
+           JOIN creators c ON c.id = m."creatorId"
+           WHERE ${dateClause}
+             ${chatterClause}
+             ${creatorClause}
+           GROUP BY m."creatorId", c.platform, 3`,
+          baseParams
+        ),
+        pool.query(
+          `SELECT
+              CASE
+                WHEN ABS(m."priceNet") < 10 THEN 'under_10'
+                WHEN ABS(m."priceNet") < 30 THEN '10_to_30'
+                ELSE '30_plus'
+              END AS band,
+              COUNT(*)::int AS sent,
+              COUNT(*) FILTER (WHERE m.purchased = true)::int AS unlocked
+           FROM messaging_dashboard_entries m
+           WHERE m."contentType" = 'chat_product'
+             AND m."priceNet" IS NOT NULL
+             AND ${dateClause}
+             ${chatterClause}
+             ${creatorClause}
+           GROUP BY 1`,
+          baseParams
+        ),
+        pool.query(
+          `SELECT
+              EXTRACT(HOUR FROM m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::int AS hour,
+              COUNT(*) FILTER (
+                WHERE m."contentType" IN ('text', 'media', 'chat_product')
+              )::int AS "messagesSent",
+              COUNT(*) FILTER (
+                WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+              )::int AS "salesCount",
+              COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+              ), 0)::float AS "salesAmount"
+           FROM messaging_dashboard_entries m
+           WHERE ${dateClause}
+             ${chatterClause}
+             ${creatorClause}
+           GROUP BY 1
+           ORDER BY 1`,
+          baseParams
+        ),
+        pool.query(
+          `SELECT (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date::text AS date,
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                  ), 0)::float AS amount
+           FROM messaging_dashboard_entries m
+           WHERE ${dateClause}
+             ${chatterClause}
+             ${creatorClause}
+           GROUP BY 1, 2
+           ORDER BY 1 ASC`,
+          baseParams
+        ),
+        pool.query(
+          `SELECT m."fanId",
+                  MAX(m."fanUsername") AS "fanUsername",
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                  ), 0)::float AS amount
+           FROM messaging_dashboard_entries m
+           WHERE m."fanId" IS NOT NULL
+             AND ${dateClause}
+             ${chatterClause}
+             ${creatorClause}
+           GROUP BY m."fanId", 3
+           HAVING COALESCE(SUM(ABS(m."priceNet")) FILTER (
+             WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+           ), 0) > 0
+           ORDER BY SUM(ABS(m."priceNet")) FILTER (
+             WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+           ) DESC
+           LIMIT 20`,
+          baseParams
+        ),
+        pool.query(
+          `SELECT ${EXTENDED_MESSAGE_STATS_SELECT}
+           FROM messaging_dashboard_entries m
+           WHERE ${dateClause}
+             ${chatterClause}
+             ${creatorClause}`,
+          baseParams
+        ),
+        pool.query(
+          `SELECT
+              CASE
+                WHEN m."contentType" = 'tip' THEN 'tip'
+                WHEN m."contentType" = 'chat_product' AND m.purchased = true THEN 'ppv'
+                ELSE NULL
+              END AS kind,
+              UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+              COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+           FROM messaging_dashboard_entries m
+           WHERE m."priceNet" IS NOT NULL
+             AND (
+               m."contentType" = 'tip'
+               OR (m."contentType" = 'chat_product' AND m.purchased = true)
+             )
+             AND ${dateClause}
+             ${chatterClause}
+             ${creatorClause}
+           GROUP BY 1, 2`,
+          baseParams
+        ),
+      ]);
+
+      const salesByCreator = new Map();
+      for (const row of creatorSalesResult.rows) {
+        if (!salesByCreator.has(row.creatorId)) {
+          salesByCreator.set(row.creatorId, {
+            totalSales: [],
+            tipSales: [],
+            ppvSales: [],
+          });
+        }
+        const entry = salesByCreator.get(row.creatorId);
+        const currency = normalizeCurrency(row.currency);
+        const totalAmt = Number(row.totalSalesAmount) || 0;
+        const tipAmt = Number(row.tipSalesAmount) || 0;
+        const ppvAmt = Number(row.ppvSalesAmount) || 0;
+        if (totalAmt > 0) entry.totalSales.push({ currency, amount: totalAmt });
+        if (tipAmt > 0) entry.tipSales.push({ currency, amount: tipAmt });
+        if (ppvAmt > 0) entry.ppvSales.push({ currency, amount: ppvAmt });
+      }
+
+      const chatterSalesByCreator = new Map();
+      for (const row of salesByChatterResult.rows) {
+        if (!chatterSalesByCreator.has(row.creatorId)) {
+          chatterSalesByCreator.set(row.creatorId, new Map());
+        }
+        const byChatter = chatterSalesByCreator.get(row.creatorId);
+        if (!byChatter.has(row.chatterId)) {
+          byChatter.set(row.chatterId, {
+            chatterId: row.chatterId,
+            chatterName: row.chatterName,
+            amounts: [],
+          });
+        }
+        const amount = Number(row.amount) || 0;
+        if (amount > 0) {
+          byChatter.get(row.chatterId).amounts.push({
+            currency: normalizeCurrency(row.currency),
+            amount,
+          });
+        }
+      }
+
+      const platformByCreator = new Map();
+      for (const row of salesByPlatformResult.rows) {
+        if (!platformByCreator.has(row.creatorId)) {
+          platformByCreator.set(row.creatorId, new Map());
+        }
+        const byPlatform = platformByCreator.get(row.creatorId);
+        const platform = row.platform === '4based' ? '4based' : 'maloum';
+        if (!byPlatform.has(platform)) byPlatform.set(platform, []);
+        const amount = Number(row.amount) || 0;
+        if (amount > 0) {
+          byPlatform.get(platform).push({
+            currency: normalizeCurrency(row.currency),
+            amount,
+          });
+        }
+      }
+
+      const creators = creatorStatsResult.rows.map((row) => {
+        const stats = parseExtendedMessageStats(row);
+        const sales = salesByCreator.get(row.creatorId) || {
+          totalSales: [],
+          tipSales: [],
+          ppvSales: [],
+        };
+        const totalSales = mergeCurrencyAmounts(sales.totalSales);
+        const tipSales = mergeCurrencyAmounts(sales.tipSales);
+        const ppvSales = mergeCurrencyAmounts(sales.ppvSales);
+        const salesByChatter = [
+          ...(chatterSalesByCreator.get(row.creatorId)?.values() || []),
+        ]
+          .map((item) => ({
+            ...item,
+            amounts: mergeCurrencyAmounts(item.amounts),
+          }))
+          .sort((a, b) =>
+            a.chatterName.localeCompare(b.chatterName)
+          );
+        const salesByPlatform = [
+          ...(platformByCreator.get(row.creatorId)?.entries() || []),
+        ].map(([platform, amounts]) => ({
+          platform,
+          amounts: mergeCurrencyAmounts(amounts),
+        }));
+
+        return {
+          creatorId: row.creatorId,
+          creatorName: row.creatorName,
+          creatorUsername: row.creatorUsername || null,
+          creatorAvatarUrl: row.creatorAvatarUrl || null,
+          platform:
+            row.platform === '4based'
+              ? '4based'
+              : row.platform === 'maloum'
+                ? 'maloum'
+                : null,
+          ...stats,
+          totalSales,
+          tipSales,
+          ppvSales,
+          revenuePerFan: revenuePerFan(ppvSales, stats.fansWhoUnlocked),
+          salesPerMessage: salesPerMessage(totalSales, stats.messagesSent),
+          salesByChatter,
+          salesByPlatform,
+        };
+      });
+
+      const tipSales = [];
+      const ppvSales = [];
+      for (const row of tipPpvSalesResult.rows) {
+        const amount = Number(row.amount) || 0;
+        if (amount <= 0 || !row.kind) continue;
+        const item = { currency: normalizeCurrency(row.currency), amount };
+        if (row.kind === 'tip') tipSales.push(item);
+        else ppvSales.push(item);
+      }
+
+      const aggregate = parseExtendedMessageStats(aggregateStatsResult.rows[0] || {});
+      const tipSalesMerged = mergeCurrencyAmounts(tipSales);
+      const ppvSalesMerged = mergeCurrencyAmounts(ppvSales);
+      const totalSalesMerged = mergeCurrencyAmounts(tipSalesMerged, ppvSalesMerged);
+
+      const dayMap = new Map();
+      for (const row of dailySalesResult.rows) {
+        const date = String(row.date).slice(0, 10);
+        if (!dayMap.has(date)) dayMap.set(date, []);
+        const amount = Number(row.amount) || 0;
+        if (amount > 0) {
+          dayMap.get(date).push({
+            currency: normalizeCurrency(row.currency),
+            amount,
+          });
+        }
+      }
+      const dailySalesByDay = period.dates.map((date) => ({
+        date,
+        amounts: mergeCurrencyAmounts(dayMap.get(date) || []),
+      }));
+
+      const topFanMap = new Map();
+      for (const row of topFansResult.rows) {
+        if (!topFanMap.has(row.fanId)) {
+          topFanMap.set(row.fanId, {
+            fanId: row.fanId,
+            fanUsername: row.fanUsername || null,
+            amounts: [],
+          });
+        }
+        const amount = Number(row.amount) || 0;
+        if (amount > 0) {
+          topFanMap.get(row.fanId).amounts.push({
+            currency: normalizeCurrency(row.currency),
+            amount,
+          });
+        }
+      }
+      const topFans = [...topFanMap.values()]
+        .map((fan) => ({
+          ...fan,
+          amounts: mergeCurrencyAmounts(fan.amounts),
+          total:
+            mergeCurrencyAmounts(fan.amounts).reduce(
+              (s, a) => s + (Number(a.amount) || 0),
+              0
+            ),
+        }))
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 10)
+        .map(({ total, ...fan }) => fan);
+
+      const selected =
+        creatorIdFilter
+          ? creators.find((c) => c.creatorId === creatorIdFilter) || null
+          : null;
+
+      res.json({
+        scope: scope.mode,
+        period: { startDate: periodStart, endDate: periodEnd },
+        chartDays: period.days,
+        creatorId: creatorIdFilter,
+        summary: {
+          ...aggregate,
+          totalSales: totalSalesMerged,
+          tipSales: tipSalesMerged,
+          ppvSales: ppvSalesMerged,
+          revenuePerFan: revenuePerFan(ppvSalesMerged, aggregate.fansWhoUnlocked),
+          salesPerMessage: salesPerMessage(totalSalesMerged, aggregate.messagesSent),
+          unlockRateByPriceBand: buildPriceBandsFromRows(priceBandResult.rows),
+          hourOfDay: buildHourOfDayFromRows(hourOfDayResult.rows),
+          dailySalesByDay,
+          topFans,
+          salesByChatter: selected?.salesByChatter ||
+            (creatorIdFilter
+              ? []
+              : (() => {
+                  const map = new Map();
+                  for (const creator of creators) {
+                    for (const row of creator.salesByChatter) {
+                      if (!map.has(row.chatterId)) {
+                        map.set(row.chatterId, {
+                          chatterId: row.chatterId,
+                          chatterName: row.chatterName,
+                          amounts: [],
+                        });
+                      }
+                      map.get(row.chatterId).amounts.push(...row.amounts);
+                    }
+                  }
+                  return [...map.values()].map((row) => ({
+                    ...row,
+                    amounts: mergeCurrencyAmounts(row.amounts),
+                  }));
+                })()),
+          salesByPlatform: selected?.salesByPlatform ||
+            (() => {
+              const map = new Map();
+              for (const creator of creators) {
+                for (const row of creator.salesByPlatform) {
+                  if (!map.has(row.platform)) map.set(row.platform, []);
+                  map.get(row.platform).push(...row.amounts);
+                }
+              }
+              return [...map.entries()].map(([platform, amounts]) => ({
+                platform,
+                amounts: mergeCurrencyAmounts(amounts),
+              }));
+            })(),
+        },
+        creators,
+        selected,
+        lastUpdated: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('messaging dashboard creator-overview failed:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/creator-series',
+  authenticate,
+  requirePermission('analytics.view'),
+  async (req, res) => {
+    try {
+      const scope = getAnalyticsScope(req.user);
+      if (scope.mode !== 'team') {
+        return res.status(403).json({ error: 'Team analytics access required' });
+      }
+      const period = resolveAnalyticsPeriod(
+        {
+          startDate: req.query.startDate,
+          endDate: req.query.endDate,
+          days: req.query.days,
+        },
+        90,
+        { allowAnyDays: true, defaultDays: 7 }
+      );
+      const startDate = period.startDate;
+      const endDate = period.endDate;
+      const dateRange = period.dates;
+      const creatorIdFilter =
+        typeof req.query.creatorId === 'string' && isValidUuid(req.query.creatorId)
+          ? req.query.creatorId
+          : null;
+
+      const chatterClause =
+        scope.mode === 'self' ? ' AND m."chatterId" = ANY($3::uuid[])' : '';
+      const creatorClause = creatorIdFilter
+        ? scope.mode === 'self'
+          ? ' AND m."creatorId" = $4'
+          : ' AND m."creatorId" = $3'
+        : '';
+
+      const messageParams =
+        scope.mode === 'self'
+          ? creatorIdFilter
+            ? [startDate, endDate, scope.userIds, creatorIdFilter]
+            : [startDate, endDate, scope.userIds]
+          : creatorIdFilter
+            ? [startDate, endDate, creatorIdFilter]
+            : [startDate, endDate];
+
+      const result = await pool.query(
+        `SELECT (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date::text AS date,
+                ${SERIES_MESSAGE_SELECT}
+         FROM messaging_dashboard_entries m
+         WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+           AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+           ${chatterClause}
+           ${creatorClause}
+         GROUP BY 1, 7
+         ORDER BY 1 ASC`,
+        messageParams
+      );
+
+      const messageAgg = new Map();
+      for (const row of result.rows) {
+        const date = String(row.date).slice(0, 10);
+        if (!messageAgg.has(date)) {
+          messageAgg.set(date, {
+            messagesSent: 0,
+            ppvsSent: 0,
+            ppvsUnlocked: 0,
+            pendingPpvs: 0,
+            freeMediaSent: 0,
+            uniqueFansMessaged: 0,
+            revenue: [],
+            tipRevenue: [],
+            ppvRevenue: [],
+          });
+        }
+        const entry = messageAgg.get(date);
+        entry.messagesSent += Number(row.messagesSent) || 0;
+        entry.ppvsSent += Number(row.ppvsSent) || 0;
+        entry.ppvsUnlocked += Number(row.ppvsUnlocked) || 0;
+        entry.pendingPpvs += Number(row.pendingPpvs) || 0;
+        entry.freeMediaSent += Number(row.freeMediaSent) || 0;
+        entry.uniqueFansMessaged += Number(row.uniqueFansMessaged) || 0;
+        const currency = normalizeCurrency(row.currency);
+        const amount = Number(row.revenue) || 0;
+        const tipAmount = Number(row.tipRevenue) || 0;
+        const ppvAmount = Number(row.ppvRevenue) || 0;
+        if (amount > 0) entry.revenue.push({ currency, amount });
+        if (tipAmount > 0) entry.tipRevenue.push({ currency, amount: tipAmount });
+        if (ppvAmount > 0) entry.ppvRevenue.push({ currency, amount: ppvAmount });
+      }
+
+      const series = dateRange.map((date) => {
+        const msg = messageAgg.get(date) || {
+          messagesSent: 0,
+          ppvsSent: 0,
+          ppvsUnlocked: 0,
+          pendingPpvs: 0,
+          freeMediaSent: 0,
+          uniqueFansMessaged: 0,
+          revenue: [],
+          tipRevenue: [],
+          ppvRevenue: [],
+        };
+        return {
+          date,
+          messagesSent: msg.messagesSent,
+          ppvsSent: msg.ppvsSent,
+          ppvsUnlocked: msg.ppvsUnlocked,
+          pendingPpvs: msg.pendingPpvs,
+          freeMediaSent: msg.freeMediaSent,
+          uniqueFansMessaged: msg.uniqueFansMessaged,
+          goldenRatio: ratePercent(msg.ppvsSent, msg.messagesSent),
+          ppvConversionRate: ratePercent(msg.ppvsUnlocked, msg.ppvsSent),
+          revenue: mergeCurrencyAmounts(msg.revenue),
+          tipRevenue: mergeCurrencyAmounts(msg.tipRevenue),
+          ppvRevenue: mergeCurrencyAmounts(msg.ppvRevenue),
+        };
+      });
+
+      res.json({
+        scope: scope.mode,
+        days: period.days,
+        startDate,
+        endDate,
+        creatorId: creatorIdFilter,
+        series,
+        lastUpdated: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('messaging dashboard creator-series failed:', err);
       res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -2487,7 +3587,7 @@ router.get(
 
     if (contentType != null && String(contentType).trim() !== '') {
       const typeValue = String(contentType).trim();
-      if (typeValue !== 'chat_product') {
+      if (typeValue !== 'chat_product' && typeValue !== 'tip') {
         return res.status(400).json({ error: 'Invalid contentType' });
       }
       conditions.push(`m."contentType" = $${paramIndex}`);
