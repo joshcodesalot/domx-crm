@@ -1,4 +1,4 @@
--- Per-staff weekly work schedules (Asia/Manila wall clock).
+-- Per-staff weekly work schedules (Europe/Berlin wall clock).
 -- Overnight shifts: endTime <= startTime (e.g. 23:00 → 08:00).
 
 CREATE TABLE IF NOT EXISTS user_work_schedules (

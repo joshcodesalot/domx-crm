@@ -1,5 +1,5 @@
 /**
- * Per-staff weekly work schedules in Asia/Manila.
+ * Per-staff weekly work schedules in Europe/Berlin.
  * Overnight: endTime <= startTime (e.g. 23:00 → 08:00).
  * Shift-start attribution: events in [D+start, end) count toward calendar date D.
  */
@@ -56,7 +56,7 @@ function isOvernight(startTime, endTime) {
 }
 
 /**
- * JS day-of-week for a YYYY-MM-DD in Asia/Manila (0=Sun … 6=Sat).
+ * JS day-of-week for a YYYY-MM-DD in Europe/Berlin (0=Sun … 6=Sat).
  * Uses UTC noon so the calendar date is stable (PH has no DST).
  * @param {string} dateStr
  */
@@ -80,7 +80,7 @@ function nextCalendarDate(dateStr) {
 }
 
 /**
- * Build a timestamptz literal expression for SQL using Asia/Manila wall clock.
+ * Build a timestamptz literal expression for SQL using Europe/Berlin wall clock.
  * @param {string} dateStr YYYY-MM-DD
  * @param {string} timeStr HH:MM:SS
  */

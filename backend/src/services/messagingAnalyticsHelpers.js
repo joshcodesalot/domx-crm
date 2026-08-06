@@ -1,4 +1,4 @@
-const { BUSINESS_TZ } = require('./businessTimezone');
+const { BUSINESS_TZ, normalizeTimeZone } = require('./businessTimezone');
 
 function ratePercent(numerator, denominator) {
   const n = Number(numerator) || 0;
@@ -230,10 +230,17 @@ function parseExtendedMessageStats(row = {}) {
   };
 }
 
-function periodDateClause(alias, startParam, endParam) {
+/**
+ * @param {string|null} alias
+ * @param {number} startParam
+ * @param {number} endParam
+ * @param {string} [timeZone]
+ */
+function periodDateClause(alias, startParam, endParam, timeZone = BUSINESS_TZ) {
+  const tz = normalizeTimeZone(timeZone);
   const col = alias ? `${alias}."sentAt"` : '"sentAt"';
-  return `(${col} AT TIME ZONE '${BUSINESS_TZ}')::date >= $${startParam}::date
-             AND (${col} AT TIME ZONE '${BUSINESS_TZ}')::date <= $${endParam}::date`;
+  return `(${col} AT TIME ZONE '${tz}')::date >= $${startParam}::date
+             AND (${col} AT TIME ZONE '${tz}')::date <= $${endParam}::date`;
 }
 
 module.exports = {

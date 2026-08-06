@@ -155,7 +155,7 @@ export default function StaffScheduleModal({
         <div className="p-6">
           <h3 className="text-lg font-semibold mb-1">Work schedule</h3>
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">
-            {member.name} — hours in Asia/Manila (PHT)
+            {member.name} — hours in Europe/Berlin (CET/CEST)
           </p>
           <p className="text-xs text-gray-400 mb-4">
             Overnight shifts are supported (e.g. 23:00–08:00). Cleared days count as

@@ -1,26 +1,45 @@
 export const CHART_PERIOD_OPTIONS = [1, 3, 5, 7] as const;
 export type ChartPeriodDays = (typeof CHART_PERIOD_OPTIONS)[number];
 
-const manilaDateFormatter = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Manila',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-});
+export const DEFAULT_TIMEZONE = 'Europe/Berlin';
+
+function dateFormatterFor(timeZone: string) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+}
 
 export function periodDaysLabel(days: number): string {
   return days === 1 ? '1 day' : `${days} days`;
 }
 
-/** Today as YYYY-MM-DD in Asia/Manila. */
-export function manilaCalendarDateString(date = new Date()): string {
-  return manilaDateFormatter.format(date);
+/** Today as YYYY-MM-DD in the given IANA timezone. */
+export function calendarDateString(
+  date = new Date(),
+  timeZone = DEFAULT_TIMEZONE
+): string {
+  try {
+    return dateFormatterFor(timeZone).format(date);
+  } catch {
+    return dateFormatterFor(DEFAULT_TIMEZONE).format(date);
+  }
 }
 
-/** Last N inclusive Manila calendar days ending today, oldest first. */
-export function buildManilaDateRange(days: number): string[] {
+/** @deprecated Use calendarDateString */
+export function manilaCalendarDateString(date = new Date()): string {
+  return calendarDateString(date, DEFAULT_TIMEZONE);
+}
+
+/** Last N inclusive calendar days ending today, oldest first. */
+export function buildDateRange(
+  days: number,
+  timeZone = DEFAULT_TIMEZONE
+): string[] {
   const count = Math.max(0, Math.floor(Number(days) || 0));
-  const today = manilaCalendarDateString();
+  const today = calendarDateString(new Date(), timeZone);
   const [year, month, day] = today.split('-').map(Number);
   const dates: string[] = [];
   for (let i = count - 1; i >= 0; i -= 1) {
@@ -34,11 +53,19 @@ export function buildManilaDateRange(days: number): string[] {
   return dates;
 }
 
-export function rangeFromPresetDays(days: ChartPeriodDays): {
+/** @deprecated Use buildDateRange */
+export function buildManilaDateRange(days: number): string[] {
+  return buildDateRange(days, DEFAULT_TIMEZONE);
+}
+
+export function rangeFromPresetDays(
+  days: ChartPeriodDays,
+  timeZone = DEFAULT_TIMEZONE
+): {
   startDate: string;
   endDate: string;
 } {
-  const dates = buildManilaDateRange(days);
+  const dates = buildDateRange(days, timeZone);
   return {
     startDate: dates[0],
     endDate: dates[dates.length - 1],
@@ -80,7 +107,7 @@ export default function PeriodDaysToggle({
             className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
               active
                 ? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
-                : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5'
+                : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10'
             }`}
           >
             {periodDaysLabel(days)}

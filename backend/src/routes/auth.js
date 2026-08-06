@@ -12,6 +12,10 @@ const {
   OWNER_ROLE_SLUG,
 } = require('../services/rbac');
 const { validatePassword } = require('../services/passwordUtils');
+const {
+  BUSINESS_TZ,
+  normalizeTimeZone,
+} = require('../services/businessTimezone');
 
 const router = express.Router();
 
@@ -117,7 +121,7 @@ router.post('/register-owner', registerOwnerLimiter, async (req, res) => {
     const inserted = await client.query(
       `INSERT INTO users (name, email, "passwordHash", role, status, "lastLoginAt", "ipAddressLast")
        VALUES ($1, $2, $3, $4, 'active', NOW(), $5)
-       RETURNING id, name, email, role, status, "mustChangePassword",
+       RETURNING id, name, email, role, status, "mustChangePassword", timezone,
                  "lastLoginAt", "createdAt", "updatedAt", "ipAddressLast"`,
       [name, email, passwordHash, OWNER_ROLE_SLUG, clientIp]
     );
@@ -145,7 +149,7 @@ router.post('/login', loginLimiter, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT id, name, email, "passwordHash", role, status, "mustChangePassword",
-              "lastLoginAt", "createdAt", "updatedAt", "ipAddressLast"
+              timezone, "lastLoginAt", "createdAt", "updatedAt", "ipAddressLast"
        FROM users
        WHERE LOWER(email) = LOWER($1)`,
       [email]
@@ -174,7 +178,7 @@ router.post('/login', loginLimiter, async (req, res) => {
            "ipAddressLast" = $1,
            "updatedAt" = NOW()
        WHERE id = $2
-       RETURNING id, name, email, role, status, "mustChangePassword",
+       RETURNING id, name, email, role, status, "mustChangePassword", timezone,
                  "lastLoginAt", "createdAt", "updatedAt", "ipAddressLast"`,
       [clientIp, user.id]
     );
@@ -190,7 +194,7 @@ router.post('/login', loginLimiter, async (req, res) => {
 router.get('/me', authenticate, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, name, email, role, status, "mustChangePassword",
+      `SELECT id, name, email, role, status, "mustChangePassword", timezone,
               "lastLoginAt", "createdAt", "updatedAt", "ipAddressLast"
        FROM users
        WHERE id = $1`,
@@ -211,6 +215,48 @@ router.get('/me', authenticate, async (req, res) => {
     res.json({ user: safeUser });
   } catch (err) {
     console.error('Me error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.patch('/me', authenticate, async (req, res) => {
+  const requestedTz = req.body?.timezone;
+  if (requestedTz == null || String(requestedTz).trim() === '') {
+    return res.status(400).json({ error: 'timezone is required' });
+  }
+
+  const timezone = normalizeTimeZone(requestedTz);
+  if (timezone !== String(requestedTz).trim()) {
+    return res.status(400).json({
+      error: 'Invalid timezone. Use a valid IANA timezone (e.g. Europe/Berlin).',
+    });
+  }
+
+  try {
+    const updated = await pool.query(
+      `UPDATE users
+       SET timezone = $1,
+           "updatedAt" = NOW()
+       WHERE id = $2
+       RETURNING id, name, email, role, status, "mustChangePassword", timezone,
+                 "lastLoginAt", "createdAt", "updatedAt", "ipAddressLast"`,
+      [timezone || BUSINESS_TZ, req.user.id]
+    );
+
+    if (updated.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userInfo = await getUserById(req.user.id);
+    const permissions = await getUserPermissions(req.user.id);
+    const safeUser = toSafeUser(
+      { ...updated.rows[0], roleName: userInfo?.roleName },
+      permissions
+    );
+
+    res.json({ user: safeUser });
+  } catch (err) {
+    console.error('Update me error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -238,7 +284,7 @@ router.post('/change-password', authenticate, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT id, name, email, role, status, "passwordHash", "mustChangePassword",
-              "lastLoginAt", "createdAt", "updatedAt", "ipAddressLast"
+              timezone, "lastLoginAt", "createdAt", "updatedAt", "ipAddressLast"
        FROM users
        WHERE id = $1`,
       [req.user.id]
@@ -267,7 +313,7 @@ router.post('/change-password', authenticate, async (req, res) => {
            "mustChangePassword" = false,
            "updatedAt" = NOW()
        WHERE id = $2
-       RETURNING id, name, email, role, status, "mustChangePassword",
+       RETURNING id, name, email, role, status, "mustChangePassword", timezone,
                  "lastLoginAt", "createdAt", "updatedAt", "ipAddressLast"`,
       [passwordHash, req.user.id]
     );

@@ -4,6 +4,7 @@ import { RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import PeriodDaysToggle, {
+  DEFAULT_TIMEZONE,
   formatPeriodRangeLabel,
   rangeFromPresetDays,
   type ChartPeriodDays,
@@ -19,6 +20,30 @@ import {
   type CurrencyAmount,
 } from '@/lib/api';
 import { formatMoney, formatResponseTime } from '@/lib/messagingDashboardFormat';
+import fourBasedIcon from '@/assets/4based_icon.ico';
+import maloumIcon from '@/assets/maloum_icon.png';
+
+function PlatformIcon({
+  platform,
+  className = 'w-3.5 h-3.5',
+}: {
+  platform?: 'maloum' | '4based' | null;
+  className?: string;
+}) {
+  if (platform === '4based') {
+    return <img src={fourBasedIcon} alt="" className={className} />;
+  }
+  if (platform === 'maloum') {
+    return (
+      <img
+        src={maloumIcon}
+        alt=""
+        className={`${className} rounded-sm object-cover`}
+      />
+    );
+  }
+  return null;
+}
 
 function formatCurrencyAmounts(amounts: CurrencyAmount[] | undefined): string {
   if (!amounts || amounts.length === 0) return formatMoney(0, 'EUR');
@@ -182,7 +207,11 @@ export default function CreatorAnalytics() {
   const [creators, setCreators] = useState<Creator[]>([]);
   const [overview, setOverview] = useState<CreatorOverviewResponse | null>(null);
   const [series, setSeries] = useState<CreatorSeriesDay[]>([]);
-  const defaultRange = useMemo(() => rangeFromPresetDays(7), []);
+  const viewerTimeZone = user?.timezone || DEFAULT_TIMEZONE;
+  const defaultRange = useMemo(
+    () => rangeFromPresetDays(7, viewerTimeZone),
+    [viewerTimeZone]
+  );
   const [presetDays, setPresetDays] = useState<ChartPeriodDays | null>(7);
   const [startDate, setStartDate] = useState(defaultRange.startDate);
   const [endDate, setEndDate] = useState(defaultRange.endDate);
@@ -245,12 +274,23 @@ export default function CreatorAnalytics() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (presetDays == null) return;
+    const range = rangeFromPresetDays(presetDays, viewerTimeZone);
+    setStartDate(range.startDate);
+    setEndDate(range.endDate);
+  }, [viewerTimeZone, presetDays]);
+
   const handlePresetChange = (days: ChartPeriodDays) => {
-    const range = rangeFromPresetDays(days);
+    const range = rangeFromPresetDays(days, viewerTimeZone);
     setPresetDays(days);
     setStartDate(range.startDate);
     setEndDate(range.endDate);
   };
+
+  const selectedCreator = creators.find((c) => c.id === creatorId) || null;
+  const selectedPlatform =
+    overview?.selected?.platform || selectedCreator?.platform || null;
 
   const handleCreatorChange = (value: string) => {
     setCreatorId(value);
@@ -272,7 +312,7 @@ export default function CreatorAnalytics() {
           <div>
             <h2 className="text-2xl font-semibold mb-1">Creator Analytics</h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              {periodLabel} (Asia/Manila)
+              {periodLabel} ({overview?.timeZone || viewerTimeZone})
               {' · '}
               <Link
                 to="/dashboard"
@@ -316,19 +356,23 @@ export default function CreatorAnalytics() {
                 />
               </label>
             </div>
-            <select
-              value={creatorId}
-              onChange={(e) => handleCreatorChange(e.target.value)}
-              disabled={loading || refreshing}
-              className="rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-sm disabled:opacity-50"
-            >
-              <option value="">All creators</option>
-              {creators.map((creator) => (
-                <option key={creator.id} value={creator.id}>
-                  {creator.displayName}
-                </option>
-              ))}
-            </select>
+            <div className="flex items-center gap-2">
+              <PlatformIcon platform={selectedPlatform} className="w-4 h-4" />
+              <select
+                value={creatorId}
+                onChange={(e) => handleCreatorChange(e.target.value)}
+                disabled={loading || refreshing}
+                className="rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-sm disabled:opacity-50"
+              >
+                <option value="">All creators</option>
+                {creators.map((creator) => (
+                  <option key={creator.id} value={creator.id}>
+                    {creator.platform === '4based' ? '4based · ' : 'Maloum · '}
+                    {creator.displayName}
+                  </option>
+                ))}
+              </select>
+            </div>
             <button
               type="button"
               onClick={() => void load({ silent: true })}
@@ -628,6 +672,10 @@ export default function CreatorAnalytics() {
                                     }
                                     className="flex items-center gap-2 hover:underline"
                                   >
+                                    <PlatformIcon
+                                      platform={creator.platform}
+                                      className="w-3.5 h-3.5 shrink-0"
+                                    />
                                     <CreatorAvatar
                                       avatarUrl={creator.creatorAvatarUrl}
                                       displayName={creator.creatorName}

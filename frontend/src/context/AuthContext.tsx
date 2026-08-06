@@ -16,6 +16,7 @@ import {
   logout as apiLogout,
   registerOwner as apiRegisterOwner,
   setToken,
+  updateMyTimezone as apiUpdateMyTimezone,
   type User,
 } from '@/lib/api';
 
@@ -27,6 +28,7 @@ interface AuthContextValue {
   login: (email: string, password: string) => Promise<void>;
   registerOwner: (name: string, email: string, password: string) => Promise<void>;
   changePassword: (newPassword: string, confirmPassword: string) => Promise<void>;
+  updateTimezone: (timezone: string) => Promise<void>;
   logout: () => Promise<void>;
   hasPermission: (slug: string) => boolean;
   hasAnyPermission: (slugs: string[]) => boolean;
@@ -82,6 +84,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     []
   );
 
+  const updateTimezone = useCallback(async (timezone: string) => {
+    const { user: updatedUser } = await apiUpdateMyTimezone(timezone);
+    setUser(updatedUser);
+  }, []);
+
   const logout = useCallback(async () => {
     await apiLogout();
     clearToken();
@@ -112,6 +119,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       registerOwner,
       changePassword,
+      updateTimezone,
       logout,
       hasPermission,
       hasAnyPermission,
@@ -123,6 +131,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       registerOwner,
       changePassword,
+      updateTimezone,
       logout,
       hasPermission,
       hasAnyPermission,

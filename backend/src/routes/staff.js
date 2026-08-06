@@ -32,6 +32,7 @@ function staffSelectQuery() {
   return `
     SELECT u.id, u.name, u.email, u.role, u.status,
            u."mustChangePassword",
+           u.timezone,
            r.name AS "roleName",
            u."lastLoginAt", u."createdAt", u."updatedAt", u."ipAddressLast",
            COALESCE(a."creatorCount", 0)::int AS "creatorCount"
@@ -373,7 +374,7 @@ router.get(
 
       res.json({
         userId: id,
-        timeZone: 'Asia/Manila',
+        timeZone: 'Europe/Berlin',
         days,
       });
     } catch (err) {
@@ -437,7 +438,7 @@ router.put(
 
       res.json({
         userId: id,
-        timeZone: 'Asia/Manila',
+        timeZone: 'Europe/Berlin',
         days,
       });
     } catch (err) {

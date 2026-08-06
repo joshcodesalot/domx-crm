@@ -7,6 +7,7 @@ const {
   getUserIdsWithCreatorAccess,
   userCanAccessCreator,
 } = require('../services/creatorAccess');
+const { getUserTimeZone } = require('../services/rbac');
 const { emitToUsers } = require('../services/userEventBus');
 const {
   getAnalyticsScope,
@@ -19,7 +20,6 @@ const {
   maskCount,
 } = require('../services/leaderboardMask');
 const {
-  BUSINESS_TZ,
   calendarDateString,
   monthStartDateString,
   resolveAnalyticsPeriod,
@@ -41,7 +41,6 @@ const {
   loadSchedulesByUserId,
   scheduleMetaForWeek,
   expandShiftWindows,
-  expandTodayWindows,
   buildWindowValuesClause,
   duringScheduledHoursPredicate,
   scheduleDowJoin,
@@ -1303,12 +1302,13 @@ router.get(
   requirePermission('analytics.view', 'analytics.self'),
   async (req, res) => {
     try {
+      const tz = await getUserTimeZone(req.user.id);
       const scope = getAnalyticsScope(req.user);
       const period = resolveAnalyticsPeriod({
         startDate: req.query.startDate,
         endDate: req.query.endDate,
         days: req.query.days,
-      });
+      }, 90, { timeZone: tz });
       const periodStart = period.startDate;
       const periodEnd = period.endDate;
       const chartDays = period.days;
@@ -1343,20 +1343,11 @@ router.get(
       const chatterNamesResult = await staffListQuery;
       const staffIds = chatterNamesResult.rows.map((row) => row.chatterId);
       const schedulesByUser = await loadSchedulesByUserId(staffIds);
-      const todayWindows = await expandTodayWindows(staffIds, schedulesByUser);
       const periodWindows = await expandShiftWindows(
         staffIds,
         periodStart,
         periodEnd,
         schedulesByUser
-      );
-      const todayWindowClause = buildWindowValuesClause(
-        todayWindows,
-        scope.mode === 'self' ? 2 : 1
-      );
-      const chatterTodayWindowClause = buildWindowValuesClause(
-        todayWindows,
-        scope.mode === 'self' ? 2 : 1
       );
       const periodWindowClause = buildWindowValuesClause(
         periodWindows,
@@ -1451,120 +1442,25 @@ router.get(
           `SELECT NULL::text AS currency, 0::float AS amount WHERE false`
         );
 
-      const dailySalesQuery = !todayWindowClause
-        ? scope.mode === 'self'
-          ? emptyCurrencyQuery()
-          : pool.query(
-              `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
-               FROM messaging_dashboard_entries
-               WHERE purchased = true
-                 AND "priceNet" IS NOT NULL
-                 AND "chatterId" IS NULL
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date
-                     = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
-               GROUP BY 1`
-            )
-        : scope.mode === 'self'
-          ? pool.query(
-              `WITH windows("userId", "windowStart", "windowEnd") AS (
-                 VALUES ${todayWindowClause.sql}
-               )
-               SELECT UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
-               FROM messaging_dashboard_entries m
-               WHERE m.purchased = true
-                 AND m."priceNet" IS NOT NULL
-                 AND m."chatterId" = ANY($1::uuid[])
-                 AND EXISTS (
-                   SELECT 1 FROM windows w
-                   WHERE w."userId" = m."chatterId"
-                     AND m."sentAt" >= w."windowStart"
-                     AND m."sentAt" < w."windowEnd"
-                 )
-               GROUP BY 1`,
-              [scope.userIds, ...todayWindowClause.params]
-            )
-          : pool.query(
-              `WITH windows("userId", "windowStart", "windowEnd") AS (
-                 VALUES ${todayWindowClause.sql}
-               )
-               SELECT UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
-               FROM messaging_dashboard_entries m
-               WHERE m.purchased = true
-                 AND m."priceNet" IS NOT NULL
-                 AND (
-                   EXISTS (
-                     SELECT 1 FROM windows w
-                     WHERE w."userId" = m."chatterId"
-                       AND m."sentAt" >= w."windowStart"
-                       AND m."sentAt" < w."windowEnd"
-                   )
-                   OR (
-                     m."chatterId" IS NULL
-                     AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date
-                         = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
-                   )
-                 )
-               GROUP BY 1`,
-              todayWindowClause.params
-            );
-
-      const chatterSalesQuery = !chatterTodayWindowClause
-        ? pool.query(
+      const chatterSalesQuery = pool.query(
             `SELECT m."chatterId",
                     UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                    0::float AS "dailySales",
                     COALESCE(SUM(ABS(m."priceNet")) FILTER (
                       WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                     ), 0)::float AS "totalSales",
                     COALESCE(SUM(ABS(m."priceNet")) FILTER (
                       WHERE m.purchased = true
                         AND m."priceNet" IS NOT NULL
-                        AND date_trunc('month', m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')
-                            = date_trunc('month', NOW() AT TIME ZONE '${BUSINESS_TZ}')
+                        AND date_trunc('month', m."sentAt" AT TIME ZONE '${tz}')
+                            = date_trunc('month', NOW() AT TIME ZONE '${tz}')
                     ), 0)::float AS "monthlySales"
              FROM messaging_dashboard_entries m
              WHERE TRUE ${mChatterClause}
              GROUP BY m."chatterId", 2`,
             selfParams
-          )
-        : pool.query(
-            `WITH windows("userId", "windowStart", "windowEnd") AS (
-               VALUES ${chatterTodayWindowClause.sql}
-             )
-             SELECT m."chatterId",
-                    UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                    COALESCE(SUM(ABS(m."priceNet")) FILTER (
-                      WHERE m.purchased = true
-                        AND m."priceNet" IS NOT NULL
-                        AND EXISTS (
-                          SELECT 1 FROM windows w
-                          WHERE w."userId" = m."chatterId"
-                            AND m."sentAt" >= w."windowStart"
-                            AND m."sentAt" < w."windowEnd"
-                        )
-                    ), 0)::float AS "dailySales",
-                    COALESCE(SUM(ABS(m."priceNet")) FILTER (
-                      WHERE m.purchased = true AND m."priceNet" IS NOT NULL
-                    ), 0)::float AS "totalSales",
-                    COALESCE(SUM(ABS(m."priceNet")) FILTER (
-                      WHERE m.purchased = true
-                        AND m."priceNet" IS NOT NULL
-                        AND date_trunc('month', m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')
-                            = date_trunc('month', NOW() AT TIME ZONE '${BUSINESS_TZ}')
-                    ), 0)::float AS "monthlySales"
-             FROM messaging_dashboard_entries m
-             WHERE TRUE ${mChatterClause}
-             GROUP BY m."chatterId", 2`,
-            scope.mode === 'self'
-              ? [scope.userIds, ...chatterTodayWindowClause.params]
-              : chatterTodayWindowClause.params
           );
 
       const [
-        dailySalesResult,
         totalSalesResult,
         monthlySalesResult,
         avgResponseResult,
@@ -1588,7 +1484,6 @@ router.get(
         chatterPeriodStatsResult,
         chatterPeriodSalesResult,
       ] = await Promise.all([
-        dailySalesQuery,
         // Period sales (Period Sales card / totalRevenue)
         scope.mode === 'self'
           ? pool.query(
@@ -1597,8 +1492,8 @@ router.get(
                FROM messaging_dashboard_entries
                WHERE purchased = true
                  AND "priceNet" IS NOT NULL
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND "chatterId" = ANY($1::uuid[])
                GROUP BY 1`,
               [scope.userIds, periodStart, periodEnd]
@@ -1609,8 +1504,8 @@ router.get(
                FROM messaging_dashboard_entries
                WHERE purchased = true
                  AND "priceNet" IS NOT NULL
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY 1`,
               [periodStart, periodEnd]
             ),
@@ -1620,8 +1515,8 @@ router.get(
            FROM messaging_dashboard_entries
            WHERE purchased = true
              AND "priceNet" IS NOT NULL
-             AND date_trunc('month', "sentAt" AT TIME ZONE '${BUSINESS_TZ}')
-                 = date_trunc('month', NOW() AT TIME ZONE '${BUSINESS_TZ}')
+             AND date_trunc('month', "sentAt" AT TIME ZONE '${tz}')
+                 = date_trunc('month', NOW() AT TIME ZONE '${tz}')
              ${chatterClause}
            GROUP BY 1`,
           selfParams
@@ -1639,7 +1534,7 @@ router.get(
                       ), 0)::float AS amount
                FROM days d
                LEFT JOIN messaging_dashboard_entries m
-                 ON (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date = d.day
+                 ON (m."sentAt" AT TIME ZONE '${tz}')::date = d.day
                 AND m."chatterId" = ANY($1::uuid[])
                GROUP BY d.day, 2
                ORDER BY d.day`
@@ -1653,7 +1548,7 @@ router.get(
                       ), 0)::float AS amount
                FROM days d
                LEFT JOIN messaging_dashboard_entries m
-                 ON (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date = d.day
+                 ON (m."sentAt" AT TIME ZONE '${tz}')::date = d.day
                GROUP BY d.day, 2
                ORDER BY d.day`,
           periodSelfParams
@@ -1663,16 +1558,16 @@ router.get(
           ? pool.query(
               `SELECT ${EXTENDED_MESSAGE_STATS_SELECT}
                FROM messaging_dashboard_entries m
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])`,
               [scope.userIds, periodStart, periodEnd]
             )
           : pool.query(
               `SELECT ${EXTENDED_MESSAGE_STATS_SELECT}
                FROM messaging_dashboard_entries m
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date`,
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date`,
               [periodStart, periodEnd]
             ),
         // Period revenue for per-hour rates (team cards)
@@ -1683,8 +1578,8 @@ router.get(
                FROM messaging_dashboard_entries
                WHERE purchased = true
                  AND "priceNet" IS NOT NULL
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND "chatterId" = ANY($1::uuid[])
                GROUP BY 1`,
               [scope.userIds, periodStart, periodEnd]
@@ -1695,8 +1590,8 @@ router.get(
                FROM messaging_dashboard_entries
                WHERE purchased = true
                  AND "priceNet" IS NOT NULL
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY 1`,
               [periodStart, periodEnd]
             ),
@@ -1705,8 +1600,8 @@ router.get(
               `SELECT COUNT(*)::int AS "messagesSent"
                FROM messaging_dashboard_entries
                WHERE "contentType" IN ('text', 'media', 'chat_product')
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND "chatterId" = ANY($1::uuid[])`,
               [scope.userIds, periodStart, periodEnd]
             )
@@ -1714,8 +1609,8 @@ router.get(
               `SELECT COUNT(*)::int AS "messagesSent"
                FROM messaging_dashboard_entries
                WHERE "contentType" IN ('text', 'media', 'chat_product')
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND ("sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date`,
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND ("sentAt" AT TIME ZONE '${tz}')::date <= $2::date`,
               [periodStart, periodEnd]
             ),
         chatterAvgQuery,
@@ -1746,7 +1641,7 @@ router.get(
                FROM messaging_dashboard_entries m
                WHERE m.purchased = true
                  AND m."priceNet" IS NOT NULL
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY m."chatterId", 2`,
               [scope.userIds, ACTIVITY_METRICS_CUTOVER]
@@ -1758,7 +1653,7 @@ router.get(
                FROM messaging_dashboard_entries m
                WHERE m.purchased = true
                  AND m."priceNet" IS NOT NULL
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                GROUP BY m."chatterId", 2`,
               [ACTIVITY_METRICS_CUTOVER]
             ),
@@ -1768,7 +1663,7 @@ router.get(
                       COUNT(*)::int AS "messagesSent"
                FROM messaging_dashboard_entries m
                WHERE m."contentType" IN ('text', 'media', 'chat_product')
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY m."chatterId"`,
               [scope.userIds, ACTIVITY_METRICS_CUTOVER]
@@ -1778,7 +1673,7 @@ router.get(
                       COUNT(*)::int AS "messagesSent"
                FROM messaging_dashboard_entries m
                WHERE m."contentType" IN ('text', 'media', 'chat_product')
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                GROUP BY m."chatterId"`,
               [ACTIVITY_METRICS_CUTOVER]
             ),
@@ -1845,8 +1740,8 @@ router.get(
                    m."contentType" = 'tip'
                    OR (m."contentType" = 'chat_product' AND m.purchased = true)
                  )
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY 1, 2`,
               [scope.userIds, periodStart, periodEnd]
@@ -1866,8 +1761,8 @@ router.get(
                    m."contentType" = 'tip'
                    OR (m."contentType" = 'chat_product' AND m.purchased = true)
                  )
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY 1, 2`,
               [periodStart, periodEnd]
             ),
@@ -1885,8 +1780,8 @@ router.get(
                FROM messaging_dashboard_entries m
                WHERE m."contentType" = 'chat_product'
                  AND m."priceNet" IS NOT NULL
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY 1`,
               [scope.userIds, periodStart, periodEnd]
@@ -1903,8 +1798,8 @@ router.get(
                FROM messaging_dashboard_entries m
                WHERE m."contentType" = 'chat_product'
                  AND m."priceNet" IS NOT NULL
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY 1`,
               [periodStart, periodEnd]
             ),
@@ -1912,7 +1807,7 @@ router.get(
         scope.mode === 'self'
           ? pool.query(
               `SELECT
-                  EXTRACT(HOUR FROM m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::int AS hour,
+                  EXTRACT(HOUR FROM m."sentAt" AT TIME ZONE '${tz}')::int AS hour,
                   COUNT(*) FILTER (
                     WHERE m."contentType" IN ('text', 'media', 'chat_product')
                   )::int AS "messagesSent",
@@ -1923,8 +1818,8 @@ router.get(
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                   ), 0)::float AS "salesAmount"
                FROM messaging_dashboard_entries m
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY 1
                ORDER BY 1`,
@@ -1932,7 +1827,7 @@ router.get(
             )
           : pool.query(
               `SELECT
-                  EXTRACT(HOUR FROM m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::int AS hour,
+                  EXTRACT(HOUR FROM m."sentAt" AT TIME ZONE '${tz}')::int AS hour,
                   COUNT(*) FILTER (
                     WHERE m."contentType" IN ('text', 'media', 'chat_product')
                   )::int AS "messagesSent",
@@ -1943,8 +1838,8 @@ router.get(
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                   ), 0)::float AS "salesAmount"
                FROM messaging_dashboard_entries m
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY 1
                ORDER BY 1`,
               [periodStart, periodEnd]
@@ -1959,8 +1854,8 @@ router.get(
                JOIN creators c ON c.id = m."creatorId"
                WHERE m.purchased = true
                  AND m."priceNet" IS NOT NULL
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY c.platform, 2`,
               [scope.userIds, periodStart, periodEnd]
@@ -1973,8 +1868,8 @@ router.get(
                JOIN creators c ON c.id = m."creatorId"
                WHERE m.purchased = true
                  AND m."priceNet" IS NOT NULL
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY c.platform, 2`,
               [periodStart, periodEnd]
             ),
@@ -1989,8 +1884,8 @@ router.get(
                       ${EXTENDED_MESSAGE_STATS_SELECT}
                FROM messaging_dashboard_entries m
                JOIN creators c ON c.id = m."creatorId"
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY m."creatorId"`,
               [scope.userIds, periodStart, periodEnd]
@@ -2004,8 +1899,8 @@ router.get(
                       ${EXTENDED_MESSAGE_STATS_SELECT}
                FROM messaging_dashboard_entries m
                JOIN creators c ON c.id = m."creatorId"
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY m."creatorId"`,
               [periodStart, periodEnd]
             ),
@@ -2024,8 +1919,8 @@ router.get(
                         WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "ppvSalesAmount"
                FROM messaging_dashboard_entries m
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY m."creatorId", 2`,
               [scope.userIds, periodStart, periodEnd]
@@ -2043,8 +1938,8 @@ router.get(
                         WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "ppvSalesAmount"
                FROM messaging_dashboard_entries m
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY m."creatorId", 2`,
               [periodStart, periodEnd]
             ),
@@ -2054,8 +1949,8 @@ router.get(
               `SELECT m."chatterId",
                       ${EXTENDED_MESSAGE_STATS_SELECT}
                FROM messaging_dashboard_entries m
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY m."chatterId"`,
               [scope.userIds, periodStart, periodEnd]
@@ -2064,8 +1959,8 @@ router.get(
               `SELECT m."chatterId",
                       ${EXTENDED_MESSAGE_STATS_SELECT}
                FROM messaging_dashboard_entries m
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY m."chatterId"`,
               [periodStart, periodEnd]
             ),
@@ -2084,8 +1979,8 @@ router.get(
                         WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "periodSalesAmount"
                FROM messaging_dashboard_entries m
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY m."chatterId", 2`,
               [scope.userIds, periodStart, periodEnd]
@@ -2103,8 +1998,8 @@ router.get(
                         WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "periodSalesAmount"
                FROM messaging_dashboard_entries m
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY m."chatterId", 2`,
               [periodStart, periodEnd]
             ),
@@ -2228,7 +2123,6 @@ router.get(
         }
       }
 
-      const dailySales = currencyAmountRowsToList(dailySalesResult.rows);
       const totalSales = currencyAmountRowsToList(totalSalesResult.rows);
       const monthlyRevenue = currencyAmountRowsToList(monthlySalesResult.rows);
       const periodRateSales = currencyAmountRowsToList(cutoverSalesResult.rows);
@@ -2445,7 +2339,6 @@ router.get(
             row.avgResponseTimeSeconds != null
               ? Number(row.avgResponseTimeSeconds)
               : null,
-          dailySales: [],
           totalSales: [],
           monthlyRevenue: [],
           messagesSent: 0,
@@ -2459,7 +2352,6 @@ router.get(
         if (!statsByChatter.has(row.chatterId)) {
           statsByChatter.set(row.chatterId, {
             avgResponseTimeSeconds: null,
-            dailySales: [],
             totalSales: [],
             monthlyRevenue: [],
             messagesSent: 0,
@@ -2472,12 +2364,8 @@ router.get(
         const entry = statsByChatter.get(row.chatterId);
         const currency =
           String(row.currency || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR';
-        const daily = Number(row.dailySales) || 0;
         const total = Number(row.totalSales) || 0;
         const monthly = Number(row.monthlySales) || 0;
-        if (daily > 0) {
-          entry.dailySales.push({ currency, amount: daily });
-        }
         if (total > 0) {
           entry.totalSales.push({ currency, amount: total });
         }
@@ -2489,7 +2377,6 @@ router.get(
         if (!statsByChatter.has(row.chatterId)) {
           statsByChatter.set(row.chatterId, {
             avgResponseTimeSeconds: null,
-            dailySales: [],
             totalSales: [],
             monthlyRevenue: [],
             messagesSent: 0,
@@ -2527,7 +2414,6 @@ router.get(
           chatterId: row.chatterId,
           chatterName: row.chatterName,
           avgResponseTimeSeconds: stats?.avgResponseTimeSeconds ?? null,
-          dailySales: mergeCurrencyAmounts(stats?.dailySales || []),
           totalSales: totalSalesMerged,
           monthlyRevenue: mergeCurrencyAmounts(stats?.monthlyRevenue || []),
           messagesSent: messagesSentForChatter,
@@ -2588,7 +2474,6 @@ router.get(
             chatterId,
             chatterName: nameById.get(chatterId) || 'Unknown',
             avgResponseTimeSeconds: stats.avgResponseTimeSeconds,
-            dailySales: mergeCurrencyAmounts(stats.dailySales),
             totalSales: totalSalesMerged,
             monthlyRevenue: mergeCurrencyAmounts(stats.monthlyRevenue),
             messagesSent: stats.messagesSent,
@@ -2628,7 +2513,7 @@ router.get(
         scope: scope.mode,
         chartDays,
         period: { startDate: periodStart, endDate: periodEnd },
-        dailySales,
+        timeZone: tz,
         totalSales,
         totalRevenue: totalSales,
         monthlyRevenue,
@@ -2684,9 +2569,10 @@ router.get(
   requirePermission('analytics.view', 'analytics.self'),
   async (req, res) => {
     try {
+      const tz = await getUserTimeZone(req.user.id);
       const viewerId = req.user.id;
-      const periodStart = monthStartDateString();
-      const periodEnd = calendarDateString();
+      const periodStart = monthStartDateString(new Date(), tz);
+      const periodEnd = calendarDateString(new Date(), tz);
 
       const staffResult = await pool.query(
         `SELECT u.id AS "userId", u.name AS "userName"
@@ -2918,7 +2804,7 @@ router.get(
         period: {
           startDate: periodStart,
           endDate: periodEnd,
-          timeZone: BUSINESS_TZ,
+          timeZone: tz,
           usesScheduledHours: true,
         },
         lastUpdated: new Date().toISOString(),
@@ -2936,6 +2822,7 @@ router.get(
   requirePermission('analytics.view'),
   async (req, res) => {
     try {
+      const tz = await getUserTimeZone(req.user.id);
       const scope = getAnalyticsScope(req.user);
       if (scope.mode !== 'team') {
         return res.status(403).json({ error: 'Team analytics access required' });
@@ -2947,7 +2834,9 @@ router.get(
           days: req.query.days,
         },
         90,
-        { allowAnyDays: true, defaultDays: 7 }
+        {
+          timeZone: tz,
+          allowAnyDays: true, defaultDays: 7 }
       );
       const dateRange = period.dates;
       const startDate = period.startDate;
@@ -2986,13 +2875,13 @@ router.get(
         activityByStaffResult,
       ] = await Promise.all([
         pool.query(
-          `SELECT (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date::text AS date,
+          `SELECT (m."sentAt" AT TIME ZONE '${tz}')::date::text AS date,
                   ${SERIES_MESSAGE_SELECT}
            FROM messaging_dashboard_entries m
-           WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-             AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+           WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+             AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
              ${chatterClause}
-           GROUP BY (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date, ${SERIES_CURRENCY_EXPR}
+           GROUP BY (m."sentAt" AT TIME ZONE '${tz}')::date, ${SERIES_CURRENCY_EXPR}
            ORDER BY 1 ASC`,
           messageParams
         ),
@@ -3028,29 +2917,29 @@ router.get(
         scope.mode === 'self'
           ? pool.query(
               `SELECT m."chatterId",
-                      (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date::text AS date,
+                      (m."sentAt" AT TIME ZONE '${tz}')::date::text AS date,
                       ${SERIES_MESSAGE_SELECT}
                FROM messaging_dashboard_entries m
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                  AND m."chatterId" = ANY($3::uuid[])
                GROUP BY m."chatterId",
-                        (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date,
+                        (m."sentAt" AT TIME ZONE '${tz}')::date,
                         ${SERIES_CURRENCY_EXPR}
                ORDER BY 2 ASC`,
               [startDate, endDate, scope.userIds]
             )
           : pool.query(
               `SELECT m."chatterId",
-                      (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date::text AS date,
+                      (m."sentAt" AT TIME ZONE '${tz}')::date::text AS date,
                       ${SERIES_MESSAGE_SELECT}
                FROM messaging_dashboard_entries m
                JOIN users u ON u.id = m."chatterId"
-               WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-                 AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+               WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                  AND u.role = ANY($3::text[])
                GROUP BY m."chatterId",
-                        (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date,
+                        (m."sentAt" AT TIME ZONE '${tz}')::date,
                         ${SERIES_CURRENCY_EXPR}
                ORDER BY 2 ASC`,
               [startDate, endDate, TRACKED_STAFF_ROLES]
@@ -3242,6 +3131,7 @@ router.get(
         days: parsedDays,
         startDate,
         endDate,
+        timeZone: tz,
         series: days,
         byStaff,
         lastUpdated: new Date().toISOString(),
@@ -3259,6 +3149,7 @@ router.get(
   requirePermission('analytics.view'),
   async (req, res) => {
     try {
+      const tz = await getUserTimeZone(req.user.id);
       const scope = getAnalyticsScope(req.user);
       if (scope.mode !== 'team') {
         return res.status(403).json({ error: 'Team analytics access required' });
@@ -3267,7 +3158,7 @@ router.get(
         startDate: req.query.startDate,
         endDate: req.query.endDate,
         days: req.query.days,
-      });
+      }, 90, { timeZone: tz });
       const periodStart = period.startDate;
       const periodEnd = period.endDate;
       const creatorIdFilter =
@@ -3294,10 +3185,10 @@ router.get(
 
       const dateClause =
         scope.mode === 'self'
-          ? `(m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $2::date
-             AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $3::date`
-          : `(m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-             AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date`;
+          ? `(m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+             AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date`
+          : `(m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+             AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date`;
 
       const [
         creatorStatsResult,
@@ -3396,7 +3287,7 @@ router.get(
         ),
         pool.query(
           `SELECT
-              EXTRACT(HOUR FROM m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::int AS hour,
+              EXTRACT(HOUR FROM m."sentAt" AT TIME ZONE '${tz}')::int AS hour,
               COUNT(*) FILTER (
                 WHERE m."contentType" IN ('text', 'media', 'chat_product')
               )::int AS "messagesSent",
@@ -3415,7 +3306,7 @@ router.get(
           baseParams
         ),
         pool.query(
-          `SELECT (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date::text AS date,
+          `SELECT (m."sentAt" AT TIME ZONE '${tz}')::date::text AS date,
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                   COALESCE(SUM(ABS(m."priceNet")) FILTER (
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
@@ -3659,6 +3550,7 @@ router.get(
       res.json({
         scope: scope.mode,
         period: { startDate: periodStart, endDate: periodEnd },
+        timeZone: tz,
         chartDays: period.days,
         creatorId: creatorIdFilter,
         summary: {
@@ -3726,6 +3618,7 @@ router.get(
   requirePermission('analytics.view'),
   async (req, res) => {
     try {
+      const tz = await getUserTimeZone(req.user.id);
       const scope = getAnalyticsScope(req.user);
       if (scope.mode !== 'team') {
         return res.status(403).json({ error: 'Team analytics access required' });
@@ -3737,7 +3630,9 @@ router.get(
           days: req.query.days,
         },
         90,
-        { allowAnyDays: true, defaultDays: 7 }
+        {
+          timeZone: tz,
+          allowAnyDays: true, defaultDays: 7 }
       );
       const startDate = period.startDate;
       const endDate = period.endDate;
@@ -3765,14 +3660,14 @@ router.get(
             : [startDate, endDate];
 
       const result = await pool.query(
-        `SELECT (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date::text AS date,
+        `SELECT (m."sentAt" AT TIME ZONE '${tz}')::date::text AS date,
                 ${SERIES_MESSAGE_SELECT}
          FROM messaging_dashboard_entries m
-         WHERE (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $1::date
-           AND (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $2::date
+         WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+           AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
            ${chatterClause}
            ${creatorClause}
-         GROUP BY (m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date, ${SERIES_CURRENCY_EXPR}
+         GROUP BY (m."sentAt" AT TIME ZONE '${tz}')::date, ${SERIES_CURRENCY_EXPR}
          ORDER BY 1 ASC`,
         messageParams
       );
@@ -3858,6 +3753,7 @@ router.get(
   authenticate,
   requirePermission('analytics.view'),
   async (req, res) => {
+    const tz = await getUserTimeZone(req.user.id);
     const {
       startDate,
       endDate,
@@ -3880,7 +3776,7 @@ router.get(
         return res.status(400).json({ error: 'Invalid startDate' });
       }
       conditions.push(
-        `(m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date >= $${paramIndex}::date`
+        `(m."sentAt" AT TIME ZONE '${tz}')::date >= $${paramIndex}::date`
       );
       values.push(dateValue);
       paramIndex += 1;
@@ -3892,7 +3788,7 @@ router.get(
         return res.status(400).json({ error: 'Invalid endDate' });
       }
       conditions.push(
-        `(m."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::date <= $${paramIndex}::date`
+        `(m."sentAt" AT TIME ZONE '${tz}')::date <= $${paramIndex}::date`
       );
       values.push(dateValue);
       paramIndex += 1;

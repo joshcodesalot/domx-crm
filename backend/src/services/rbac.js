@@ -1,4 +1,5 @@
 const pool = require('../db/pool');
+const { normalizeTimeZone, BUSINESS_TZ } = require('./businessTimezone');
 
 const OWNER_ROLE_SLUG = 'owner';
 const PROTECTED_OWNER_PERMISSION = 'roles.manage';
@@ -54,6 +55,7 @@ async function getUserById(userId) {
   const result = await pool.query(
     `SELECT u.id, u.name, u.email, u.role, u.status,
             u."mustChangePassword",
+            u.timezone,
             r.name AS "roleName", r.rank AS "roleRank"
      FROM users u
      LEFT JOIN roles r ON r.slug = u.role
@@ -61,6 +63,19 @@ async function getUserById(userId) {
     [userId]
   );
   return result.rows[0] || null;
+}
+
+/**
+ * Viewer IANA timezone for analytics day bucketing.
+ * @param {string} userId
+ * @returns {Promise<string>}
+ */
+async function getUserTimeZone(userId) {
+  if (!userId) return BUSINESS_TZ;
+  const result = await pool.query(`SELECT timezone FROM users WHERE id = $1`, [
+    userId,
+  ]);
+  return normalizeTimeZone(result.rows[0]?.timezone || BUSINESS_TZ);
 }
 
 async function getAllPermissions() {
@@ -235,6 +250,7 @@ function toSafeUser(row, permissions) {
     status: row.status,
     permissions,
     mustChangePassword: row.mustChangePassword ?? false,
+    timezone: row.timezone || 'Europe/Berlin',
     lastLoginAt: row.lastLoginAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -257,6 +273,7 @@ module.exports = {
   getPermissionsForRole,
   getUserPermissions,
   getUserById,
+  getUserTimeZone,
   getAllPermissions,
   getRolesWithPermissions,
   canManageUser,

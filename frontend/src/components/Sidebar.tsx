@@ -10,6 +10,7 @@ import {
   PanelsTopLeft,
   ShieldAlert,
   Sparkles,
+  Settings,
   UserCog,
   UserSearch,
   Users,
@@ -29,7 +30,8 @@ interface SidebarProps {
     | 'chatter'
     | 'creators'
     | 'staff'
-    | 'moderation';
+    | 'moderation'
+    | 'account';
 }
 
 export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
@@ -454,6 +456,14 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
 
       <div className="mt-auto flex flex-col gap-4 items-center">
         <ThemeToggle className="p-0 hover:bg-transparent dark:hover:bg-transparent focus:ring-0" />
+        <button
+          type="button"
+          onClick={() => navigate('/account/settings')}
+          className={navClass('account')}
+          title="Account Settings"
+        >
+          <Settings className="w-5 h-5" />
+        </button>
         <button
           type="button"
           onClick={handleLogout}

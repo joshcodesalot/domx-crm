@@ -3,6 +3,7 @@ import { Navigate, Link } from 'react-router-dom';
 import { Info, RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import PeriodDaysToggle, {
+  DEFAULT_TIMEZONE,
   formatPeriodRangeLabel,
   rangeFromPresetDays,
   type ChartPeriodDays,
@@ -419,7 +420,11 @@ export default function AnalyticsCharts() {
   const canViewMessaging = hasPermission('analytics.view');
 
   const [data, setData] = useState<AnalyticsSeriesResponse | null>(null);
-  const defaultRange = useMemo(() => rangeFromPresetDays(7), []);
+  const viewerTimeZone = user?.timezone || DEFAULT_TIMEZONE;
+  const defaultRange = useMemo(
+    () => rangeFromPresetDays(7, viewerTimeZone),
+    [viewerTimeZone]
+  );
   const [presetDays, setPresetDays] = useState<ChartPeriodDays | null>(7);
   const [startDate, setStartDate] = useState(defaultRange.startDate);
   const [endDate, setEndDate] = useState(defaultRange.endDate);
@@ -460,8 +465,15 @@ export default function AnalyticsCharts() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (presetDays == null) return;
+    const range = rangeFromPresetDays(presetDays, viewerTimeZone);
+    setStartDate(range.startDate);
+    setEndDate(range.endDate);
+  }, [viewerTimeZone, presetDays]);
+
   const handlePresetChange = (days: ChartPeriodDays) => {
-    const range = rangeFromPresetDays(days);
+    const range = rangeFromPresetDays(days, viewerTimeZone);
     setPresetDays(days);
     setStartDate(range.startDate);
     setEndDate(range.endDate);
@@ -511,7 +523,7 @@ export default function AnalyticsCharts() {
           <div>
             <h2 className="text-2xl font-semibold mb-1">Team Charts</h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              {periodLabel} (Asia/Manila)
+              {periodLabel} ({data?.timeZone || viewerTimeZone})
               {canViewMessaging ? (
                 <>
                   {' · '}

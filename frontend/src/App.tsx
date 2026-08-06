@@ -30,6 +30,7 @@ import MessagePro4Based from '@/pages/MessagePro4Based';
 import MessagingDashboard from '@/pages/MessagingDashboard';
 import AnalyticsCharts from '@/pages/AnalyticsCharts';
 import CreatorAnalytics from '@/pages/CreatorAnalytics';
+import AccountSettings from '@/pages/AccountSettings';
 import KeywordModeration from '@/pages/KeywordModeration';
 import ModerationAlertsListener from '@/components/ModerationAlertsListener';
 import ActivityHeartbeatListener from '@/components/ActivityHeartbeatListener';
@@ -202,6 +203,7 @@ function AppRoutes() {
           <Route path="/setup" element={<SetupOwner />} />
           <Route path="/change-password" element={<ChangePassword />} />
           <Route element={<ProtectedRoute />}>
+            <Route path="/account/settings" element={<AccountSettings />} />
             <Route element={<CreatorBootProvider />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route element={<RoleRoute roles={['owner', 'manager']} />}>

@@ -3,6 +3,7 @@ import { Navigate, Link } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import PeriodDaysToggle, {
+  DEFAULT_TIMEZONE,
   formatPeriodRangeLabel,
   rangeFromPresetDays,
   type ChartPeriodDays,
@@ -285,7 +286,11 @@ export default function Dashboard() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardResponse | null>(null);
   const [presenceById, setPresenceById] = useState<Record<string, PresenceChatter>>({});
   const [onlineCount, setOnlineCount] = useState(0);
-  const defaultRange = useMemo(() => rangeFromPresetDays(7), []);
+  const viewerTimeZone = user?.timezone || DEFAULT_TIMEZONE;
+  const defaultRange = useMemo(
+    () => rangeFromPresetDays(7, viewerTimeZone),
+    [viewerTimeZone]
+  );
   const [presetDays, setPresetDays] = useState<ChartPeriodDays | null>(7);
   const [startDate, setStartDate] = useState(defaultRange.startDate);
   const [endDate, setEndDate] = useState(defaultRange.endDate);
@@ -347,8 +352,15 @@ export default function Dashboard() {
     [canViewAnalytics, presetDays, startDate, endDate]
   );
 
+  useEffect(() => {
+    if (presetDays == null) return;
+    const range = rangeFromPresetDays(presetDays, viewerTimeZone);
+    setStartDate(range.startDate);
+    setEndDate(range.endDate);
+  }, [viewerTimeZone, presetDays]);
+
   const handlePresetChange = (days: ChartPeriodDays) => {
-    const range = rangeFromPresetDays(days);
+    const range = rangeFromPresetDays(days, viewerTimeZone);
     setPresetDays(days);
     setStartDate(range.startDate);
     setEndDate(range.endDate);
@@ -421,7 +433,7 @@ export default function Dashboard() {
         chatterId: presence.userId,
         chatterName: presence.userName,
         avgResponseTimeSeconds: null,
-        dailySales: [],
+        periodSales: [],
         totalSales: [],
         monthlyRevenue: [],
         messagesSent: 0,
@@ -528,21 +540,16 @@ export default function Dashboard() {
           <div className="space-y-12">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <MetricCard
-                label="Daily Sales"
-                value={formatCurrencyAmounts(overview?.dailySales)}
-                hint="Purchased revenue during each chatter’s scheduled shift today (Asia/Manila)"
-              />
-              <MetricCard
                 label="Period Sales"
                 value={formatCurrencyAmounts(
                   overview?.totalRevenue || overview?.totalSales
                 )}
-                hint={`Purchased revenue for ${periodLabel}`}
+                hint={`Purchased revenue for ${periodLabel} (${overview?.timeZone || viewerTimeZone})`}
               />
               <MetricCard
                 label="Monthly Revenue"
                 value={formatCurrencyAmounts(overview?.monthlyRevenue)}
-                hint="Purchased revenue this calendar month (Asia/Manila)"
+                hint={`Purchased revenue this calendar month (${overview?.timeZone || viewerTimeZone})`}
               />
               <MetricCard
                 label="Avg Response Time"
@@ -658,47 +665,17 @@ export default function Dashboard() {
               ) : null}
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <div className={showTeamWidgets ? 'lg:col-span-2' : 'lg:col-span-3'}>
-                <h3 className="text-sm font-medium mb-4">
-                  Daily Sales ({periodLabel})
-                </h3>
-                {overview?.dailySalesByDay?.length ? (
-                  <DailySalesBars days={overview.dailySalesByDay} />
-                ) : (
-                  <div className="h-64 border border-gray-200 dark:border-white/10 rounded-lg flex items-center justify-center text-sm text-gray-400">
-                    No data available
-                  </div>
-                )}
-              </div>
-
-              {showTeamWidgets ? (
-                <div>
-                  <h3 className="text-sm font-medium mb-4">Top Earners (today)</h3>
-                  <div className="space-y-3">
-                    {chatterRows
-                      .filter((row) => dayTotal(row.dailySales) > 0)
-                      .sort((a, b) => dayTotal(b.dailySales) - dayTotal(a.dailySales))
-                      .slice(0, 5)
-                      .map((row) => (
-                        <div
-                          key={row.chatterId}
-                          className="flex items-center justify-between gap-3 text-sm"
-                        >
-                          <span className="truncate font-medium">{row.chatterName}</span>
-                          <span className="shrink-0 text-gray-500 dark:text-gray-400">
-                            {formatCurrencyAmounts(row.dailySales)}
-                          </span>
-                        </div>
-                      ))}
-                    {chatterRows.every((row) => dayTotal(row.dailySales) === 0) ? (
-                      <div className="text-sm text-gray-400 text-center py-8">
-                        No data to display
-                      </div>
-                    ) : null}
-                  </div>
+            <div>
+              <h3 className="text-sm font-medium mb-4">
+                Sales by day ({periodLabel})
+              </h3>
+              {overview?.dailySalesByDay?.length ? (
+                <DailySalesBars days={overview.dailySalesByDay} />
+              ) : (
+                <div className="h-64 border border-gray-200 dark:border-white/10 rounded-lg flex items-center justify-center text-sm text-gray-400">
+                  No data available
                 </div>
-              ) : null}
+              )}
             </div>
 
             {showTeamWidgets ? (
@@ -830,7 +807,7 @@ export default function Dashboard() {
               </h3>
               <p className="text-xs text-gray-400 mb-3">
                 {isTeamScope ? 'Team' : 'Your'} active (dark) and idle (amber) time from
-                click and keydown activity (Asia/Manila days)
+                click and keydown activity ({history?.timeZone || viewerTimeZone} days)
               </p>
               {history?.teamByDay?.length ? (
                 <DayActivityBars days={history.teamByDay} />
@@ -845,8 +822,7 @@ export default function Dashboard() {
               <div>
                 <h3 className="text-sm font-medium mb-1">Staff Performance</h3>
                 <p className="text-xs text-gray-400 mb-4">
-                  Daily sales count during each person&apos;s scheduled shift today;
-                  messages count only during scheduled hours
+                  Period and lifetime sales; messages count only during scheduled hours
                 </p>
                 <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden">
                   <div className="overflow-x-auto">
@@ -855,7 +831,7 @@ export default function Dashboard() {
                         <tr>
                           <th className="px-4 py-3 font-medium">Staff</th>
                           <th className="px-4 py-3 font-medium">Avg Response</th>
-                          <th className="px-4 py-3 font-medium">Daily Sales</th>
+                          <th className="px-4 py-3 font-medium">Period Sales</th>
                           <th className="px-4 py-3 font-medium">Total Sales</th>
                           <th className="px-4 py-3 font-medium">Messages</th>
                           <th className="px-4 py-3 font-medium">Sent PPV</th>
@@ -879,7 +855,7 @@ export default function Dashboard() {
                         </tr>
                       </thead>
                       <tbody>
-                        {chatterRows.length === 0 ? (
+                          {chatterRows.length === 0 ? (
                           <tr>
                             <td
                               colSpan={15}
@@ -906,7 +882,7 @@ export default function Dashboard() {
                                 {formatResponseTime(row.avgResponseTimeSeconds)}
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap">
-                                {formatCurrencyAmounts(row.dailySales)}
+                                {formatCurrencyAmounts(row.periodSales)}
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap">
                                 {formatCurrencyAmounts(row.totalSales)}

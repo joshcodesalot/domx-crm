@@ -11,6 +11,7 @@ const {
   calendarDateString,
   resolveAnalyticsPeriod,
 } = require('../services/businessTimezone');
+const { getUserTimeZone } = require('../services/rbac');
 
 const router = express.Router();
 
@@ -209,6 +210,7 @@ router.get(
   requirePermission('analytics.view', 'analytics.self'),
   async (req, res) => {
     try {
+      const tz = await getUserTimeZone(req.user.id);
       const scope = getAnalyticsScope(req.user);
       const period = resolveAnalyticsPeriod(
         {
@@ -217,7 +219,7 @@ router.get(
           days: req.query.days,
         },
         90,
-        { allowAnyDays: true, defaultDays: 14 }
+        { allowAnyDays: true, defaultDays: 14, timeZone: tz }
       );
       const dateRange = period.dates;
       const startDate = period.startDate;
@@ -313,6 +315,7 @@ router.get(
         days: parsedDays,
         startDate,
         endDate,
+        timeZone: tz,
         scope: scope.mode,
         teamByDay: dateRange.map((date) => ({
           date,
@@ -334,6 +337,8 @@ router.get(
   requirePermission('analytics.view', 'analytics.self'),
   async (req, res) => {
     try {
+      // Presence day keys are written in BUSINESS_TZ (Europe/Berlin).
+      const tz = BUSINESS_TZ;
       const scope = getAnalyticsScope(req.user);
 
       let query;
@@ -345,17 +350,17 @@ router.get(
                         p."lastInputAt",
                         p."lastHeartbeatAt",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${tz}')::date
                           THEN COALESCE(p."activeSecondsToday", 0)
                           ELSE 0
                         END AS "activeSecondsToday",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${tz}')::date
                           THEN COALESCE(p."idleSecondsToday", 0)
                           ELSE 0
                         END AS "idleSecondsToday",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${tz}')::date
                           THEN COALESCE(p."keystrokesToday", 0)
                           ELSE 0
                         END AS "keystrokesToday"
@@ -371,17 +376,17 @@ router.get(
                         p."lastInputAt",
                         p."lastHeartbeatAt",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${tz}')::date
                           THEN COALESCE(p."activeSecondsToday", 0)
                           ELSE 0
                         END AS "activeSecondsToday",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${tz}')::date
                           THEN COALESCE(p."idleSecondsToday", 0)
                           ELSE 0
                         END AS "idleSecondsToday",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${tz}')::date
                           THEN COALESCE(p."keystrokesToday", 0)
                           ELSE 0
                         END AS "keystrokesToday"

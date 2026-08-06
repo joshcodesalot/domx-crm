@@ -9,6 +9,7 @@ export interface User {
   status: string;
   permissions: string[];
   mustChangePassword: boolean;
+  timezone: string;
   lastLoginAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -487,6 +488,13 @@ export async function getMe(): Promise<MeResponse> {
   return request<MeResponse>('/api/auth/me');
 }
 
+export async function updateMyTimezone(timezone: string): Promise<MeResponse> {
+  return request<MeResponse>('/api/auth/me', {
+    method: 'PATCH',
+    body: JSON.stringify({ timezone }),
+  });
+}
+
 export async function logout(): Promise<void> {
   try {
     await request('/api/auth/logout', { method: 'POST' });
@@ -834,7 +842,7 @@ export interface OverviewChatterStats {
   chatterId: string;
   chatterName: string;
   avgResponseTimeSeconds: number | null;
-  dailySales: CurrencyAmount[];
+  dailySales?: CurrencyAmount[];
   totalSales: CurrencyAmount[];
   monthlyRevenue?: CurrencyAmount[];
   messagesSent?: number;
@@ -909,7 +917,8 @@ export interface OverviewAnalyticsResponse {
   scope?: 'team' | 'self';
   chartDays?: number;
   period?: { startDate: string; endDate: string };
-  dailySales: CurrencyAmount[];
+  timeZone?: string;
+  dailySales?: CurrencyAmount[];
   totalSales: CurrencyAmount[];
   totalRevenue?: CurrencyAmount[];
   monthlyRevenue?: CurrencyAmount[];
@@ -1070,6 +1079,7 @@ export interface ActivityHistoryResponse {
   days: number;
   startDate: string;
   endDate: string;
+  timeZone?: string;
   scope?: 'team' | 'self';
   teamByDay: ActivityHistoryDay[];
   chatters: ActivityHistoryChatter[];
@@ -1124,6 +1134,7 @@ export interface AnalyticsSeriesResponse {
   days: number;
   startDate: string;
   endDate: string;
+  timeZone?: string;
   series: AnalyticsSeriesDay[];
   byStaff?: AnalyticsSeriesStaff[];
   lastUpdated: string;
@@ -1190,6 +1201,7 @@ export interface CreatorOverviewCreator extends OverviewCreatorStats {
 export interface CreatorOverviewResponse {
   scope: 'team' | 'self';
   period: { startDate: string; endDate: string };
+  timeZone?: string;
   chartDays: number;
   creatorId: string | null;
   summary: CreatorOverviewSummary;
