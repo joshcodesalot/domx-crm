@@ -1,15 +1,31 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Navigate, Link } from 'react-router-dom';
 import { Info, RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
+import PeriodDaysToggle, {
+  periodDaysLabel,
+  type ChartPeriodDays,
+} from '@/components/PeriodDaysToggle';
 import { useAuth } from '@/context/AuthContext';
 import {
   getAnalyticsSeries,
   type AnalyticsSeriesDay,
   type AnalyticsSeriesResponse,
+  type AnalyticsSeriesStaff,
   type CurrencyAmount,
 } from '@/lib/api';
 import { formatMoney } from '@/lib/messagingDashboardFormat';
+
+const STAFF_COLORS = [
+  { stroke: 'stroke-orange-500', fill: 'fill-orange-500', hex: '#f97316' },
+  { stroke: 'stroke-sky-500', fill: 'fill-sky-500', hex: '#0ea5e9' },
+  { stroke: 'stroke-emerald-500', fill: 'fill-emerald-500', hex: '#10b981' },
+  { stroke: 'stroke-violet-500', fill: 'fill-violet-500', hex: '#8b5cf6' },
+  { stroke: 'stroke-rose-500', fill: 'fill-rose-500', hex: '#f43f5e' },
+  { stroke: 'stroke-amber-500', fill: 'fill-amber-500', hex: '#f59e0b' },
+  { stroke: 'stroke-teal-500', fill: 'fill-teal-500', hex: '#14b8a6' },
+  { stroke: 'stroke-indigo-500', fill: 'fill-indigo-500', hex: '#6366f1' },
+];
 
 function formatCurrencyAmounts(amounts: CurrencyAmount[] | undefined): string {
   if (!amounts || amounts.length === 0) {
@@ -169,6 +185,143 @@ function LineChart({
   );
 }
 
+function MultiLineChart({
+  staffSeries,
+  getValue,
+  formatValue,
+  yMax,
+  yTickFormat,
+}: {
+  staffSeries: AnalyticsSeriesStaff[];
+  getValue: (day: AnalyticsSeriesDay) => number;
+  formatValue: (day: AnalyticsSeriesDay, value: number, name: string) => string;
+  yMax?: number;
+  yTickFormat?: (v: number) => string;
+}) {
+  const dates =
+    staffSeries[0]?.series.map((d) => d.date) ||
+    ([] as string[]);
+  const allValues = staffSeries.flatMap((s) => s.series.map((d) => getValue(d)));
+  const dataMax = Math.max(0, ...allValues);
+  const max = yMax != null ? Math.max(yMax, dataMax || 1) : Math.max(1, dataMax);
+  const width = 320;
+  const height = 160;
+  const padX = 8;
+  const padY = 12;
+  const innerW = width - padX * 2;
+  const innerH = height - padY * 2;
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((t) => Math.round(max * t));
+
+  return (
+    <div className="relative">
+      <div className="flex gap-3">
+        <div className="flex flex-col justify-between text-[10px] text-gray-400 py-1 w-10 text-right shrink-0">
+          {[...ticks].reverse().map((t) => (
+            <span key={t}>{yTickFormat ? yTickFormat(t) : t}</span>
+          ))}
+        </div>
+        <div className="flex-1 min-w-0">
+          <svg
+            viewBox={`0 0 ${width} ${height}`}
+            className="w-full h-40 overflow-visible"
+            role="img"
+          >
+            {ticks.map((t) => {
+              const y = padY + innerH - (t / max) * innerH;
+              return (
+                <line
+                  key={t}
+                  x1={padX}
+                  x2={width - padX}
+                  y1={y}
+                  y2={y}
+                  className="stroke-gray-200 dark:stroke-white/10"
+                  strokeDasharray="4 4"
+                  strokeWidth={1}
+                />
+              );
+            })}
+            {staffSeries.map((staff, staffIndex) => {
+              const color = STAFF_COLORS[staffIndex % STAFF_COLORS.length];
+              const points = staff.series.map((day, i) => {
+                const x =
+                  staff.series.length === 1
+                    ? padX + innerW / 2
+                    : padX + (i / (staff.series.length - 1)) * innerW;
+                const v = getValue(day);
+                const y = padY + innerH - (v / max) * innerH;
+                return { x, y, day, v };
+              });
+              const pathD = points
+                .map(
+                  (p, i) =>
+                    `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`
+                )
+                .join(' ');
+              return (
+                <g key={staff.chatterId}>
+                  {points.length > 1 ? (
+                    <path
+                      d={pathD}
+                      fill="none"
+                      stroke={color.hex}
+                      strokeWidth={2}
+                      strokeLinejoin="round"
+                      strokeLinecap="round"
+                    />
+                  ) : null}
+                  {points.map((p) => (
+                    <circle
+                      key={`${staff.chatterId}-${p.day.date}`}
+                      cx={p.x}
+                      cy={p.y}
+                      r={3}
+                      fill={color.hex}
+                    >
+                      <title>
+                        {formatValue(p.day, p.v, staff.chatterName)}
+                      </title>
+                    </circle>
+                  ))}
+                </g>
+              );
+            })}
+          </svg>
+          <div className="flex justify-between mt-1 px-1">
+            {dates.map((date) => (
+              <span
+                key={date}
+                className="text-[10px] text-gray-400 truncate flex-1 text-center"
+              >
+                {dayLabel(date)}
+              </span>
+            ))}
+          </div>
+          {staffSeries.length > 0 ? (
+            <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1.5">
+              {staffSeries.map((staff, i) => {
+                const color = STAFF_COLORS[i % STAFF_COLORS.length];
+                return (
+                  <span
+                    key={staff.chatterId}
+                    className="inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400"
+                  >
+                    <span
+                      className="h-2 w-2 rounded-full shrink-0"
+                      style={{ backgroundColor: color.hex }}
+                    />
+                    <span className="truncate max-w-[120px]">{staff.chatterName}</span>
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ActivityStackedBars({ days }: { days: AnalyticsSeriesDay[] }) {
   const max = Math.max(
     1,
@@ -212,6 +365,53 @@ function ActivityStackedBars({ days }: { days: AnalyticsSeriesDay[] }) {
   );
 }
 
+function MetricLineChart({
+  compareMode,
+  series,
+  staffSeries,
+  getValue,
+  formatSingle,
+  formatCompare,
+  colorClass,
+  fillClass,
+  yMax,
+  yTickFormat,
+}: {
+  compareMode: boolean;
+  series: AnalyticsSeriesDay[];
+  staffSeries: AnalyticsSeriesStaff[];
+  getValue: (day: AnalyticsSeriesDay) => number;
+  formatSingle: (day: AnalyticsSeriesDay, value: number) => string;
+  formatCompare: (day: AnalyticsSeriesDay, value: number, name: string) => string;
+  colorClass?: string;
+  fillClass?: string;
+  yMax?: number;
+  yTickFormat?: (v: number) => string;
+}) {
+  if (compareMode && staffSeries.length > 0) {
+    return (
+      <MultiLineChart
+        staffSeries={staffSeries}
+        getValue={getValue}
+        formatValue={formatCompare}
+        yMax={yMax}
+        yTickFormat={yTickFormat}
+      />
+    );
+  }
+  return (
+    <LineChart
+      days={series}
+      getValue={getValue}
+      formatTooltip={formatSingle}
+      colorClass={colorClass}
+      fillClass={fillClass}
+      yMax={yMax}
+      yTickFormat={yTickFormat}
+    />
+  );
+}
+
 export default function AnalyticsCharts() {
   const { user, hasPermission } = useAuth();
   const canView =
@@ -220,6 +420,8 @@ export default function AnalyticsCharts() {
   const canViewMessaging = hasPermission('analytics.view');
 
   const [data, setData] = useState<AnalyticsSeriesResponse | null>(null);
+  const [chartDays, setChartDays] = useState<ChartPeriodDays>(7);
+  const [staffFilter, setStaffFilter] = useState<string>('all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -231,7 +433,7 @@ export default function AnalyticsCharts() {
       else setRefreshing(true);
       setError(null);
       try {
-        const result = await getAnalyticsSeries(7);
+        const result = await getAnalyticsSeries(chartDays);
         setData(result);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load charts');
@@ -240,12 +442,31 @@ export default function AnalyticsCharts() {
         setRefreshing(false);
       }
     },
-    [canView]
+    [canView, chartDays]
   );
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const byStaff = data?.byStaff || [];
+
+  useEffect(() => {
+    if (staffFilter === 'all') return;
+    if (!byStaff.some((s) => s.chatterId === staffFilter)) {
+      setStaffFilter('all');
+    }
+  }, [byStaff, staffFilter]);
+
+  const compareMode = isTeamScope && staffFilter === 'all' && byStaff.length > 0;
+
+  const series = useMemo(() => {
+    if (!isTeamScope || staffFilter === 'all') {
+      return data?.series || [];
+    }
+    const match = byStaff.find((s) => s.chatterId === staffFilter);
+    return match?.series || [];
+  }, [data?.series, byStaff, isTeamScope, staffFilter]);
 
   if (!user) {
     return <Navigate to="/login" replace />;
@@ -254,8 +475,6 @@ export default function AnalyticsCharts() {
   if (!canView) {
     return <Navigate to="/dashboard" replace />;
   }
-
-  const series = data?.series || [];
 
   return (
     <AppLayout title="Analytics Charts" activePage="charts">
@@ -266,7 +485,7 @@ export default function AnalyticsCharts() {
               {isTeamScope ? 'Team Charts' : 'Your Charts'}
             </h2>
             <p className="text-sm text-gray-500 dark:text-gray-400">
-              Last 7 days (UTC)
+              Last {periodDaysLabel(chartDays)} (Asia/Manila)
               {canViewMessaging ? (
                 <>
                   {' · '}
@@ -280,15 +499,37 @@ export default function AnalyticsCharts() {
               ) : null}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => void load({ silent: true })}
-            disabled={refreshing}
-            className="inline-flex items-center gap-2 self-start rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 disabled:opacity-50"
-          >
-            <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
+          <div className="flex flex-col items-start gap-2 sm:items-end">
+            <PeriodDaysToggle
+              value={chartDays}
+              onChange={setChartDays}
+              disabled={loading || refreshing}
+            />
+            {isTeamScope ? (
+              <select
+                value={staffFilter}
+                onChange={(e) => setStaffFilter(e.target.value)}
+                disabled={loading || refreshing}
+                className="rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-sm text-gray-700 dark:text-gray-200 disabled:opacity-50"
+              >
+                <option value="all">All (compare)</option>
+                {byStaff.map((staff) => (
+                  <option key={staff.chatterId} value={staff.chatterId}>
+                    {staff.chatterName}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void load({ silent: true })}
+              disabled={refreshing}
+              className="inline-flex items-center gap-2 self-start rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 disabled:opacity-50"
+            >
+              <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -314,17 +555,28 @@ export default function AnalyticsCharts() {
                   <span className="h-2 w-2 rounded-sm bg-amber-400" /> Idle
                 </span>
               </div>
+              {compareMode ? (
+                <p className="mt-2 text-[11px] text-gray-400">
+                  Activity bars show team totals. Switch to a staff member to view
+                  their activity.
+                </p>
+              ) : null}
             </ChartCard>
 
             <ChartCard
               title="Golden ratio"
               hint="Percentage of direct messages that were PPVs. PPVs sent ÷ DMs sent × 100"
             >
-              <LineChart
-                days={series}
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
                 getValue={(d) => d.goldenRatio}
-                formatTooltip={(d, v) =>
+                formatSingle={(d, v) =>
                   `${dayLabel(d.date)} | Golden ratio: ${v.toFixed(2)}%`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | Golden ratio: ${v.toFixed(2)}%`
                 }
                 yTickFormat={(v) => `${v}%`}
               />
@@ -334,23 +586,53 @@ export default function AnalyticsCharts() {
               title="PPV conversion rate"
               hint="Percentage of direct PPVs unlocked by fans, by send date. Unlocked ÷ sent × 100"
             >
-              <LineChart
-                days={series}
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
                 getValue={(d) => d.ppvConversionRate}
-                formatTooltip={(d, v) =>
+                formatSingle={(d, v) =>
                   `${dayLabel(d.date)} | Unlock rate: ${v.toFixed(2)}%`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | Unlock rate: ${v.toFixed(2)}%`
                 }
                 yMax={100}
                 yTickFormat={(v) => `${v}%`}
               />
             </ChartCard>
 
+            <ChartCard
+              title="Sent PPV"
+              hint="Direct PPVs sent (contentType chat_product)"
+            >
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
+                getValue={(d) => d.ppvsSent}
+                formatSingle={(d, v) =>
+                  `${dayLabel(d.date)} | Sent PPV: ${Math.round(v)}`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | Sent PPV: ${Math.round(v)}`
+                }
+                colorClass="stroke-rose-500"
+                fillClass="fill-rose-500"
+              />
+            </ChartCard>
+
             <ChartCard title="Keystrokes" hint="Keydown count (content is never logged)">
-              <LineChart
-                days={series}
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
                 getValue={(d) => d.keystrokes}
-                formatTooltip={(d, v) =>
+                formatSingle={(d, v) =>
                   `${dayLabel(d.date)} | Keystrokes: ${Math.round(v)}`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | Keystrokes: ${Math.round(v)}`
                 }
                 colorClass="stroke-teal-500"
                 fillClass="fill-teal-500"
@@ -358,11 +640,16 @@ export default function AnalyticsCharts() {
             </ChartCard>
 
             <ChartCard title="Messages sent">
-              <LineChart
-                days={series}
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
                 getValue={(d) => d.messagesSent}
-                formatTooltip={(d, v) =>
+                formatSingle={(d, v) =>
                   `${dayLabel(d.date)} | Messages: ${Math.round(v)}`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | Messages: ${Math.round(v)}`
                 }
                 colorClass="stroke-sky-500"
                 fillClass="fill-sky-500"
@@ -370,13 +657,18 @@ export default function AnalyticsCharts() {
             </ChartCard>
 
             <ChartCard title="Revenue">
-              <LineChart
-                days={series}
+              <MetricLineChart
+                compareMode={compareMode}
+                series={series}
+                staffSeries={byStaff}
                 getValue={(d) =>
                   d.revenue.reduce((sum, r) => sum + (Number(r.amount) || 0), 0)
                 }
-                formatTooltip={(d, v) =>
+                formatSingle={(d, v) =>
                   `${dayLabel(d.date)} | ${formatCurrencyAmounts(d.revenue)} (${v.toFixed(2)})`
+                }
+                formatCompare={(d, v, name) =>
+                  `${name} · ${dayLabel(d.date)} | ${formatCurrencyAmounts(d.revenue)} (${v.toFixed(2)})`
                 }
                 colorClass="stroke-emerald-500"
                 fillClass="fill-emerald-500"

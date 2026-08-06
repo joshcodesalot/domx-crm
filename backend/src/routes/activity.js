@@ -6,6 +6,11 @@ const {
   getAnalyticsScope,
   TRACKED_STAFF_ROLES,
 } = require('../services/analyticsScope');
+const {
+  BUSINESS_TZ,
+  calendarDateString,
+  buildDateRange,
+} = require('../services/businessTimezone');
 
 const router = express.Router();
 
@@ -14,10 +19,6 @@ const IDLE_MS = 10 * 60 * 1000;
 const HEARTBEAT_FRESH_MS = 2 * 60 * 1000;
 const MAX_ACTIVE_INTERVAL_SECONDS = 60;
 const MAX_KEYSTROKE_DELTA = 5000;
-
-function utcDateString(date = new Date()) {
-  return date.toISOString().slice(0, 10);
-}
 
 function parseInputAt(value) {
   if (value == null || value === '') return null;
@@ -57,24 +58,13 @@ function derivePresenceStatus(row, now = Date.now()) {
   return 'away';
 }
 
-function buildUtcDateRange(days) {
-  const dates = [];
-  for (let i = days - 1; i >= 0; i -= 1) {
-    const d = new Date();
-    d.setUTCHours(0, 0, 0, 0);
-    d.setUTCDate(d.getUTCDate() - i);
-    dates.push(d.toISOString().slice(0, 10));
-  }
-  return dates;
-}
-
 router.post('/heartbeat', authenticate, async (req, res) => {
   try {
     const userId = req.user.id;
     const clientInputAt = parseInputAt(req.body?.lastInputAt);
     const keystrokeDelta = parseKeystrokeDelta(req.body?.keystrokeDelta);
     const now = new Date();
-    const today = utcDateString(now);
+    const today = calendarDateString(now);
 
     const existing = await pool.query(
       `SELECT "lastInputAt", "lastHeartbeatAt",
@@ -224,7 +214,7 @@ router.get(
         Math.max(Number.parseInt(String(req.query.days || '14'), 10) || 14, 1),
         90
       );
-      const dateRange = buildUtcDateRange(parsedDays);
+      const dateRange = buildDateRange(parsedDays);
       const startDate = dateRange[0];
       const endDate = dateRange[dateRange.length - 1];
 
@@ -349,17 +339,17 @@ router.get(
                         p."lastInputAt",
                         p."lastHeartbeatAt",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
                           THEN COALESCE(p."activeSecondsToday", 0)
                           ELSE 0
                         END AS "activeSecondsToday",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
                           THEN COALESCE(p."idleSecondsToday", 0)
                           ELSE 0
                         END AS "idleSecondsToday",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
                           THEN COALESCE(p."keystrokesToday", 0)
                           ELSE 0
                         END AS "keystrokesToday"
@@ -375,17 +365,17 @@ router.get(
                         p."lastInputAt",
                         p."lastHeartbeatAt",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
                           THEN COALESCE(p."activeSecondsToday", 0)
                           ELSE 0
                         END AS "activeSecondsToday",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
                           THEN COALESCE(p."idleSecondsToday", 0)
                           ELSE 0
                         END AS "idleSecondsToday",
                         CASE
-                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE 'UTC')::date
+                          WHEN p."activeSecondsDate" = (NOW() AT TIME ZONE '${BUSINESS_TZ}')::date
                           THEN COALESCE(p."keystrokesToday", 0)
                           ELSE 0
                         END AS "keystrokesToday"

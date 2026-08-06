@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
+import PeriodDaysToggle, {
+  periodDaysLabel,
+  type ChartPeriodDays,
+} from '@/components/PeriodDaysToggle';
 import { useAuth } from '@/context/AuthContext';
 import {
   getActivityHistory,
@@ -279,6 +283,7 @@ export default function Dashboard() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardResponse | null>(null);
   const [presenceById, setPresenceById] = useState<Record<string, PresenceChatter>>({});
   const [onlineCount, setOnlineCount] = useState(0);
+  const [chartDays, setChartDays] = useState<ChartPeriodDays>(7);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -297,9 +302,9 @@ export default function Dashboard() {
       try {
         const [overviewResult, presenceResult, historyResult, leaderboardResult] =
           await Promise.all([
-            getOverviewAnalytics(),
+            getOverviewAnalytics({ days: chartDays }),
             getActivityPresence(),
-            getActivityHistory(14),
+            getActivityHistory(chartDays),
             getLeaderboard(),
           ]);
 
@@ -320,7 +325,7 @@ export default function Dashboard() {
         setRefreshing(false);
       }
     },
-    [canViewAnalytics]
+    [canViewAnalytics, chartDays]
   );
 
   useEffect(() => {
@@ -428,15 +433,22 @@ export default function Dashboard() {
           </div>
 
           {canViewAnalytics ? (
-            <button
-              type="button"
-              onClick={() => void loadData({ silent: true })}
-              disabled={refreshing}
-              className="inline-flex items-center gap-2 self-start rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 disabled:opacity-50"
-            >
-              <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
+            <div className="flex flex-col items-start gap-2 sm:items-end">
+              <PeriodDaysToggle
+                value={chartDays}
+                onChange={setChartDays}
+                disabled={loading || refreshing}
+              />
+              <button
+                type="button"
+                onClick={() => void loadData({ silent: true })}
+                disabled={refreshing}
+                className="inline-flex items-center gap-2 self-start rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 disabled:opacity-50"
+              >
+                <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+            </div>
           ) : null}
         </div>
 
@@ -478,6 +490,11 @@ export default function Dashboard() {
               <MetricCard
                 label="Total Messages Sent"
                 value={formatCount(overview?.totalMessagesSent)}
+              />
+              <MetricCard
+                label="Sent PPV"
+                value={formatCount(overview?.ppvsSent)}
+                hint="Direct PPVs sent (all-time)"
               />
               <MetricCard
                 label="PPV Conversion Rate"
@@ -523,7 +540,9 @@ export default function Dashboard() {
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
               <div className={showTeamWidgets ? 'lg:col-span-2' : 'lg:col-span-3'}>
-                <h3 className="text-sm font-medium mb-4">Daily Sales (14 days)</h3>
+                <h3 className="text-sm font-medium mb-4">
+                  Daily Sales ({periodDaysLabel(chartDays)})
+                </h3>
                 {overview?.dailySalesByDay?.length ? (
                   <DailySalesBars days={overview.dailySalesByDay} />
                 ) : (
@@ -600,10 +619,12 @@ export default function Dashboard() {
             </div>
 
             <div>
-              <h3 className="text-sm font-medium mb-4">Day Activity Time (14 days)</h3>
+              <h3 className="text-sm font-medium mb-4">
+                Day Activity Time ({periodDaysLabel(chartDays)})
+              </h3>
               <p className="text-xs text-gray-400 mb-3">
                 {isTeamScope ? 'Team' : 'Your'} active (dark) and idle (amber) time from
-                click and keydown activity (UTC days)
+                click and keydown activity (Asia/Manila days)
               </p>
               {history?.teamByDay?.length ? (
                 <DayActivityBars days={history.teamByDay} />
@@ -627,6 +648,7 @@ export default function Dashboard() {
                           <th className="px-4 py-3 font-medium">Daily Sales</th>
                           <th className="px-4 py-3 font-medium">Total Sales</th>
                           <th className="px-4 py-3 font-medium">Messages</th>
+                          <th className="px-4 py-3 font-medium">Sent PPV</th>
                           <th className="px-4 py-3 font-medium">Rev/hr</th>
                           <th className="px-4 py-3 font-medium">Msg/hr</th>
                           <th className="px-4 py-3 font-medium">PPV Conv.</th>
@@ -635,14 +657,16 @@ export default function Dashboard() {
                           <th className="px-4 py-3 font-medium">Active Today</th>
                           <th className="px-4 py-3 font-medium">Idle Today</th>
                           <th className="px-4 py-3 font-medium">Keys Today</th>
-                          <th className="px-4 py-3 font-medium">Active (14d)</th>
+                          <th className="px-4 py-3 font-medium">
+                            Active ({chartDays}d)
+                          </th>
                         </tr>
                       </thead>
                       <tbody>
                         {chatterRows.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={14}
+                              colSpan={15}
                               className="px-4 py-10 text-center text-gray-400"
                             >
                               No staff to display
@@ -668,6 +692,9 @@ export default function Dashboard() {
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap">
                                 {formatCount(row.messagesSent)}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                {formatCount(row.ppvsSent)}
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap">
                                 {formatCurrencyAmounts(row.revenuePerHour)}

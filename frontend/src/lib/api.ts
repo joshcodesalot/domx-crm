@@ -827,6 +827,7 @@ export interface OverviewDailySalesDay {
 
 export interface OverviewAnalyticsResponse {
   scope?: 'team' | 'self';
+  chartDays?: number;
   dailySales: CurrencyAmount[];
   totalSales: CurrencyAmount[];
   totalRevenue?: CurrencyAmount[];
@@ -884,10 +885,12 @@ export interface ActivityHeartbeatResponse {
 export async function getOverviewAnalytics(filters: {
   startDate?: string;
   endDate?: string;
+  days?: number;
 } = {}): Promise<OverviewAnalyticsResponse> {
   const params = new URLSearchParams();
   if (filters.startDate) params.set('startDate', filters.startDate);
   if (filters.endDate) params.set('endDate', filters.endDate);
+  if (filters.days != null) params.set('days', String(filters.days));
   const query = params.toString();
   const path = query
     ? `/api/messaging-dashboard/overview?${query}`
@@ -987,12 +990,19 @@ export interface AnalyticsSeriesDay {
   keystrokes: number;
 }
 
+export interface AnalyticsSeriesStaff {
+  chatterId: string;
+  chatterName: string;
+  series: AnalyticsSeriesDay[];
+}
+
 export interface AnalyticsSeriesResponse {
   scope: 'team' | 'self';
   days: number;
   startDate: string;
   endDate: string;
   series: AnalyticsSeriesDay[];
+  byStaff?: AnalyticsSeriesStaff[];
   lastUpdated: string;
 }
 
