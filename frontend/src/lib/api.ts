@@ -839,7 +839,7 @@ export interface CurrencyAmount {
 }
 
 export interface OverviewChatterStats {
-  chatterId: string;
+  chatterId: string | null;
   chatterName: string;
   avgResponseTimeSeconds: number | null;
   dailySales?: CurrencyAmount[];
@@ -886,7 +886,7 @@ export interface OverviewHourOfDay {
 }
 
 export interface OverviewCreatorStats {
-  creatorId: string;
+  creatorId: string | null;
   creatorName: string;
   creatorUsername?: string | null;
   creatorAvatarUrl?: string | null;
@@ -922,6 +922,7 @@ export interface OverviewAnalyticsResponse {
   totalSales: CurrencyAmount[];
   totalRevenue?: CurrencyAmount[];
   monthlyRevenue?: CurrencyAmount[];
+  allTimeSales?: CurrencyAmount[];
   tipSales?: CurrencyAmount[];
   ppvSales?: CurrencyAmount[];
   totalMessagesSent?: number;
@@ -1159,7 +1160,7 @@ export async function getAnalyticsSeries(
 }
 
 export interface CreatorSalesByChatter {
-  chatterId: string;
+  chatterId: string | null;
   chatterName: string;
   amounts: CurrencyAmount[];
 }

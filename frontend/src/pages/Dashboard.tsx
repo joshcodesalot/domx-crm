@@ -409,11 +409,17 @@ export default function Dashboard() {
 
   const chatterRows: ChatterRow[] = useMemo(() => {
     const fromOverview = overview?.chatters || [];
-    const overviewIds = new Set(fromOverview.map((c) => c.chatterId));
+    const overviewIds = new Set(
+      fromOverview.map((c) => c.chatterId).filter((id): id is string => !!id)
+    );
 
     const rows: ChatterRow[] = fromOverview.map((chatter) => {
-      const presence = presenceById[chatter.chatterId];
-      const period = periodByUserId[chatter.chatterId];
+      const presence = chatter.chatterId
+        ? presenceById[chatter.chatterId]
+        : undefined;
+      const period = chatter.chatterId
+        ? periodByUserId[chatter.chatterId]
+        : undefined;
       return {
         ...chatter,
         status: presence?.status || 'away',
@@ -544,12 +550,12 @@ export default function Dashboard() {
                 value={formatCurrencyAmounts(
                   overview?.totalRevenue || overview?.totalSales
                 )}
-                hint={`Purchased revenue for ${periodLabel} (${overview?.timeZone || viewerTimeZone})`}
+                hint={`Net purchased revenue for ${periodLabel} (${overview?.timeZone || viewerTimeZone})`}
               />
               <MetricCard
                 label="Monthly Revenue"
                 value={formatCurrencyAmounts(overview?.monthlyRevenue)}
-                hint={`Purchased revenue this calendar month (${overview?.timeZone || viewerTimeZone})`}
+                hint={`Net purchased revenue this calendar month (${overview?.timeZone || viewerTimeZone})`}
               />
               <MetricCard
                 label="Avg Response Time"
@@ -727,16 +733,20 @@ export default function Dashboard() {
                             .slice(0, 10)
                             .map((creator) => (
                               <tr
-                                key={creator.creatorId}
+                                key={creator.creatorId || 'deleted'}
                                 className="border-t border-gray-100 dark:border-white/5"
                               >
                                 <td className="px-4 py-3 font-medium whitespace-nowrap">
-                                  <Link
-                                    to={`/dashboard/creator-analytics?creatorId=${creator.creatorId}`}
-                                    className="hover:underline"
-                                  >
-                                    {creator.creatorName}
-                                  </Link>
+                                  {creator.creatorId ? (
+                                    <Link
+                                      to={`/dashboard/creator-analytics?creatorId=${creator.creatorId}`}
+                                      className="hover:underline"
+                                    >
+                                      {creator.creatorName}
+                                    </Link>
+                                  ) : (
+                                    creator.creatorName
+                                  )}
                                 </td>
                                 <td className="px-4 py-3 whitespace-nowrap">
                                   {formatCurrencyAmounts(creator.totalSales)}
@@ -867,7 +877,7 @@ export default function Dashboard() {
                         ) : (
                           chatterRows.map((row) => (
                             <tr
-                              key={row.chatterId}
+                              key={row.chatterId || 'deleted'}
                               className="border-t border-gray-100 dark:border-white/5"
                             >
                               <td className="px-4 py-3 font-medium whitespace-nowrap">

@@ -324,6 +324,7 @@ router.patch('/:id/activate', authenticate, requirePermission('staff.deactivate'
 router.delete('/:id', authenticate, requirePermission('staff.delete'), async (req, res) => {
   const { id } = req.params;
 
+  const client = await pool.connect();
   try {
     const actor = await getUserById(req.user.id);
     const check = await canDeleteUser(actor, id);
@@ -331,18 +332,47 @@ router.delete('/:id', authenticate, requirePermission('staff.delete'), async (re
       return res.status(403).json({ error: check.reason });
     }
 
-    const result = await pool.query('DELETE FROM users WHERE id = $1 RETURNING id', [id]);
+    await client.query('BEGIN');
+
+    await client.query(
+      `UPDATE messaging_dashboard_entries
+       SET "chatterName" = 'Deleted', "chatterEmail" = NULL
+       WHERE "chatterId" = $1`,
+      [id]
+    );
+
+    await client.query(
+      `UPDATE maloum_sent_messages
+       SET "sentByUserName" = 'Deleted'
+       WHERE "sentByUserId" = $1`,
+      [id]
+    );
+
+    const result = await client.query(
+      'DELETE FROM users WHERE id = $1 RETURNING id',
+      [id]
+    );
 
     if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'User not found' });
     }
+
+    await client.query('COMMIT');
 
     emitToUser(id, { type: 'account:deleted' });
 
     res.json({ message: 'Staff member deleted successfully' });
   } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // ignore rollback errors
+    }
     console.error('Delete staff error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 

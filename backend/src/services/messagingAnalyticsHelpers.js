@@ -167,6 +167,19 @@ const EXTENDED_MESSAGE_STATS_SELECT = `
 const SERIES_CURRENCY_EXPR =
   `UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR'))`;
 
+/** DomX net take: Maloum 80% / 4Based 70% of stored (gross) priceNet. */
+function netSalesExpr(alias = 'm') {
+  const prefix = alias ? `${alias}.` : '';
+  return (
+    `ABS(${prefix}"priceNet") * CASE` +
+    ` WHEN ${prefix}platform = '4based' THEN 0.7` +
+    ` ELSE 0.8 END`
+  );
+}
+
+const NET_SALES_EXPR = netSalesExpr('m');
+const NET_SALES_EXPR_UNALIASED = netSalesExpr('');
+
 const SERIES_MESSAGE_SELECT = `
   COUNT(*) FILTER (
     WHERE m."contentType" IN ('text', 'media', 'chat_product')
@@ -184,13 +197,13 @@ const SERIES_MESSAGE_SELECT = `
       AND m."contentType" IN ('text', 'media', 'chat_product')
   )::int AS "uniqueFansMessaged",
   ${SERIES_CURRENCY_EXPR} AS currency,
-  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
   ), 0)::float AS revenue,
-  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
     WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
   ), 0)::float AS "tipRevenue",
-  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
     WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
   ), 0)::float AS "ppvRevenue"
 `;
@@ -261,6 +274,9 @@ module.exports = {
   EXTENDED_MESSAGE_STATS_SELECT,
   SERIES_MESSAGE_SELECT,
   SERIES_CURRENCY_EXPR,
+  netSalesExpr,
+  NET_SALES_EXPR,
+  NET_SALES_EXPR_UNALIASED,
   parseExtendedMessageStats,
   periodDateClause,
 };

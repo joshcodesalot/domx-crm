@@ -28,6 +28,8 @@ const {
   EXTENDED_MESSAGE_STATS_SELECT,
   SERIES_MESSAGE_SELECT,
   SERIES_CURRENCY_EXPR,
+  NET_SALES_EXPR,
+  NET_SALES_EXPR_UNALIASED,
   parseExtendedMessageStats,
   salesPerMessage,
   revenuePerFan,
@@ -122,7 +124,7 @@ function toDashboardEntry(row) {
 
 async function enrichCreatorFields(creatorId) {
   const result = await pool.query(
-    `SELECT "displayName", username, "avatarUrl"
+    `SELECT "displayName", username, "avatarUrl", platform
      FROM creators
      WHERE id = $1`,
     [creatorId]
@@ -137,6 +139,7 @@ async function enrichCreatorFields(creatorId) {
     creatorName: row.displayName,
     creatorUsername: row.username,
     creatorAvatarUrl: row.avatarUrl,
+    platform: row.platform === '4based' ? '4based' : 'maloum',
   };
 }
 
@@ -382,6 +385,7 @@ async function logTip({
       "creatorName",
       "creatorUsername",
       "creatorAvatarUrl",
+      platform,
       "chatterId",
       "chatterName",
       "chatterEmail",
@@ -407,7 +411,7 @@ async function logTip({
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
       $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-      $21, $22, $23, $24, $25, $26, $27
+      $21, $22, $23, $24, $25, $26, $27, $28
     )
     ON CONFLICT ("maloumMessageId") DO NOTHING
     RETURNING *`,
@@ -417,6 +421,7 @@ async function logTip({
       enriched.creatorName,
       enriched.creatorUsername,
       enriched.creatorAvatarUrl,
+      enriched.platform,
       tipContext.chatterId,
       tipContext.chatterName,
       tipContext.chatterEmail,
@@ -909,6 +914,7 @@ async function logFourBasedSale({
       "creatorName",
       "creatorUsername",
       "creatorAvatarUrl",
+      platform,
       "chatterId",
       "chatterName",
       "chatterEmail",
@@ -934,7 +940,7 @@ async function logFourBasedSale({
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
       $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-      $21, $22, $23, $24, $25, $26, $27
+      $21, $22, $23, $24, $25, $26, $27, $28
     )
     ON CONFLICT ("maloumMessageId") DO NOTHING
     RETURNING *`,
@@ -944,6 +950,7 @@ async function logFourBasedSale({
       enriched.creatorName,
       enriched.creatorUsername,
       enriched.creatorAvatarUrl,
+      enriched.platform,
       tipContext.chatterId,
       tipContext.chatterName,
       tipContext.chatterEmail,
@@ -1445,10 +1452,10 @@ router.get(
       const chatterSalesQuery = pool.query(
             `SELECT m."chatterId",
                     UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                    COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                       WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                     ), 0)::float AS "totalSales",
-                    COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                    COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                       WHERE m.purchased = true
                         AND m."priceNet" IS NOT NULL
                         AND date_trunc('month', m."sentAt" AT TIME ZONE '${tz}')
@@ -1483,12 +1490,13 @@ router.get(
         creatorSalesResult,
         chatterPeriodStatsResult,
         chatterPeriodSalesResult,
+        allTimeSalesResult,
       ] = await Promise.all([
         // Period sales (Period Sales card / totalRevenue)
         scope.mode === 'self'
           ? pool.query(
               `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+                      COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
                FROM messaging_dashboard_entries
                WHERE purchased = true
                  AND "priceNet" IS NOT NULL
@@ -1500,7 +1508,7 @@ router.get(
             )
           : pool.query(
               `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+                      COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
                FROM messaging_dashboard_entries
                WHERE purchased = true
                  AND "priceNet" IS NOT NULL
@@ -1511,7 +1519,7 @@ router.get(
             ),
         pool.query(
           `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+                  COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
            FROM messaging_dashboard_entries
            WHERE purchased = true
              AND "priceNet" IS NOT NULL
@@ -1529,7 +1537,7 @@ router.get(
                )
                SELECT d.day::text AS date,
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS amount
                FROM days d
@@ -1543,7 +1551,7 @@ router.get(
                )
                SELECT d.day::text AS date,
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS amount
                FROM days d
@@ -1574,7 +1582,7 @@ router.get(
         scope.mode === 'self'
           ? pool.query(
               `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+                      COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
                FROM messaging_dashboard_entries
                WHERE purchased = true
                  AND "priceNet" IS NOT NULL
@@ -1586,7 +1594,7 @@ router.get(
             )
           : pool.query(
               `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS("priceNet")), 0)::float AS amount
+                      COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
                FROM messaging_dashboard_entries
                WHERE purchased = true
                  AND "priceNet" IS NOT NULL
@@ -1637,7 +1645,7 @@ router.get(
           ? pool.query(
               `SELECT m."chatterId",
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+                      COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
                WHERE m.purchased = true
                  AND m."priceNet" IS NOT NULL
@@ -1649,7 +1657,7 @@ router.get(
           : pool.query(
               `SELECT m."chatterId",
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+                      COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
                WHERE m.purchased = true
                  AND m."priceNet" IS NOT NULL
@@ -1733,7 +1741,7 @@ router.get(
                     ELSE NULL
                   END AS kind,
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+                  COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
                WHERE m."priceNet" IS NOT NULL
                  AND (
@@ -1754,7 +1762,7 @@ router.get(
                     ELSE NULL
                   END AS kind,
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+                  COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
                WHERE m."priceNet" IS NOT NULL
                  AND (
@@ -1814,7 +1822,7 @@ router.get(
                   COUNT(*) FILTER (
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                   )::int AS "salesCount",
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                   ), 0)::float AS "salesAmount"
                FROM messaging_dashboard_entries m
@@ -1834,7 +1842,7 @@ router.get(
                   COUNT(*) FILTER (
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                   )::int AS "salesCount",
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                   ), 0)::float AS "salesAmount"
                FROM messaging_dashboard_entries m
@@ -1847,30 +1855,28 @@ router.get(
         // Sales by platform
         scope.mode === 'self'
           ? pool.query(
-              `SELECT c.platform,
+              `SELECT m.platform,
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+                      COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
-               JOIN creators c ON c.id = m."creatorId"
                WHERE m.purchased = true
                  AND m."priceNet" IS NOT NULL
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
-               GROUP BY c.platform, 2`,
+               GROUP BY m.platform, 2`,
               [scope.userIds, periodStart, periodEnd]
             )
           : pool.query(
-              `SELECT c.platform,
+              `SELECT m.platform,
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+                      COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
-               JOIN creators c ON c.id = m."creatorId"
                WHERE m.purchased = true
                  AND m."priceNet" IS NOT NULL
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
-               GROUP BY c.platform, 2`,
+               GROUP BY m.platform, 2`,
               [periodStart, periodEnd]
             ),
         // Creator comparison counts (period, no currency split)
@@ -1880,10 +1886,9 @@ router.get(
                       MAX(m."creatorName") AS "creatorName",
                       MAX(m."creatorUsername") AS "creatorUsername",
                       MAX(m."creatorAvatarUrl") AS "creatorAvatarUrl",
-                      MAX(c.platform) AS platform,
+                      MAX(m.platform) AS platform,
                       ${EXTENDED_MESSAGE_STATS_SELECT}
                FROM messaging_dashboard_entries m
-               JOIN creators c ON c.id = m."creatorId"
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
@@ -1895,10 +1900,9 @@ router.get(
                       MAX(m."creatorName") AS "creatorName",
                       MAX(m."creatorUsername") AS "creatorUsername",
                       MAX(m."creatorAvatarUrl") AS "creatorAvatarUrl",
-                      MAX(c.platform) AS platform,
+                      MAX(m.platform) AS platform,
                       ${EXTENDED_MESSAGE_STATS_SELECT}
                FROM messaging_dashboard_entries m
-               JOIN creators c ON c.id = m."creatorId"
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY m."creatorId"`,
@@ -1909,13 +1913,13 @@ router.get(
           ? pool.query(
               `SELECT m."creatorId",
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "totalSalesAmount",
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "tipSalesAmount",
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "ppvSalesAmount"
                FROM messaging_dashboard_entries m
@@ -1928,13 +1932,13 @@ router.get(
           : pool.query(
               `SELECT m."creatorId",
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "totalSalesAmount",
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "tipSalesAmount",
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "ppvSalesAmount"
                FROM messaging_dashboard_entries m
@@ -1969,13 +1973,13 @@ router.get(
           ? pool.query(
               `SELECT m."chatterId",
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "tipSalesAmount",
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "ppvSalesAmount",
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "periodSalesAmount"
                FROM messaging_dashboard_entries m
@@ -1988,13 +1992,13 @@ router.get(
           : pool.query(
               `SELECT m."chatterId",
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "tipSalesAmount",
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "ppvSalesAmount",
-                      COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                      COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "periodSalesAmount"
                FROM messaging_dashboard_entries m
@@ -2003,6 +2007,17 @@ router.get(
                GROUP BY m."chatterId", 2`,
               [periodStart, periodEnd]
             ),
+        // All-time / overall total sales (net)
+        pool.query(
+          `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
+           FROM messaging_dashboard_entries
+           WHERE purchased = true
+             AND "priceNet" IS NOT NULL
+             ${chatterClause}
+           GROUP BY 1`,
+          selfParams
+        ),
       ]);
 
       // Override team + per-chatter p50/p90 with shift-scoped response times
@@ -2125,6 +2140,7 @@ router.get(
 
       const totalSales = currencyAmountRowsToList(totalSalesResult.rows);
       const monthlyRevenue = currencyAmountRowsToList(monthlySalesResult.rows);
+      const allTimeSales = currencyAmountRowsToList(allTimeSalesResult.rows);
       const periodRateSales = currencyAmountRowsToList(cutoverSalesResult.rows);
       const periodRateMessages =
         Number(cutoverMessagesResult.rows[0]?.messagesSent) || 0;
@@ -2203,11 +2219,19 @@ router.get(
       const creatorsById = new Map();
       for (const row of creatorStatsResult.rows) {
         const stats = parseExtendedMessageStats(row);
-        creatorsById.set(row.creatorId, {
-          creatorId: row.creatorId,
-          creatorName: row.creatorName,
-          creatorUsername: row.creatorUsername || null,
-          creatorAvatarUrl: row.creatorAvatarUrl || null,
+        const creatorKey = row.creatorId == null ? null : row.creatorId;
+        const isDeletedCreator = creatorKey == null;
+        creatorsById.set(creatorKey, {
+          creatorId: creatorKey,
+          creatorName: isDeletedCreator
+            ? 'Deleted'
+            : row.creatorName || 'Deleted',
+          creatorUsername: isDeletedCreator
+            ? null
+            : row.creatorUsername || null,
+          creatorAvatarUrl: isDeletedCreator
+            ? null
+            : row.creatorAvatarUrl || null,
           platform: row.platform === '4based' ? '4based' : row.platform === 'maloum' ? 'maloum' : null,
           ...stats,
           totalSales: [],
@@ -2216,8 +2240,21 @@ router.get(
         });
       }
       for (const row of creatorSalesResult.rows) {
-        if (!creatorsById.has(row.creatorId)) continue;
-        const entry = creatorsById.get(row.creatorId);
+        const creatorKey = row.creatorId == null ? null : row.creatorId;
+        if (!creatorsById.has(creatorKey)) {
+          creatorsById.set(creatorKey, {
+            creatorId: creatorKey,
+            creatorName: 'Deleted',
+            creatorUsername: null,
+            creatorAvatarUrl: null,
+            platform: null,
+            ...parseExtendedMessageStats({}),
+            totalSales: [],
+            tipSales: [],
+            ppvSales: [],
+          });
+        }
+        const entry = creatorsById.get(creatorKey);
         const currency = normalizeCurrency(row.currency);
         const totalAmt = Number(row.totalSalesAmount) || 0;
         const tipAmt = Number(row.tipSalesAmount) || 0;
@@ -2445,7 +2482,12 @@ router.get(
         };
       });
 
-      const missingIds = [...statsByChatter.keys()].filter((id) => !namedIds.has(id));
+      const missingIds = [...statsByChatter.keys()].filter(
+        (id) => id != null && !namedIds.has(id)
+      );
+      const hasDeletedChatter =
+        statsByChatter.has(null) || periodExtrasByChatter.has(null);
+
       if (missingIds.length > 0) {
         const nameResult = await pool.query(
           `SELECT id AS "chatterId", name AS "chatterName"
@@ -2506,6 +2548,65 @@ router.get(
         }
       }
 
+      if (hasDeletedChatter) {
+        const stats = statsByChatter.get(null) || {
+          avgResponseTimeSeconds: null,
+          totalSales: [],
+          monthlyRevenue: [],
+          messagesSent: 0,
+          ppvsSent: 0,
+          ppvsUnlocked: 0,
+          goldenRatio: 0,
+          ppvConversionRate: 0,
+        };
+        const periodExtras = periodExtrasByChatter.get(null);
+        const totalSalesMerged = mergeCurrencyAmounts(stats.totalSales || []);
+        const cutoverSalesMerged = mergeCurrencyAmounts(
+          cutoverSalesByChatter.get(null) || []
+        );
+        const cutoverMessages = cutoverMessagesByChatter.get(null) || 0;
+        const tipSalesMergedRow = mergeCurrencyAmounts(periodExtras?.tipSales || []);
+        const ppvSalesMergedChatter = mergeCurrencyAmounts(
+          periodExtras?.ppvSales || []
+        );
+        const periodSalesMerged = mergeCurrencyAmounts(
+          periodExtras?.periodSales || []
+        );
+        chatters.push({
+          chatterId: null,
+          chatterName: 'Deleted',
+          avgResponseTimeSeconds: stats.avgResponseTimeSeconds ?? null,
+          totalSales: totalSalesMerged,
+          monthlyRevenue: mergeCurrencyAmounts(stats.monthlyRevenue || []),
+          messagesSent: stats.messagesSent || 0,
+          ppvsSent: stats.ppvsSent || 0,
+          ppvsUnlocked: stats.ppvsUnlocked || 0,
+          goldenRatio: stats.goldenRatio || 0,
+          ppvConversionRate: stats.ppvConversionRate || 0,
+          activeSecondsTotal: 0,
+          idleSecondsTotal: 0,
+          idlePercent: 0,
+          revenuePerHour: revenuePerHourAmounts(cutoverSalesMerged, 0),
+          messagesPerHour: perHourRate(cutoverMessages, 0),
+          tipSales: tipSalesMergedRow,
+          ppvSales: ppvSalesMergedChatter,
+          periodSales: periodSalesMerged,
+          salesPerMessage: salesPerMessage(
+            periodSalesMerged,
+            periodExtras?.messagesSent || 0
+          ),
+          uniqueFansMessaged: periodExtras?.uniqueFansMessaged || 0,
+          fansWhoUnlocked: periodExtras?.fansWhoUnlocked || 0,
+          pendingPpvs: periodExtras?.pendingPpvs || 0,
+          p50ResponseSeconds: periodExtras?.p50ResponseSeconds ?? null,
+          p90ResponseSeconds: periodExtras?.p90ResponseSeconds ?? null,
+          avgPpvPrice: periodExtras?.avgPpvPrice ?? null,
+          medianPpvPrice: periodExtras?.medianPpvPrice ?? null,
+          scheduleApplied: false,
+          shiftLabel: null,
+        });
+      }
+
       chatters.sort((a, b) => a.chatterName.localeCompare(b.chatterName));
 
       const avgRaw = avgResponseResult.rows[0]?.avg;
@@ -2517,6 +2618,7 @@ router.get(
         totalSales,
         totalRevenue: totalSales,
         monthlyRevenue,
+        allTimeSales,
         tipSales: tipSalesMerged,
         ppvSales: ppvSalesMerged,
         totalMessagesSent: messagesSent,
@@ -2634,7 +2736,7 @@ router.get(
               `${windowsCte}
                SELECT m."chatterId" AS "userId",
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+                      COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
                JOIN users u ON u.id = m."chatterId"
                WHERE u.role = ANY($1::text[])
@@ -3207,10 +3309,9 @@ router.get(
                   MAX(m."creatorName") AS "creatorName",
                   MAX(m."creatorUsername") AS "creatorUsername",
                   MAX(m."creatorAvatarUrl") AS "creatorAvatarUrl",
-                  MAX(c.platform) AS platform,
+                  MAX(m.platform) AS platform,
                   ${EXTENDED_MESSAGE_STATS_SELECT}
            FROM messaging_dashboard_entries m
-           JOIN creators c ON c.id = m."creatorId"
            WHERE ${dateClause}
              ${chatterClause}
              ${creatorClause}
@@ -3221,13 +3322,13 @@ router.get(
         pool.query(
           `SELECT m."creatorId",
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                   ), 0)::float AS "totalSalesAmount",
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                     WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
                   ), 0)::float AS "tipSalesAmount",
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                     WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
                   ), 0)::float AS "ppvSalesAmount"
            FROM messaging_dashboard_entries m
@@ -3242,7 +3343,7 @@ router.get(
                   m."chatterId",
                   MAX(m."chatterName") AS "chatterName",
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                   ), 0)::float AS amount
            FROM messaging_dashboard_entries m
@@ -3254,17 +3355,16 @@ router.get(
         ),
         pool.query(
           `SELECT m."creatorId",
-                  c.platform,
+                  m.platform,
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                   ), 0)::float AS amount
            FROM messaging_dashboard_entries m
-           JOIN creators c ON c.id = m."creatorId"
            WHERE ${dateClause}
              ${chatterClause}
              ${creatorClause}
-           GROUP BY m."creatorId", c.platform, 3`,
+           GROUP BY m."creatorId", m.platform, 3`,
           baseParams
         ),
         pool.query(
@@ -3294,7 +3394,7 @@ router.get(
               COUNT(*) FILTER (
                 WHERE m.purchased = true AND m."priceNet" IS NOT NULL
               )::int AS "salesCount",
-              COALESCE(SUM(ABS(m."priceNet")) FILTER (
+              COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                 WHERE m.purchased = true AND m."priceNet" IS NOT NULL
               ), 0)::float AS "salesAmount"
            FROM messaging_dashboard_entries m
@@ -3308,7 +3408,7 @@ router.get(
         pool.query(
           `SELECT (m."sentAt" AT TIME ZONE '${tz}')::date::text AS date,
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                   ), 0)::float AS amount
            FROM messaging_dashboard_entries m
@@ -3323,7 +3423,7 @@ router.get(
           `SELECT m."fanId",
                   MAX(m."fanUsername") AS "fanUsername",
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                  COALESCE(SUM(ABS(m."priceNet")) FILTER (
+                  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                     WHERE m.purchased = true AND m."priceNet" IS NOT NULL
                   ), 0)::float AS amount
            FROM messaging_dashboard_entries m
@@ -3332,10 +3432,10 @@ router.get(
              ${chatterClause}
              ${creatorClause}
            GROUP BY m."fanId", 3
-           HAVING COALESCE(SUM(ABS(m."priceNet")) FILTER (
+           HAVING COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
              WHERE m.purchased = true AND m."priceNet" IS NOT NULL
            ), 0) > 0
-           ORDER BY SUM(ABS(m."priceNet")) FILTER (
+           ORDER BY SUM(${NET_SALES_EXPR}) FILTER (
              WHERE m.purchased = true AND m."priceNet" IS NOT NULL
            ) DESC
            LIMIT 20`,
@@ -3357,7 +3457,7 @@ router.get(
                 ELSE NULL
               END AS kind,
               UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-              COALESCE(SUM(ABS(m."priceNet")), 0)::float AS amount
+              COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
            FROM messaging_dashboard_entries m
            WHERE m."priceNet" IS NOT NULL
              AND (
@@ -3374,14 +3474,15 @@ router.get(
 
       const salesByCreator = new Map();
       for (const row of creatorSalesResult.rows) {
-        if (!salesByCreator.has(row.creatorId)) {
-          salesByCreator.set(row.creatorId, {
+        const creatorKey = row.creatorId == null ? null : row.creatorId;
+        if (!salesByCreator.has(creatorKey)) {
+          salesByCreator.set(creatorKey, {
             totalSales: [],
             tipSales: [],
             ppvSales: [],
           });
         }
-        const entry = salesByCreator.get(row.creatorId);
+        const entry = salesByCreator.get(creatorKey);
         const currency = normalizeCurrency(row.currency);
         const totalAmt = Number(row.totalSalesAmount) || 0;
         const tipAmt = Number(row.tipSalesAmount) || 0;
@@ -3393,20 +3494,23 @@ router.get(
 
       const chatterSalesByCreator = new Map();
       for (const row of salesByChatterResult.rows) {
-        if (!chatterSalesByCreator.has(row.creatorId)) {
-          chatterSalesByCreator.set(row.creatorId, new Map());
+        const creatorKey = row.creatorId == null ? null : row.creatorId;
+        const chatterKey = row.chatterId == null ? null : row.chatterId;
+        if (!chatterSalesByCreator.has(creatorKey)) {
+          chatterSalesByCreator.set(creatorKey, new Map());
         }
-        const byChatter = chatterSalesByCreator.get(row.creatorId);
-        if (!byChatter.has(row.chatterId)) {
-          byChatter.set(row.chatterId, {
-            chatterId: row.chatterId,
-            chatterName: row.chatterName,
+        const byChatter = chatterSalesByCreator.get(creatorKey);
+        if (!byChatter.has(chatterKey)) {
+          byChatter.set(chatterKey, {
+            chatterId: chatterKey,
+            chatterName:
+              chatterKey == null ? 'Deleted' : row.chatterName || 'Deleted',
             amounts: [],
           });
         }
         const amount = Number(row.amount) || 0;
         if (amount > 0) {
-          byChatter.get(row.chatterId).amounts.push({
+          byChatter.get(chatterKey).amounts.push({
             currency: normalizeCurrency(row.currency),
             amount,
           });
@@ -3415,10 +3519,11 @@ router.get(
 
       const platformByCreator = new Map();
       for (const row of salesByPlatformResult.rows) {
-        if (!platformByCreator.has(row.creatorId)) {
-          platformByCreator.set(row.creatorId, new Map());
+        const creatorKey = row.creatorId == null ? null : row.creatorId;
+        if (!platformByCreator.has(creatorKey)) {
+          platformByCreator.set(creatorKey, new Map());
         }
-        const byPlatform = platformByCreator.get(row.creatorId);
+        const byPlatform = platformByCreator.get(creatorKey);
         const platform = row.platform === '4based' ? '4based' : 'maloum';
         if (!byPlatform.has(platform)) byPlatform.set(platform, []);
         const amount = Number(row.amount) || 0;
@@ -3431,8 +3536,10 @@ router.get(
       }
 
       const creators = creatorStatsResult.rows.map((row) => {
+        const creatorKey = row.creatorId == null ? null : row.creatorId;
+        const isDeletedCreator = creatorKey == null;
         const stats = parseExtendedMessageStats(row);
-        const sales = salesByCreator.get(row.creatorId) || {
+        const sales = salesByCreator.get(creatorKey) || {
           totalSales: [],
           tipSales: [],
           ppvSales: [],
@@ -3441,27 +3548,38 @@ router.get(
         const tipSales = mergeCurrencyAmounts(sales.tipSales);
         const ppvSales = mergeCurrencyAmounts(sales.ppvSales);
         const salesByChatter = [
-          ...(chatterSalesByCreator.get(row.creatorId)?.values() || []),
+          ...(chatterSalesByCreator.get(creatorKey)?.values() || []),
         ]
           .map((item) => ({
             ...item,
+            chatterId: item.chatterId == null ? null : item.chatterId,
+            chatterName:
+              item.chatterId == null
+                ? 'Deleted'
+                : item.chatterName || 'Deleted',
             amounts: mergeCurrencyAmounts(item.amounts),
           }))
           .sort((a, b) =>
             a.chatterName.localeCompare(b.chatterName)
           );
         const salesByPlatform = [
-          ...(platformByCreator.get(row.creatorId)?.entries() || []),
+          ...(platformByCreator.get(creatorKey)?.entries() || []),
         ].map(([platform, amounts]) => ({
           platform,
           amounts: mergeCurrencyAmounts(amounts),
         }));
 
         return {
-          creatorId: row.creatorId,
-          creatorName: row.creatorName,
-          creatorUsername: row.creatorUsername || null,
-          creatorAvatarUrl: row.creatorAvatarUrl || null,
+          creatorId: creatorKey,
+          creatorName: isDeletedCreator
+            ? 'Deleted'
+            : row.creatorName || 'Deleted',
+          creatorUsername: isDeletedCreator
+            ? null
+            : row.creatorUsername || null,
+          creatorAvatarUrl: isDeletedCreator
+            ? null
+            : row.creatorAvatarUrl || null,
           platform:
             row.platform === '4based'
               ? '4based'
@@ -3848,7 +3966,6 @@ router.get(
     const countResult = await pool.query(
       `SELECT COUNT(*)::int AS total
        FROM messaging_dashboard_entries m
-       JOIN creators c ON c.id = m."creatorId"
        ${whereClause}`,
       values
     );
@@ -3857,17 +3974,16 @@ router.get(
 
     const dataResult = await pool.query(
       `SELECT m.*,
-              c.platform AS platform,
+              m.platform AS platform,
               COALESCE(sales."chatterSalesTotal", 0) AS "chatterSalesTotal"
        FROM messaging_dashboard_entries m
-       JOIN creators c ON c.id = m."creatorId"
        LEFT JOIN (
-         SELECT m."chatterId", c.platform, SUM(ABS(m."priceNet")) AS "chatterSalesTotal"
+         SELECT m."chatterId", m.platform, SUM(${NET_SALES_EXPR}) AS "chatterSalesTotal"
          FROM messaging_dashboard_entries m
-         JOIN creators c ON c.id = m."creatorId"
          ${salesWhereClause}
-         GROUP BY m."chatterId", c.platform
-       ) sales ON sales."chatterId" = m."chatterId" AND sales.platform = c.platform
+         GROUP BY m."chatterId", m.platform
+       ) sales ON sales."chatterId" IS NOT DISTINCT FROM m."chatterId"
+              AND sales.platform = m.platform
        ${whereClause}
        ORDER BY m."sentAt" DESC
        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
@@ -3964,24 +4080,15 @@ router.post(
       return res.status(400).json({ error: 'sentAt is required' });
     }
 
-    const creatorCheck = await pool.query('SELECT id FROM creators WHERE id = $1', [creatorId]);
-    if (creatorCheck.rows.length === 0) {
+    const enriched = await enrichCreatorFields(creatorId);
+    if (!enriched) {
       return res.status(404).json({ error: 'Creator not found' });
     }
 
-    let resolvedCreatorName = creatorName;
-    let resolvedCreatorUsername = creatorUsername;
-    let resolvedCreatorAvatarUrl = creatorAvatarUrl;
-
-    if (!resolvedCreatorName) {
-      const enriched = await enrichCreatorFields(creatorId);
-      if (!enriched) {
-        return res.status(404).json({ error: 'Creator not found' });
-      }
-      resolvedCreatorName = enriched.creatorName;
-      resolvedCreatorUsername = resolvedCreatorUsername || enriched.creatorUsername;
-      resolvedCreatorAvatarUrl = resolvedCreatorAvatarUrl || enriched.creatorAvatarUrl;
-    }
+    const resolvedCreatorName = creatorName || enriched.creatorName;
+    const resolvedCreatorUsername = creatorUsername || enriched.creatorUsername;
+    const resolvedCreatorAvatarUrl = creatorAvatarUrl || enriched.creatorAvatarUrl;
+    const resolvedPlatform = enriched.platform;
 
     const resolvedChatterEmail = chatterEmail || (await enrichChatterEmail(chatterId));
 
@@ -3992,6 +4099,7 @@ router.post(
         "creatorName",
         "creatorUsername",
         "creatorAvatarUrl",
+        platform,
         "chatterId",
         "chatterName",
         "chatterEmail",
@@ -4018,12 +4126,13 @@ router.post(
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
         $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-        $21, $22, $23, $24, $25, $26, $27, NOW()
+        $21, $22, $23, $24, $25, $26, $27, $28, NOW()
       )
       ON CONFLICT ("maloumMessageId") DO UPDATE SET
         "creatorName" = EXCLUDED."creatorName",
         "creatorUsername" = EXCLUDED."creatorUsername",
         "creatorAvatarUrl" = EXCLUDED."creatorAvatarUrl",
+        platform = COALESCE(EXCLUDED.platform, messaging_dashboard_entries.platform),
         "chatterName" = EXCLUDED."chatterName",
         "chatterEmail" = EXCLUDED."chatterEmail",
         "fanId" = COALESCE(EXCLUDED."fanId", messaging_dashboard_entries."fanId"),
@@ -4053,6 +4162,7 @@ router.post(
         resolvedCreatorName,
         resolvedCreatorUsername,
         resolvedCreatorAvatarUrl,
+        resolvedPlatform,
         chatterId,
         chatterName,
         resolvedChatterEmail,

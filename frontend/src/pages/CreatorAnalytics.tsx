@@ -514,7 +514,7 @@ export default function CreatorAnalytics() {
                           .sort((a, b) => dayTotal(b.amounts) - dayTotal(a.amounts))
                           .map((row) => (
                             <tr
-                              key={row.chatterId}
+                              key={row.chatterId || 'deleted'}
                               className="border-t border-gray-100 dark:border-white/5"
                             >
                               <td className="px-4 py-3">{row.chatterName}</td>
@@ -661,16 +661,19 @@ export default function CreatorAnalytics() {
                             )
                             .map((creator) => (
                               <tr
-                                key={creator.creatorId}
+                                key={creator.creatorId || 'deleted'}
                                 className="border-t border-gray-100 dark:border-white/5"
                               >
                                 <td className="px-4 py-3">
                                   <button
                                     type="button"
-                                    onClick={() =>
-                                      handleCreatorChange(creator.creatorId)
-                                    }
-                                    className="flex items-center gap-2 hover:underline"
+                                    onClick={() => {
+                                      if (creator.creatorId) {
+                                        handleCreatorChange(creator.creatorId);
+                                      }
+                                    }}
+                                    disabled={!creator.creatorId}
+                                    className="flex items-center gap-2 hover:underline disabled:hover:no-underline disabled:cursor-default"
                                   >
                                     <PlatformIcon
                                       platform={creator.platform}

@@ -1584,9 +1584,10 @@ router.patch(
 router.delete('/:id', authenticate, requirePermission('creators.manage'), async (req, res) => {
   const { id } = req.params;
 
+  const client = await pool.connect();
   try {
-    const creatorResult = await pool.query(
-      `SELECT id, "displayName", "accountId", "partitionId"
+    const creatorResult = await client.query(
+      `SELECT id, "displayName", "accountId", "partitionId", platform
        FROM creators
        WHERE id = $1`,
       [id]
@@ -1597,18 +1598,34 @@ router.delete('/:id', authenticate, requirePermission('creators.manage'), async 
     }
 
     const creator = creatorResult.rows[0];
+    const creatorPlatform =
+      creator.platform === '4based' ? '4based' : 'maloum';
 
-    const assignedStaff = await pool.query(
+    const assignedStaff = await client.query(
       `SELECT "userId" FROM creator_staff_assignments WHERE "creatorId" = $1`,
       [id]
     );
 
-    const result = await pool.query(
+    await client.query('BEGIN');
+
+    await client.query(
+      `UPDATE messaging_dashboard_entries
+       SET "creatorName" = 'Deleted',
+           "creatorUsername" = NULL,
+           "creatorAvatarUrl" = NULL,
+           platform = COALESCE(NULLIF(TRIM(platform), ''), $2)
+       WHERE "creatorId" = $1`,
+      [id, creatorPlatform]
+    );
+
+    const result = await client.query(
       `DELETE FROM creators
        WHERE id = $1
        RETURNING id, "accountId", "partitionId", platform`,
       [id]
     );
+
+    await client.query('COMMIT');
 
     const { accountId, partitionId, platform } = result.rows[0];
 
@@ -1639,8 +1656,15 @@ router.delete('/:id', authenticate, requirePermission('creators.manage'), async 
       partitionId: partitionId || null,
     });
   } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      // ignore rollback errors
+    }
     console.error('Delete creator error:', err);
     res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 
