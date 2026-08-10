@@ -3931,7 +3931,7 @@ router.get(
     }
 
     if (platform === 'maloum' || platform === '4based') {
-      conditions.push(`c.platform = $${paramIndex}`);
+      conditions.push(`m.platform = $${paramIndex}`);
       values.push(platform);
       paramIndex += 1;
     } else if (platform != null && String(platform).trim() !== '') {

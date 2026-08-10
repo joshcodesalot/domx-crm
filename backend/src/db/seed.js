@@ -3,8 +3,9 @@ const pool = require('./pool');
 const ROLES = [
   { slug: 'owner', name: 'Owner', rank: 1 },
   { slug: 'manager', name: 'Manager', rank: 2 },
-  { slug: 'team_leader', name: 'Team Leader', rank: 3 },
-  { slug: 'chatter', name: 'Chatter', rank: 4 },
+  { slug: 'backend', name: 'Backend', rank: 3 },
+  { slug: 'team_leader', name: 'Team Leader', rank: 4 },
+  { slug: 'chatter', name: 'Chatter', rank: 5 },
 ];
 
 const PERMISSIONS = [
@@ -42,12 +43,17 @@ const DEFAULT_MATRIX = {
   manager: [
     'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view', 'creators.manage',
     'staff.view', 'staff.create', 'staff.edit', 'staff.deactivate', 'staff.delete', 'staff.assign_role',
-    'roles.view',
+    'roles.view', 'roles.manage',
     'mass_messages.send',
     'vault.notes.edit',
     'scripts.manage',
     'moderation.manage',
     'moderation.review',
+  ],
+  backend: [
+    'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view',
+    'staff.view',
+    'vault.notes.edit',
   ],
   team_leader: [
     'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view',
