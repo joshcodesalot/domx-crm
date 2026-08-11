@@ -13,6 +13,7 @@ import {
   Loader2,
   Lock,
   Megaphone,
+  Play,
   RefreshCw,
   Send,
   Trash2,
@@ -23,6 +24,7 @@ import {
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
+import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
@@ -35,6 +37,7 @@ import { useToast } from '@/context/ToastContext';
 import {
   countFourBasedMassMessageReceivers,
   deleteFourBasedMassMessage,
+  fourBasedMediaUrl,
   fourBasedPreviewPath,
   getCreators,
   getFourBasedProfile,
@@ -43,6 +46,7 @@ import {
   listFourBasedVault,
   listVaultMediaNotes,
   pickFourBasedPreviewUrl,
+  pickFourBasedSourceUrl,
   resolveFourBasedMediaSrc,
   sendFourBasedMassMessage,
   translateToGerman,
@@ -128,6 +132,40 @@ function mediaThumbSrc(
   );
 }
 
+function mediaFullSrc(
+  creatorId: string,
+  providerUserId: string | null,
+  item: FourBasedVaultItem
+): string | null {
+  const fromPreview = pickFourBasedPreviewUrl(item.preview, [
+    '900xxx',
+    '500x500',
+    '400x400',
+  ]);
+  if (fromPreview) return resolveFourBasedMediaSrc(creatorId, fromPreview);
+  const id = vaultItemId(item);
+  if (!providerUserId || !id) return null;
+  return resolveFourBasedMediaSrc(
+    creatorId,
+    fourBasedPreviewPath(providerUserId, id, '900xxx.jpg')
+  );
+}
+
+function mediaVideoSrc(
+  creatorId: string,
+  providerUserId: string | null,
+  item: FourBasedVaultItem
+): string | null {
+  const fromSource = pickFourBasedSourceUrl(item.source);
+  if (fromSource) return resolveFourBasedMediaSrc(creatorId, fromSource);
+  const id = vaultItemId(item);
+  if (!providerUserId || !id) return null;
+  return fourBasedMediaUrl(
+    creatorId,
+    `protected/${providerUserId}/${id}/file.mp4`
+  );
+}
+
 export default function FourBasedMassMessage() {
   const { hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
@@ -181,6 +219,7 @@ export default function FourBasedMassMessage() {
   const [vaultLoading, setVaultLoading] = useState(false);
   const [vaultLoadingMore, setVaultLoadingMore] = useState(false);
   const [vaultError, setVaultError] = useState<string | null>(null);
+  const [previewItem, setPreviewItem] = useState<FourBasedVaultItem | null>(null);
   const [selectedVaultItems, setSelectedVaultItems] = useState<FourBasedVaultItem[]>(
     []
   );
@@ -690,6 +729,36 @@ export default function FourBasedMassMessage() {
     loadMessages,
   ]);
 
+  const vaultLightbox =
+    previewItem && selectedCreatorId
+      ? (() => {
+          const video = isVideoItem(previewItem);
+          const full = mediaFullSrc(
+            selectedCreatorId,
+            providerUserId,
+            previewItem
+          );
+          const thumb = mediaThumbSrc(
+            selectedCreatorId,
+            providerUserId,
+            previewItem
+          );
+          const stream = mediaVideoSrc(
+            selectedCreatorId,
+            providerUserId,
+            previewItem
+          );
+          const url = video ? stream || full || thumb : full || thumb;
+          if (!url) return null;
+          return {
+            url,
+            kind: (video ? 'video' : 'picture') as 'video' | 'picture',
+            poster: video ? thumb || full : null,
+            fallbackUrl: !video ? thumb : null,
+          };
+        })()
+      : null;
+
   return (
     <div className="h-screen flex bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 antialiased overflow-hidden">
       <Sidebar activePage="chatter" />
@@ -1156,7 +1225,10 @@ export default function FourBasedMassMessage() {
             type="button"
             aria-label="Close vault"
             className="absolute inset-0 bg-black/30 dark:bg-black/80 backdrop-blur-sm"
-            onClick={() => setVaultOpen(false)}
+            onClick={() => {
+              setVaultOpen(false);
+              setPreviewItem(null);
+            }}
           />
           <div className="relative bg-white dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800/80 rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
             <div className="flex items-center justify-between p-5 border-b border-gray-200 dark:border-zinc-800/60">
@@ -1177,14 +1249,20 @@ export default function FourBasedMassMessage() {
               <div className="flex items-center gap-3">
                 <button
                   type="button"
-                  onClick={() => setVaultOpen(false)}
+                  onClick={() => {
+                    setVaultOpen(false);
+                    setPreviewItem(null);
+                  }}
                   className="px-5 py-2 text-sm font-semibold rounded-lg bg-4based-500 text-white hover:opacity-90"
                 >
                   Insert Media
                 </button>
                 <button
                   type="button"
-                  onClick={() => setVaultOpen(false)}
+                  onClick={() => {
+                    setVaultOpen(false);
+                    setPreviewItem(null);
+                  }}
                   className="p-2 text-gray-500 hover:text-gray-900 dark:hover:text-white rounded-lg"
                   aria-label="Close vault"
                 >
@@ -1309,17 +1387,19 @@ export default function FourBasedMassMessage() {
                       role="button"
                       tabIndex={0}
                       onClick={() => toggleVaultItem(item)}
+                      onDoubleClick={() => setPreviewItem(item)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault();
                           toggleVaultItem(item);
                         }
                       }}
-                      className={`relative aspect-square rounded-xl overflow-hidden cursor-pointer ${
+                      className={`relative aspect-square rounded-xl overflow-hidden group cursor-pointer ${
                         selected
                           ? 'ring-2 ring-4based-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
                           : 'border border-gray-200 dark:border-zinc-800'
                       }`}
+                      title="Click to select · double-click to preview"
                     >
                       {src ? (
                         <img
@@ -1345,14 +1425,25 @@ export default function FourBasedMassMessage() {
                         />
                       ) : null}
                       {selected && (
-                        <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-4based-500 text-white flex items-center justify-center">
+                        <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-4based-500 text-white flex items-center justify-center z-10">
                           <Check className="w-3.5 h-3.5" />
                         </span>
                       )}
                       {video && (
-                        <span className="absolute inset-0 flex items-center justify-center bg-black/20 pointer-events-none">
-                          <Video className="w-5 h-5 text-white" />
-                        </span>
+                        <div className="absolute inset-0 z-[5] flex items-center justify-center bg-black/20 pointer-events-none">
+                          <button
+                            type="button"
+                            aria-label="Play video"
+                            className="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center text-white/90 pointer-events-auto hover:bg-black/70 transition-colors"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setPreviewItem(item);
+                            }}
+                          >
+                            <Play className="w-5 h-5 ml-0.5" />
+                          </button>
+                        </div>
                       )}
                     </div>
                   );
@@ -1371,6 +1462,17 @@ export default function FourBasedMassMessage() {
             </div>
           </div>
         </div>
+      )}
+
+      {vaultLightbox && (
+        <VaultMediaLightbox
+          url={vaultLightbox.url}
+          kind={vaultLightbox.kind}
+          poster={vaultLightbox.poster}
+          fallbackUrl={vaultLightbox.fallbackUrl}
+          onClose={() => setPreviewItem(null)}
+          zClassName="z-[100]"
+        />
       )}
 
       {priceModalOpen && (

@@ -11,9 +11,14 @@ const { getUserTimeZone } = require('../services/rbac');
 const { emitToUsers } = require('../services/userEventBus');
 const {
   getAnalyticsScope,
+  isTeamAnalyticsRole,
   TRACKED_STAFF_ROLES,
 } = require('../services/analyticsScope');
 const {
+  formatMoneyAmounts,
+  formatPercentPlain,
+  formatCountPlain,
+  formatResponseDuration,
   maskMoneyAmounts,
   maskDuration,
   maskPercent,
@@ -58,14 +63,14 @@ function ratePercent(numerator, denominator) {
   return helperRatePercent(numerator, denominator);
 }
 
-function perHourRate(value, activeSeconds) {
-  const hours = (Number(activeSeconds) || 0) / 3600;
+function perHourRate(value, totalSeconds) {
+  const hours = (Number(totalSeconds) || 0) / 3600;
   if (hours <= 0) return 0;
   return Math.round(((Number(value) || 0) / hours) * 100) / 100;
 }
 
-function revenuePerHourAmounts(amounts, activeSeconds) {
-  const hours = (Number(activeSeconds) || 0) / 3600;
+function revenuePerHourAmounts(amounts, totalSeconds) {
+  const hours = (Number(totalSeconds) || 0) / 3600;
   if (hours <= 0 || !amounts || amounts.length === 0) {
     return [];
   }
@@ -76,6 +81,33 @@ function revenuePerHourAmounts(amounts, activeSeconds) {
     }))
     .filter((item) => item.amount > 0);
 }
+
+/**
+ * Response wait clamped to the shift window that contains sentAt.
+ * Overnight fan wait before clock-in is excluded from averages.
+ * Requires a `windows("userId", "windowStart", "windowEnd")` CTE.
+ */
+const EFFECTIVE_RESPONSE_SECONDS_SQL = `
+  CASE
+    WHEN m."previousFanMessageAt" IS NULL THEN m."responseTimeSeconds"::float
+    ELSE GREATEST(
+      0::float,
+      EXTRACT(EPOCH FROM (
+        m."sentAt" - GREATEST(
+          m."previousFanMessageAt",
+          (
+            SELECT w."windowStart"
+            FROM windows w
+            WHERE w."userId" = m."chatterId"
+              AND m."sentAt" >= w."windowStart"
+              AND m."sentAt" < w."windowEnd"
+            LIMIT 1
+          )
+        )
+      ))
+    )::float
+  END
+`;
 
 const router = express.Router();
 
@@ -1377,7 +1409,7 @@ router.get(
               `WITH windows("userId", "windowStart", "windowEnd") AS (
                  VALUES ${periodWindowClause.sql}
                )
-               SELECT AVG(m."responseTimeSeconds")::float AS avg
+               SELECT AVG(${EFFECTIVE_RESPONSE_SECONDS_SQL})::float AS avg
                FROM messaging_dashboard_entries m
                WHERE m."responseTimeSeconds" IS NOT NULL
                  AND m."chatterId" = ANY($1::uuid[])
@@ -1393,7 +1425,7 @@ router.get(
               `WITH windows("userId", "windowStart", "windowEnd") AS (
                  VALUES ${periodWindowClause.sql}
                )
-               SELECT AVG(m."responseTimeSeconds")::float AS avg
+               SELECT AVG(${EFFECTIVE_RESPONSE_SECONDS_SQL})::float AS avg
                FROM messaging_dashboard_entries m
                WHERE m."responseTimeSeconds" IS NOT NULL
                  AND EXISTS (
@@ -1413,7 +1445,7 @@ router.get(
                  VALUES ${periodWindowClause.sql}
                )
                SELECT m."chatterId",
-                      AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
+                      AVG(${EFFECTIVE_RESPONSE_SECONDS_SQL})::float AS "avgResponseTimeSeconds"
                FROM messaging_dashboard_entries m
                WHERE m."responseTimeSeconds" IS NOT NULL
                  AND m."chatterId" = ANY($1::uuid[])
@@ -1431,7 +1463,7 @@ router.get(
                  VALUES ${periodWindowClause.sql}
                )
                SELECT m."chatterId",
-                      AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
+                      AVG(${EFFECTIVE_RESPONSE_SECONDS_SQL})::float AS "avgResponseTimeSeconds"
                FROM messaging_dashboard_entries m
                WHERE m."responseTimeSeconds" IS NOT NULL
                  AND EXISTS (
@@ -1708,7 +1740,7 @@ router.get(
                  AND d.day <= $3::date`,
               [TRACKED_STAFF_ROLES, periodStart, periodEnd]
             ),
-        // Staff Performance /hr active seconds: since cutover
+        // Staff Performance /hr tracked seconds: selected period (active + idle)
         scope.mode === 'self'
           ? pool.query(
               `SELECT d."userId" AS "chatterId",
@@ -1717,8 +1749,9 @@ router.get(
                FROM user_activity_daily d
                WHERE d."userId" = ANY($1::uuid[])
                  AND d.day >= $2::date
+                 AND d.day <= $3::date
                GROUP BY d."userId"`,
-              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
+              [scope.userIds, periodStart, periodEnd]
             )
           : pool.query(
               `SELECT d."userId" AS "chatterId",
@@ -1728,8 +1761,9 @@ router.get(
                JOIN users u ON u.id = d."userId"
                WHERE u.role = ANY($1::text[])
                  AND d.day >= $2::date
+                 AND d.day <= $3::date
                GROUP BY d."userId"`,
-              [TRACKED_STAFF_ROLES, ACTIVITY_METRICS_CUTOVER]
+              [TRACKED_STAFF_ROLES, periodStart, periodEnd]
             ),
         // Tip vs PPV sales (period)
         scope.mode === 'self'
@@ -2035,10 +2069,10 @@ router.get(
                  VALUES ${periodWindowClause.sql}
                )
                SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (
-                        ORDER BY m."responseTimeSeconds"
+                        ORDER BY ${EFFECTIVE_RESPONSE_SECONDS_SQL}
                       )::float AS "p50ResponseSeconds",
                       PERCENTILE_CONT(0.9) WITHIN GROUP (
-                        ORDER BY m."responseTimeSeconds"
+                        ORDER BY ${EFFECTIVE_RESPONSE_SECONDS_SQL}
                       )::float AS "p90ResponseSeconds"
                FROM messaging_dashboard_entries m
                WHERE m."responseTimeSeconds" IS NOT NULL
@@ -2053,10 +2087,10 @@ router.get(
                  VALUES ${periodWindowClause.sql}
                )
                SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (
-                        ORDER BY m."responseTimeSeconds"
+                        ORDER BY ${EFFECTIVE_RESPONSE_SECONDS_SQL}
                       )::float AS "p50ResponseSeconds",
                       PERCENTILE_CONT(0.9) WITHIN GROUP (
-                        ORDER BY m."responseTimeSeconds"
+                        ORDER BY ${EFFECTIVE_RESPONSE_SECONDS_SQL}
                       )::float AS "p90ResponseSeconds"
                FROM messaging_dashboard_entries m
                WHERE m."responseTimeSeconds" IS NOT NULL
@@ -2073,10 +2107,10 @@ router.get(
                )
                SELECT m."chatterId",
                       PERCENTILE_CONT(0.5) WITHIN GROUP (
-                        ORDER BY m."responseTimeSeconds"
+                        ORDER BY ${EFFECTIVE_RESPONSE_SECONDS_SQL}
                       )::float AS "p50ResponseSeconds",
                       PERCENTILE_CONT(0.9) WITHIN GROUP (
-                        ORDER BY m."responseTimeSeconds"
+                        ORDER BY ${EFFECTIVE_RESPONSE_SECONDS_SQL}
                       )::float AS "p90ResponseSeconds"
                FROM messaging_dashboard_entries m
                WHERE m."responseTimeSeconds" IS NOT NULL
@@ -2093,10 +2127,10 @@ router.get(
                )
                SELECT m."chatterId",
                       PERCENTILE_CONT(0.5) WITHIN GROUP (
-                        ORDER BY m."responseTimeSeconds"
+                        ORDER BY ${EFFECTIVE_RESPONSE_SECONDS_SQL}
                       )::float AS "p50ResponseSeconds",
                       PERCENTILE_CONT(0.9) WITHIN GROUP (
-                        ORDER BY m."responseTimeSeconds"
+                        ORDER BY ${EFFECTIVE_RESPONSE_SECONDS_SQL}
                       )::float AS "p90ResponseSeconds"
                FROM messaging_dashboard_entries m
                WHERE m."responseTimeSeconds" IS NOT NULL
@@ -2141,9 +2175,6 @@ router.get(
       const totalSales = currencyAmountRowsToList(totalSalesResult.rows);
       const monthlyRevenue = currencyAmountRowsToList(monthlySalesResult.rows);
       const allTimeSales = currencyAmountRowsToList(allTimeSalesResult.rows);
-      const periodRateSales = currencyAmountRowsToList(cutoverSalesResult.rows);
-      const periodRateMessages =
-        Number(cutoverMessagesResult.rows[0]?.messagesSent) || 0;
 
       const msgStats = parseExtendedMessageStats(messageStatsResult.rows[0] || {});
       const {
@@ -2187,8 +2218,9 @@ router.get(
       const keystrokesTotal = Number(keystrokesResult.rows[0]?.keystrokes) || 0;
       const activeSecondsTotal = Number(keystrokesResult.rows[0]?.activeSeconds) || 0;
       const idleSecondsTotal = Number(keystrokesResult.rows[0]?.idleSeconds) || 0;
-      const revenuePerHour = revenuePerHourAmounts(periodRateSales, activeSecondsTotal);
-      const messagesPerHour = perHourRate(periodRateMessages, activeSecondsTotal);
+      const totalTrackedSeconds = activeSecondsTotal + idleSecondsTotal;
+      const revenuePerHour = revenuePerHourAmounts(totalSales, totalTrackedSeconds);
+      const messagesPerHour = perHourRate(messagesSent, totalTrackedSeconds);
       const salesPerMessageAmounts = salesPerMessage(totalSales, messagesSent);
       const revenuePerFanAmounts = revenuePerFan(ppvSalesMerged, fansWhoUnlocked);
       const idlePercentValue = idlePercent(activeSecondsTotal, idleSecondsTotal);
@@ -2326,28 +2358,12 @@ router.get(
         idleSecondsByChatter.set(row.chatterId, Number(row.idleSeconds) || 0);
       }
 
-      const cutoverSalesByChatter = new Map();
-      for (const row of chatterCutoverSalesResult.rows) {
-        if (!cutoverSalesByChatter.has(row.chatterId)) {
-          cutoverSalesByChatter.set(row.chatterId, []);
-        }
-        const amount = Number(row.amount) || 0;
-        if (amount > 0) {
-          cutoverSalesByChatter.get(row.chatterId).push({
-            currency:
-              String(row.currency || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR',
-            amount,
-          });
-        }
-      }
-
-      const cutoverMessagesByChatter = new Map();
-      for (const row of chatterCutoverMessagesResult.rows) {
-        cutoverMessagesByChatter.set(
-          row.chatterId,
-          Number(row.messagesSent) || 0
-        );
-      }
+      // Cutover sales/message queries remain in Promise.all for stable indexing;
+      // rates now use selected-period sales/messages and total tracked time.
+      void chatterCutoverSalesResult;
+      void chatterCutoverMessagesResult;
+      void cutoverSalesResult;
+      void cutoverMessagesResult;
 
       const dayMap = new Map();
       for (const row of dailyByDayResult.rows) {
@@ -2436,16 +2452,14 @@ router.get(
         const stats = statsByChatter.get(row.chatterId);
         const activeSeconds = activeSecondsByChatter.get(row.chatterId) || 0;
         const idleSeconds = idleSecondsByChatter.get(row.chatterId) || 0;
+        const totalTrackedSeconds = activeSeconds + idleSeconds;
         const totalSalesMerged = mergeCurrencyAmounts(stats?.totalSales || []);
-        const cutoverSalesMerged = mergeCurrencyAmounts(
-          cutoverSalesByChatter.get(row.chatterId) || []
-        );
         const messagesSentForChatter = stats?.messagesSent || 0;
-        const cutoverMessages = cutoverMessagesByChatter.get(row.chatterId) || 0;
         const periodExtras = periodExtrasByChatter.get(row.chatterId);
         const tipSalesMerged = mergeCurrencyAmounts(periodExtras?.tipSales || []);
         const ppvSalesMergedChatter = mergeCurrencyAmounts(periodExtras?.ppvSales || []);
         const periodSalesMerged = mergeCurrencyAmounts(periodExtras?.periodSales || []);
+        const periodMessages = periodExtras?.messagesSent || 0;
         const scheduleMeta = scheduleMetaForWeek(schedulesByUser.get(row.chatterId));
         return {
           chatterId: row.chatterId,
@@ -2461,8 +2475,11 @@ router.get(
           activeSecondsTotal: activeSeconds,
           idleSecondsTotal: idleSeconds,
           idlePercent: idlePercent(activeSeconds, idleSeconds),
-          revenuePerHour: revenuePerHourAmounts(cutoverSalesMerged, activeSeconds),
-          messagesPerHour: perHourRate(cutoverMessages, activeSeconds),
+          revenuePerHour: revenuePerHourAmounts(
+            periodSalesMerged,
+            totalTrackedSeconds
+          ),
+          messagesPerHour: perHourRate(periodMessages, totalTrackedSeconds),
           tipSales: tipSalesMerged,
           ppvSales: ppvSalesMergedChatter,
           periodSales: periodSalesMerged,
@@ -2502,15 +2519,13 @@ router.get(
           const stats = statsByChatter.get(chatterId);
           const activeSeconds = activeSecondsByChatter.get(chatterId) || 0;
           const idleSeconds = idleSecondsByChatter.get(chatterId) || 0;
+          const totalTrackedSeconds = activeSeconds + idleSeconds;
           const totalSalesMerged = mergeCurrencyAmounts(stats.totalSales);
-          const cutoverSalesMerged = mergeCurrencyAmounts(
-            cutoverSalesByChatter.get(chatterId) || []
-          );
-          const cutoverMessages = cutoverMessagesByChatter.get(chatterId) || 0;
           const periodExtras = periodExtrasByChatter.get(chatterId);
           const tipSalesMerged = mergeCurrencyAmounts(periodExtras?.tipSales || []);
           const ppvSalesMergedChatter = mergeCurrencyAmounts(periodExtras?.ppvSales || []);
           const periodSalesMerged = mergeCurrencyAmounts(periodExtras?.periodSales || []);
+          const periodMessages = periodExtras?.messagesSent || 0;
           const scheduleMeta = scheduleMetaForWeek(schedulesByUser.get(chatterId));
           chatters.push({
             chatterId,
@@ -2526,8 +2541,11 @@ router.get(
             activeSecondsTotal: activeSeconds,
             idleSecondsTotal: idleSeconds,
             idlePercent: idlePercent(activeSeconds, idleSeconds),
-            revenuePerHour: revenuePerHourAmounts(cutoverSalesMerged, activeSeconds),
-            messagesPerHour: perHourRate(cutoverMessages, activeSeconds),
+            revenuePerHour: revenuePerHourAmounts(
+              periodSalesMerged,
+              totalTrackedSeconds
+            ),
+            messagesPerHour: perHourRate(periodMessages, totalTrackedSeconds),
             tipSales: tipSalesMerged,
             ppvSales: ppvSalesMergedChatter,
             periodSales: periodSalesMerged,
@@ -2561,10 +2579,6 @@ router.get(
         };
         const periodExtras = periodExtrasByChatter.get(null);
         const totalSalesMerged = mergeCurrencyAmounts(stats.totalSales || []);
-        const cutoverSalesMerged = mergeCurrencyAmounts(
-          cutoverSalesByChatter.get(null) || []
-        );
-        const cutoverMessages = cutoverMessagesByChatter.get(null) || 0;
         const tipSalesMergedRow = mergeCurrencyAmounts(periodExtras?.tipSales || []);
         const ppvSalesMergedChatter = mergeCurrencyAmounts(
           periodExtras?.ppvSales || []
@@ -2586,8 +2600,8 @@ router.get(
           activeSecondsTotal: 0,
           idleSecondsTotal: 0,
           idlePercent: 0,
-          revenuePerHour: revenuePerHourAmounts(cutoverSalesMerged, 0),
-          messagesPerHour: perHourRate(cutoverMessages, 0),
+          revenuePerHour: revenuePerHourAmounts(periodSalesMerged, 0),
+          messagesPerHour: perHourRate(periodExtras?.messagesSent || 0, 0),
           tipSales: tipSalesMergedRow,
           ppvSales: ppvSalesMergedChatter,
           periodSales: periodSalesMerged,
@@ -2716,12 +2730,14 @@ router.get(
         ? [TRACKED_STAFF_ROLES, ...windowClause.params]
         : [TRACKED_STAFF_ROLES];
 
+      const revealLeaderboard = isTeamAnalyticsRole(req.user.role);
+
       const [responseResult, salesResult, messageStatsResult] = await Promise.all([
         windowClause
           ? pool.query(
               `${windowsCte}
                SELECT m."chatterId" AS "userId",
-                      AVG(m."responseTimeSeconds")::float AS "avgResponseTimeSeconds"
+                      AVG(${EFFECTIVE_RESPONSE_SECONDS_SQL})::float AS "avgResponseTimeSeconds"
                FROM messaging_dashboard_entries m
                JOIN users u ON u.id = m."chatterId"
                WHERE u.role = ANY($1::text[])
@@ -2839,6 +2855,17 @@ router.get(
         };
       }
 
+      const formatDurationValue = revealLeaderboard
+        ? formatResponseDuration
+        : maskDuration;
+      const formatMoneyValue = revealLeaderboard
+        ? formatMoneyAmounts
+        : maskMoneyAmounts;
+      const formatCountValue = revealLeaderboard ? formatCountPlain : maskCount;
+      const formatPercentValue = revealLeaderboard
+        ? formatPercentPlain
+        : maskPercent;
+
       const responseSorted = staff
         .filter((p) => p.avgResponseTimeSeconds != null)
         .sort(
@@ -2848,7 +2875,7 @@ router.get(
         )
         .map((p) => ({
           ...p,
-          _masked: maskDuration(p.avgResponseTimeSeconds),
+          _masked: formatDurationValue(p.avgResponseTimeSeconds),
         }));
 
       const salesSorted = staff
@@ -2860,7 +2887,7 @@ router.get(
         .map((p) => ({
           ...p,
           sales: mergeCurrencyAmounts(p.sales),
-          _masked: maskMoneyAmounts(mergeCurrencyAmounts(p.sales)),
+          _masked: formatMoneyValue(mergeCurrencyAmounts(p.sales)),
         }));
 
       const ppvSorted = staff
@@ -2872,7 +2899,7 @@ router.get(
         )
         .map((p) => ({
           ...p,
-          _masked: maskCount(p.ppvsUnlocked),
+          _masked: formatCountValue(p.ppvsUnlocked),
         }));
 
       const goldenSorted = staff
@@ -2883,7 +2910,7 @@ router.get(
         )
         .map((p) => ({
           ...p,
-          _masked: maskPercent(p.goldenRatio),
+          _masked: formatPercentValue(p.goldenRatio),
         }));
 
       res.json({
@@ -2893,16 +2920,19 @@ router.get(
         topGoldenRatio: buildTop(goldenSorted),
         viewerRank: {
           responseTime: findViewer(responseSorted, (p) =>
-            maskDuration(p.avgResponseTimeSeconds)
+            formatDurationValue(p.avgResponseTimeSeconds)
           ),
           sales: findViewer(salesSorted, (p) =>
-            maskMoneyAmounts(mergeCurrencyAmounts(p.sales))
+            formatMoneyValue(mergeCurrencyAmounts(p.sales))
           ),
-          ppvsUnlocked: findViewer(ppvSorted, (p) => maskCount(p.ppvsUnlocked)),
+          ppvsUnlocked: findViewer(ppvSorted, (p) =>
+            formatCountValue(p.ppvsUnlocked)
+          ),
           goldenRatio: findViewer(goldenSorted, (p) =>
-            maskPercent(p.goldenRatio)
+            formatPercentValue(p.goldenRatio)
           ),
         },
+        valuesRevealed: revealLeaderboard,
         period: {
           startDate: periodStart,
           endDate: periodEnd,

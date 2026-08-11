@@ -25,6 +25,15 @@ function maskMoney(amount, currency) {
   return maskMoneyString(formatMoneyPlain(amount, currency));
 }
 
+function formatMoneyAmounts(amounts) {
+  if (!amounts || amounts.length === 0) {
+    return formatMoneyPlain(0, 'EUR');
+  }
+  return amounts
+    .map((item) => formatMoneyPlain(item.amount, item.currency))
+    .join(' · ');
+}
+
 function maskMoneyAmounts(amounts) {
   if (!amounts || amounts.length === 0) {
     return maskMoney(0, 'EUR');
@@ -32,6 +41,15 @@ function maskMoneyAmounts(amounts) {
   return amounts
     .map((item) => maskMoney(item.amount, item.currency))
     .join(' · ');
+}
+
+function formatPercentPlain(value) {
+  const n = Math.max(0, Number(value) || 0);
+  return `${n.toFixed(2)}%`;
+}
+
+function formatCountPlain(value) {
+  return String(Math.max(0, Math.floor(Number(value) || 0)));
 }
 
 function formatResponseDuration(seconds) {
@@ -100,6 +118,9 @@ function maskCount(value) {
 
 module.exports = {
   formatMoneyPlain,
+  formatMoneyAmounts,
+  formatPercentPlain,
+  formatCountPlain,
   maskMoney,
   maskMoneyAmounts,
   formatResponseDuration,

@@ -32,6 +32,7 @@ import {
 import CreatorAvatar from '@/components/CreatorAvatar';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import ToggleSwitch from '@/components/ToggleSwitch';
+import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
@@ -2843,46 +2844,12 @@ export function MaloumChatThread({
       )}
 
       {preview && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/20 dark:bg-black/70 p-6 animate-fade-in">
-          <button
-            type="button"
-            className="absolute inset-0"
-            aria-label="Close preview"
-            onClick={() => setPreview(null)}
-          />
-          {preview.kind === 'embed' ? (
-            <iframe
-              src={preview.url}
-              title="Video"
-              className="relative z-10 w-full max-w-3xl aspect-[9/16] max-h-full rounded-lg bg-gray-900 dark:bg-black animate-slide-up"
-              allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
-              allowFullScreen
-            />
-          ) : preview.kind === 'video' ? (
-            <video
-              src={preview.url}
-              controls
-              autoPlay
-              playsInline
-              className="relative z-10 max-w-full max-h-full rounded-lg bg-gray-900 dark:bg-black animate-slide-up"
-            >
-              <track kind="captions" />
-            </video>
-          ) : (
-            <img
-              src={preview.url}
-              alt=""
-              className="relative z-10 max-w-full max-h-full rounded-lg object-contain animate-slide-up"
-            />
-          )}
-          <button
-            type="button"
-            onClick={() => setPreview(null)}
-            className="absolute top-4 right-4 z-10 p-2 rounded-full bg-black/30 dark:bg-black/50 text-white"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+        <VaultMediaLightbox
+          url={preview.url}
+          kind={preview.kind}
+          onClose={() => setPreview(null)}
+          zClassName={vaultOpen ? 'z-[100]' : 'z-[60]'}
+        />
       )}
 
       {vaultNoteModal && (

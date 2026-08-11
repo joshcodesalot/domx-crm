@@ -203,12 +203,14 @@ function LeaderboardCard({
   entries,
   viewerRank,
   viewerId,
+  valuesRevealed = false,
 }: {
   title: string;
   hint?: string;
   entries: LeaderboardEntry[];
   viewerRank: LeaderboardViewerRank | null | undefined;
   viewerId?: string;
+  valuesRevealed?: boolean;
 }) {
   const viewerInTop = entries.some((e) => e.userId === viewerId);
 
@@ -217,7 +219,11 @@ function LeaderboardCard({
       <h4 className="text-sm font-medium mb-1" title={hint}>
         {title}
       </h4>
-      <p className="text-[11px] text-gray-400 mb-3">Values are partially hidden</p>
+      <p className="text-[11px] text-gray-400 mb-3">
+        {valuesRevealed
+          ? 'Full values visible to managers'
+          : 'Values are partially hidden'}
+      </p>
       <div className="space-y-2">
         {entries.length === 0 ? (
           <p className="text-sm text-gray-400 text-center py-6">No data yet</p>
@@ -560,7 +566,7 @@ export default function Dashboard() {
               <MetricCard
                 label="Avg Response Time"
                 value={formatResponseTime(overview?.avgResponseTimeSeconds)}
-                hint={`Average response time for ${periodLabel} (scheduled hours)`}
+                hint={`Average response time for ${periodLabel} (scheduled hours; overnight wait excluded)`}
               />
               <MetricCard
                 label="Messages Sent"
@@ -590,12 +596,12 @@ export default function Dashboard() {
               <MetricCard
                 label="Revenue per Hour"
                 value={formatCurrencyAmounts(overview?.revenuePerHour)}
-                hint={`Period sales ÷ active hours for ${periodLabel}`}
+                hint={`Period sales ÷ total tracked hours (active + idle) for ${periodLabel}`}
               />
               <MetricCard
                 label="Messages per Hour"
                 value={formatRate(overview?.messagesPerHour)}
-                hint={`Period messages ÷ active hours for ${periodLabel}`}
+                hint={`Period messages ÷ total tracked hours (active + idle) for ${periodLabel}`}
               />
               <MetricCard
                 label="Tip Sales"
@@ -644,12 +650,12 @@ export default function Dashboard() {
               <MetricCard
                 label="p50 Response"
                 value={formatResponseTime(overview?.p50ResponseSeconds ?? null)}
-                hint={`Median response time for ${periodLabel} (scheduled hours)`}
+                hint={`Median response time for ${periodLabel} (scheduled hours; overnight wait excluded)`}
               />
               <MetricCard
                 label="p90 Response"
                 value={formatResponseTime(overview?.p90ResponseSeconds ?? null)}
-                hint={`90th percentile response time for ${periodLabel} (scheduled hours)`}
+                hint={`90th percentile response time for ${periodLabel} (scheduled hours; overnight wait excluded)`}
               />
               <MetricCard
                 label="Idle %"
@@ -776,16 +782,22 @@ export default function Dashboard() {
             <div>
               <h3 className="text-sm font-medium mb-1">Leaderboard</h3>
               <p className="text-xs text-gray-400 mb-4">
-                Team rankings with partially hidden totals. Rankings use each
-                chatter&apos;s scheduled hours (PHT); no schedule means all day.
+                {leaderboard?.valuesRevealed || isTeamScope
+                  ? 'Team rankings with full totals for managers. '
+                  : 'Team rankings with partially hidden totals. '}
+                Rankings use each chatter&apos;s scheduled hours (PHT); response
+                wait is counted from shift start. No schedule means all day.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <LeaderboardCard
                   title="Top Response Time"
-                  hint="Fastest average response this month (scheduled hours)"
+                  hint="Fastest average response this month (scheduled hours; overnight wait excluded)"
                   entries={leaderboard?.topResponseTime || []}
                   viewerRank={leaderboard?.viewerRank?.responseTime}
                   viewerId={user.id}
+                  valuesRevealed={Boolean(
+                    leaderboard?.valuesRevealed || isTeamScope
+                  )}
                 />
                 <LeaderboardCard
                   title="Top Sales"
@@ -793,6 +805,9 @@ export default function Dashboard() {
                   entries={leaderboard?.topSales || []}
                   viewerRank={leaderboard?.viewerRank?.sales}
                   viewerId={user.id}
+                  valuesRevealed={Boolean(
+                    leaderboard?.valuesRevealed || isTeamScope
+                  )}
                 />
                 <LeaderboardCard
                   title="Top PPVs Unlocked"
@@ -800,6 +815,9 @@ export default function Dashboard() {
                   entries={leaderboard?.topPpvsUnlocked || []}
                   viewerRank={leaderboard?.viewerRank?.ppvsUnlocked}
                   viewerId={user.id}
+                  valuesRevealed={Boolean(
+                    leaderboard?.valuesRevealed || isTeamScope
+                  )}
                 />
                 <LeaderboardCard
                   title="Top Golden Ratio"
@@ -807,6 +825,9 @@ export default function Dashboard() {
                   entries={leaderboard?.topGoldenRatio || []}
                   viewerRank={leaderboard?.viewerRank?.goldenRatio}
                   viewerId={user.id}
+                  valuesRevealed={Boolean(
+                    leaderboard?.valuesRevealed || isTeamScope
+                  )}
                 />
               </div>
             </div>
@@ -832,7 +853,9 @@ export default function Dashboard() {
               <div>
                 <h3 className="text-sm font-medium mb-1">Staff Performance</h3>
                 <p className="text-xs text-gray-400 mb-4">
-                  Period and lifetime sales; messages count only during scheduled hours
+                  Period and lifetime sales; messages count only during scheduled
+                  hours. Rev/hr and Msg/hr use period sales ÷ total tracked time
+                  (active + idle).
                 </p>
                 <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden">
                   <div className="overflow-x-auto">

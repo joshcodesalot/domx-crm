@@ -11,14 +11,17 @@ import {
 } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import { useToast } from '@/context/ToastContext';
 import {
+  fourBasedMediaUrl,
   fourBasedPreviewPath,
   getCreators,
   getFourBasedFanScrapeJob,
   listFourBasedVault,
   pickFourBasedPreviewUrl,
+  pickFourBasedSourceUrl,
   resolveFourBasedMediaSrc,
   startFourBasedFanScrapeJob,
   stopFourBasedFanScrapeJob,
@@ -131,6 +134,40 @@ function mediaThumbSrc(
   );
 }
 
+function mediaFullSrc(
+  creatorId: string,
+  providerUserId: string | null,
+  item: FourBasedVaultItem
+): string | null {
+  const fromPreview = pickFourBasedPreviewUrl(item.preview, [
+    '900xxx',
+    '500x500',
+    '400x400',
+  ]);
+  if (fromPreview) return resolveFourBasedMediaSrc(creatorId, fromPreview);
+  const id = vaultItemId(item);
+  if (!providerUserId || !id) return null;
+  return resolveFourBasedMediaSrc(
+    creatorId,
+    fourBasedPreviewPath(providerUserId, id, '900xxx.jpg')
+  );
+}
+
+function mediaVideoSrc(
+  creatorId: string,
+  providerUserId: string | null,
+  item: FourBasedVaultItem
+): string | null {
+  const fromSource = pickFourBasedSourceUrl(item.source);
+  if (fromSource) return resolveFourBasedMediaSrc(creatorId, fromSource);
+  const id = vaultItemId(item);
+  if (!providerUserId || !id) return null;
+  return fourBasedMediaUrl(
+    creatorId,
+    `protected/${providerUserId}/${id}/file.mp4`
+  );
+}
+
 export default function FourBasedFanScraper() {
   const { toast } = useToast();
   const [creators, setCreators] = useState<Creator[]>([]);
@@ -158,6 +195,7 @@ export default function FourBasedFanScraper() {
   const [vaultHasMore, setVaultHasMore] = useState(false);
   const [vaultLoading, setVaultLoading] = useState(false);
   const [vaultOpen, setVaultOpen] = useState(false);
+  const [previewItem, setPreviewItem] = useState<FourBasedVaultItem | null>(null);
 
   const [savingConfig, setSavingConfig] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
@@ -413,6 +451,36 @@ export default function FourBasedFanScraper() {
         : job?.status === 'completed'
           ? `Completed · ${checkpoint.processedFans} messaged`
           : 'Idle');
+
+  const vaultLightbox =
+    previewItem && selectedCreatorId
+      ? (() => {
+          const video = isVideoItem(previewItem);
+          const full = mediaFullSrc(
+            selectedCreatorId,
+            providerUserId,
+            previewItem
+          );
+          const thumb = mediaThumbSrc(
+            selectedCreatorId,
+            providerUserId,
+            previewItem
+          );
+          const stream = mediaVideoSrc(
+            selectedCreatorId,
+            providerUserId,
+            previewItem
+          );
+          const url = video ? stream || full || thumb : full || thumb;
+          if (!url) return null;
+          return {
+            url,
+            kind: (video ? 'video' : 'picture') as 'video' | 'picture',
+            poster: video ? thumb || full : null,
+            fallbackUrl: !video ? thumb : null,
+          };
+        })()
+      : null;
 
   return (
     <div className="h-screen flex bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 antialiased overflow-hidden">
@@ -806,30 +874,60 @@ export default function FourBasedFanScraper() {
                     const thumb =
                       selectedCreatorId &&
                       mediaThumbSrc(selectedCreatorId, providerUserId, item);
+                    const video = isVideoItem(item);
                     return (
-                      <button
+                      <div
                         key={id}
-                        type="button"
-                        disabled={isRunning}
-                        onClick={() => toggleVaultItem(item)}
-                        className={`relative aspect-square rounded-lg overflow-hidden border ${
+                        role="button"
+                        tabIndex={isRunning ? -1 : 0}
+                        onClick={() => {
+                          if (!isRunning) toggleVaultItem(item);
+                        }}
+                        onDoubleClick={() => {
+                          if (!isRunning) setPreviewItem(item);
+                        }}
+                        onKeyDown={(e) => {
+                          if (isRunning) return;
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleVaultItem(item);
+                          }
+                        }}
+                        className={`relative aspect-square rounded-lg overflow-hidden border cursor-pointer ${
                           selected
                             ? 'border-emerald-500 ring-2 ring-emerald-500/40'
                             : 'border-gray-200 dark:border-zinc-700'
-                        } disabled:opacity-50`}
+                        } ${isRunning ? 'opacity-50 pointer-events-none' : ''}`}
+                        title="Click to select · double-click to preview"
                       >
                         {thumb ? (
                           <img src={thumb} alt="" className="w-full h-full object-cover" />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center bg-gray-100 dark:bg-zinc-800">
-                            {isVideoItem(item) ? (
+                            {video ? (
                               <Video className="w-4 h-4" />
                             ) : (
                               <ImageIcon className="w-4 h-4" />
                             )}
                           </div>
                         )}
-                      </button>
+                        {video && (
+                          <button
+                            type="button"
+                            aria-label="Play video"
+                            className="absolute inset-0 z-[5] flex items-center justify-center bg-black/20"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setPreviewItem(item);
+                            }}
+                          >
+                            <span className="w-8 h-8 rounded-full bg-black/50 flex items-center justify-center text-white">
+                              <Play className="w-4 h-4 ml-0.5" />
+                            </span>
+                          </button>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
@@ -848,6 +946,17 @@ export default function FourBasedFanScraper() {
           </section>
         </div>
       </main>
+
+      {vaultLightbox && (
+        <VaultMediaLightbox
+          url={vaultLightbox.url}
+          kind={vaultLightbox.kind}
+          poster={vaultLightbox.poster}
+          fallbackUrl={vaultLightbox.fallbackUrl}
+          onClose={() => setPreviewItem(null)}
+          zClassName="z-[100]"
+        />
+      )}
     </div>
   );
 }

@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import ToggleSwitch from '@/components/ToggleSwitch';
+import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
@@ -1293,9 +1294,6 @@ export function FourBasedChatThread({
   const [vaultLoadingMore, setVaultLoadingMore] = useState(false);
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<FourBasedVaultItem | null>(null);
-  const [vaultPreviewPlaying, setVaultPreviewPlaying] = useState(false);
-  /** When 900xxx full preview fails, fall back to grid thumb (500x500). */
-  const [previewFullFailed, setPreviewFullFailed] = useState(false);
   const [selectedVaultItems, setSelectedVaultItems] = useState<FourBasedVaultItem[]>(
     []
   );
@@ -1651,8 +1649,6 @@ export function FourBasedChatThread({
     setPlayingMsgId(null);
     setVaultOpen(false);
     setPreviewItem(null);
-    setVaultPreviewPlaying(false);
-    setPreviewFullFailed(false);
     setChatMediaPreview(null);
     setChatPreviewFullFailed(false);
     setSelectedFolder(null);
@@ -2230,8 +2226,6 @@ export function FourBasedChatThread({
     }
     setVaultOpen(true);
     setPreviewItem(null);
-    setVaultPreviewPlaying(false);
-    setPreviewFullFailed(false);
     setSelectedFolder(null);
     setVaultCategoryFilter('all');
     setVaultSentFilter('all');
@@ -2268,8 +2262,6 @@ export function FourBasedChatThread({
     }
     setVaultOpen(true);
     setPreviewItem(null);
-    setVaultPreviewPlaying(false);
-    setPreviewFullFailed(false);
     setSelectedFolder(null);
     setVaultCategoryFilter('all');
     setVaultSentFilter('all');
@@ -2309,8 +2301,6 @@ export function FourBasedChatThread({
     if (next.category !== undefined) setVaultCategoryFilter(next.category);
     if (next.sent !== undefined) setVaultSentFilter(next.sent);
     setPreviewItem(null);
-    setVaultPreviewPlaying(false);
-    setPreviewFullFailed(false);
     setVaultOffset(0);
     setVaultHasMore(false);
     await loadVaultItems({ folder, category, sent, offset: 0 });
@@ -2351,13 +2341,6 @@ export function FourBasedChatThread({
       creatorId,
       fourBasedPreviewPath(providerUserId, id, '900xxx.jpg')
     );
-  }
-
-  function vaultPreviewDisplaySrc(item: FourBasedVaultItem): string | null {
-    const full = fullMediaSrc(item);
-    const thumb = mediaSrcForVaultItem(item);
-    if (previewFullFailed) return thumb || full;
-    return full || thumb;
   }
 
   function videoStreamSrc(item: FourBasedVaultItem): string | null {
@@ -2433,6 +2416,22 @@ export function FourBasedChatThread({
   }
 
   const spent = formatSpent(chat?.sales_volume);
+
+  const vaultLightbox = (() => {
+    if (!previewItem) return null;
+    const video = isVideoItem(previewItem);
+    const full = fullMediaSrc(previewItem);
+    const thumb = mediaSrcForVaultItem(previewItem);
+    const stream = videoStreamSrc(previewItem);
+    const url = video ? stream || full || thumb : full || thumb;
+    if (!url) return null;
+    return {
+      url,
+      kind: (video ? 'video' : 'picture') as 'video' | 'picture',
+      poster: video ? thumb || full : null,
+      fallbackUrl: !video ? thumb : null,
+    };
+  })();
 
   return (
     <div
@@ -3138,7 +3137,6 @@ export function FourBasedChatThread({
                     }
                     setVaultOpen(false);
                     setPreviewItem(null);
-                    setVaultPreviewPlaying(false);
                   }}
                   className="px-5 py-2 text-sm font-semibold rounded-lg bg-domx-600 text-white hover:bg-domx-500 transition-colors shadow-lg shadow-domx-600/20"
                 >
@@ -3150,7 +3148,6 @@ export function FourBasedChatThread({
                   onClick={() => {
                     setVaultOpen(false);
                     setPreviewItem(null);
-                    setVaultPreviewPlaying(false);
                     setVaultPickMode('composer');
                     setScriptPickItems([]);
                   }}
@@ -3162,305 +3159,219 @@ export function FourBasedChatThread({
               </div>
             </div>
 
-            {previewItem ? (
-              <div className="flex-1 overflow-y-auto p-4 space-y-4 animate-fade-in">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPreviewItem(null);
-                    setPreviewFullFailed(false);
-                    setVaultPreviewPlaying(false);
-                  }}
-                  className="text-sm text-domx-400 hover:text-domx-500"
-                >
-                  ← Back to grid
-                </button>
-                <div className="flex justify-center bg-black/10 dark:bg-black/40 rounded-xl p-2 min-h-[240px]">
-                  {isVideoItem(previewItem) ? (
-                    vaultPreviewPlaying ? (
-                      <video
-                        controls
-                        autoPlay
-                        playsInline
-                        poster={
-                          vaultPreviewDisplaySrc(previewItem) || undefined
-                        }
-                        src={videoStreamSrc(previewItem) || undefined}
-                        className="max-h-[60vh] max-w-full rounded"
-                      >
-                        <track kind="captions" />
-                      </video>
-                    ) : (
+            <div className="flex flex-1 flex-col overflow-hidden min-h-0">
+              <div className="shrink-0 border-b border-gray-200 dark:border-zinc-800/60 space-y-2 p-3">
+                <div className="flex gap-2 overflow-x-auto">
+                  {(
+                    [
+                      { id: 'all' as const, label: 'All' },
+                      { id: 'video' as const, label: 'Videos', icon: Video },
+                      { id: 'image' as const, label: 'Images', icon: ImageIcon },
+                      { id: 'not_purchased' as const, label: 'Not Purchased' },
+                      { id: 'purchased' as const, label: 'Purchased' },
+                    ] as const
+                  ).map((chip) => {
+                    const active = vaultCategoryFilter === chip.id;
+                    const Icon = 'icon' in chip ? chip.icon : null;
+                    return (
                       <button
+                        key={chip.id}
                         type="button"
-                        className="relative max-h-[60vh] max-w-full"
-                        onClick={() => setVaultPreviewPlaying(true)}
-                        aria-label="Play video"
+                        onClick={() => void applyVaultFilters({ category: chip.id })}
+                        className={`px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors flex items-center gap-1.5 ${
+                          active
+                            ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                            : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
+                        }`}
                       >
-                        {vaultPreviewDisplaySrc(previewItem) ? (
+                        {Icon && <Icon className="w-3 h-3" />}
+                        {chip.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex gap-2 overflow-x-auto">
+                  {(
+                    [
+                      { id: 'all' as const, label: 'All' },
+                      { id: 'sent' as const, label: 'Sent' },
+                      { id: 'not_sent' as const, label: 'Not Sent' },
+                    ] as const
+                  ).map((chip) => {
+                    const active = vaultSentFilter === chip.id;
+                    return (
+                      <button
+                        key={chip.id}
+                        type="button"
+                        onClick={() => void applyVaultFilters({ sent: chip.id })}
+                        className={`px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors ${
+                          active
+                            ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                            : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
+                        }`}
+                      >
+                        {chip.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex gap-2 overflow-x-auto">
+                  <button
+                    type="button"
+                    onClick={() => void applyVaultFilters({ folder: null })}
+                    className={`shrink-0 px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors ${
+                      selectedFolder === null
+                        ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                        : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
+                    }`}
+                  >
+                    All
+                  </button>
+                  {vaultFolders.map((folder) => {
+                    const active = selectedFolder === folder;
+                    return (
+                      <button
+                        key={folder}
+                        type="button"
+                        onClick={() => void applyVaultFilters({ folder })}
+                        className={`shrink-0 px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors max-w-[200px] truncate ${
+                          active
+                            ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
+                            : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
+                        }`}
+                        title={folder}
+                      >
+                        {folder}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div
+                className="flex-1 overflow-y-auto p-4"
+                onScroll={handleVaultMediaScroll}
+              >
+                {vaultLoading && vaultItems.length === 0 && (
+                  <div className="flex justify-center py-12">
+                    <Loader2 className="w-6 h-6 animate-spin text-gray-500 dark:text-zinc-400" />
+                  </div>
+                )}
+                {vaultError && <p className="text-sm text-red-400">{vaultError}</p>}
+                {!vaultLoading && !vaultError && vaultItems.length === 0 && (
+                  <p className="text-sm text-gray-500 dark:text-zinc-500">
+                    {selectedFolder
+                      ? `No media in “${selectedFolder}”.`
+                      : 'Vault is empty.'}
+                  </p>
+                )}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                  {vaultItems.map((item) => {
+                    const thumb = mediaSrcForVaultItem(item);
+                    const video = isVideoItem(item);
+                    const id = vaultItemId(item);
+                    const selected = activeVaultSelection.some(
+                      (entry) => vaultItemId(entry) === id
+                    );
+                    return (
+                      <div
+                        key={id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => toggleVaultItem(item)}
+                        onDoubleClick={() => setPreviewItem(item)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            toggleVaultItem(item);
+                          }
+                        }}
+                        className={`relative aspect-square rounded-xl overflow-hidden group transition-all cursor-pointer ${
+                          selected
+                            ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
+                            : 'border border-gray-200 dark:border-zinc-800 hover:border-gray-400 dark:hover:border-zinc-600'
+                        }`}
+                        title="Click to select · play to preview video · double-click to preview"
+                      >
+                        {thumb ? (
                           <img
-                            src={vaultPreviewDisplaySrc(previewItem)!}
+                            src={thumb}
                             alt=""
                             loading="lazy"
                             decoding="async"
-                            onError={() => {
-                              if (!previewFullFailed) setPreviewFullFailed(true);
-                            }}
-                            className="max-h-[60vh] max-w-full rounded object-contain"
+                            className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
                           />
                         ) : (
-                          <div className="w-64 h-40 flex items-center justify-center rounded bg-black/10 dark:bg-black/40">
-                            <Play className="w-12 h-12 text-white" />
+                          <div className="w-full h-full flex items-center justify-center bg-white dark:bg-zinc-900 text-gray-500 dark:text-zinc-500">
+                            <ImageIcon className="w-6 h-6" />
                           </div>
                         )}
-                        <span className="absolute inset-0 flex items-center justify-center bg-black/5 dark:bg-black/25 rounded">
-                          <Play className="w-14 h-14 text-white drop-shadow fill-white/20" />
-                        </span>
-                      </button>
-                    )
-                  ) : (
-                    vaultPreviewDisplaySrc(previewItem) && (
-                      <img
-                        src={vaultPreviewDisplaySrc(previewItem)!}
-                        alt=""
-                        loading="lazy"
-                        decoding="async"
-                        onError={() => {
-                          if (!previewFullFailed) setPreviewFullFailed(true);
-                        }}
-                        className="max-h-[60vh] max-w-full rounded object-contain"
-                      />
-                    )
-                  )}
+                        {id ? (
+                          <VaultMediaNoteButton
+                            hasNote={Boolean(vaultNotes[id]?.trim())}
+                            onOpen={() =>
+                              setVaultNoteModal({
+                                mediaKey: id,
+                                note: vaultNotes[id] || '',
+                              })
+                            }
+                          />
+                        ) : null}
+                        {selected && (
+                          <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center z-10 shadow-lg">
+                            <Check className="w-3.5 h-3.5" />
+                          </span>
+                        )}
+                        {video && (
+                          <>
+                            <span className="absolute inset-0 bg-black/5 dark:bg-black/20 group-hover:bg-black/5 dark:group-hover:bg-black/10 transition-colors pointer-events-none" />
+                            <button
+                              type="button"
+                              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/30 dark:bg-black/50 backdrop-blur flex items-center justify-center text-white/90 z-[5] hover:bg-black/50 dark:hover:bg-black/70 transition-colors"
+                              aria-label="Play video"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPreviewItem(item);
+                              }}
+                            >
+                              <Play className="w-5 h-5 ml-0.5" />
+                            </button>
+                          </>
+                        )}
+                        {video && item.duration != null && (
+                          <span className="absolute bottom-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/20 dark:bg-black/70 text-white backdrop-blur z-10 pointer-events-none">
+                            {formatDuration(Number(item.duration))}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="flex justify-end gap-2">
+                {vaultHasMore && (
                   <button
                     type="button"
-                    onClick={() => {
-                      toggleVaultItem(previewItem);
-                      setPreviewItem(null);
-                      setVaultPreviewPlaying(false);
-                    }}
-                    className="px-3 py-2 text-sm rounded-lg bg-domx-600 text-white hover:bg-domx-500"
+                    onClick={loadMoreVaultItems}
+                    disabled={vaultLoadingMore}
+                    className="w-full mt-4 py-2.5 text-sm font-medium text-domx-600 dark:text-domx-400 hover:underline disabled:opacity-40"
                   >
-                    {activeVaultSelection.some(
-                      (entry) => vaultItemId(entry) === vaultItemId(previewItem)
-                    )
-                      ? 'Remove from selection'
-                      : 'Attach'}
+                    {vaultLoadingMore ? 'Loading…' : 'Load more'}
                   </button>
-                </div>
+                )}
               </div>
-            ) : (
-              <div className="flex flex-1 flex-col overflow-hidden min-h-0">
-                <div className="shrink-0 border-b border-gray-200 dark:border-zinc-800/60 space-y-2 p-3">
-                  <div className="flex gap-2 overflow-x-auto">
-                    {(
-                      [
-                        { id: 'all' as const, label: 'All' },
-                        { id: 'video' as const, label: 'Videos', icon: Video },
-                        { id: 'image' as const, label: 'Images', icon: ImageIcon },
-                        { id: 'not_purchased' as const, label: 'Not Purchased' },
-                        { id: 'purchased' as const, label: 'Purchased' },
-                      ] as const
-                    ).map((chip) => {
-                      const active = vaultCategoryFilter === chip.id;
-                      const Icon = 'icon' in chip ? chip.icon : null;
-                      return (
-                        <button
-                          key={chip.id}
-                          type="button"
-                          onClick={() => void applyVaultFilters({ category: chip.id })}
-                          className={`px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors flex items-center gap-1.5 ${
-                            active
-                              ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
-                              : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
-                          }`}
-                        >
-                          {Icon && <Icon className="w-3 h-3" />}
-                          {chip.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div className="flex gap-2 overflow-x-auto">
-                    {(
-                      [
-                        { id: 'all' as const, label: 'All' },
-                        { id: 'sent' as const, label: 'Sent' },
-                        { id: 'not_sent' as const, label: 'Not Sent' },
-                      ] as const
-                    ).map((chip) => {
-                      const active = vaultSentFilter === chip.id;
-                      return (
-                        <button
-                          key={chip.id}
-                          type="button"
-                          onClick={() => void applyVaultFilters({ sent: chip.id })}
-                          className={`px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors ${
-                            active
-                              ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
-                              : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
-                          }`}
-                        >
-                          {chip.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  <div className="flex gap-2 overflow-x-auto">
-                    <button
-                      type="button"
-                      onClick={() => void applyVaultFilters({ folder: null })}
-                      className={`shrink-0 px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors ${
-                        selectedFolder === null
-                          ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
-                          : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
-                      }`}
-                    >
-                      All
-                    </button>
-                    {vaultFolders.map((folder) => {
-                      const active = selectedFolder === folder;
-                      return (
-                        <button
-                          key={folder}
-                          type="button"
-                          onClick={() => void applyVaultFilters({ folder })}
-                          className={`shrink-0 px-4 py-1.5 rounded-full text-xs font-medium border whitespace-nowrap transition-colors max-w-[200px] truncate ${
-                            active
-                              ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white border-gray-300 dark:border-zinc-700'
-                              : 'bg-gray-50 dark:bg-zinc-900/50 text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700'
-                          }`}
-                          title={folder}
-                        >
-                          {folder}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div
-                  className="flex-1 overflow-y-auto p-4"
-                  onScroll={handleVaultMediaScroll}
-                >
-                  {vaultLoading && vaultItems.length === 0 && (
-                    <div className="flex justify-center py-12">
-                      <Loader2 className="w-6 h-6 animate-spin text-gray-500 dark:text-zinc-400" />
-                    </div>
-                  )}
-                  {vaultError && <p className="text-sm text-red-400">{vaultError}</p>}
-                  {!vaultLoading && !vaultError && vaultItems.length === 0 && (
-                    <p className="text-sm text-gray-500 dark:text-zinc-500">
-                      {selectedFolder
-                        ? `No media in “${selectedFolder}”.`
-                        : 'Vault is empty.'}
-                    </p>
-                  )}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                    {vaultItems.map((item) => {
-                      const thumb = mediaSrcForVaultItem(item);
-                      const video = isVideoItem(item);
-                      const id = vaultItemId(item);
-                      const selected = activeVaultSelection.some(
-                        (entry) => vaultItemId(entry) === id
-                      );
-                      return (
-                        <div
-                          key={id}
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => toggleVaultItem(item)}
-                          onDoubleClick={() => {
-                            setVaultPreviewPlaying(false);
-                            setPreviewFullFailed(false);
-                            setPreviewItem(item);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              toggleVaultItem(item);
-                            }
-                          }}
-                          className={`relative aspect-square rounded-xl overflow-hidden group transition-all cursor-pointer ${
-                            selected
-                              ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
-                              : 'border border-gray-200 dark:border-zinc-800 hover:border-gray-400 dark:hover:border-zinc-600'
-                          }`}
-                          title="Click to select · play to preview video · double-click to preview"
-                        >
-                          {thumb ? (
-                            <img
-                              src={thumb}
-                              alt=""
-                              loading="lazy"
-                              decoding="async"
-                              className="w-full h-full object-cover opacity-80 group-hover:opacity-100 group-hover:scale-105 transition-all duration-500"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center bg-white dark:bg-zinc-900 text-gray-500 dark:text-zinc-500">
-                              <ImageIcon className="w-6 h-6" />
-                            </div>
-                          )}
-                          {id ? (
-                            <VaultMediaNoteButton
-                              hasNote={Boolean(vaultNotes[id]?.trim())}
-                              onOpen={() =>
-                                setVaultNoteModal({
-                                  mediaKey: id,
-                                  note: vaultNotes[id] || '',
-                                })
-                              }
-                            />
-                          ) : null}
-                          {selected && (
-                            <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center z-10 shadow-lg">
-                              <Check className="w-3.5 h-3.5" />
-                            </span>
-                          )}
-                          {video && (
-                            <>
-                              <span className="absolute inset-0 bg-black/5 dark:bg-black/20 group-hover:bg-black/5 dark:group-hover:bg-black/10 transition-colors pointer-events-none" />
-                              <button
-                                type="button"
-                                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/30 dark:bg-black/50 backdrop-blur flex items-center justify-center text-white/90 z-[5] hover:bg-black/50 dark:hover:bg-black/70 transition-colors"
-                                aria-label="Play video"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setPreviewFullFailed(false);
-                                  setPreviewItem(item);
-                                  setVaultPreviewPlaying(true);
-                                }}
-                              >
-                                <Play className="w-5 h-5 ml-0.5" />
-                              </button>
-                            </>
-                          )}
-                          {video && item.duration != null && (
-                            <span className="absolute bottom-2 right-2 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/20 dark:bg-black/70 text-white backdrop-blur z-10 pointer-events-none">
-                              {formatDuration(Number(item.duration))}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {vaultHasMore && (
-                    <button
-                      type="button"
-                      onClick={loadMoreVaultItems}
-                      disabled={vaultLoadingMore}
-                      className="w-full mt-4 py-2.5 text-sm font-medium text-domx-600 dark:text-domx-400 hover:underline disabled:opacity-40"
-                    >
-                      {vaultLoadingMore ? 'Loading…' : 'Load more'}
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
+            </div>
           </div>
         </div>
+      )}
+
+      {vaultLightbox && (
+        <VaultMediaLightbox
+          url={vaultLightbox.url}
+          kind={vaultLightbox.kind}
+          poster={vaultLightbox.poster}
+          fallbackUrl={vaultLightbox.fallbackUrl}
+          onClose={() => setPreviewItem(null)}
+          zClassName="z-[100]"
+        />
       )}
 
       {priceModalOpen && (

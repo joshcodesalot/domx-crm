@@ -1032,6 +1032,8 @@ export interface LeaderboardResponse {
     ppvsUnlocked: LeaderboardViewerRank | null;
     goldenRatio: LeaderboardViewerRank | null;
   };
+  /** True when owner/manager sees unmasked peer values. */
+  valuesRevealed?: boolean;
   period?: {
     startDate: string;
     endDate: string;

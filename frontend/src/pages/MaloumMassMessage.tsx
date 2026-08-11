@@ -15,6 +15,7 @@ import {
   Loader2,
   Lock,
   Megaphone,
+  Play,
   RefreshCw,
   Send,
   Trash2,
@@ -25,6 +26,7 @@ import {
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
+import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
@@ -38,6 +40,7 @@ import {
   friendlyVaultFolderName,
   isVideoAsset,
   vaultDirectUrl,
+  vaultPreviewFromItem,
   vaultUploadId,
 } from '@/components/maloum/MaloumChatPanels';
 import {
@@ -235,6 +238,10 @@ export default function MaloumMassMessage() {
   const [loadingMoreFolders, setLoadingMoreFolders] = useState(false);
   const [loadingMoreMedia, setLoadingMoreMedia] = useState(false);
   const [vaultError, setVaultError] = useState<string | null>(null);
+  const [vaultPreview, setVaultPreview] = useState<{
+    url: string;
+    kind: 'picture' | 'video' | 'embed';
+  } | null>(null);
   const [selectedVaultItems, setSelectedVaultItems] = useState<MaloumVaultMediaItem[]>(
     []
   );
@@ -1071,7 +1078,10 @@ export default function MaloumMassMessage() {
             type="button"
             aria-label="Close vault"
             className="absolute inset-0 bg-black/30 dark:bg-black/80 backdrop-blur-sm"
-            onClick={() => setVaultOpen(false)}
+            onClick={() => {
+              setVaultOpen(false);
+              setVaultPreview(null);
+            }}
           />
           <div className="relative bg-white dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800/80 rounded-2xl shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
             <div className="flex items-center justify-between p-5 border-b border-gray-200 dark:border-zinc-800/60">
@@ -1092,14 +1102,20 @@ export default function MaloumMassMessage() {
               <div className="flex items-center gap-3">
                 <button
                   type="button"
-                  onClick={() => setVaultOpen(false)}
+                  onClick={() => {
+                    setVaultOpen(false);
+                    setVaultPreview(null);
+                  }}
                   className="px-5 py-2 text-sm font-semibold rounded-lg bg-domx-600 text-white hover:bg-domx-500"
                 >
                   Insert Media
                 </button>
                 <button
                   type="button"
-                  onClick={() => setVaultOpen(false)}
+                  onClick={() => {
+                    setVaultOpen(false);
+                    setVaultPreview(null);
+                  }}
                   className="p-2 text-gray-500 hover:text-gray-900 dark:hover:text-white rounded-lg"
                   aria-label="Close vault"
                 >
@@ -1194,23 +1210,32 @@ export default function MaloumMassMessage() {
                         (entry) => vaultUploadId(entry) === uploadId
                       );
                       const video = isVideoAsset(item.media?.type);
+                      const openPreview = () => {
+                        const next = vaultPreviewFromItem(item);
+                        if (next) setVaultPreview(next);
+                      };
                       return (
                         <div
                           key={uploadId || src || 'item'}
                           role="button"
                           tabIndex={0}
                           onClick={() => toggleVaultItem(item)}
+                          onDoubleClick={(e) => {
+                            e.preventDefault();
+                            openPreview();
+                          }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' || e.key === ' ') {
                               e.preventDefault();
                               toggleVaultItem(item);
                             }
                           }}
-                          className={`relative aspect-square rounded-xl overflow-hidden cursor-pointer ${
+                          className={`relative aspect-square rounded-xl overflow-hidden group cursor-pointer ${
                             selected
                               ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
                               : 'border border-gray-200 dark:border-zinc-800'
                           }`}
+                          title="Click to select · double-click to preview"
                         >
                           {src ? (
                             <img
@@ -1236,14 +1261,25 @@ export default function MaloumMassMessage() {
                             />
                           ) : null}
                           {selected && (
-                            <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center">
+                            <span className="absolute top-2 right-2 w-6 h-6 rounded-full bg-domx-500 text-white flex items-center justify-center z-10">
                               <Check className="w-3.5 h-3.5" />
                             </span>
                           )}
                           {video && (
-                            <span className="absolute inset-0 flex items-center justify-center bg-black/20 pointer-events-none">
-                              <Video className="w-5 h-5 text-white" />
-                            </span>
+                            <div className="absolute inset-0 z-[5] flex items-center justify-center bg-black/20 pointer-events-none">
+                              <button
+                                type="button"
+                                aria-label="Play video"
+                                className="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center text-white/90 pointer-events-auto hover:bg-black/70 transition-colors"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  openPreview();
+                                }}
+                              >
+                                <Play className="w-5 h-5 ml-0.5" />
+                              </button>
+                            </div>
                           )}
                         </div>
                       );
@@ -1264,6 +1300,15 @@ export default function MaloumMassMessage() {
             </div>
           </div>
         </div>
+      )}
+
+      {vaultPreview && (
+        <VaultMediaLightbox
+          url={vaultPreview.url}
+          kind={vaultPreview.kind}
+          onClose={() => setVaultPreview(null)}
+          zClassName="z-[100]"
+        />
       )}
 
       {priceModalOpen && (

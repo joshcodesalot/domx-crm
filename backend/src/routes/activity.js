@@ -15,9 +15,9 @@ const { getUserTimeZone } = require('../services/rbac');
 
 const router = express.Router();
 
-const ONLINE_MS = 2 * 60 * 1000;
-const IDLE_MS = 10 * 60 * 1000;
-const HEARTBEAT_FRESH_MS = 2 * 60 * 1000;
+const ONLINE_MS = 10 * 60 * 1000;
+const IDLE_MS = 30 * 60 * 1000;
+const HEARTBEAT_FRESH_MS = 10 * 60 * 1000;
 const MAX_ACTIVE_INTERVAL_SECONDS = 60;
 const MAX_KEYSTROKE_DELTA = 5000;
 
