@@ -81,6 +81,26 @@ function monthStartDateString(date = new Date(), timeZone = BUSINESS_TZ) {
 }
 
 /**
+ * Monday of the ISO week containing `date` in the given timezone.
+ * @param {Date} [date]
+ * @param {string} [timeZone]
+ * @returns {string} YYYY-MM-DD
+ */
+function weekStartDateString(date = new Date(), timeZone = BUSINESS_TZ) {
+  const today = calendarDateString(date, timeZone);
+  const [year, month, day] = today.split('-').map(Number);
+  // UTC noon so weekday math is stable across DST.
+  const noon = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  // getUTCDay: 0=Sun … 6=Sat → days since Monday
+  const daysSinceMonday = (noon.getUTCDay() + 6) % 7;
+  noon.setUTCDate(noon.getUTCDate() - daysSinceMonday);
+  const y = noon.getUTCFullYear();
+  const m = String(noon.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(noon.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
+/**
  * Last N inclusive calendar days ending today (in timeZone), oldest first.
  * @param {number} days
  * @param {string} [timeZone]
@@ -206,6 +226,7 @@ module.exports = {
   normalizeTimeZone,
   calendarDateString,
   monthStartDateString,
+  weekStartDateString,
   buildDateRange,
   buildDateRangeBetween,
   isValidDateString,

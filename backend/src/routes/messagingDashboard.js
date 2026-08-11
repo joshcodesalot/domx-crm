@@ -27,6 +27,7 @@ const {
 const {
   calendarDateString,
   monthStartDateString,
+  weekStartDateString,
   resolveAnalyticsPeriod,
 } = require('../services/businessTimezone');
 const {
@@ -1350,6 +1351,8 @@ router.get(
       }, 90, { timeZone: tz });
       const periodStart = period.startDate;
       const periodEnd = period.endDate;
+      const weekStart = weekStartDateString(new Date(), tz);
+      const todayDate = calendarDateString(new Date(), tz);
       const chartDays = period.days;
 
       const chatterClause =
@@ -1510,8 +1513,8 @@ router.get(
         chatterAvgResult,
         chatterSalesResult,
         chatterMessageStatsResult,
-        chatterCutoverSalesResult,
-        chatterCutoverMessagesResult,
+        chatterWeeklySalesResult,
+        chatterWeeklyMessagesResult,
         keystrokesResult,
         chatterActiveResult,
         tipPpvSalesResult,
@@ -1672,7 +1675,7 @@ router.get(
            GROUP BY m."chatterId"`,
           selfParams
         ),
-        // Staff Performance /hr: still since activity cutover
+        // Staff Performance weekly sales (calendar week Mon–today)
         scope.mode === 'self'
           ? pool.query(
               `SELECT m."chatterId",
@@ -1682,9 +1685,10 @@ router.get(
                WHERE m.purchased = true
                  AND m."priceNet" IS NOT NULL
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY m."chatterId", 2`,
-              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
+              [scope.userIds, weekStart, todayDate]
             )
           : pool.query(
               `SELECT m."chatterId",
@@ -1694,8 +1698,9 @@ router.get(
                WHERE m.purchased = true
                  AND m."priceNet" IS NOT NULL
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY m."chatterId", 2`,
-              [ACTIVITY_METRICS_CUTOVER]
+              [weekStart, todayDate]
             ),
         scope.mode === 'self'
           ? pool.query(
@@ -1704,9 +1709,10 @@ router.get(
                FROM messaging_dashboard_entries m
                WHERE m."contentType" IN ('text', 'media', 'chat_product')
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
                GROUP BY m."chatterId"`,
-              [scope.userIds, ACTIVITY_METRICS_CUTOVER]
+              [scope.userIds, weekStart, todayDate]
             )
           : pool.query(
               `SELECT m."chatterId",
@@ -1714,8 +1720,9 @@ router.get(
                FROM messaging_dashboard_entries m
                WHERE m."contentType" IN ('text', 'media', 'chat_product')
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
+                 AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY m."chatterId"`,
-              [ACTIVITY_METRICS_CUTOVER]
+              [weekStart, todayDate]
             ),
         // Period keystrokes / active / idle for team cards
         scope.mode === 'self'
@@ -1740,30 +1747,50 @@ router.get(
                  AND d.day <= $3::date`,
               [TRACKED_STAFF_ROLES, periodStart, periodEnd]
             ),
-        // Staff Performance /hr tracked seconds: selected period (active + idle)
+        // Staff Performance tracked seconds: period + weekly + all-time
         scope.mode === 'self'
           ? pool.query(
               `SELECT d."userId" AS "chatterId",
-                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds",
-                      COALESCE(SUM(d."idleSeconds"), 0)::int AS "idleSeconds"
+                      COALESCE(SUM(d."activeSeconds") FILTER (
+                        WHERE d.day >= $2::date AND d.day <= $3::date
+                      ), 0)::int AS "activeSeconds",
+                      COALESCE(SUM(d."idleSeconds") FILTER (
+                        WHERE d.day >= $2::date AND d.day <= $3::date
+                      ), 0)::int AS "idleSeconds",
+                      COALESCE(SUM(d."activeSeconds") FILTER (
+                        WHERE d.day >= $4::date AND d.day <= $5::date
+                      ), 0)::int AS "weeklyActiveSeconds",
+                      COALESCE(SUM(d."idleSeconds") FILTER (
+                        WHERE d.day >= $4::date AND d.day <= $5::date
+                      ), 0)::int AS "weeklyIdleSeconds",
+                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "totalActiveSeconds",
+                      COALESCE(SUM(d."idleSeconds"), 0)::int AS "totalIdleSeconds"
                FROM user_activity_daily d
                WHERE d."userId" = ANY($1::uuid[])
-                 AND d.day >= $2::date
-                 AND d.day <= $3::date
                GROUP BY d."userId"`,
-              [scope.userIds, periodStart, periodEnd]
+              [scope.userIds, periodStart, periodEnd, weekStart, todayDate]
             )
           : pool.query(
               `SELECT d."userId" AS "chatterId",
-                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "activeSeconds",
-                      COALESCE(SUM(d."idleSeconds"), 0)::int AS "idleSeconds"
+                      COALESCE(SUM(d."activeSeconds") FILTER (
+                        WHERE d.day >= $2::date AND d.day <= $3::date
+                      ), 0)::int AS "activeSeconds",
+                      COALESCE(SUM(d."idleSeconds") FILTER (
+                        WHERE d.day >= $2::date AND d.day <= $3::date
+                      ), 0)::int AS "idleSeconds",
+                      COALESCE(SUM(d."activeSeconds") FILTER (
+                        WHERE d.day >= $4::date AND d.day <= $5::date
+                      ), 0)::int AS "weeklyActiveSeconds",
+                      COALESCE(SUM(d."idleSeconds") FILTER (
+                        WHERE d.day >= $4::date AND d.day <= $5::date
+                      ), 0)::int AS "weeklyIdleSeconds",
+                      COALESCE(SUM(d."activeSeconds"), 0)::int AS "totalActiveSeconds",
+                      COALESCE(SUM(d."idleSeconds"), 0)::int AS "totalIdleSeconds"
                FROM user_activity_daily d
                JOIN users u ON u.id = d."userId"
                WHERE u.role = ANY($1::text[])
-                 AND d.day >= $2::date
-                 AND d.day <= $3::date
                GROUP BY d."userId"`,
-              [TRACKED_STAFF_ROLES, periodStart, periodEnd]
+              [TRACKED_STAFF_ROLES, periodStart, periodEnd, weekStart, todayDate]
             ),
         // Tip vs PPV sales (period)
         scope.mode === 'self'
@@ -2350,18 +2377,61 @@ router.get(
 
       const activeSecondsByChatter = new Map();
       const idleSecondsByChatter = new Map();
+      const weeklyActiveByChatter = new Map();
+      const weeklyIdleByChatter = new Map();
+      const totalActiveByChatter = new Map();
+      const totalIdleByChatter = new Map();
       for (const row of chatterActiveResult.rows) {
         activeSecondsByChatter.set(
           row.chatterId,
           Number(row.activeSeconds) || 0
         );
         idleSecondsByChatter.set(row.chatterId, Number(row.idleSeconds) || 0);
+        weeklyActiveByChatter.set(
+          row.chatterId,
+          Number(row.weeklyActiveSeconds) || 0
+        );
+        weeklyIdleByChatter.set(
+          row.chatterId,
+          Number(row.weeklyIdleSeconds) || 0
+        );
+        totalActiveByChatter.set(
+          row.chatterId,
+          Number(row.totalActiveSeconds) || 0
+        );
+        totalIdleByChatter.set(
+          row.chatterId,
+          Number(row.totalIdleSeconds) || 0
+        );
       }
 
-      // Cutover sales/message queries remain in Promise.all for stable indexing;
-      // rates now use selected-period sales/messages and total tracked time.
-      void chatterCutoverSalesResult;
-      void chatterCutoverMessagesResult;
+      const weeklySalesByChatter = new Map();
+      for (const row of chatterWeeklySalesResult.rows) {
+        if (!weeklySalesByChatter.has(row.chatterId)) {
+          weeklySalesByChatter.set(row.chatterId, []);
+        }
+        const amount = Number(row.amount) || 0;
+        if (amount > 0) {
+          weeklySalesByChatter.get(row.chatterId).push({
+            currency:
+              String(row.currency || 'EUR').toUpperCase() === 'USD'
+                ? 'USD'
+                : 'EUR',
+            amount,
+          });
+        }
+      }
+
+      const weeklyMessagesByChatter = new Map();
+      for (const row of chatterWeeklyMessagesResult.rows) {
+        weeklyMessagesByChatter.set(
+          row.chatterId,
+          Number(row.messagesSent) || 0
+        );
+      }
+
+      // Team overview cards still run cutover-shaped queries in Promise.all;
+      // rates below use selected-period / weekly / total windows instead.
       void cutoverSalesResult;
       void cutoverMessagesResult;
 
@@ -2447,12 +2517,51 @@ router.get(
         entry.ppvConversionRate = ratePercent(entry.ppvsUnlocked, entry.ppvsSent);
       }
 
+      function buildChatterRateFields(chatterId, {
+        totalSalesMerged,
+        periodSalesMerged,
+        periodMessages,
+        lifetimeMessages,
+      }) {
+        const activeSeconds = activeSecondsByChatter.get(chatterId) || 0;
+        const idleSeconds = idleSecondsByChatter.get(chatterId) || 0;
+        const periodTracked = activeSeconds + idleSeconds;
+        const weeklyActive = weeklyActiveByChatter.get(chatterId) || 0;
+        const weeklyIdle = weeklyIdleByChatter.get(chatterId) || 0;
+        const weeklyTracked = weeklyActive + weeklyIdle;
+        const totalActive = totalActiveByChatter.get(chatterId) || 0;
+        const totalIdle = totalIdleByChatter.get(chatterId) || 0;
+        const totalTracked = totalActive + totalIdle;
+        const weeklySalesMerged = mergeCurrencyAmounts(
+          weeklySalesByChatter.get(chatterId) || []
+        );
+        const weeklyMessages = weeklyMessagesByChatter.get(chatterId) || 0;
+        return {
+          activeSecondsTotal: activeSeconds,
+          idleSecondsTotal: idleSeconds,
+          idlePercent: idlePercent(activeSeconds, idleSeconds),
+          revenuePerHour: revenuePerHourAmounts(periodSalesMerged, periodTracked),
+          messagesPerHour: perHourRate(periodMessages, periodTracked),
+          weeklyRevenuePerHour: revenuePerHourAmounts(
+            weeklySalesMerged,
+            weeklyTracked
+          ),
+          weeklyMessagesPerHour: perHourRate(weeklyMessages, weeklyTracked),
+          totalRevenuePerHour: revenuePerHourAmounts(
+            totalSalesMerged,
+            totalTracked
+          ),
+          totalMessagesPerHour: perHourRate(lifetimeMessages, totalTracked),
+          totalActiveSeconds: totalActive,
+          totalIdleSeconds: totalIdle,
+          weeklySales: weeklySalesMerged,
+          weeklyMessagesSent: weeklyMessages,
+        };
+      }
+
       const namedIds = new Set(chatterNamesResult.rows.map((r) => r.chatterId));
       const chatters = chatterNamesResult.rows.map((row) => {
         const stats = statsByChatter.get(row.chatterId);
-        const activeSeconds = activeSecondsByChatter.get(row.chatterId) || 0;
-        const idleSeconds = idleSecondsByChatter.get(row.chatterId) || 0;
-        const totalTrackedSeconds = activeSeconds + idleSeconds;
         const totalSalesMerged = mergeCurrencyAmounts(stats?.totalSales || []);
         const messagesSentForChatter = stats?.messagesSent || 0;
         const periodExtras = periodExtrasByChatter.get(row.chatterId);
@@ -2461,6 +2570,12 @@ router.get(
         const periodSalesMerged = mergeCurrencyAmounts(periodExtras?.periodSales || []);
         const periodMessages = periodExtras?.messagesSent || 0;
         const scheduleMeta = scheduleMetaForWeek(schedulesByUser.get(row.chatterId));
+        const rates = buildChatterRateFields(row.chatterId, {
+          totalSalesMerged,
+          periodSalesMerged,
+          periodMessages,
+          lifetimeMessages: messagesSentForChatter,
+        });
         return {
           chatterId: row.chatterId,
           chatterName: row.chatterName,
@@ -2472,14 +2587,7 @@ router.get(
           ppvsUnlocked: stats?.ppvsUnlocked || 0,
           goldenRatio: stats?.goldenRatio || 0,
           ppvConversionRate: stats?.ppvConversionRate || 0,
-          activeSecondsTotal: activeSeconds,
-          idleSecondsTotal: idleSeconds,
-          idlePercent: idlePercent(activeSeconds, idleSeconds),
-          revenuePerHour: revenuePerHourAmounts(
-            periodSalesMerged,
-            totalTrackedSeconds
-          ),
-          messagesPerHour: perHourRate(periodMessages, totalTrackedSeconds),
+          ...rates,
           tipSales: tipSalesMerged,
           ppvSales: ppvSalesMergedChatter,
           periodSales: periodSalesMerged,
@@ -2517,9 +2625,6 @@ router.get(
         );
         for (const chatterId of missingIds) {
           const stats = statsByChatter.get(chatterId);
-          const activeSeconds = activeSecondsByChatter.get(chatterId) || 0;
-          const idleSeconds = idleSecondsByChatter.get(chatterId) || 0;
-          const totalTrackedSeconds = activeSeconds + idleSeconds;
           const totalSalesMerged = mergeCurrencyAmounts(stats.totalSales);
           const periodExtras = periodExtrasByChatter.get(chatterId);
           const tipSalesMerged = mergeCurrencyAmounts(periodExtras?.tipSales || []);
@@ -2527,6 +2632,12 @@ router.get(
           const periodSalesMerged = mergeCurrencyAmounts(periodExtras?.periodSales || []);
           const periodMessages = periodExtras?.messagesSent || 0;
           const scheduleMeta = scheduleMetaForWeek(schedulesByUser.get(chatterId));
+          const rates = buildChatterRateFields(chatterId, {
+            totalSalesMerged,
+            periodSalesMerged,
+            periodMessages,
+            lifetimeMessages: stats.messagesSent || 0,
+          });
           chatters.push({
             chatterId,
             chatterName: nameById.get(chatterId) || 'Unknown',
@@ -2538,14 +2649,7 @@ router.get(
             ppvsUnlocked: stats.ppvsUnlocked,
             goldenRatio: stats.goldenRatio,
             ppvConversionRate: stats.ppvConversionRate,
-            activeSecondsTotal: activeSeconds,
-            idleSecondsTotal: idleSeconds,
-            idlePercent: idlePercent(activeSeconds, idleSeconds),
-            revenuePerHour: revenuePerHourAmounts(
-              periodSalesMerged,
-              totalTrackedSeconds
-            ),
-            messagesPerHour: perHourRate(periodMessages, totalTrackedSeconds),
+            ...rates,
             tipSales: tipSalesMerged,
             ppvSales: ppvSalesMergedChatter,
             periodSales: periodSalesMerged,
@@ -2586,6 +2690,12 @@ router.get(
         const periodSalesMerged = mergeCurrencyAmounts(
           periodExtras?.periodSales || []
         );
+        const rates = buildChatterRateFields(null, {
+          totalSalesMerged,
+          periodSalesMerged,
+          periodMessages: periodExtras?.messagesSent || 0,
+          lifetimeMessages: stats.messagesSent || 0,
+        });
         chatters.push({
           chatterId: null,
           chatterName: 'Deleted',
@@ -2597,11 +2707,7 @@ router.get(
           ppvsUnlocked: stats.ppvsUnlocked || 0,
           goldenRatio: stats.goldenRatio || 0,
           ppvConversionRate: stats.ppvConversionRate || 0,
-          activeSecondsTotal: 0,
-          idleSecondsTotal: 0,
-          idlePercent: 0,
-          revenuePerHour: revenuePerHourAmounts(periodSalesMerged, 0),
-          messagesPerHour: perHourRate(periodExtras?.messagesSent || 0, 0),
+          ...rates,
           tipSales: tipSalesMergedRow,
           ppvSales: ppvSalesMergedChatter,
           periodSales: periodSalesMerged,
@@ -2938,6 +3044,7 @@ router.get(
           endDate: periodEnd,
           timeZone: tz,
           usesScheduledHours: true,
+          window: 'calendar_month',
         },
         lastUpdated: new Date().toISOString(),
       });

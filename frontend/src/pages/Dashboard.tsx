@@ -782,11 +782,16 @@ export default function Dashboard() {
             <div>
               <h3 className="text-sm font-medium mb-1">Leaderboard</h3>
               <p className="text-xs text-gray-400 mb-4">
+                Monthly rankings (calendar month
+                {leaderboard?.period?.startDate && leaderboard?.period?.endDate
+                  ? `: ${leaderboard.period.startDate} → ${leaderboard.period.endDate}`
+                  : ''}
+                ).{' '}
                 {leaderboard?.valuesRevealed || isTeamScope
-                  ? 'Team rankings with full totals for managers. '
-                  : 'Team rankings with partially hidden totals. '}
-                Rankings use each chatter&apos;s scheduled hours (PHT); response
-                wait is counted from shift start. No schedule means all day.
+                  ? 'Full totals visible to managers. '
+                  : 'Values are partially hidden. '}
+                Uses each chatter&apos;s scheduled hours; response wait is counted
+                from shift start. No schedule means all day.
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <LeaderboardCard
@@ -854,8 +859,8 @@ export default function Dashboard() {
                 <h3 className="text-sm font-medium mb-1">Staff Performance</h3>
                 <p className="text-xs text-gray-400 mb-4">
                   Period and lifetime sales; messages count only during scheduled
-                  hours. Rev/hr and Msg/hr use period sales ÷ total tracked time
-                  (active + idle).
+                  hours. Period/Weekly/Total Rev/hr and Msg/hr use sales ÷ total
+                  tracked time (active + idle) for that window.
                 </p>
                 <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden">
                   <div className="overflow-x-auto">
@@ -868,13 +873,19 @@ export default function Dashboard() {
                           <th className="px-4 py-3 font-medium">Total Sales</th>
                           <th className="px-4 py-3 font-medium">Messages</th>
                           <th className="px-4 py-3 font-medium">Sent PPV</th>
-                          <th className="px-4 py-3 font-medium">Rev/hr</th>
-                          <th className="px-4 py-3 font-medium">Msg/hr</th>
+                          <th className="px-4 py-3 font-medium">Period Rev/hr</th>
+                          <th className="px-4 py-3 font-medium">Period Msg/hr</th>
+                          <th className="px-4 py-3 font-medium">Weekly Rev/hr</th>
+                          <th className="px-4 py-3 font-medium">Weekly Msg/hr</th>
+                          <th className="px-4 py-3 font-medium">Total Rev/hr</th>
+                          <th className="px-4 py-3 font-medium">Total Msg/hr</th>
                           <th className="px-4 py-3 font-medium">PPV Conv.</th>
                           <th className="px-4 py-3 font-medium">Golden</th>
                           <th className="px-4 py-3 font-medium">Status</th>
                           <th className="px-4 py-3 font-medium">Active Today</th>
                           <th className="px-4 py-3 font-medium">Idle Today</th>
+                          <th className="px-4 py-3 font-medium">Total Active</th>
+                          <th className="px-4 py-3 font-medium">Total Idle</th>
                           <th className="px-4 py-3 font-medium">Keys Today</th>
                           <th className="px-4 py-3 font-medium">
                             Active (
@@ -891,7 +902,7 @@ export default function Dashboard() {
                           {chatterRows.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={15}
+                              colSpan={21}
                               className="px-4 py-10 text-center text-gray-400"
                             >
                               No staff to display
@@ -933,6 +944,18 @@ export default function Dashboard() {
                                 {formatRate(row.messagesPerHour)}
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap">
+                                {formatCurrencyAmounts(row.weeklyRevenuePerHour)}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                {formatRate(row.weeklyMessagesPerHour)}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                {formatCurrencyAmounts(row.totalRevenuePerHour)}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                {formatRate(row.totalMessagesPerHour)}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
                                 {formatPercent(row.ppvConversionRate)}
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap">
@@ -950,6 +973,12 @@ export default function Dashboard() {
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap text-gray-500 dark:text-gray-400">
                                 {formatActiveDuration(row.idleSecondsToday)}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap text-gray-500 dark:text-gray-400">
+                                {formatActiveDuration(row.totalActiveSeconds || 0)}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap text-gray-500 dark:text-gray-400">
+                                {formatActiveDuration(row.totalIdleSeconds || 0)}
                               </td>
                               <td className="px-4 py-3 whitespace-nowrap text-gray-500 dark:text-gray-400">
                                 {formatCount(row.keystrokesToday)}

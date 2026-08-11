@@ -855,6 +855,14 @@ export interface OverviewChatterStats {
   idlePercent?: number;
   revenuePerHour?: CurrencyAmount[];
   messagesPerHour?: number;
+  weeklyRevenuePerHour?: CurrencyAmount[];
+  weeklyMessagesPerHour?: number;
+  totalRevenuePerHour?: CurrencyAmount[];
+  totalMessagesPerHour?: number;
+  totalActiveSeconds?: number;
+  totalIdleSeconds?: number;
+  weeklySales?: CurrencyAmount[];
+  weeklyMessagesSent?: number;
   tipSales?: CurrencyAmount[];
   ppvSales?: CurrencyAmount[];
   periodSales?: CurrencyAmount[];
@@ -1039,6 +1047,7 @@ export interface LeaderboardResponse {
     endDate: string;
     timeZone: string;
     usesScheduledHours?: boolean;
+    window?: 'calendar_month' | string;
   };
   responseWindow?: { startDate: string; endDate: string };
   lastUpdated: string;
