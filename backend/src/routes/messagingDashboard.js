@@ -1316,6 +1316,67 @@ router.get(
   }
 );
 
+router.get(
+  '/unsends',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { creatorId, chatId, platform, limit = '500' } = req.query;
+
+    if (!creatorId || !isValidUuid(String(creatorId))) {
+      return res.status(400).json({ error: 'Valid creatorId is required' });
+    }
+
+    if (!chatId || typeof chatId !== 'string' || !String(chatId).trim()) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+
+    const resolvedPlatform =
+      platform === '4based' || platform === 'maloum' ? platform : null;
+    if (!resolvedPlatform) {
+      return res.status(400).json({ error: 'platform must be maloum or 4based' });
+    }
+
+    const allowed = await userCanAccessCreator(req.user, String(creatorId));
+    if (!allowed) {
+      return res.status(403).json({ error: 'You do not have access to this creator' });
+    }
+
+    const parsedLimit = Math.min(
+      Math.max(Number.parseInt(String(limit), 10) || 500, 1),
+      500
+    );
+
+    try {
+      const result = await pool.query(
+        `SELECT "platformMessageId", "originalText", "unsentByUserName",
+                "unsentAt", "messageSentAt"
+         FROM message_unsends
+         WHERE "creatorId" = $1 AND "chatId" = $2 AND platform = $3
+         ORDER BY COALESCE("messageSentAt", "unsentAt") DESC
+         LIMIT $4`,
+        [creatorId, String(chatId), resolvedPlatform, parsedLimit]
+      );
+
+      const unsends = {};
+      for (const row of result.rows) {
+        if (!row.platformMessageId) continue;
+        unsends[row.platformMessageId] = {
+          originalText: row.originalText || '',
+          unsentByUserName: row.unsentByUserName || 'Unknown',
+          unsentAt: row.unsentAt || null,
+          messageSentAt: row.messageSentAt || null,
+        };
+      }
+
+      res.json({ unsends });
+    } catch (err) {
+      console.error('List message unsends error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
 function currencyAmountRowsToList(rows) {
   return rows.map((row) => ({
     currency: String(row.currency || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR',

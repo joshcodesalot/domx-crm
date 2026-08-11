@@ -668,6 +668,23 @@ async function getChatByUser(creator, fanId) {
   return result.data;
 }
 
+async function createChatByUser(creator, fanId) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  if (!fanId) {
+    throw new FourBasedApiError('fanId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'POST',
+    url: `${REST_BASE}/user/${providerUserId}/chat/user/${encodeURIComponent(fanId)}`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+    body: {},
+  });
+  return result.data;
+}
+
 async function getMessages(creator, chatId, { limit = 20, offset = 0 } = {}) {
   const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
   const sort = encodeURIComponent(JSON.stringify({ created_at: 'desc' }));
@@ -1229,6 +1246,7 @@ module.exports = {
   listTrendingFileStacks,
   listFileStackComments,
   getChatByUser,
+  createChatByUser,
   getMessages,
   markReceived,
   getPivot,

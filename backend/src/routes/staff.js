@@ -348,6 +348,13 @@ router.delete('/:id', authenticate, requirePermission('staff.delete'), async (re
       [id]
     );
 
+    await client.query(
+      `UPDATE message_unsends
+       SET "unsentByUserName" = 'Deleted'
+       WHERE "unsentByUserId" = $1`,
+      [id]
+    );
+
     const result = await client.query(
       'DELETE FROM users WHERE id = $1 RETURNING id',
       [id]

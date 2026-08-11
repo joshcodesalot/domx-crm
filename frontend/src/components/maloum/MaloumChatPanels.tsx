@@ -8,6 +8,7 @@ import {
   type UIEvent,
 } from 'react';
 import {
+  Ban,
   Banknote,
   Bell,
   Box,
@@ -47,6 +48,7 @@ import {
   deleteMaloumMessage,
   getMaloumChat,
   getMaloumMessages,
+  getMessageUnsends,
   getMessagingDashboardSenders,
   listMaloumChats,
   listMaloumVaultFolders,
@@ -66,6 +68,7 @@ import {
   type MaloumMessage,
   type MaloumVaultFolder,
   type MaloumVaultMediaItem,
+  type MessageUnsendRecord,
   type TranslateHistoryItem,
 } from '@/lib/api';
 import {
@@ -514,6 +517,71 @@ function maloumMessageId(msg: MaloumMessage): string {
   return String(msg._id || '');
 }
 
+function isDomxUnsentMaloumMessage(msg: MaloumMessage): boolean {
+  return Boolean(msg.domxUnsent);
+}
+
+function buildMaloumUnsendTombstone(
+  platformMessageId: string,
+  unsend: MessageUnsendRecord,
+  providerUserId: string | null
+): MaloumMessage {
+  return {
+    _id: platformMessageId,
+    senderId: providerUserId || undefined,
+    sentAt: unsend.messageSentAt || unsend.unsentAt || undefined,
+    domxUnsent: true,
+    content: {
+      type: 'text',
+      text: unsend.originalText || '',
+    },
+  };
+}
+
+function applyMaloumUnsends(
+  messages: MaloumMessage[],
+  unsends: Record<string, MessageUnsendRecord>,
+  providerUserId: string | null
+): MaloumMessage[] {
+  const byId = new Map<string, MaloumMessage>();
+  for (const msg of messages) {
+    const id = maloumMessageId(msg);
+    if (!id) continue;
+    const unsend = unsends[id];
+    if (unsend) {
+      byId.set(id, {
+        ...msg,
+        domxUnsent: true,
+        content: {
+          ...(msg.content || {}),
+          type: 'text',
+          text: unsend.originalText || messageText(msg),
+        },
+      });
+    } else {
+      byId.set(id, msg);
+    }
+  }
+
+  const times = messages
+    .map((m) => new Date(m.sentAt || 0).getTime())
+    .filter((t) => t > 0);
+  const oldest = times.length > 0 ? Math.min(...times) : null;
+
+  for (const [id, unsend] of Object.entries(unsends)) {
+    if (byId.has(id)) continue;
+    const t = new Date(unsend.messageSentAt || unsend.unsentAt || 0).getTime();
+    if (oldest != null && t > 0 && t < oldest) continue;
+    byId.set(id, buildMaloumUnsendTombstone(id, unsend, providerUserId));
+  }
+
+  return Array.from(byId.values()).sort((a, b) => {
+    const ta = new Date(a.sentAt || 0).getTime();
+    const tb = new Date(b.sentAt || 0).getTime();
+    return ta - tb;
+  });
+}
+
 function mergeMaloumMessages(
   prev: MaloumMessage[],
   incoming: MaloumMessage[]
@@ -902,6 +970,8 @@ export function MaloumChatThread({
   const [providerUserId, setProviderUserId] = useState<string | null>(
     creator.accountId || null
   );
+  const providerUserIdRef = useRef<string | null>(creator.accountId || null);
+  providerUserIdRef.current = providerUserId;
   const [messages, setMessages] = useState<MaloumMessage[]>([]);
   const [messagesNext, setMessagesNext] = useState<string | null>(null);
   const [messagesLoading, setMessagesLoading] = useState(false);
@@ -1002,6 +1072,10 @@ export function MaloumChatThread({
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>(
     {}
   );
+  const [messageUnsends, setMessageUnsends] = useState<
+    Record<string, MessageUnsendRecord>
+  >({});
+  const messageUnsendsRef = useRef<Record<string, MessageUnsendRecord>>({});
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -1050,10 +1124,16 @@ export function MaloumChatThread({
         if (chatResult?.chat) {
           setChat(chatResult.chat);
         }
+        const resolvedProviderUserId =
+          chatResult?.providerUserId ||
+          msgResult.providerUserId ||
+          providerUserIdRef.current;
         if (chatResult?.providerUserId) {
           setProviderUserId(chatResult.providerUserId);
+          providerUserIdRef.current = chatResult.providerUserId;
         } else if (msgResult.providerUserId) {
           setProviderUserId(msgResult.providerUserId);
+          providerUserIdRef.current = msgResult.providerUserId;
         }
         const incoming = msgResult.messages || [];
         // API returns newest-first; reverse for chronological display
@@ -1083,14 +1163,26 @@ export function MaloumChatThread({
               const id = maloumMessageId(msg);
               return id && !existing.has(id);
             });
-            return fresh.length > 0 ? [...fresh, ...prev] : prev;
+            const merged =
+              fresh.length > 0 ? [...fresh, ...prev] : prev;
+            return applyMaloumUnsends(
+              merged,
+              messageUnsendsRef.current,
+              resolvedProviderUserId
+            );
           });
         } else {
-          setMessages((prev) =>
-            prev.length > 0 && manualTranslateOnlyIdsRef.current.size > 0
-              ? mergeMaloumMessages(prev, chronological)
-              : chronological
-          );
+          setMessages((prev) => {
+            const base =
+              prev.length > 0 && manualTranslateOnlyIdsRef.current.size > 0
+                ? mergeMaloumMessages(prev, chronological)
+                : chronological;
+            return applyMaloumUnsends(
+              base,
+              messageUnsendsRef.current,
+              resolvedProviderUserId
+            );
+          });
         }
         const nextCursor = msgResult.next || null;
         // Keep the oldest-page cursor when a live refresh merges into already-loaded history.
@@ -1124,6 +1216,25 @@ export function MaloumChatThread({
         limit: 200,
       });
       setMessageSenders(result.senders || {});
+    } catch {
+      // best-effort
+    }
+  }, [creatorId, chatId]);
+
+  const loadUnsends = useCallback(async () => {
+    try {
+      const result = await getMessageUnsends({
+        creatorId,
+        chatId,
+        platform: 'maloum',
+        limit: 500,
+      });
+      const next = result.unsends || {};
+      messageUnsendsRef.current = next;
+      setMessageUnsends(next);
+      setMessages((prev) =>
+        applyMaloumUnsends(prev, next, providerUserIdRef.current)
+      );
     } catch {
       // best-effort
     }
@@ -1184,6 +1295,8 @@ export function MaloumChatThread({
     setVaultSentFilter('all');
     setSentUploadIds({});
     setMessageSenders({});
+    setMessageUnsends({});
+    messageUnsendsRef.current = {};
     setHistoryTranslations({});
     historyTranslationsRef.current = {};
     historyTranslateQueueRef.current?.clear();
@@ -1194,11 +1307,12 @@ export function MaloumChatThread({
     preserveScrollRef.current = null;
     void loadMessages();
     void loadSenders();
+    void loadUnsends();
     const timer = window.setInterval(() => {
       void loadMessages({ silent: true });
     }, MESSAGE_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [chatId, creatorId, initialChat, loadMessages, loadSenders]);
+  }, [chatId, creatorId, initialChat, loadMessages, loadSenders, loadUnsends]);
 
   useEffect(() => {
     return onSyncEvent((event) => {
@@ -1831,26 +1945,69 @@ export function MaloumChatThread({
     async (messageId: string) => {
       if (!isPersistedMaloumMessageId(messageId) || deletingMessageId) return;
       const ok = await confirm({
-        title: 'Delete message',
-        message: 'Delete this message?',
-        confirmLabel: 'Delete',
+        title: 'Unsend message',
+        message: 'Unsend this message? It will remain visible in DomX for audit.',
+        confirmLabel: 'Unsend',
         variant: 'danger',
       });
       if (!ok) return;
+      const existing = messages.find((m) => maloumMessageId(m) === messageId);
+      const originalText = existing ? messageText(existing).trim() : '';
+      const messageSentAt =
+        typeof existing?.sentAt === 'string' ? existing.sentAt : null;
       setDeletingMessageId(messageId);
       setDeleteError(null);
       try {
-        await deleteMaloumMessage(creatorId, chatId, messageId, {
+        const result = await deleteMaloumMessage(creatorId, chatId, messageId, {
           deleteTextOnly: false,
+          originalText,
+          messageSentAt,
         });
-        setMessages((prev) => prev.filter((m) => m._id !== messageId));
+        const unsendRecord: MessageUnsendRecord = result.unsend
+          ? {
+              originalText: result.unsend.originalText || originalText,
+              unsentByUserName:
+                result.unsend.unsentByUserName || user?.name || 'Unknown',
+              unsentAt: result.unsend.unsentAt || new Date().toISOString(),
+              messageSentAt: result.unsend.messageSentAt || messageSentAt,
+            }
+          : {
+              originalText,
+              unsentByUserName: user?.name || 'Unknown',
+              unsentAt: new Date().toISOString(),
+              messageSentAt,
+            };
+        messageUnsendsRef.current = {
+          ...messageUnsendsRef.current,
+          [messageId]: unsendRecord,
+        };
+        setMessageUnsends(messageUnsendsRef.current);
+        setMessages((prev) =>
+          applyMaloumUnsends(
+            prev.map((m) =>
+              maloumMessageId(m) === messageId
+                ? {
+                    ...m,
+                    domxUnsent: true,
+                    content: {
+                      ...(m.content || {}),
+                      type: 'text',
+                      text: unsendRecord.originalText || messageText(m),
+                    },
+                  }
+                : m
+            ),
+            messageUnsendsRef.current,
+            providerUserIdRef.current
+          )
+        );
       } catch (err) {
         setDeleteError(err instanceof Error ? err.message : 'Failed to delete message');
       } finally {
         setDeletingMessageId(null);
       }
     },
-    [creatorId, chatId, deletingMessageId, confirm]
+    [creatorId, chatId, deletingMessageId, confirm, messages, user?.name]
   );
 
   const title = partnerName(chat);
@@ -1980,17 +2137,28 @@ export function MaloumChatThread({
           const mine = Boolean(
             providerUserId && msg.senderId && msg.senderId === providerUserId
           );
-          const assets = messageMediaAssets(msg);
-          const text = messageText(msg);
           const msgKey = maloumMessageId(msg);
-          const canDelete = mine && isPersistedMaloumMessageId(msgKey);
+          const unsent =
+            isDomxUnsentMaloumMessage(msg) ||
+            Boolean(msgKey && messageUnsends[msgKey]);
+          const unsendInfo = msgKey ? messageUnsends[msgKey] : undefined;
+          const unsentBy = unsendInfo?.unsentByUserName;
+          const unsentOriginalText = (
+            unsendInfo?.originalText ||
+            messageText(msg) ||
+            ''
+          ).trim();
+          const assets = unsent ? [] : messageMediaAssets(msg);
+          const text = unsent ? '' : messageText(msg);
+          const canDelete =
+            mine && !unsent && isPersistedMaloumMessageId(msgKey);
           const deleting = deletingMessageId === msgKey;
           const optimisticKey =
             typeof msg.optimisticMessageId === 'string'
               ? msg.optimisticMessageId
               : '';
           const sentBy =
-            mine && msgKey
+            mine && !unsent && msgKey
               ? messageSenders[msgKey] ||
                 (optimisticKey ? messageSenders[optimisticKey] : undefined)
               : undefined;
@@ -1998,18 +2166,20 @@ export function MaloumChatThread({
           const cacheKey =
             msgKey && trimmedText ? `${msgKey}::${trimmedText}` : '';
           const historyEn =
-            autoTranslateHistory && cacheKey
+            !unsent && autoTranslateHistory && cacheKey
               ? historyTranslations[cacheKey]
               : undefined;
           const translatingThis =
             Boolean(cacheKey) && translatingMessageKeys.has(cacheKey);
           const showManualTranslate =
+            !unsent &&
             autoTranslateHistory &&
             Boolean(msgKey && trimmedText) &&
             !historyEn &&
             manualTranslateOnlyIds.has(msgKey);
-          const isPpv = msg.content?.type === 'chat_product';
+          const isPpv = !unsent && msg.content?.type === 'chat_product';
           const isFreeMedia =
+            !unsent &&
             !isPpv &&
             (msg.content?.type === 'media' || assets.length > 0);
           const priceNet =
@@ -2027,9 +2197,10 @@ export function MaloumChatThread({
               ? msg.content.price.currency
               : 'EUR';
           const isTip =
-            msg.content?.type === 'tip' ||
-            (priceNet != null && !isPpv && !text && assets.length === 0) ||
-            (priceGross != null && !isPpv && !text && assets.length === 0);
+            !unsent &&
+            (msg.content?.type === 'tip' ||
+              (priceNet != null && !isPpv && !text && assets.length === 0) ||
+              (priceGross != null && !isPpv && !text && assets.length === 0));
           const tipAmount = priceNet ?? priceGross;
           const tipLabel =
             isTip && tipAmount != null
@@ -2068,8 +2239,8 @@ export function MaloumChatThread({
                       onClick={() => void handleDeleteMessage(msgKey)}
                       disabled={deleting}
                       className="opacity-0 group-hover/msg:opacity-100 focus:opacity-100 p-1 rounded-md text-gray-500 dark:text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
-                      title="Delete message"
-                      aria-label="Delete message"
+                      title="Unsend message"
+                      aria-label="Unsend message"
                     >
                       {deleting ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -2079,7 +2250,29 @@ export function MaloumChatThread({
                     </button>
                   </div>
                 )}
-                {isTip ? (
+                {unsent ? (
+                  <div
+                    className={`rounded-2xl px-4 py-3 text-sm shadow-sm backdrop-blur-sm flex flex-col gap-1.5 ${
+                      mine
+                        ? 'bg-maloum-600/70 text-white/90 chat-bubble-out'
+                        : 'bg-gray-100/80 dark:bg-zinc-800/80 border border-gray-200 dark:border-zinc-700/50 text-gray-500 dark:text-zinc-400 chat-bubble-in'
+                    }`}
+                  >
+                    <div className="italic flex items-center gap-2">
+                      <Ban className="w-4 h-4 shrink-0 opacity-80" />
+                      <span>Message unsent</span>
+                    </div>
+                    {unsentOriginalText ? (
+                      <p
+                        className={`text-xs whitespace-pre-wrap break-words ${
+                          mine ? 'text-white/70' : 'text-gray-400 dark:text-zinc-500'
+                        }`}
+                      >
+                        {unsentOriginalText}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : isTip ? (
                   <div className="rounded-2xl px-4 py-3 shadow-lg bg-zinc-900 border border-emerald-500/30 text-white chat-bubble-in min-w-[140px]">
                     <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-300/90 uppercase tracking-wide">
                       <Banknote className="w-3.5 h-3.5" />
@@ -2226,6 +2419,11 @@ export function MaloumChatThread({
                   {sentBy && (
                     <div className="px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-zinc-900/90 border border-gray-200 dark:border-zinc-800 text-[9px] font-medium text-gray-500 dark:text-zinc-400 shadow-sm">
                       Sent by {sentBy}
+                    </div>
+                  )}
+                  {unsent && unsentBy && (
+                    <div className="px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-zinc-900/90 border border-gray-200 dark:border-zinc-800 text-[9px] font-medium text-gray-500 dark:text-zinc-400 shadow-sm">
+                      Unsent by {unsentBy}
                     </div>
                   )}
                 </div>

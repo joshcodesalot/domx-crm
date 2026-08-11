@@ -328,6 +328,28 @@ function extractChatId(chatPayload) {
   return null;
 }
 
+function isInteractionRestricted(err) {
+  if (!err) return false;
+  if (err.status === 420) return true;
+  const systemCode = err.body?.systemCode || err.body?.system_code;
+  if (
+    typeof systemCode === 'string' &&
+    systemCode.toLowerCase() === 'interactionrestrictedexception'
+  ) {
+    return true;
+  }
+  const message = typeof err.message === 'string' ? err.message : '';
+  return /interaction is restricted/i.test(message);
+}
+
+async function openOrCreateChat(creator, fanId) {
+  const existing = await fourBasedClient.getChatByUser(creator, fanId);
+  const existingId = extractChatId(existing);
+  if (existingId) return existingId;
+  const created = await fourBasedClient.createChatByUser(creator, fanId);
+  return extractChatId(created);
+}
+
 async function processFan(creator, job, fan, sourcePostId, cp, senderCreatorId) {
   const fanId = fan?._id;
   if (!fanId || fan.own) {
@@ -343,8 +365,7 @@ async function processFan(creator, job, fan, sourcePostId, cp, senderCreatorId) 
   }
 
   try {
-    const chatPayload = await fourBasedClient.getChatByUser(creator, fanId);
-    const chatId = extractChatId(chatPayload);
+    const chatId = await openOrCreateChat(creator, fanId);
     if (!chatId) {
       return {
         ...cp,
@@ -389,6 +410,9 @@ async function processFan(creator, job, fan, sourcePostId, cp, senderCreatorId) 
       lastError: null,
     };
   } catch (err) {
+    if (isInteractionRestricted(err)) {
+      return { ...cp, skippedFans: cp.skippedFans + 1 };
+    }
     return {
       ...cp,
       failedFans: cp.failedFans + 1,

@@ -54,6 +54,7 @@ import {
   getFourBasedPivot,
   getFourBasedProfile,
   getFourBasedUser,
+  getMessageUnsends,
   getMessagingDashboardSenders,
   listFourBasedChats,
   listFourBasedUserLists,
@@ -81,6 +82,7 @@ import {
   type FourBasedUserList,
   type FourBasedUserProfile,
   type FourBasedVaultItem,
+  type MessageUnsendRecord,
   type TranslateHistoryItem,
 } from '@/lib/api';
 import {
@@ -564,7 +566,7 @@ function isDeletedFourBasedMessage(
 function lastMessagePreview(chat: FourBasedChat): string {
   const last = chat.last_message;
   if (!last) return '—';
-  if (isDeletedFourBasedMessage(last)) return 'Message deleted';
+  if (isDeletedFourBasedMessage(last)) return 'Message unsent';
   const text = typeof last.message === 'string' ? last.message.trim() : '';
   return text || '—';
 }
@@ -1139,7 +1141,7 @@ export function FourBasedChatList({
                       {isDeletedFourBasedMessage(chat.last_message) ? (
                         <span className="inline-flex items-center gap-1">
                           <Ban className="w-3 h-3 shrink-0" />
-                          Message deleted
+                          Message unsent
                         </span>
                       ) : (
                         lastMessagePreview(chat)
@@ -1213,6 +1215,9 @@ export function FourBasedChatThread({
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>({});
+  const [messageUnsends, setMessageUnsends] = useState<
+    Record<string, MessageUnsendRecord>
+  >({});
 
   const [fanProfile, setFanProfile] = useState<FourBasedUserProfile | null>(null);
   const [fanProfileLoading, setFanProfileLoading] = useState(false);
@@ -1640,6 +1645,7 @@ export function FourBasedChatThread({
     setMessagesHasMore(false);
     messagesHasMoreRef.current = false;
     setMessageSenders({});
+    setMessageUnsends({});
     setFanProfile(null);
     setDraft('');
     setSkipOutgoingTranslate(false);
@@ -1665,6 +1671,19 @@ export function FourBasedChatThread({
       .then((result) => {
         if (threadKeyRef.current !== `${creatorId}:${chatId}`) return;
         setMessageSenders(result.senders || {});
+      })
+      .catch(() => {
+        // best-effort
+      });
+    void getMessageUnsends({
+      creatorId,
+      chatId,
+      platform: '4based',
+      limit: 500,
+    })
+      .then((result) => {
+        if (threadKeyRef.current !== `${creatorId}:${chatId}`) return;
+        setMessageUnsends(result.unsends || {});
       })
       .catch(() => {
         // best-effort
@@ -1880,16 +1899,24 @@ export function FourBasedChatThread({
   async function handleDeleteMessage(messageId: string) {
     if (!isPersistedFourBasedMessageId(messageId) || deletingMessageId) return;
     const ok = await confirm({
-      title: 'Delete message',
-      message: 'Delete this message?',
-      confirmLabel: 'Delete',
+      title: 'Unsend message',
+      message: 'Unsend this message? It will remain visible in DomX for audit.',
+      confirmLabel: 'Unsend',
       variant: 'danger',
     });
     if (!ok) return;
+    const existing = messages.find((m) => m._id === messageId);
+    const originalText =
+      typeof existing?.message === 'string' ? existing.message.trim() : '';
+    const messageSentAt =
+      typeof existing?.created_at === 'string' ? existing.created_at : null;
     setDeletingMessageId(messageId);
     setDeleteError(null);
     try {
-      const result = await deleteFourBasedMessage(creatorId, chatId, messageId);
+      const result = await deleteFourBasedMessage(creatorId, chatId, messageId, {
+        originalText,
+        messageSentAt,
+      });
       const deletedIds =
         Array.isArray(result.message?.deleted_user_ids) &&
         result.message.deleted_user_ids.length > 0
@@ -1902,6 +1929,27 @@ export function FourBasedChatThread({
         file_stack: null,
         file_stack_id: null,
       };
+      if (result.unsend) {
+        setMessageUnsends((prev) => ({
+          ...prev,
+          [messageId]: {
+            originalText: result.unsend!.originalText || originalText,
+            unsentByUserName: result.unsend!.unsentByUserName || user?.name || 'Unknown',
+            unsentAt: result.unsend!.unsentAt || new Date().toISOString(),
+            messageSentAt: result.unsend!.messageSentAt || messageSentAt,
+          },
+        }));
+      } else if (user?.name) {
+        setMessageUnsends((prev) => ({
+          ...prev,
+          [messageId]: {
+            originalText,
+            unsentByUserName: user.name,
+            unsentAt: new Date().toISOString(),
+            messageSentAt,
+          },
+        }));
+      }
       setMessages((prev) =>
         prev.map((m) => {
           if (m._id !== messageId) return m;
@@ -1919,7 +1967,7 @@ export function FourBasedChatThread({
         chatId,
         message: {
           ...updated,
-          created_at: updated.created_at || messages.find((m) => m._id === messageId)?.created_at,
+          created_at: updated.created_at || existing?.created_at,
           user_id: updated.user_id || providerUserId || undefined,
         },
       });
@@ -2562,6 +2610,9 @@ export function FourBasedChatThread({
             mine && !deleted && isPersistedFourBasedMessageId(msg._id);
           const deleting = deletingMessageId === msg._id;
           const localKey = typeof msg.local_id === 'string' ? msg.local_id : '';
+          const unsendInfo = msg._id ? messageUnsends[msg._id] : undefined;
+          const unsentBy = unsendInfo?.unsentByUserName;
+          const unsentOriginalText = (unsendInfo?.originalText || '').trim();
           const sentBy = mine
             ? messageSenders[`4based:${msg._id}`] ||
               (localKey ? messageSenders[localKey] : undefined) ||
@@ -2615,8 +2666,8 @@ export function FourBasedChatThread({
                       onClick={() => void handleDeleteMessage(msg._id)}
                       disabled={deleting}
                       className="opacity-0 group-hover/msg:opacity-100 focus:opacity-100 p-1 rounded-md text-gray-500 dark:text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
-                      title="Delete message"
-                      aria-label="Delete message"
+                      title="Unsend message"
+                      aria-label="Unsend message"
                     >
                       {deleting ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -2628,14 +2679,25 @@ export function FourBasedChatThread({
                 )}
                 {deleted ? (
                   <div
-                    className={`rounded-2xl px-4 py-3 text-sm shadow-sm backdrop-blur-sm italic flex items-center gap-2 ${
+                    className={`rounded-2xl px-4 py-3 text-sm shadow-sm backdrop-blur-sm flex flex-col gap-1.5 ${
                       mine
                         ? 'bg-4based-600/70 text-white/90 chat-bubble-out'
                         : 'bg-gray-100/80 dark:bg-zinc-800/80 border border-gray-200 dark:border-zinc-700/50 text-gray-500 dark:text-zinc-400 chat-bubble-in'
                     }`}
                   >
-                    <Ban className="w-4 h-4 shrink-0 opacity-80" />
-                    <span>Message deleted</span>
+                    <div className="italic flex items-center gap-2">
+                      <Ban className="w-4 h-4 shrink-0 opacity-80" />
+                      <span>Message unsent</span>
+                    </div>
+                    {unsentOriginalText ? (
+                      <p
+                        className={`text-xs whitespace-pre-wrap break-words ${
+                          mine ? 'text-white/70' : 'text-gray-400 dark:text-zinc-500'
+                        }`}
+                      >
+                        {unsentOriginalText}
+                      </p>
+                    ) : null}
                   </div>
                 ) : hasMedia || ppvLabel ? (
                   <div
@@ -2788,9 +2850,14 @@ export function FourBasedChatThread({
                   <span className="text-[10px] text-gray-400 dark:text-zinc-600">
                     {formatTime(msg.created_at)}
                   </span>
-                  {sentBy && (
+                  {sentBy && !deleted && (
                     <div className="px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-zinc-900/90 border border-gray-200 dark:border-zinc-800 text-[9px] font-medium text-gray-500 dark:text-zinc-400 shadow-sm">
                       Sent by {sentBy}
+                    </div>
+                  )}
+                  {deleted && unsentBy && (
+                    <div className="px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-zinc-900/90 border border-gray-200 dark:border-zinc-800 text-[9px] font-medium text-gray-500 dark:text-zinc-400 shadow-sm">
+                      Unsent by {unsentBy}
                     </div>
                   )}
                 </div>

@@ -1364,6 +1364,31 @@ export async function getMessagingDashboardSenders(filters: {
   );
 }
 
+export interface MessageUnsendRecord {
+  originalText: string;
+  unsentByUserName: string;
+  unsentAt: string | null;
+  messageSentAt: string | null;
+}
+
+export async function getMessageUnsends(filters: {
+  creatorId: string;
+  chatId: string;
+  platform: 'maloum' | '4based';
+  limit?: number;
+}): Promise<{ unsends: Record<string, MessageUnsendRecord> }> {
+  const params = new URLSearchParams();
+  params.set('creatorId', filters.creatorId);
+  params.set('chatId', filters.chatId);
+  params.set('platform', filters.platform);
+  if (filters.limit != null) {
+    params.set('limit', String(filters.limit));
+  }
+  return request<{ unsends: Record<string, MessageUnsendRecord> }>(
+    `/api/messaging-dashboard/unsends?${params.toString()}`
+  );
+}
+
 export interface MaloumFanPpvEntry {
   id: string;
   maloumMessageId: string | null;
@@ -1887,12 +1912,21 @@ export async function sendFourBasedMessage(
 export async function deleteFourBasedMessage(
   creatorId: string,
   chatId: string,
-  messageId: string
-): Promise<{ ok: boolean; message?: FourBasedMessage }> {
+  messageId: string,
+  options: { originalText?: string; messageSentAt?: string | null } = {}
+): Promise<{
+  ok: boolean;
+  message?: FourBasedMessage;
+  unsend?: MessageUnsendRecord & { platformMessageId: string };
+}> {
   return request(
     `/api/creators/${creatorId}/4based/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`,
     {
       method: 'DELETE',
+      body: JSON.stringify({
+        originalText: options.originalText || '',
+        messageSentAt: options.messageSentAt || null,
+      }),
     }
   );
 }
@@ -2698,14 +2732,23 @@ export async function deleteMaloumMessage(
   creatorId: string,
   chatId: string,
   messageId: string,
-  options: { deleteTextOnly?: boolean } = {}
-): Promise<{ ok: boolean }> {
+  options: {
+    deleteTextOnly?: boolean;
+    originalText?: string;
+    messageSentAt?: string | null;
+  } = {}
+): Promise<{
+  ok: boolean;
+  unsend?: MessageUnsendRecord & { platformMessageId: string };
+}> {
   return request(
     `/api/creators/${creatorId}/maloum/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`,
     {
       method: 'POST',
       body: JSON.stringify({
         deleteTextOnly: Boolean(options.deleteTextOnly),
+        originalText: options.originalText || '',
+        messageSentAt: options.messageSentAt || null,
       }),
     }
   );
