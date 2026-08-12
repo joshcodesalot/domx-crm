@@ -51,7 +51,7 @@ import {
   getMessageUnsends,
   getMessagingDashboardSenders,
   listMaloumChats,
-  listMaloumVaultFolders,
+  listAllMaloumVaultFolders,
   listMaloumVaultMedia,
   listMaloumVaultSent,
   listVaultMediaNotes,
@@ -381,20 +381,6 @@ function nearScrollEnd(
   const remaining =
     target.scrollHeight - target.scrollTop - target.clientHeight;
   return remaining <= thresholdPx;
-}
-
-function mergeVaultFolders(
-  prev: MaloumVaultFolder[],
-  incoming: MaloumVaultFolder[]
-): MaloumVaultFolder[] {
-  const seen = new Set(prev.map((f) => f._id));
-  const next = [...prev];
-  for (const folder of incoming) {
-    if (!folder?._id || seen.has(folder._id)) continue;
-    seen.add(folder._id);
-    next.push(folder);
-  }
-  return next;
 }
 
 function mergeVaultMediaItems(
@@ -1042,12 +1028,11 @@ export function MaloumChatThread({
   const [appliedScriptId, setAppliedScriptId] = useState<string | null>(null);
   const [scriptsRefreshKey, setScriptsRefreshKey] = useState(0);
   const [vaultFolders, setVaultFolders] = useState<MaloumVaultFolder[]>([]);
-  const [vaultFoldersNext, setVaultFoldersNext] = useState<number | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [vaultItems, setVaultItems] = useState<MaloumVaultMediaItem[]>([]);
   const [vaultMediaNext, setVaultMediaNext] = useState<number | null>(null);
+  const [vaultFoldersLoading, setVaultFoldersLoading] = useState(false);
   const [vaultLoading, setVaultLoading] = useState(false);
-  const [loadingMoreFolders, setLoadingMoreFolders] = useState(false);
   const [loadingMoreMedia, setLoadingMoreMedia] = useState(false);
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [selectedVaultItems, setSelectedVaultItems] = useState<MaloumVaultMediaItem[]>(
@@ -1092,9 +1077,7 @@ export function MaloumChatThread({
   const nearBottomRef = useRef(true);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const messagesNextRef = useRef<string | null>(null);
-  const loadingMoreFoldersRef = useRef(false);
   const loadingMoreMediaRef = useRef(false);
-  const vaultFoldersNextRef = useRef<number | null>(null);
   const vaultMediaNextRef = useRef<number | null>(null);
   /** Maloum is EUR-only in the chatter UI. */
   const currency = 'EUR';
@@ -1497,60 +1480,18 @@ export function MaloumChatThread({
     [vaultPickMode]
   );
 
-  const loadVaultFolders = useCallback(
-    async (opts?: { append?: boolean; next?: number | null }) => {
-      const append = Boolean(opts?.append);
-      if (append) {
-        if (
-          loadingMoreFoldersRef.current ||
-          opts?.next == null ||
-          !Number.isFinite(opts.next)
-        ) {
-          return;
-        }
-        loadingMoreFoldersRef.current = true;
-        setLoadingMoreFolders(true);
-      } else {
-        setVaultLoading(true);
-      }
-      setVaultError(null);
-      try {
-        const result = await listMaloumVaultFolders(creatorId, {
-          limit: 15,
-          next: append && opts?.next != null ? opts.next : undefined,
-        });
-        const folders = result.folders || [];
-        const next =
-          typeof result.next === 'number' && Number.isFinite(result.next)
-            ? result.next
-            : null;
-        vaultFoldersNextRef.current = next;
-        setVaultFoldersNext(next);
-        setVaultFolders((prev) =>
-          append ? mergeVaultFolders(prev, folders) : folders
-        );
-        if (!append) {
-          setSelectedFolderId((prev) => prev || folders[0]?._id || null);
-        }
-      } catch (err) {
-        setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
-      } finally {
-        if (append) {
-          loadingMoreFoldersRef.current = false;
-          setLoadingMoreFolders(false);
-        } else {
-          setVaultLoading(false);
-        }
-      }
-    },
-    [creatorId]
-  );
-
-  const loadMoreVaultFolders = useCallback(() => {
-    const next = vaultFoldersNextRef.current;
-    if (next == null) return;
-    void loadVaultFolders({ append: true, next });
-  }, [loadVaultFolders]);
+  const loadVaultFolders = useCallback(async () => {
+    setVaultFoldersLoading(true);
+    setVaultError(null);
+    try {
+      const result = await listAllMaloumVaultFolders(creatorId);
+      setVaultFolders(result.folders || []);
+    } catch (err) {
+      setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
+    } finally {
+      setVaultFoldersLoading(false);
+    }
+  }, [creatorId]);
 
   const vaultFanId = partnerId(chat) || undefined;
 
@@ -1631,9 +1572,13 @@ export function MaloumChatThread({
     setVaultOpen(true);
     setVaultTypeFilter('all');
     setVaultSentFilter('all');
+    setSelectedFolderId(null);
+    setVaultItems([]);
+    setVaultNotes({});
+    setVaultError(null);
+    vaultMediaNextRef.current = null;
+    setVaultMediaNext(null);
     setVaultFolders([]);
-    vaultFoldersNextRef.current = null;
-    setVaultFoldersNext(null);
     await loadVaultFolders();
   }, [loadVaultFolders]);
 
@@ -1643,9 +1588,13 @@ export function MaloumChatThread({
     setVaultOpen(true);
     setVaultTypeFilter('all');
     setVaultSentFilter('all');
+    setSelectedFolderId(null);
+    setVaultItems([]);
+    setVaultNotes({});
+    setVaultError(null);
+    vaultMediaNextRef.current = null;
+    setVaultMediaNext(null);
     setVaultFolders([]);
-    vaultFoldersNextRef.current = null;
-    setVaultFoldersNext(null);
     await loadVaultFolders();
   }, [loadVaultFolders]);
 
@@ -1703,16 +1652,6 @@ export function MaloumChatThread({
     if (!vaultOpen || !selectedFolderId) return;
     void loadVaultMedia({ folderId: selectedFolderId });
   }, [vaultOpen, selectedFolderId, loadVaultMedia]);
-
-  const handleVaultFoldersScroll = useCallback(
-    (event: UIEvent<HTMLElement>, axis: 'vertical' | 'horizontal' = 'vertical') => {
-      if (!nearScrollEnd(event.currentTarget, 80, axis)) return;
-      const next = vaultFoldersNextRef.current;
-      if (next == null) return;
-      void loadVaultFolders({ append: true, next });
-    },
-    [loadVaultFolders]
-  );
 
   const handleVaultMediaScroll = useCallback(
     (event: UIEvent<HTMLElement>) => {
@@ -2711,13 +2650,15 @@ export function MaloumChatThread({
             </div>
 
             <div className="flex flex-1 overflow-hidden min-h-0">
-              <div
-                className="w-48 sm:w-56 border-r border-gray-200 dark:border-zinc-800/60 bg-gray-100/40 dark:bg-zinc-900/20 p-3 overflow-y-auto hidden md:block shrink-0"
-                onScroll={(e) => handleVaultFoldersScroll(e, 'vertical')}
-              >
+              <div className="w-48 sm:w-56 border-r border-gray-200 dark:border-zinc-800/60 bg-gray-100/40 dark:bg-zinc-900/20 p-3 overflow-y-auto hidden md:block shrink-0">
                 <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-3 px-2">
                   Folders
                 </h4>
+                {vaultFoldersLoading && vaultFolders.length === 0 && (
+                  <div className="flex justify-center py-6">
+                    <Loader2 className="w-5 h-5 animate-spin text-gray-500 dark:text-zinc-400" />
+                  </div>
+                )}
                 <ul className="space-y-1">
                   {vaultFolders.map((folder) => {
                     const active = selectedFolderId === folder._id;
@@ -2745,23 +2686,10 @@ export function MaloumChatThread({
                     );
                   })}
                 </ul>
-                {vaultFoldersNext != null && (
-                  <button
-                    type="button"
-                    onClick={loadMoreVaultFolders}
-                    disabled={loadingMoreFolders}
-                    className="w-full mt-2 py-2 text-xs font-medium text-domx-600 dark:text-domx-400 hover:underline disabled:opacity-40"
-                  >
-                    {loadingMoreFolders ? 'Loading…' : 'Load more'}
-                  </button>
-                )}
               </div>
 
               <div className="flex-1 flex flex-col min-w-0">
-                <div
-                  className="p-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0 md:hidden"
-                  onScroll={(e) => handleVaultFoldersScroll(e, 'horizontal')}
-                >
+                <div className="p-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0 md:hidden">
                   {vaultFolders.map((folder) => {
                     const folderLabel = friendlyVaultFolderName(folder);
                     return (
@@ -2780,16 +2708,6 @@ export function MaloumChatThread({
                       </button>
                     );
                   })}
-                  {vaultFoldersNext != null && (
-                    <button
-                      type="button"
-                      onClick={loadMoreVaultFolders}
-                      disabled={loadingMoreFolders}
-                      className="shrink-0 self-center px-3 py-1.5 text-xs font-medium text-domx-600 dark:text-domx-400 hover:underline disabled:opacity-40 whitespace-nowrap"
-                    >
-                      {loadingMoreFolders ? 'Loading…' : 'Load more'}
-                    </button>
-                  )}
                 </div>
                 <div className="p-3 border-b border-gray-200 dark:border-zinc-800/60 flex gap-2 overflow-x-auto shrink-0">
                   {(
@@ -2848,7 +2766,7 @@ export function MaloumChatThread({
                   className="flex-1 overflow-y-auto p-4"
                   onScroll={handleVaultMediaScroll}
                 >
-                  {vaultLoading && vaultItems.length === 0 && (
+                  {vaultLoading && vaultItems.length === 0 && selectedFolderId && (
                     <div className="flex justify-center py-12">
                       <Loader2 className="w-6 h-6 animate-spin text-gray-500 dark:text-zinc-400" />
                     </div>
@@ -2858,11 +2776,12 @@ export function MaloumChatThread({
                   )}
                   {!vaultLoading &&
                     !vaultError &&
+                    !vaultFoldersLoading &&
                     filteredVaultItems.length === 0 && (
                       <p className="text-sm text-gray-500 dark:text-zinc-500">
                         {selectedFolderId
                           ? 'No media in this folder.'
-                          : 'Vault is empty.'}
+                          : 'Select a folder to browse media.'}
                       </p>
                     )}
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">

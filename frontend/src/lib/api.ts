@@ -3526,6 +3526,35 @@ export async function listMaloumVaultFolders(
   );
 }
 
+export async function listAllMaloumVaultFolders(
+  creatorId: string,
+  options: { query?: string; pageSize?: number } = {}
+): Promise<{
+  folders: MaloumVaultFolder[];
+  providerUserId: string | null;
+}> {
+  const pageSize = options.pageSize ?? 50;
+  const byId = new Map<string, MaloumVaultFolder>();
+  let next: number | undefined;
+  let providerUserId: string | null = null;
+
+  for (;;) {
+    const result = await listMaloumVaultFolders(creatorId, {
+      query: options.query,
+      limit: pageSize,
+      next,
+    });
+    if (result.providerUserId != null) providerUserId = result.providerUserId;
+    for (const folder of result.folders || []) {
+      if (folder._id) byId.set(folder._id, folder);
+    }
+    if (result.next == null || !Number.isFinite(result.next)) break;
+    next = result.next;
+  }
+
+  return { folders: [...byId.values()], providerUserId };
+}
+
 export async function listMaloumVaultMedia(
   creatorId: string,
   folderId: string,
