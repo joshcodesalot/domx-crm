@@ -26,6 +26,7 @@
     "playwright": "^1.61.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "sharp": "^0.35.3",
     "socket.io-client": "^4.8.3",
     "undici": "^8.9.0"
   },

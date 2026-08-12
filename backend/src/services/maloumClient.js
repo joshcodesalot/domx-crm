@@ -1134,6 +1134,107 @@ async function listVaultMedia(creator, folderId, { fanId, limit = 50, next } = {
   return result.data;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isUploadNotApprovedError(err) {
+  const message = String(err?.message || err?.body?.message || err?.body?.error || '');
+  return /not approved/i.test(message);
+}
+
+function uploadStatusFromPayload(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  return String(
+    payload.uploadStatus ||
+      payload.status ||
+      payload.media?.uploadStatus ||
+      payload.media?.media?.uploadStatus ||
+      ''
+  ).toUpperCase();
+}
+
+function findVaultItemByUploadId(items, uploadId) {
+  const id = String(uploadId || '');
+  if (!id) return null;
+  const list = Array.isArray(items) ? items : [];
+  for (const item of list) {
+    const candidate =
+      item?.media?.uploadId ||
+      item?.uploadId ||
+      item?.media?.media?.uploadId ||
+      item?._id ||
+      null;
+    if (candidate && String(candidate) === id) return item;
+  }
+  return null;
+}
+
+async function getUpload(creator, uploadId) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const id = typeof uploadId === 'string' ? uploadId.trim() : '';
+  if (!id) {
+    throw new MaloumApiError('uploadId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'GET',
+    path: `/uploads/${encodeURIComponent(id)}`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function waitForUploadApproved(creator, uploadId, { folderId } = {}) {
+  const id = typeof uploadId === 'string' ? uploadId.trim() : String(uploadId || '');
+  if (!id) {
+    throw new MaloumApiError('uploadId is required', 400);
+  }
+  const deadline = Date.now() + 90_000;
+  const folder = typeof folderId === 'string' ? folderId.trim() : '';
+
+  while (Date.now() < deadline) {
+    let payload = null;
+    try {
+      payload = await getUpload(creator, id);
+    } catch (err) {
+      if (err instanceof MaloumApiError && err.status === 401) throw err;
+      payload = null;
+    }
+
+    let status = uploadStatusFromPayload(payload);
+    if (status !== 'FINISHED' && folder) {
+      try {
+        const media = await listVaultMedia(creator, folder, { limit: 20 });
+        const items = Array.isArray(media?.data)
+          ? media.data
+          : Array.isArray(media)
+            ? media
+            : [];
+        const vaultItem = findVaultItemByUploadId(items, id);
+        if (vaultItem) {
+          payload = vaultItem;
+          status = uploadStatusFromPayload(vaultItem);
+        }
+      } catch (err) {
+        if (err instanceof MaloumApiError && err.status === 401) throw err;
+      }
+    }
+    if (status === 'FINISHED') return payload || { uploadStatus: 'FINISHED' };
+    if (status === 'REJECTED' || status === 'FAILED' || status === 'BLOCKED') {
+      throw new MaloumApiError(`Upload ${status.toLowerCase()}`, 400, payload);
+    }
+
+    await sleep(1500);
+  }
+
+  throw new MaloumApiError(
+    'Timed out waiting for Maloum to approve the upload',
+    504
+  );
+}
+
 function isAllowedMediaUrl(url) {
   if (!url || typeof url !== 'string') return false;
   try {
@@ -1446,6 +1547,9 @@ module.exports = {
   deletePost,
   generateUploadUrl,
   uploadToSignedUrl,
+  getUpload,
+  waitForUploadApproved,
+  isUploadNotApprovedError,
   getMessages,
   markRead,
   getUnreadCount,

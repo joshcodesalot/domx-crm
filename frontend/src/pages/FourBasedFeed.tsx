@@ -89,6 +89,22 @@ function parseHashtags(description: string): string[] {
   return tags;
 }
 
+function stripHashtags(text: string): string {
+  return text
+    .replace(/#[\p{L}\p{N}_]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function reattachHashtags(translated: string, tags: string[]): string {
+  const existing = new Set(
+    parseHashtags(translated).map((tag) => tag.toLowerCase())
+  );
+  const missing = tags.filter((tag) => !existing.has(tag.toLowerCase()));
+  if (missing.length === 0) return translated.trim();
+  return `${translated.trim()} ${missing.map((tag) => `#${tag}`).join(' ')}`.trim();
+}
+
 function pickDefaultFeedFolder(folders: string[]): string | null {
   const feed = folders.find((f) => /feed/i.test(f.trim()));
   return feed || folders[0] || null;
@@ -401,7 +417,13 @@ export default function FourBasedFeed() {
       if (caption && autoTranslateOutgoing) {
         setTranslatingOutgoing(true);
         try {
-          caption = await translateToGerman(caption);
+          const tags = parseHashtags(caption);
+          const body = stripHashtags(caption);
+          if (body) {
+            caption = reattachHashtags(await translateToGerman(body), tags);
+          } else {
+            caption = tags.map((tag) => `#${tag}`).join(' ');
+          }
           setDraft(caption);
         } finally {
           setTranslatingOutgoing(false);

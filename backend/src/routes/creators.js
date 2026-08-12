@@ -3,6 +3,7 @@ const rateLimit = require('express-rate-limit');
 const multer = require('multer');
 const { imageSize } = require('image-size');
 const pool = require('../db/pool');
+const { autoOrientImage } = require('../services/imageOrient');
 
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/authorize');
@@ -5593,12 +5594,27 @@ router.post(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      const post = await maloumClient.createPost(loaded.creator, {
-        caption,
-        categories,
-        public: isPublic,
-        mediaIds,
-      });
+      const deadline = Date.now() + 90_000;
+      let post;
+      for (;;) {
+        try {
+          post = await maloumClient.createPost(loaded.creator, {
+            caption,
+            categories,
+            public: isPublic,
+            mediaIds,
+          });
+          break;
+        } catch (err) {
+          if (
+            !maloumClient.isUploadNotApprovedError(err) ||
+            Date.now() >= deadline
+          ) {
+            throw err;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+      }
       return res.status(201).json({
         post,
         providerUserId: loaded.creator.providerUserId,
@@ -5678,14 +5694,12 @@ router.post(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      let dimensions;
-      try {
-        dimensions = imageSize(req.file.buffer);
-      } catch {
-        return res.status(400).json({ error: 'Could not read image dimensions' });
-      }
-      const width = Number(dimensions?.width);
-      const height = Number(dimensions?.height);
+      const oriented = await autoOrientImage(
+        req.file.buffer,
+        req.file.mimetype || 'image/jpeg'
+      );
+      const width = Number(oriented.width);
+      const height = Number(oriented.height);
       if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
         return res.status(400).json({ error: 'Invalid image dimensions' });
       }
@@ -5709,9 +5723,13 @@ router.post(
       await maloumClient.uploadToSignedUrl(
         proxyUrl,
         uploadUrl,
-        req.file.buffer,
-        req.file.mimetype || 'application/octet-stream'
+        oriented.buffer,
+        oriented.mimeType || req.file.mimetype || 'application/octet-stream'
       );
+
+      await maloumClient.waitForUploadApproved(loaded.creator, String(uploadId), {
+        folderId,
+      });
 
       return res.status(201).json({
         uploadId: String(uploadId),

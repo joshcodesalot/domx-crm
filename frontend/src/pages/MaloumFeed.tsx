@@ -66,6 +66,38 @@ function readStoredBoolean(key: string, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
+function parseHashtags(description: string): string[] {
+  const tags: string[] = [];
+  const seen = new Set<string>();
+  const re = /#([\p{L}\p{N}_]+)/gu;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(description)) !== null) {
+    const tag = String(match[1] || '').trim();
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+function stripHashtags(text: string): string {
+  return text
+    .replace(/#[\p{L}\p{N}_]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function reattachHashtags(translated: string, tags: string[]): string {
+  const existing = new Set(
+    parseHashtags(translated).map((tag) => tag.toLowerCase())
+  );
+  const missing = tags.filter((tag) => !existing.has(tag.toLowerCase()));
+  if (missing.length === 0) return translated.trim();
+  return `${translated.trim()} ${missing.map((tag) => `#${tag}`).join(' ')}`.trim();
+}
+
 function nearScrollEnd(
   target: HTMLElement,
   thresholdPx = 80,
@@ -465,7 +497,13 @@ export default function MaloumFeed() {
       if (caption && autoTranslateOutgoing) {
         setTranslatingOutgoing(true);
         try {
-          caption = await translateToGerman(caption);
+          const tags = parseHashtags(caption);
+          const body = stripHashtags(caption);
+          if (body) {
+            caption = reattachHashtags(await translateToGerman(body), tags);
+          } else {
+            caption = tags.map((tag) => `#${tag}`).join(' ');
+          }
           setDraft(caption);
         } finally {
           setTranslatingOutgoing(false);
@@ -852,7 +890,7 @@ export default function MaloumFeed() {
                   {translatingOutgoing
                     ? 'Translating to German…'
                     : postPhase === 'uploading'
-                      ? 'Uploading photo…'
+                      ? 'Uploading photo and waiting for approval…'
                       : 'Creating post…'}
                 </p>
               )}
