@@ -39,6 +39,7 @@ mac:
         - arm64
   artifactName: DomX-CRM-${version}-${arch}.${ext}
   category: public.app-category.business
+  identity: null
 
 nsis:
   oneClick: false
