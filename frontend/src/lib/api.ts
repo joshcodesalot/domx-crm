@@ -1609,6 +1609,17 @@ export interface FourBasedFileStack {
   [key: string]: unknown;
 }
 
+export interface FourBasedFeedPost extends FourBasedFileStack {
+  description?: string;
+  tag?: string[];
+  created_at?: string;
+  likes_count?: number;
+  comment_count?: number;
+  comments_count?: number;
+  private?: boolean;
+  categories?: string[];
+}
+
 export interface FourBasedMessage {
   _id: string;
   chat_id?: string;
@@ -2304,6 +2315,89 @@ export async function getFourBasedProfile(
   return request(`/api/creators/${creatorId}/4based/profile`);
 }
 
+export async function listFourBasedFeedPosts(
+  creatorId: string,
+  options: { offset?: number; limit?: number } = {}
+): Promise<{
+  posts: FourBasedFeedPost[];
+  hasMore: boolean;
+  offset: number;
+  limit: number;
+  providerUserId: string;
+}> {
+  const params = new URLSearchParams();
+  if (options.offset != null) params.set('offset', String(options.offset));
+  if (options.limit != null) params.set('limit', String(options.limit));
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/4based/feed${query ? `?${query}` : ''}`
+  );
+}
+
+export async function createFourBasedFeedPost(
+  creatorId: string,
+  payload: {
+    vaultId: string;
+    vaultGuid?: string;
+    description?: string;
+  }
+): Promise<{ post: FourBasedFeedPost; providerUserId: string }> {
+  return request(`/api/creators/${creatorId}/4based/feed`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteFourBasedFeedPost(
+  creatorId: string,
+  postId: string
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/4based/feed/${encodeURIComponent(postId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export async function uploadFourBasedFeedPhoto(
+  creatorId: string,
+  formData: FormData
+): Promise<{
+  post: FourBasedFeedPost;
+  width: number;
+  height: number;
+  providerUserId: string;
+}> {
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const response = await fetch(
+    `${API_URL}/api/creators/${creatorId}/4based/feed/uploads/photo`,
+    {
+      method: 'POST',
+      headers,
+      body: formData,
+    }
+  );
+  const data = await response.json().catch(() => ({}));
+  if (isDomxAuthFailure(response.status, (data as { error?: string }).error) && token) {
+    clearToken();
+    window.dispatchEvent(new CustomEvent('domx:session-expired'));
+  }
+  if (!response.ok) {
+    throw new ApiError((data as { error?: string }).error || 'Upload failed', {
+      status: response.status,
+    });
+  }
+  return data as {
+    post: FourBasedFeedPost;
+    width: number;
+    height: number;
+    providerUserId: string;
+  };
+}
+
 export async function getFourBasedUser(
   creatorId: string,
   userId: string
@@ -2944,8 +3038,22 @@ export async function getMaloumUserProfile(
 export interface MaloumFeedPost {
   _id: string;
   publishedAt?: string;
+  createdAt?: string;
   caption?: string;
   commentCount?: number;
+  likeCount?: number;
+  public?: boolean;
+  categories?: Array<{ _id?: string; name?: string; type?: string }>;
+  media?: MaloumMediaAsset[];
+  thumbnail?: MaloumMediaAsset;
+  [key: string]: unknown;
+}
+
+export interface MaloumCategory {
+  _id: string;
+  name: string;
+  type?: string;
+  createdAt?: string;
   [key: string]: unknown;
 }
 
@@ -2967,6 +3075,97 @@ export async function listMaloumUserPosts(
       query ? `?${query}` : ''
     }`
   );
+}
+
+export async function listMaloumMyPosts(
+  creatorId: string,
+  options: { limit?: number; next?: string } = {}
+): Promise<{
+  posts: MaloumFeedPost[];
+  next: string | null;
+  providerUserId: string | null;
+}> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.next) params.set('next', options.next);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/maloum/posts/me${query ? `?${query}` : ''}`
+  );
+}
+
+export async function listMaloumCategories(
+  creatorId: string
+): Promise<{
+  categories: MaloumCategory[];
+  providerUserId: string | null;
+}> {
+  return request(`/api/creators/${creatorId}/maloum/categories`);
+}
+
+export async function createMaloumPost(
+  creatorId: string,
+  payload: {
+    caption?: string;
+    categories: string[];
+    public?: boolean;
+    mediaIds: string[];
+  }
+): Promise<{ post: MaloumFeedPost; providerUserId: string | null }> {
+  return request(`/api/creators/${creatorId}/maloum/posts`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteMaloumPost(
+  creatorId: string,
+  postId: string
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/maloum/posts/${encodeURIComponent(postId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export async function uploadMaloumFeedPhoto(
+  creatorId: string,
+  formData: FormData
+): Promise<{
+  uploadId: string;
+  width: number;
+  height: number;
+  providerUserId: string | null;
+}> {
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const response = await fetch(
+    `${API_URL}/api/creators/${creatorId}/maloum/uploads/photo`,
+    {
+      method: 'POST',
+      headers,
+      body: formData,
+    }
+  );
+  const data = await response.json().catch(() => ({}));
+  if (isDomxAuthFailure(response.status, (data as { error?: string }).error) && token) {
+    clearToken();
+    window.dispatchEvent(new CustomEvent('domx:session-expired'));
+  }
+  if (!response.ok) {
+    throw new ApiError((data as { error?: string }).error || 'Upload failed', {
+      status: response.status,
+    });
+  }
+  return data as {
+    uploadId: string;
+    width: number;
+    height: number;
+    providerUserId: string | null;
+  };
 }
 
 export interface MaloumPostComment {

@@ -530,6 +530,160 @@ async function listPostComments(creator, postId, { limit = 15, next } = {}) {
   return result.data;
 }
 
+async function listMyPosts(creator, { limit = 15, next } = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const result = await requestJson({
+    method: 'GET',
+    path: `/posts/me${buildQuery({ limit, next })}`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function listCategories(creator) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const result = await requestJson({
+    method: 'GET',
+    path: '/categories',
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function createPost(
+  creator,
+  { caption, categories, public: isPublic = true, mediaIds } = {}
+) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const ids = Array.isArray(mediaIds)
+    ? mediaIds.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  if (ids.length !== 1) {
+    throw new MaloumApiError('Exactly one mediaId is required', 400);
+  }
+  const cats = Array.isArray(categories)
+    ? categories.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  if (cats.length === 0) {
+    throw new MaloumApiError('At least one category is required', 400);
+  }
+  if (cats.length > 3) {
+    throw new MaloumApiError('At most 3 categories are allowed', 400);
+  }
+  const text = typeof caption === 'string' ? caption.trim() : '';
+  const result = await requestJson({
+    method: 'POST',
+    path: '/posts',
+    proxyUrl,
+    accessToken,
+    timezone,
+    body: {
+      caption: text,
+      categories: cats,
+      public: isPublic !== false,
+      mediaIds: ids,
+    },
+  });
+  return result.data;
+}
+
+async function deletePost(creator, postId) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!postId) {
+    throw new MaloumApiError('postId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'DELETE',
+    path: `/posts/${encodeURIComponent(postId)}`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
+async function generateUploadUrl(creator, { width, height, folderId } = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const folder = typeof folderId === 'string' ? folderId.trim() : '';
+  if (!folder) {
+    throw new MaloumApiError('folderId is required', 400);
+  }
+  const w = Number(width);
+  const h = Number(height);
+  if (!Number.isFinite(w) || w <= 0 || !Number.isFinite(h) || h <= 0) {
+    throw new MaloumApiError('width and height are required', 400);
+  }
+  const result = await requestJson({
+    method: 'POST',
+    path: '/uploads/generate-upload-url',
+    proxyUrl,
+    accessToken,
+    timezone,
+    body: {
+      width: Math.round(w),
+      height: Math.round(h),
+      folderId: folder,
+    },
+  });
+  return result.data;
+}
+
+async function uploadToSignedUrl(proxyUrl, uploadUrl, buffer, contentType) {
+  if (!uploadUrl || typeof uploadUrl !== 'string') {
+    throw new MaloumApiError('uploadUrl is required', 400);
+  }
+  if (!buffer || !buffer.length) {
+    throw new MaloumApiError('file buffer is required', 400);
+  }
+  let parsed;
+  try {
+    parsed = new URL(uploadUrl);
+  } catch {
+    throw new MaloumApiError('Invalid upload URL', 400);
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new MaloumApiError('Invalid upload URL', 400);
+  }
+  if (
+    parsed.hostname !== 'storage.googleapis.com' &&
+    !parsed.hostname.endsWith('.storage.googleapis.com')
+  ) {
+    throw new MaloumApiError('Disallowed upload URL host', 400);
+  }
+
+  const dispatcher = createDispatcher(proxyUrl);
+  let response;
+  try {
+    response = await undiciFetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'content-type': contentType || 'application/octet-stream',
+        'content-length': String(buffer.length),
+        'user-agent': USER_AGENT,
+        origin: APP_ORIGIN,
+        referer: `${APP_ORIGIN}/`,
+      },
+      body: buffer,
+      dispatcher,
+    });
+  } catch (err) {
+    throw proxyFailureError(err);
+  }
+
+  if (response.status < 200 || response.status >= 300) {
+    const text = await response.text().catch(() => '');
+    throw new MaloumApiError(
+      `Upload failed (${response.status})${text ? `: ${text.slice(0, 200)}` : ''}`,
+      response.status >= 400 && response.status < 600 ? response.status : 502
+    );
+  }
+  return { ok: true, status: response.status };
+}
+
 async function createChatList(creator, name) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   const trimmed = typeof name === 'string' ? name.trim() : '';
@@ -1286,6 +1440,12 @@ module.exports = {
   getUserProfile,
   listUserPosts,
   listPostComments,
+  listMyPosts,
+  listCategories,
+  createPost,
+  deletePost,
+  generateUploadUrl,
+  uploadToSignedUrl,
   getMessages,
   markRead,
   getUnreadCount,

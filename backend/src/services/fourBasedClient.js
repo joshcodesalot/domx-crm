@@ -1,12 +1,15 @@
 const { randomUUID } = require('crypto');
-const { ProxyAgent, fetch: undiciFetch } = require('undici');
+const { ProxyAgent, fetch: undiciFetch, FormData } = require('undici');
 
 const REST_BASE = 'https://rest.4based.com/api/1.0';
 const REST_BASE_V2 = 'https://rest.4based.com/api/2.0';
 const MEDIA_BASE = 'https://media.4based.com';
+const STORAGE_BASE = 'https://storage.4based.com/api/1.0';
 const APP_VERSION = '10.3.0.17';
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36';
+/** Upload chunk size used by 4based upload worker (8 MiB). */
+const UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
 
 /** Default audience filters for mass messages (HAR). */
 const MASS_MESSAGE_DEFAULT_FILTER = [
@@ -1045,6 +1048,307 @@ async function getCoinPackages(creator) {
   return result.data;
 }
 
+function parseHashtags(description) {
+  if (!description || typeof description !== 'string') return [];
+  const tags = [];
+  const seen = new Set();
+  const re = /#([\p{L}\p{N}_]+)/gu;
+  let match;
+  while ((match = re.exec(description)) !== null) {
+    const tag = String(match[1] || '').trim();
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+async function listMyFeedPosts(creator, { offset = 0, limit = 24 } = {}) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const safeLimit = Math.min(Math.max(Number(limit) || 24, 1), 100);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const sort = encodeURIComponent(JSON.stringify({ created_at: 'desc' }));
+  const result = await requestJson({
+    url:
+      `${REST_BASE}/user/${providerUserId}/file-stack` +
+      `?offset=${safeOffset}&limit=${safeLimit}` +
+      `&categories=media&sort=${sort}&with_source=true` +
+      `&is_subscription_item=false`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  const items = Array.isArray(result.data)
+    ? result.data
+    : Array.isArray(result.data?.items)
+      ? result.data.items
+      : result.data
+        ? [result.data]
+        : [];
+  const moreHeader =
+    result.headers?.get?.('x-more') ||
+    result.headers?.get?.('X-More') ||
+    null;
+  const hasMore =
+    moreHeader === 'true' ||
+    moreHeader === '1' ||
+    items.length >= safeLimit;
+  return { items, hasMore, offset: safeOffset, limit: safeLimit };
+}
+
+async function deleteFeedPost(creator, postId) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  if (!postId) {
+    throw new FourBasedApiError('postId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'DELETE',
+    url: `${REST_BASE}/user/${providerUserId}/file-stack/${encodeURIComponent(postId)}`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  return result.data;
+}
+
+async function createTransfer(
+  creator,
+  {
+    width,
+    height,
+    description = '',
+    fileName,
+    folder,
+    fileType = 'image',
+    guid,
+    private: isPrivate = false,
+    price = 0,
+    isSubscriptionItem = false,
+    isTeaser = false,
+    tags,
+  } = {}
+) {
+  const { token, resource, cookies, proxyUrl } = authContext(creator);
+  const w = Number(width);
+  const h = Number(height);
+  if (!Number.isFinite(w) || w <= 0 || !Number.isFinite(h) || h <= 0) {
+    throw new FourBasedApiError('width and height are required', 400);
+  }
+  const transferGuid = guid || randomUUID();
+  const caption = typeof description === 'string' ? description : '';
+  const tagList = Array.isArray(tags) ? tags : parseHashtags(caption);
+  const type =
+    fileType === 'video' ? 'video' : fileType === 'image' ? 'image' : 'image';
+  const exIf = {
+    categories: ['media', 'vault', type],
+    private: Boolean(isPrivate),
+    description: caption,
+    name: fileName || `upload.${type === 'video' ? 'mp4' : 'jpg'}`,
+    tag: tagList,
+    price: Number(price) || 0,
+    is_subscription_item: Boolean(isSubscriptionItem),
+    is_teaser: Boolean(isTeaser),
+  };
+  if (typeof folder === 'string' && folder.trim()) {
+    exIf.belongs_to_folders = [folder.trim()];
+  }
+
+  const result = await requestJson({
+    method: 'POST',
+    url: `${REST_BASE}/transfer`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+    body: {
+      object_count: 1,
+      transfer: [
+        {
+          width: Math.round(w),
+          height: Math.round(h),
+          exIf,
+          guid: transferGuid,
+          position: 0,
+        },
+      ],
+    },
+  });
+
+  const transferList = Array.isArray(result.data?.transfer)
+    ? result.data.transfer
+    : null;
+  const entry = transferList?.[0] || null;
+  const transferId = entry?._id || result.data?._id || null;
+  if (!transferId) {
+    throw new FourBasedApiError(
+      '4based transfer response missing transferId',
+      502,
+      result.data
+    );
+  }
+
+  return {
+    transferId: String(transferId),
+    guid: entry?.guid || transferGuid,
+    uploadUrl: entry?.uploadUrl || result.data?.uploadUrl || null,
+    raw: result.data,
+  };
+}
+
+async function uploadFeedPhotoToStorage(
+  creator,
+  {
+    transferId,
+    guid,
+    buffer,
+    fileName,
+    mimeType,
+    exIf,
+    position = 0,
+  } = {}
+) {
+  const { providerUserId, token, resource, proxyUrl } = authContext(creator);
+  if (!transferId) {
+    throw new FourBasedApiError('transferId is required', 400);
+  }
+  if (!guid) {
+    throw new FourBasedApiError('guid is required', 400);
+  }
+  if (!buffer || !buffer.length) {
+    throw new FourBasedApiError('file buffer is required', 400);
+  }
+
+  const dispatcher = createDispatcher(proxyUrl);
+  const url = `${STORAGE_BASE}/user/${providerUserId}/file-stack`;
+  const fileSize = buffer.length;
+  const chunkCount = Math.max(1, Math.ceil(fileSize / UPLOAD_CHUNK_SIZE));
+  const type = mimeType || 'application/octet-stream';
+  const name = fileName || 'upload.jpg';
+  let lastParsed = null;
+
+  for (let chunkId = 0; chunkId < chunkCount; chunkId++) {
+    const start = chunkId * UPLOAD_CHUNK_SIZE;
+    const end = Math.min(start + UPLOAD_CHUNK_SIZE, fileSize);
+    const chunk = buffer.subarray(start, end);
+    const form = new FormData();
+    form.append(
+      'chunk',
+      new Blob([chunk], { type }),
+      `${name}_${chunkId}`
+    );
+    form.append('chunkId', String(chunkId));
+    form.append('chunkSizeStart', String(start));
+    form.append('chunkSizeEnd', String(end));
+    form.append('startTime', new Date().toISOString());
+    form.append('chunkCount', String(chunkCount));
+    form.append('fileSize', String(fileSize));
+    form.append('fileType', type);
+    form.append('guid', String(guid));
+    form.append('transferId', String(transferId));
+    form.append('position', String(position));
+    if (exIf && typeof exIf === 'object') {
+      const { thumbnail: _thumbnail, ...safeExIf } = exIf;
+      form.append('exIf', JSON.stringify(safeExIf));
+    }
+
+    const headers = {
+      accept: 'application/json',
+      'user-agent': USER_AGENT,
+      origin: 'https://4based.com',
+      referer: 'https://4based.com/',
+      'x-auth-token': token,
+      'x-auth-resource': resource,
+    };
+
+    let response;
+    try {
+      response = await undiciFetch(url, {
+        method: 'POST',
+        headers,
+        body: form,
+        dispatcher,
+      });
+    } catch (err) {
+      throw proxyFailureError(err);
+    }
+
+    const text = await response.text();
+    const parsed = decodeMaybeBase64Json(text);
+    if (!response.ok) {
+      throw new FourBasedApiError(
+        parsed?.message ||
+          parsed?.error ||
+          `4based storage upload failed (${response.status})`,
+        response.status,
+        parsed
+      );
+    }
+    lastParsed = parsed;
+    if (parsed?.complete) {
+      return parsed;
+    }
+  }
+
+  if (!lastParsed) {
+    throw new FourBasedApiError('4based storage upload returned empty response', 502);
+  }
+  return lastParsed;
+}
+
+async function uploadFeedPhoto(
+  creator,
+  {
+    buffer,
+    width,
+    height,
+    fileName,
+    mimeType,
+    description = '',
+    folder,
+  } = {}
+) {
+  const caption = typeof description === 'string' ? description : '';
+  const tags = parseHashtags(caption);
+  const transfer = await createTransfer(creator, {
+    width,
+    height,
+    description: caption,
+    fileName,
+    folder,
+    fileType: 'image',
+    tags,
+  });
+
+  const exIf = {
+    categories: ['media', 'vault', 'image'],
+    private: false,
+    description: caption,
+    name: fileName || 'upload.jpg',
+    tag: tags,
+    price: 0,
+    is_subscription_item: false,
+    is_teaser: false,
+  };
+  if (typeof folder === 'string' && folder.trim()) {
+    exIf.belongs_to_folders = [folder.trim()];
+  }
+
+  const post = await uploadFeedPhotoToStorage(creator, {
+    transferId: transfer.transferId,
+    guid: transfer.guid,
+    buffer,
+    fileName,
+    mimeType,
+    exIf,
+    position: 0,
+  });
+  return post;
+}
+
 async function createFileStackFromVault(creator, {
   vaultId,
   vaultGuid,
@@ -1052,6 +1356,8 @@ async function createFileStackFromVault(creator, {
   description,
   priceCoins,
   guid,
+  additionalCategories = ['chat_message'],
+  tags,
 } = {}) {
   const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
 
@@ -1084,6 +1390,25 @@ async function createFileStackFromVault(creator, {
     throw new FourBasedApiError('At least one vault item is required', 400);
   }
 
+  const caption = typeof description === 'string' ? description : '';
+  const payload = {
+    vaults: vaultEntries,
+    description: caption,
+    price: Number(priceCoins) || 0,
+    status: 'available',
+    is_subscription_item: false,
+    guid: guid || randomUUID(),
+  };
+
+  if (Array.isArray(additionalCategories)) {
+    payload.additional_categories = additionalCategories;
+  }
+
+  const tagList = Array.isArray(tags) ? tags : parseHashtags(caption);
+  if (tagList.length > 0) {
+    payload.tag = tagList;
+  }
+
   const result = await requestJson({
     method: 'POST',
     url: `${REST_BASE}/user/${providerUserId}/file-stack/`,
@@ -1092,18 +1417,24 @@ async function createFileStackFromVault(creator, {
     token,
     resource,
     body: {
-      vaults_to_file_stack: {
-        vaults: vaultEntries,
-        description: description || '',
-        price: Number(priceCoins) || 0,
-        status: 'available',
-        is_subscription_item: false,
-        additional_categories: ['chat_message'],
-        guid: guid || randomUUID(),
-      },
+      vaults_to_file_stack: payload,
     },
   });
   return result.data;
+}
+
+async function createFeedPostFromVault(
+  creator,
+  { vaultId, vaultGuid, vaults, description } = {}
+) {
+  return createFileStackFromVault(creator, {
+    vaultId,
+    vaultGuid,
+    vaults,
+    description,
+    priceCoins: 0,
+    additionalCategories: [],
+  });
 }
 
 async function sendPpv(creator, chatId, {
@@ -1265,6 +1596,13 @@ module.exports = {
   MASS_MESSAGE_DEFAULT_FILTER,
   getCoinPackages,
   createFileStackFromVault,
+  createFeedPostFromVault,
+  listMyFeedPosts,
+  deleteFeedPost,
+  parseHashtags,
+  createTransfer,
+  uploadFeedPhotoToStorage,
+  uploadFeedPhoto,
   sendPpv,
   fetchMedia,
   sanitizeMediaPath,

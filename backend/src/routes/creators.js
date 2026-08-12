@@ -1,5 +1,7 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const multer = require('multer');
+const { imageSize } = require('image-size');
 const pool = require('../db/pool');
 
 const { authenticate } = require('../middleware/auth');
@@ -37,6 +39,34 @@ const maloumMediaCache = require('../services/maloumMediaCache');
 const { randomUUID } = require('crypto');
 
 const router = express.Router();
+
+const maloumPhotoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter(_req, file, cb) {
+    const ok =
+      typeof file.mimetype === 'string' &&
+      /^image\/(jpeg|jpg|png|webp|gif)$/i.test(file.mimetype);
+    if (!ok) {
+      return cb(new Error('Only JPEG, PNG, WebP, or GIF images are allowed'));
+    }
+    return cb(null, true);
+  },
+});
+
+const fourBasedPhotoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter(_req, file, cb) {
+    const ok =
+      typeof file.mimetype === 'string' &&
+      /^image\/(jpeg|jpg|png|webp|gif)$/i.test(file.mimetype);
+    if (!ok) {
+      return cb(new Error('Only JPEG, PNG, WebP, or GIF images are allowed'));
+    }
+    return cb(null, true);
+  },
+});
 
 const VALID_PLATFORMS = ['maloum', '4based'];
 const VALID_STATUSES = ['connected', 'error', 'pending'];
@@ -4275,6 +4305,194 @@ router.get(
 );
 
 router.get(
+  '/:id/4based/feed',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 24, 100);
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const result = await fourBasedClient.listMyFeedPosts(loaded.creator, {
+        limit,
+        offset,
+      });
+      res.json({
+        posts: result.items || [],
+        hasMore: Boolean(result.hasMore),
+        offset: result.offset,
+        limit: result.limit,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'List 4based feed error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/4based/feed',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    const { vaultId, vaultGuid, description } = req.body || {};
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!vaultId || typeof vaultId !== 'string') {
+      return res.status(400).json({ error: 'vaultId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const post = await fourBasedClient.createFeedPostFromVault(loaded.creator, {
+        vaultId: String(vaultId).trim(),
+        vaultGuid:
+          typeof vaultGuid === 'string' && vaultGuid.trim()
+            ? vaultGuid.trim()
+            : undefined,
+        description: typeof description === 'string' ? description : '',
+      });
+      return res.status(201).json({
+        post,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Create 4based feed post error:');
+    }
+  }
+);
+
+router.delete(
+  '/:id/4based/feed/:postId',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id, postId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!postId) {
+      return res.status(400).json({ error: 'postId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      await fourBasedClient.deleteFeedPost(loaded.creator, postId);
+      return res.json({ ok: true });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Delete 4based feed post error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/4based/feed/uploads/photo',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  (req, res, next) => {
+    fourBasedPhotoUpload.single('file')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message || 'Upload failed' });
+      }
+      return next();
+    });
+  },
+  async (req, res) => {
+    const { id } = req.params;
+    const folder =
+      typeof req.body?.folder === 'string' ? req.body.folder.trim() : '';
+    const description =
+      typeof req.body?.description === 'string' ? req.body.description : '';
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!folder) {
+      return res.status(400).json({ error: 'folder is required' });
+    }
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ error: 'file is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      let dimensions;
+      try {
+        dimensions = imageSize(req.file.buffer);
+      } catch {
+        return res.status(400).json({ error: 'Could not read image dimensions' });
+      }
+      const width = Number(dimensions?.width);
+      const height = Number(dimensions?.height);
+      if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+        return res.status(400).json({ error: 'Invalid image dimensions' });
+      }
+
+      const post = await fourBasedClient.uploadFeedPhoto(loaded.creator, {
+        buffer: req.file.buffer,
+        width,
+        height,
+        fileName: req.file.originalname || 'upload.jpg',
+        mimeType: req.file.mimetype || 'image/jpeg',
+        description,
+        folder,
+      });
+
+      return res.status(201).json({
+        post,
+        width,
+        height,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Upload 4based feed photo error:');
+    }
+  }
+);
+
+router.get(
   '/:id/4based/media',
   async (req, res, next) => {
     // <img>/<video> cannot send Authorization headers; allow ?access_token=
@@ -5270,6 +5488,239 @@ router.get(
       });
     } catch (err) {
       return handleMaloumError(res, err, 'List Maloum user posts error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/posts/me',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const limit = Math.min(Number(req.query.limit) || 15, 50);
+      const next =
+        typeof req.query.next === 'string' && req.query.next.trim()
+          ? req.query.next.trim()
+          : undefined;
+      const result = await maloumClient.listMyPosts(loaded.creator, { limit, next });
+      res.json({
+        next: result?.next ?? null,
+        posts: Array.isArray(result?.data)
+          ? result.data
+          : Array.isArray(result)
+            ? result
+            : [],
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'List Maloum my posts error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/categories',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const result = await maloumClient.listCategories(loaded.creator);
+      const categories = Array.isArray(result)
+        ? result
+        : Array.isArray(result?.data)
+          ? result.data
+          : [];
+      res.json({
+        categories,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'List Maloum categories error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/maloum/posts',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    const { caption, categories, public: isPublic, mediaIds } = req.body || {};
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const post = await maloumClient.createPost(loaded.creator, {
+        caption,
+        categories,
+        public: isPublic,
+        mediaIds,
+      });
+      return res.status(201).json({
+        post,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Create Maloum post error:');
+    }
+  }
+);
+
+router.delete(
+  '/:id/maloum/posts/:postId',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id, postId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!postId) {
+      return res.status(400).json({ error: 'postId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      await maloumClient.deletePost(loaded.creator, postId);
+      return res.json({ ok: true });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Delete Maloum post error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/maloum/uploads/photo',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  (req, res, next) => {
+    maloumPhotoUpload.single('file')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message || 'Upload failed' });
+      }
+      return next();
+    });
+  },
+  async (req, res) => {
+    const { id } = req.params;
+    const folderId =
+      typeof req.body?.folderId === 'string' ? req.body.folderId.trim() : '';
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!folderId) {
+      return res.status(400).json({ error: 'folderId is required' });
+    }
+    if (!req.file?.buffer?.length) {
+      return res.status(400).json({ error: 'file is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      let dimensions;
+      try {
+        dimensions = imageSize(req.file.buffer);
+      } catch {
+        return res.status(400).json({ error: 'Could not read image dimensions' });
+      }
+      const width = Number(dimensions?.width);
+      const height = Number(dimensions?.height);
+      if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+        return res.status(400).json({ error: 'Invalid image dimensions' });
+      }
+
+      const uploadMeta = await maloumClient.generateUploadUrl(loaded.creator, {
+        width,
+        height,
+        folderId,
+      });
+      const uploadId =
+        uploadMeta?.id ||
+        uploadMeta?.uploadId ||
+        uploadMeta?._id ||
+        null;
+      const uploadUrl = uploadMeta?.uploadUrl || uploadMeta?.url || null;
+      if (!uploadId || !uploadUrl) {
+        return res.status(502).json({ error: 'Maloum did not return an upload URL' });
+      }
+
+      const { proxyUrl } = maloumClient.authContext(loaded.creator);
+      await maloumClient.uploadToSignedUrl(
+        proxyUrl,
+        uploadUrl,
+        req.file.buffer,
+        req.file.mimetype || 'application/octet-stream'
+      );
+
+      return res.status(201).json({
+        uploadId: String(uploadId),
+        width,
+        height,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Upload Maloum photo error:');
     }
   }
 );

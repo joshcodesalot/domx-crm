@@ -18,9 +18,11 @@ import ManageStaff from '@/pages/ManageStaff';
 import ChatterMaloum from '@/pages/ChatterMaloum';
 import Chatter4Based from '@/pages/Chatter4Based';
 import MaloumMassMessage from '@/pages/MaloumMassMessage';
+import MaloumFeed from '@/pages/MaloumFeed';
 import MaloumFanScraper from '@/pages/MaloumFanScraper';
 import FourBasedFanScraper from '@/pages/FourBasedFanScraper';
 import FourBasedMassMessage from '@/pages/FourBasedMassMessage';
+import FourBasedFeed from '@/pages/FourBasedFeed';
 import MaloumAiBulkReply from '@/pages/MaloumAiBulkReply';
 import FourBasedAiBulkReply from '@/pages/FourBasedAiBulkReply';
 import MaloumNotifications from '@/pages/MaloumNotifications';
@@ -248,6 +250,7 @@ function AppRoutes() {
               </Route>
               <Route element={<PermissionRoute permission="mass_messages.send" />}>
                 <Route path="/chatter/maloum/mass-message" element={<MaloumMassMessage />} />
+                <Route path="/chatter/maloum/feed" element={<MaloumFeed />} />
                 <Route
                   path="/chatter/maloum/fan-scraper"
                   element={<MaloumFanScraper />}
@@ -256,6 +259,7 @@ function AppRoutes() {
                   path="/chatter/4based/mass-message"
                   element={<FourBasedMassMessage />}
                 />
+                <Route path="/chatter/4based/feed" element={<FourBasedFeed />} />
                 <Route
                   path="/chatter/4based/fan-scraper"
                   element={<FourBasedFanScraper />}

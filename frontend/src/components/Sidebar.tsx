@@ -7,6 +7,7 @@ import {
   LogOut,
   Megaphone,
   MessageSquare,
+  Newspaper,
   PanelsTopLeft,
   ShieldAlert,
   Sparkles,
@@ -117,6 +118,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       | 'chat'
       | 'message-pro'
       | 'mass-message'
+      | 'feed'
       | 'fan-scraper'
       | 'ai-bulk-reply'
       | 'notifications'
@@ -128,6 +130,10 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     }
     if (view === 'mass-message') {
       navigate('/chatter/maloum/mass-message');
+      return;
+    }
+    if (view === 'feed') {
+      navigate('/chatter/maloum/feed');
       return;
     }
     if (view === 'fan-scraper') {
@@ -150,6 +156,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       | 'chat'
       | 'message-pro'
       | 'mass-message'
+      | 'feed'
       | 'fan-scraper'
       | 'ai-bulk-reply'
       | 'notifications'
@@ -161,6 +168,10 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     }
     if (view === 'mass-message') {
       navigate('/chatter/4based/mass-message');
+      return;
+    }
+    if (view === 'feed') {
+      navigate('/chatter/4based/feed');
       return;
     }
     if (view === 'fan-scraper') {
@@ -302,6 +313,17 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                   <button
                     type="button"
                     role="menuitem"
+                    onClick={() => void handleMaloumNavigate('feed')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                  >
+                    <Newspaper className="w-4 h-4 shrink-0" />
+                    Feed
+                  </button>
+                )}
+                {hasPermission('mass_messages.send') && (
+                  <button
+                    type="button"
+                    role="menuitem"
                     onClick={() => void handleMaloumNavigate('fan-scraper')}
                     className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
                   >
@@ -393,6 +415,17 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                   >
                     <Megaphone className="w-4 h-4 shrink-0" />
                     Mass Message
+                  </button>
+                )}
+                {hasPermission('mass_messages.send') && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void handleFourBasedNavigate('feed')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                  >
+                    <Newspaper className="w-4 h-4 shrink-0" />
+                    Feed
                   </button>
                 )}
                 {hasPermission('mass_messages.send') && (
