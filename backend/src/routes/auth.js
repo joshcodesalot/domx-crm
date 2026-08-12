@@ -2,6 +2,9 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
+const { resolveJwtSecret } = require('../services/jwtSecret');
+
+resolveJwtSecret();
 const pool = require('../db/pool');
 const { seedRolesAndPermissions } = require('../db/seed');
 const { authenticate } = require('../middleware/auth');

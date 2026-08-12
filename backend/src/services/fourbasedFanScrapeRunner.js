@@ -247,7 +247,38 @@ function rowToJob(row) {
   };
 }
 
+function abortError() {
+  const err = new Error('ABORTED');
+  err.code = 'ABORTED';
+  return err;
+}
+
 async function saveCheckpoint(motherCreatorId, checkpoint, status) {
+  const payload = JSON.stringify(normalizeCheckpoint(checkpoint));
+  if (status === 'running') {
+    const result = await pool.query(
+      `UPDATE fourbased_fan_scrape_jobs
+       SET checkpoint = $2::jsonb,
+           "updatedAt" = NOW()
+       WHERE "motherCreatorId" = $1
+         AND status = 'running'
+       RETURNING *`,
+      [motherCreatorId, payload]
+    );
+    if (!result.rows[0]) {
+      await pool.query(
+        `UPDATE fourbased_fan_scrape_jobs
+         SET checkpoint = $2::jsonb,
+             "updatedAt" = NOW()
+         WHERE "motherCreatorId" = $1
+           AND status = 'paused'`,
+        [motherCreatorId, payload]
+      );
+      throw abortError();
+    }
+    return rowToJob(result.rows[0]);
+  }
+
   const result = await pool.query(
     `UPDATE fourbased_fan_scrape_jobs
      SET checkpoint = $2::jsonb,
@@ -255,7 +286,7 @@ async function saveCheckpoint(motherCreatorId, checkpoint, status) {
          "updatedAt" = NOW()
      WHERE "motherCreatorId" = $1
      RETURNING *`,
-    [motherCreatorId, JSON.stringify(normalizeCheckpoint(checkpoint)), status || null]
+    [motherCreatorId, payload, status || null]
   );
   return rowToJob(result.rows[0]);
 }
@@ -270,16 +301,12 @@ async function getJobStatus(motherCreatorId) {
 
 async function assertStillRunning(motherCreatorId, generation) {
   const active = activeRuns.get(motherCreatorId);
-  if (!active || active.generation !== generation) {
-    const err = new Error('ABORTED');
-    err.code = 'ABORTED';
-    throw err;
+  if (!active || active.generation !== generation || active.aborted) {
+    throw abortError();
   }
   const status = await getJobStatus(motherCreatorId);
   if (status !== 'running') {
-    const err = new Error('ABORTED');
-    err.code = 'ABORTED';
-    throw err;
+    throw abortError();
   }
 }
 
@@ -410,6 +437,7 @@ async function processFan(creator, job, fan, sourcePostId, cp, senderCreatorId) 
       lastError: null,
     };
   } catch (err) {
+    if (err?.code === 'ABORTED') throw err;
     if (isInteractionRestricted(err)) {
       return { ...cp, skippedFans: cp.skippedFans + 1 };
     }
@@ -555,6 +583,7 @@ async function runImportColdDm(motherCreatorId, job, generation) {
           senderId
         );
       } catch (err) {
+        if (err?.code === 'ABORTED') throw err;
         cp = {
           ...cp,
           failedFans: cp.failedFans + 1,
@@ -856,6 +885,10 @@ async function stopJob(motherCreatorId) {
      RETURNING *`,
     [motherCreatorId]
   );
+  const active = activeRuns.get(motherCreatorId);
+  if (active) {
+    active.aborted = true;
+  }
   return rowToJob(updated.rows[0]);
 }
 

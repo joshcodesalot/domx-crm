@@ -17,6 +17,7 @@ const API_URL = getApiUrl();
 const SESSION_EXPIRED_EVENT = 'domx:session-expired';
 const INITIAL_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30000;
+const AUTH_FAIL_LIMIT = 3;
 
 interface StaffSyncContextValue {
   onSyncEvent: (callback: (event: StaffSyncEvent) => void) => () => void;
@@ -133,6 +134,7 @@ export function StaffSyncProvider({ children }: { children: ReactNode }) {
 
     let cancelled = false;
     let reconnectTimer: number | undefined;
+    let authFailCount = 0;
 
     async function connect() {
       if (cancelled) {
@@ -157,16 +159,21 @@ export function StaffSyncProvider({ children }: { children: ReactNode }) {
           signal: controller.signal,
         });
 
-    if (response.status === 401) {
-          clearToken();
-          window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
-          return;
+        if (response.status === 401) {
+          authFailCount += 1;
+          if (authFailCount >= AUTH_FAIL_LIMIT) {
+            clearToken();
+            window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+            return;
+          }
+          throw new Error('SSE auth failed during reconnect');
         }
 
         if (!response.ok || !response.body) {
           throw new Error(`SSE connection failed (${response.status})`);
         }
 
+        authFailCount = 0;
         reconnectAttemptRef.current = 0;
         const reader = response.body.getReader();
         const decoder = new TextDecoder();

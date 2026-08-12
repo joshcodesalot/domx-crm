@@ -1,5 +1,8 @@
 const jwt = require('jsonwebtoken');
 const { getUserPermissions, getUserById } = require('../services/rbac');
+const { resolveJwtSecret } = require('../services/jwtSecret');
+
+resolveJwtSecret();
 
 const PASSWORD_CHANGE_ALLOWED_PATHS = new Set([
   '/api/auth/me',
@@ -49,8 +52,16 @@ async function authenticate(req, res, next) {
       permissions,
     };
     next();
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired token' });
+  } catch (err) {
+    const jwtError =
+      err?.name === 'JsonWebTokenError' ||
+      err?.name === 'TokenExpiredError' ||
+      err?.name === 'NotBeforeError';
+    if (jwtError) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+    console.error('authenticate error:', err);
+    return res.status(503).json({ error: 'Authentication service unavailable' });
   }
 }
 

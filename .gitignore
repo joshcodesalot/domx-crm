@@ -10,3 +10,4 @@ frontend/release/
 .DS_Store
 Thumbs.db
 *.local
+backend/data/jwt-secret

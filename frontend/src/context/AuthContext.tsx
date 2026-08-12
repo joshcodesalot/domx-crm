@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  ApiError,
   clearToken,
   changePassword as apiChangePassword,
   getMe,
@@ -49,12 +50,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch(() => setNeedsOwnerSetup(false));
 
     const authPromise = token
-      ? getMe()
-          .then(({ user }) => setUser(user))
-          .catch(() => {
-            clearToken();
-            setUser(null);
-          })
+      ? (async () => {
+          const delays = [0, 800, 1600, 3200];
+          for (let i = 0; i < delays.length; i += 1) {
+            if (delays[i]) {
+              await new Promise((resolve) => setTimeout(resolve, delays[i]));
+            }
+            try {
+              const { user } = await getMe();
+              setUser(user);
+              return;
+            } catch (err) {
+              const status = err instanceof ApiError ? err.status : 0;
+              if (status === 401) {
+                clearToken();
+                setUser(null);
+                return;
+              }
+              if (i === delays.length - 1) {
+                setUser(null);
+              }
+            }
+          }
+        })()
       : Promise.resolve();
 
     Promise.all([setupPromise, authPromise]).finally(() => setIsLoading(false));
