@@ -69,7 +69,6 @@ import {
   sendFourBasedMessage,
   sendFourBasedPpv,
   translateToGerman,
-  updateMessagingDashboardPurchased,
   type Creator,
   type CreatorScript,
   type CreatorScriptMediaItem,
@@ -1342,8 +1341,6 @@ export function FourBasedChatThread({
     localStorage.getItem(FAN_PANEL_OPEN_KEY) != null
   );
   const threadKeyRef = useRef(`${creatorId}:${chatId}`);
-  /** Message ids already PATCHed to purchased=true for chat-log sync. */
-  const purchasedSyncedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const el = threadRootRef.current;
@@ -1380,26 +1377,7 @@ export function FourBasedChatThread({
 
   useEffect(() => {
     threadKeyRef.current = `${creatorId}:${chatId}`;
-    purchasedSyncedRef.current.clear();
   }, [creatorId, chatId]);
-
-  function syncSoldPpvToChatLog(messagesList: FourBasedMessage[]) {
-    for (const msg of messagesList) {
-      const id = msg._id;
-      if (!isPersistedFourBasedMessageId(id)) continue;
-      const price = msg.file_stack?.price;
-      if (typeof price !== 'number' || price <= 0) continue;
-      if (!isFourBasedPpvSold(msg.file_stack)) continue;
-      if (purchasedSyncedRef.current.has(id)) continue;
-      purchasedSyncedRef.current.add(id);
-      const priceNet = coinsToDollars(price);
-      void updateMessagingDashboardPurchased(`4based:${id}`, true, priceNet).catch(
-        () => {
-          purchasedSyncedRef.current.delete(id);
-        }
-      );
-    }
-  }
 
   const fan = useMemo(
     () => (chat ? fanFromChat(chat, providerUserId) : EMPTY_FAN),
@@ -1586,7 +1564,6 @@ export function FourBasedChatThread({
               ? mergeFourBasedMessages(prev, chronological)
               : chronological
           );
-          syncSoldPpvToChatLog(chronological);
           if (manualTranslateOnlyIdsRef.current.size === 0) {
             messagesOffsetRef.current = list.length;
             const hasMore = list.length >= MESSAGE_PAGE_LIMIT;

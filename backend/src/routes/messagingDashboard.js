@@ -637,130 +637,63 @@ function fourBasedSendOrderSql(soldAtParam) {
 
 /**
  * Match a 4based sale activity to the original DomX PPV send log row.
- * Strategies: media ids → price+fan+time → single recent unpaid PPV for fan.
+ * Hard match only: media / file-stack ids stored on the send log.
  */
 async function findFourBasedSendRow({
   creatorId,
   fanId,
   vaultFileStackId = null,
   fileStackId = null,
-  priceNet = null,
   soldAt = null,
 } = {}) {
   if (!creatorId || !isValidUuid(creatorId) || !fanId) return null;
+  if (!vaultFileStackId && !fileStackId) return null;
 
   const soldAtIso =
     soldAt && !Number.isNaN(Date.parse(soldAt))
       ? new Date(soldAt).toISOString()
       : new Date().toISOString();
-  const windowStart = new Date(
-    new Date(soldAtIso).getTime() - 14 * 24 * 60 * 60 * 1000
-  ).toISOString();
-  // Allow small clock skew after sale timestamp.
-  const windowEnd = new Date(
-    new Date(soldAtIso).getTime() + 2 * 60 * 60 * 1000
-  ).toISOString();
 
-  // Strategy 1: media / file-stack ids stored on the send log.
-  if (vaultFileStackId || fileStackId) {
-    const values = [creatorId, fanId];
-    const mediaConds = [];
-    let paramIndex = 3;
+  const values = [creatorId, fanId];
+  const mediaConds = [];
+  let paramIndex = 3;
 
-    if (vaultFileStackId) {
-      const vaultId = String(vaultFileStackId);
-      mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
-      values.push(JSON.stringify([{ mediaId: vaultId }]));
-      paramIndex += 1;
-      mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
-      values.push(JSON.stringify([{ vaultFileStackId: vaultId }]));
-      paramIndex += 1;
-      mediaConds.push(`"mediaJson"::text LIKE $${paramIndex}`);
-      values.push(`%${vaultId}%`);
-      paramIndex += 1;
-    }
-
-    if (fileStackId) {
-      const stackId = String(fileStackId);
-      mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
-      values.push(JSON.stringify([{ fileStackId: stackId }]));
-      paramIndex += 1;
-      mediaConds.push(`"mediaJson"::text LIKE $${paramIndex}`);
-      values.push(`%${stackId}%`);
-      paramIndex += 1;
-    }
-
-    values.push(soldAtIso);
-    const soldAtParam = `$${paramIndex}`;
-
-    const byMedia = await pool.query(
-      `SELECT *
-       FROM messaging_dashboard_entries
-       WHERE ${FOURBASED_SEND_ROW_BASE}
-         AND (${mediaConds.join(' OR ')})
-       ${fourBasedSendOrderSql(soldAtParam)}
-       LIMIT 1`,
-      values
-    );
-    if (byMedia.rows[0]) return byMedia.rows[0];
+  if (vaultFileStackId) {
+    const vaultId = String(vaultFileStackId);
+    mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+    values.push(JSON.stringify([{ mediaId: vaultId }]));
+    paramIndex += 1;
+    mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+    values.push(JSON.stringify([{ vaultFileStackId: vaultId }]));
+    paramIndex += 1;
+    mediaConds.push(`"mediaJson"::text LIKE $${paramIndex}`);
+    values.push(`%${vaultId}%`);
+    paramIndex += 1;
   }
 
-  // Strategy 2: same fan + same price within a send window before the sale.
-  const parsedPrice = parsePriceNet(priceNet);
-  if (parsedPrice != null && parsedPrice > 0) {
-    const byPrice = await pool.query(
-      `SELECT *
-       FROM messaging_dashboard_entries
-       WHERE ${FOURBASED_SEND_ROW_BASE}
-         AND "contentType" IN ('chat_product', 'media')
-         AND "priceNet" IS NOT NULL
-         AND ABS("priceNet"::numeric - $3::numeric) < 0.051
-         AND "sentAt" >= $4::timestamptz
-         AND "sentAt" <= $5::timestamptz
-       ${fourBasedSendOrderSql('$6')}
-       LIMIT 1`,
-      [creatorId, fanId, parsedPrice, windowStart, windowEnd, soldAtIso]
-    );
-    if (byPrice.rows[0]) return byPrice.rows[0];
+  if (fileStackId) {
+    const stackId = String(fileStackId);
+    mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+    values.push(JSON.stringify([{ fileStackId: stackId }]));
+    paramIndex += 1;
+    mediaConds.push(`"mediaJson"::text LIKE $${paramIndex}`);
+    values.push(`%${stackId}%`);
+    paramIndex += 1;
   }
 
-  // Strategy 3: exactly one recent unpaid chat PPV for this fan.
-  const unpaid = await pool.query(
+  values.push(soldAtIso);
+  const soldAtParam = `$${paramIndex}`;
+
+  const byMedia = await pool.query(
     `SELECT *
      FROM messaging_dashboard_entries
      WHERE ${FOURBASED_SEND_ROW_BASE}
-       AND "contentType" = 'chat_product'
-       AND purchased = false
-       AND "sentAt" >= $3::timestamptz
-       AND "sentAt" <= $4::timestamptz
-     ORDER BY "sentAt" DESC`,
-    [creatorId, fanId, windowStart, windowEnd]
+       AND (${mediaConds.join(' OR ')})
+     ${fourBasedSendOrderSql(soldAtParam)}
+     LIMIT 1`,
+    values
   );
-  if (unpaid.rows.length === 1) return unpaid.rows[0];
-
-  // Strategy 4: priced unpaid/paid send for fan in window when price unknown,
-  // or single priced send in window (handles missing mediaJson on older logs).
-  if (parsedPrice == null) {
-    const recent = await pool.query(
-      `SELECT *
-       FROM messaging_dashboard_entries
-       WHERE ${FOURBASED_SEND_ROW_BASE}
-         AND "contentType" = 'chat_product'
-         AND "sentAt" >= $3::timestamptz
-         AND "sentAt" <= $4::timestamptz
-         AND (
-           COALESCE("englishMessage", '') <> ''
-           OR COALESCE("mediaCount", 0) > 0
-           OR "priceNet" IS NOT NULL
-         )
-       ${fourBasedSendOrderSql('$5')}
-       LIMIT 2`,
-      [creatorId, fanId, windowStart, windowEnd, soldAtIso]
-    );
-    if (recent.rows.length === 1) return recent.rows[0];
-  }
-
-  return null;
+  return byMedia.rows[0] || null;
 }
 
 /**
@@ -797,7 +730,6 @@ async function repairFourBasedSaleOrphans(creatorId) {
     const match = await findFourBasedSendRow({
       creatorId,
       fanId,
-      priceNet: Number.isFinite(priceNet) ? priceNet : null,
       soldAt: orphan.sentAt || orphan.createdAt || null,
     });
 
@@ -856,6 +788,182 @@ async function deleteFourBasedSaleOrphan(activityId) {
      WHERE "maloumMessageId" = $1`,
     [`4based-sale:${activityId}`]
   );
+}
+
+/** Clear purchased when a 4based chat message is unsent (ledger row kept for audit). */
+async function clearPurchasedForFourBasedMessage(messageId) {
+  if (!messageId || typeof messageId !== 'string') {
+    return { updated: 0 };
+  }
+  const result = await pool.query(
+    `UPDATE messaging_dashboard_entries
+     SET purchased = false,
+         "updatedAt" = NOW()
+     WHERE "maloumMessageId" = $1
+       AND purchased = true
+     RETURNING id`,
+    [`4based:${messageId}`]
+  );
+  return { updated: result.rows.length };
+}
+
+const FOURBASED_REPAIR_SALE_PAGE_SIZE = 100;
+const FOURBASED_REPAIR_SALE_MAX_PAGES = 5;
+
+/**
+ * Repair false 4based Purchased: Yes flags:
+ * 1) unsent send rows → purchased false
+ * 2) hard-match sale activities → re-unlock
+ * 3) purchased chat_product in activity window without hard match → purchased false
+ */
+async function repairFourBasedPurchasedFlags(
+  creatorId,
+  { fetchSalePage = null, seedActivities = null } = {}
+) {
+  const empty = {
+    clearedUnsent: 0,
+    clearedUnverified: 0,
+    reunlocked: 0,
+    activityPages: 0,
+  };
+  if (!creatorId || !isValidUuid(creatorId)) return empty;
+
+  const sales = [];
+  const seenIds = new Set();
+  const pushSales = (list) => {
+    for (const entry of Array.isArray(list) ? list : []) {
+      const type = entry?.type ? String(entry.type) : null;
+      if (type && type !== 'sale') continue;
+      const activityId = entry?._id || entry?.id ? String(entry._id || entry.id) : null;
+      if (!activityId || seenIds.has(activityId)) continue;
+      seenIds.add(activityId);
+      sales.push(entry);
+    }
+  };
+  pushSales(seedActivities);
+
+  let activityPages = 0;
+  if (typeof fetchSalePage === 'function') {
+    for (let page = 0; page < FOURBASED_REPAIR_SALE_MAX_PAGES; page += 1) {
+      const offset = page * FOURBASED_REPAIR_SALE_PAGE_SIZE;
+      let pageRows = [];
+      try {
+        pageRows = await fetchSalePage(offset, FOURBASED_REPAIR_SALE_PAGE_SIZE);
+      } catch (err) {
+        console.warn(
+          '4based sale repair page fetch failed:',
+          err.message || err
+        );
+        break;
+      }
+      const list = Array.isArray(pageRows) ? pageRows : [];
+      activityPages += 1;
+      pushSales(list);
+      if (list.length < FOURBASED_REPAIR_SALE_PAGE_SIZE) break;
+    }
+  } else if (sales.length > 0) {
+    activityPages = 1;
+  }
+
+  const matchedIds = new Set();
+  let reunlocked = 0;
+  let oldestSaleMs = null;
+
+  for (const entry of sales) {
+    const createdAt = activityCreatedAt(entry);
+    if (createdAt) {
+      const ms = Date.parse(createdAt);
+      if (!Number.isNaN(ms) && (oldestSaleMs == null || ms < oldestSaleMs)) {
+        oldestSaleMs = ms;
+      }
+    }
+
+    const fanId = entry?.user_id || entry?.user?._id
+      ? String(entry.user_id || entry.user._id)
+      : null;
+    if (!fanId) continue;
+
+    const vaultFileStackId = entry?.file_stack?.vault_file_stack_id
+      ? String(entry.file_stack.vault_file_stack_id)
+      : null;
+    const fileStackId =
+      entry?.file_stack_id || entry?.file_stack?._id
+        ? String(entry.file_stack_id || entry.file_stack._id)
+        : null;
+    if (!vaultFileStackId && !fileStackId) continue;
+
+    const priceNet = activityAmountDollars(entry);
+    const activityId = entry?._id || entry?.id ? String(entry._id || entry.id) : null;
+    const match = await findFourBasedSendRow({
+      creatorId,
+      fanId,
+      vaultFileStackId,
+      fileStackId,
+      soldAt: createdAt,
+    });
+    if (!match?.maloumMessageId) continue;
+
+    matchedIds.add(String(match.maloumMessageId));
+    const unlocked = await ensureFourBasedSaleUnlocked({
+      maloumMessageId: match.maloumMessageId,
+      priceNet,
+      notificationId: activityId,
+    });
+    if (unlocked.updated) reunlocked += 1;
+    if (activityId) await deleteFourBasedSaleOrphan(activityId);
+  }
+
+  let clearedUnverified = 0;
+  if (oldestSaleMs != null) {
+    const windowStartIso = new Date(oldestSaleMs).toISOString();
+    const matchedList = [...matchedIds];
+    const unverified = await pool.query(
+      `UPDATE messaging_dashboard_entries
+       SET purchased = false,
+           "updatedAt" = NOW()
+       WHERE "creatorId" = $1
+         AND platform = '4based'
+         AND purchased = true
+         AND "contentType" = 'chat_product'
+         AND "maloumMessageId" LIKE '4based:%'
+         AND "maloumMessageId" NOT LIKE '4based-sale:%'
+         AND "maloumMessageId" NOT LIKE '4based-tip:%'
+         AND "sentAt" >= $2::timestamptz
+         AND (
+           cardinality($3::text[]) = 0
+           OR NOT ("maloumMessageId" = ANY($3::text[]))
+         )
+       RETURNING id`,
+      [creatorId, windowStartIso, matchedList]
+    );
+    clearedUnverified = unverified.rows.length;
+  }
+
+  // After re-unlock: force unsent messages back to not purchased (audit row kept).
+  const unsentClear = await pool.query(
+    `UPDATE messaging_dashboard_entries m
+     SET purchased = false,
+         "updatedAt" = NOW()
+     FROM message_unsends u
+     WHERE m."creatorId" = $1
+       AND m.platform = '4based'
+       AND m.purchased = true
+       AND m."maloumMessageId" LIKE '4based:%'
+       AND m."maloumMessageId" NOT LIKE '4based-sale:%'
+       AND m."maloumMessageId" NOT LIKE '4based-tip:%'
+       AND u."creatorId" = m."creatorId"
+       AND u.platform = '4based'
+       AND u."platformMessageId" = substring(m."maloumMessageId" from length('4based:') + 1)
+     RETURNING m.id`,
+    [creatorId]
+  );
+
+  return {
+    clearedUnsent: unsentClear.rows.length,
+    clearedUnverified,
+    reunlocked,
+    activityPages,
+  };
 }
 
 async function logFourBasedSale({
@@ -4510,3 +4618,5 @@ module.exports.logTip = logTip;
 module.exports.processMaloumSaleAndTipNotifications = processMaloumSaleAndTipNotifications;
 module.exports.processFourBasedSaleAndTipNotifications =
   processFourBasedSaleAndTipNotifications;
+module.exports.clearPurchasedForFourBasedMessage = clearPurchasedForFourBasedMessage;
+module.exports.repairFourBasedPurchasedFlags = repairFourBasedPurchasedFlags;

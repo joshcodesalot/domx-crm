@@ -1,9 +1,8 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
 const multer = require('multer');
-const { imageSize } = require('image-size');
 const pool = require('../db/pool');
-const { autoOrientImage } = require('../services/imageOrient');
+const { prepareFeedPhoto } = require('../services/imageOrient');
 
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/authorize');
@@ -3577,6 +3576,20 @@ router.get(
         console.warn('4based sale/tip sync failed:', err.message);
       }
 
+      try {
+        await messagingDashboard.repairFourBasedPurchasedFlags(id, {
+          seedActivities: Array.isArray(saleTipActivities) ? saleTipActivities : [],
+          fetchSalePage: (pageOffset, pageLimit) =>
+            fourBasedClient.listActivities(loaded.creator, {
+              offset: pageOffset,
+              limit: pageLimit,
+              types: 'sale',
+            }),
+        });
+      } catch (err) {
+        console.warn('4based purchased repair failed:', err.message || err);
+      }
+
       res.json(badges);
     } catch (err) {
       return handleFourBasedError(res, err, 'Get 4based badges error:');
@@ -3623,6 +3636,20 @@ router.get(
         await messagingDashboard.processFourBasedSaleAndTipNotifications(id, activities);
       } catch (err) {
         console.warn('4based sale/tip sync failed:', err.message);
+      }
+
+      try {
+        await messagingDashboard.repairFourBasedPurchasedFlags(id, {
+          seedActivities: activities,
+          fetchSalePage: (pageOffset, pageLimit) =>
+            fourBasedClient.listActivities(loaded.creator, {
+              offset: pageOffset,
+              limit: pageLimit,
+              types: 'sale',
+            }),
+        });
+      } catch (err) {
+        console.warn('4based purchased repair failed:', err.message || err);
       }
 
       res.json({
@@ -3901,6 +3928,15 @@ router.delete(
         });
       } catch (auditErr) {
         console.error('Persist 4based message unsend error:', auditErr);
+      }
+
+      try {
+        await messagingDashboard.clearPurchasedForFourBasedMessage(messageId);
+      } catch (clearErr) {
+        console.warn(
+          'Clear 4based purchased on unsend failed:',
+          clearErr.message || clearErr
+        );
       }
 
       return res.json({ ok: true, message, unsend });
@@ -4459,24 +4495,24 @@ router.post(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      let dimensions;
-      try {
-        dimensions = imageSize(req.file.buffer);
-      } catch {
-        return res.status(400).json({ error: 'Could not read image dimensions' });
-      }
-      const width = Number(dimensions?.width);
-      const height = Number(dimensions?.height);
+      const prepared = await prepareFeedPhoto(req.file.buffer, {
+        mimeType: req.file.mimetype || 'image/jpeg',
+        maxEdge: 1440,
+      });
+      const width = Number(prepared.width);
+      const height = Number(prepared.height);
       if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
         return res.status(400).json({ error: 'Invalid image dimensions' });
       }
 
+      const originalName = req.file.originalname || 'upload.jpg';
+      const fileName = originalName.replace(/\.[^.]+$/, '') + '.jpg';
       const post = await fourBasedClient.uploadFeedPhoto(loaded.creator, {
-        buffer: req.file.buffer,
+        buffer: prepared.buffer,
         width,
         height,
-        fileName: req.file.originalname || 'upload.jpg',
-        mimeType: req.file.mimetype || 'image/jpeg',
+        fileName,
+        mimeType: prepared.mimeType || 'image/jpeg',
         description,
         folder,
       });
@@ -5694,12 +5730,11 @@ router.post(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      const oriented = await autoOrientImage(
-        req.file.buffer,
-        req.file.mimetype || 'image/jpeg'
-      );
-      const width = Number(oriented.width);
-      const height = Number(oriented.height);
+      const prepared = await prepareFeedPhoto(req.file.buffer, {
+        mimeType: req.file.mimetype || 'image/jpeg',
+      });
+      const width = Number(prepared.width);
+      const height = Number(prepared.height);
       if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
         return res.status(400).json({ error: 'Invalid image dimensions' });
       }
@@ -5723,8 +5758,8 @@ router.post(
       await maloumClient.uploadToSignedUrl(
         proxyUrl,
         uploadUrl,
-        oriented.buffer,
-        oriented.mimeType || req.file.mimetype || 'application/octet-stream'
+        prepared.buffer,
+        prepared.mimeType || 'image/jpeg'
       );
 
       await maloumClient.waitForUploadApproved(loaded.creator, String(uploadId), {
