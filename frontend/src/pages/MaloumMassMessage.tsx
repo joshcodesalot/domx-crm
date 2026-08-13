@@ -71,6 +71,26 @@ function readStoredBoolean(key: string, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Inclusive random gap between 5000ms and 10000ms. */
+function randomUnsendGapMs(): number {
+  return 5000 + Math.floor(Math.random() * 5001);
+}
+
+async function sleepAbortable(
+  ms: number,
+  shouldAbort: () => boolean
+): Promise<void> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (shouldAbort()) return;
+    await sleep(Math.min(200, end - Date.now()));
+  }
+}
+
 function broadcastThumbUrl(
   creatorId: string,
   media: { _id?: string; thumbnailUrl?: string; url?: string }
@@ -199,6 +219,14 @@ export default function MaloumMassMessage() {
   const [broadcastsLoading, setBroadcastsLoading] = useState(false);
   const [broadcastsError, setBroadcastsError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkUnsending, setBulkUnsending] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{
+    done: number;
+    total: number;
+    currentId: string | null;
+  }>({ done: 0, total: 0, currentId: null });
+  const bulkAbortRef = useRef(false);
 
   const [chatLists, setChatLists] = useState<MaloumChatListItem[]>([]);
   const [chatListsNext, setChatListsNext] = useState<string | null>(null);
@@ -341,6 +369,10 @@ export default function MaloumMassMessage() {
     setVaultOpen(false);
     setPpvPrice('');
     setSendError(null);
+    setSelectedIds(new Set());
+    bulkAbortRef.current = true;
+    setBulkUnsending(false);
+    setBulkProgress({ done: 0, total: 0, currentId: null });
     if (selectedCreatorId) {
       void loadBroadcasts();
       void loadChatLists();
@@ -503,7 +535,7 @@ export default function MaloumMassMessage() {
 
   const handleRevoke = useCallback(
     async (broadcastId: string) => {
-      if (!selectedCreatorId || revokingId) return;
+      if (!selectedCreatorId || revokingId || bulkUnsending) return;
       const ok = await confirm({
         title: 'Delete mass message',
         message: 'Delete this mass message? Recipients will no longer see it.',
@@ -517,14 +549,120 @@ export default function MaloumMassMessage() {
         setBroadcasts((prev) =>
           prev.map((b) => (b._id === broadcastId ? { ...b, isRevoked: true } : b))
         );
+        setSelectedIds((prev) => {
+          if (!prev.has(broadcastId)) return prev;
+          const next = new Set(prev);
+          next.delete(broadcastId);
+          return next;
+        });
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Failed to delete mass message');
       } finally {
         setRevokingId(null);
       }
     },
-    [selectedCreatorId, revokingId, confirm, toast]
+    [selectedCreatorId, revokingId, bulkUnsending, confirm, toast]
   );
+
+  const toggleSelectedId = useCallback((id: string) => {
+    if (!id) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAllVisible = useCallback(() => {
+    setSelectedIds(
+      new Set(
+        broadcasts
+          .filter((b) => !b.isRevoked && b._id)
+          .map((b) => b._id)
+      )
+    );
+  }, [broadcasts]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+  }, []);
+
+  const stopBulkUnsend = useCallback(() => {
+    bulkAbortRef.current = true;
+  }, []);
+
+  const handleBulkUnsend = useCallback(async () => {
+    if (!selectedCreatorId || bulkUnsending || revokingId) return;
+    const ids = broadcasts
+      .filter((b) => !b.isRevoked && b._id && selectedIds.has(b._id))
+      .map((b) => b._id);
+    if (ids.length === 0) return;
+
+    const ok = await confirm({
+      title: 'Delete selected',
+      message: `Delete ${ids.length} mass message${ids.length === 1 ? '' : 's'}? Each will be deleted with a random 5–10s gap.`,
+      confirmLabel: 'Delete selected',
+      variant: 'danger',
+    });
+    if (!ok) return;
+
+    bulkAbortRef.current = false;
+    setBulkUnsending(true);
+    setBulkProgress({ done: 0, total: ids.length, currentId: null });
+
+    let success = 0;
+    let failed = false;
+    for (let i = 0; i < ids.length; i += 1) {
+      if (bulkAbortRef.current) break;
+      const id = ids[i];
+      setBulkProgress({ done: success, total: ids.length, currentId: id });
+      try {
+        await revokeMaloumBroadcast(selectedCreatorId, id);
+        success += 1;
+        setBroadcasts((prev) =>
+          prev.map((b) => (b._id === id ? { ...b, isRevoked: true } : b))
+        );
+        setSelectedIds((prev) => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        setBulkProgress({ done: success, total: ids.length, currentId: id });
+      } catch (err) {
+        failed = true;
+        toast.error(
+          err instanceof Error ? err.message : 'Failed to delete mass message'
+        );
+        break;
+      }
+      if (i < ids.length - 1 && !bulkAbortRef.current) {
+        await sleepAbortable(randomUnsendGapMs(), () => bulkAbortRef.current);
+      }
+    }
+
+    setBulkUnsending(false);
+    setBulkProgress({ done: 0, total: 0, currentId: null });
+
+    if (success === ids.length) {
+      toast.success(
+        `Deleted ${success} mass message${success === 1 ? '' : 's'}`
+      );
+    } else if (success > 0 && failed) {
+      toast.error(`Deleted ${success} of ${ids.length}`);
+    } else if (success > 0 && bulkAbortRef.current) {
+      toast.success(`Stopped after deleting ${success} of ${ids.length}`);
+    }
+  }, [
+    selectedCreatorId,
+    bulkUnsending,
+    revokingId,
+    broadcasts,
+    selectedIds,
+    confirm,
+    toast,
+  ]);
 
   const handleSend = useCallback(async () => {
     if (!selectedCreatorId || sending || translatingOutgoing) return;
@@ -693,16 +831,64 @@ export default function MaloumMassMessage() {
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => void loadBroadcasts()}
-                className="p-2 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800"
-                title="Refresh"
-              >
-                <RefreshCw
-                  className={`w-4 h-4 ${broadcastsLoading ? 'animate-spin' : ''}`}
-                />
-              </button>
+              <div className="flex items-center gap-2 flex-wrap justify-end">
+                {(selectedIds.size > 0 || bulkUnsending) && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {bulkUnsending ? (
+                      <>
+                        <span className="text-xs text-gray-500 dark:text-zinc-400">
+                          Deleting {bulkProgress.done}/{bulkProgress.total}…
+                        </span>
+                        <button
+                          type="button"
+                          onClick={stopBulkUnsend}
+                          className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800"
+                        >
+                          Stop
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-xs text-gray-500 dark:text-zinc-400">
+                          {selectedIds.size} selected
+                        </span>
+                        <button
+                          type="button"
+                          onClick={selectAllVisible}
+                          className="px-2.5 py-1.5 text-xs font-medium rounded-lg text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800"
+                        >
+                          Select all
+                        </button>
+                        <button
+                          type="button"
+                          onClick={clearSelection}
+                          className="px-2.5 py-1.5 text-xs font-medium rounded-lg text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800"
+                        >
+                          Clear
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleBulkUnsend()}
+                          className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25"
+                        >
+                          Delete selected
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void loadBroadcasts()}
+                  disabled={bulkUnsending}
+                  className="p-2 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 disabled:opacity-40"
+                  title="Refresh"
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 ${broadcastsLoading ? 'animate-spin' : ''}`}
+                  />
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
@@ -723,17 +909,34 @@ export default function MaloumMassMessage() {
                 const media = broadcast.content?.media || [];
                 const price = Number(broadcast.content?.price) || 0;
                 const when = formatRelativeTime(broadcast.processedAt);
+                const canSelect = !broadcast.isRevoked && Boolean(broadcast._id);
+                const isSelected = canSelect && selectedIds.has(broadcast._id);
+                const isBulkCurrent =
+                  bulkUnsending && bulkProgress.currentId === broadcast._id;
                 return (
                   <article
                     key={broadcast._id}
                     className={`rounded-2xl border p-4 ${
                       broadcast.isRevoked
                         ? 'border-gray-200 dark:border-zinc-800 bg-gray-50/60 dark:bg-zinc-900/40 opacity-70'
-                        : 'border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40'
+                        : isSelected
+                          ? 'border-domx-500/40 bg-domx-600/5 dark:bg-domx-600/10'
+                          : 'border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40'
                     }`}
                   >
                     <div className="flex items-start justify-between gap-3 mb-2">
-                      <div className="min-w-0 flex-1">
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
+                        {canSelect && (
+                          <input
+                            type="checkbox"
+                            className="mt-1 shrink-0"
+                            checked={isSelected}
+                            disabled={bulkUnsending}
+                            onChange={() => toggleSelectedId(broadcast._id)}
+                            aria-label="Select mass message"
+                          />
+                        )}
+                        <div className="min-w-0 flex-1">
                         <p className="text-sm text-gray-900 dark:text-white whitespace-pre-wrap break-words">
                           {broadcast.content?.text || (
                             <span className="text-gray-400 italic">No text</span>
@@ -746,6 +949,9 @@ export default function MaloumMassMessage() {
                           )}
                           {broadcast.isRevoked && (
                             <span className="text-red-400 font-medium">Deleted</span>
+                          )}
+                          {isBulkCurrent && (
+                            <span className="text-amber-500 font-medium">Deleting…</span>
                           )}
                           {price > 0 && (
                             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-domx-600/15 text-domx-600 dark:text-domx-400 font-semibold">
@@ -774,16 +980,21 @@ export default function MaloumMassMessage() {
                             })()}
                           </p>
                         )}
+                        </div>
                       </div>
                       {!broadcast.isRevoked && (
                         <button
                           type="button"
                           onClick={() => void handleRevoke(broadcast._id)}
-                          disabled={revokingId === broadcast._id}
+                          disabled={
+                            revokingId === broadcast._id ||
+                            bulkUnsending ||
+                            Boolean(revokingId)
+                          }
                           className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-500/10 disabled:opacity-40"
                           title="Delete mass message"
                         >
-                          {revokingId === broadcast._id ? (
+                          {revokingId === broadcast._id || isBulkCurrent ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
                           ) : (
                             <Trash2 className="w-4 h-4" />

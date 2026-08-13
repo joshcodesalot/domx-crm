@@ -107,6 +107,26 @@ function massMessageId(msg: FourBasedMassMessage): string {
   return String(msg._id || msg.id || '');
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Inclusive random gap between 5000ms and 10000ms. */
+function randomUnsendGapMs(): number {
+  return 5000 + Math.floor(Math.random() * 5001);
+}
+
+async function sleepAbortable(
+  ms: number,
+  shouldAbort: () => boolean
+): Promise<void> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (shouldAbort()) return;
+    await sleep(Math.min(200, end - Date.now()));
+  }
+}
+
 function mediaThumbSrc(
   creatorId: string,
   providerUserId: string | null,
@@ -184,6 +204,14 @@ export default function FourBasedMassMessage() {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkUnsending, setBulkUnsending] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<{
+    done: number;
+    total: number;
+    currentId: string | null;
+  }>({ done: 0, total: 0, currentId: null });
+  const bulkAbortRef = useRef(false);
 
   const [userLists, setUserLists] = useState<FourBasedUserList[]>([]);
   const [listsOffset, setListsOffset] = useState(0);
@@ -357,6 +385,10 @@ export default function FourBasedMassMessage() {
     setReceiverCount(null);
     setProviderUserId(null);
     setHistoryTab('sent');
+    setSelectedIds(new Set());
+    bulkAbortRef.current = true;
+    setBulkUnsending(false);
+    setBulkProgress({ done: 0, total: 0, currentId: null });
     if (selectedCreatorId) {
       void loadMessages({ tab: 'sent' });
       void loadUserLists();
@@ -383,6 +415,7 @@ export default function FourBasedMassMessage() {
     setMessages([]);
     setMessagesOffset(0);
     setMessagesHasMore(false);
+    setSelectedIds(new Set());
     void loadMessages({ tab: historyTab });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyTab]);
@@ -622,7 +655,7 @@ export default function FourBasedMassMessage() {
 
   const handleDelete = useCallback(
     async (messageId: string) => {
-      if (!selectedCreatorId || deletingId) return;
+      if (!selectedCreatorId || deletingId || bulkUnsending) return;
       const ok = await confirm({
         title: 'Unsend mass message',
         message: 'Unsend this mass message? Recipients will no longer see it.',
@@ -634,14 +667,119 @@ export default function FourBasedMassMessage() {
       try {
         await deleteFourBasedMassMessage(selectedCreatorId, messageId);
         setMessages((prev) => prev.filter((m) => massMessageId(m) !== messageId));
+        setSelectedIds((prev) => {
+          if (!prev.has(messageId)) return prev;
+          const next = new Set(prev);
+          next.delete(messageId);
+          return next;
+        });
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Failed to delete mass message');
       } finally {
         setDeletingId(null);
       }
     },
-    [selectedCreatorId, deletingId, confirm, toast]
+    [selectedCreatorId, deletingId, bulkUnsending, confirm, toast]
   );
+
+  const toggleSelectedId = useCallback((id: string) => {
+    if (!id) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAllVisible = useCallback(() => {
+    if (historyTab !== 'sent') return;
+    setSelectedIds(
+      new Set(messages.map((msg) => massMessageId(msg)).filter(Boolean))
+    );
+  }, [historyTab, messages]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+  }, []);
+
+  const stopBulkUnsend = useCallback(() => {
+    bulkAbortRef.current = true;
+  }, []);
+
+  const handleBulkUnsend = useCallback(async () => {
+    if (!selectedCreatorId || bulkUnsending || deletingId) return;
+    if (historyTab !== 'sent') return;
+    const ids = messages
+      .map((msg) => massMessageId(msg))
+      .filter((id) => id && selectedIds.has(id));
+    if (ids.length === 0) return;
+
+    const ok = await confirm({
+      title: 'Unsend selected',
+      message: `Unsend ${ids.length} mass message${ids.length === 1 ? '' : 's'}? Each will be deleted with a random 5–10s gap.`,
+      confirmLabel: 'Unsend selected',
+      variant: 'danger',
+    });
+    if (!ok) return;
+
+    bulkAbortRef.current = false;
+    setBulkUnsending(true);
+    setBulkProgress({ done: 0, total: ids.length, currentId: null });
+
+    let success = 0;
+    let failed = false;
+    for (let i = 0; i < ids.length; i += 1) {
+      if (bulkAbortRef.current) break;
+      const id = ids[i];
+      setBulkProgress({ done: success, total: ids.length, currentId: id });
+      try {
+        await deleteFourBasedMassMessage(selectedCreatorId, id);
+        success += 1;
+        setMessages((prev) => prev.filter((m) => massMessageId(m) !== id));
+        setSelectedIds((prev) => {
+          if (!prev.has(id)) return prev;
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        setBulkProgress({ done: success, total: ids.length, currentId: id });
+      } catch (err) {
+        failed = true;
+        toast.error(
+          err instanceof Error ? err.message : 'Failed to delete mass message'
+        );
+        break;
+      }
+      if (i < ids.length - 1 && !bulkAbortRef.current) {
+        await sleepAbortable(randomUnsendGapMs(), () => bulkAbortRef.current);
+      }
+    }
+
+    setBulkUnsending(false);
+    setBulkProgress({ done: 0, total: 0, currentId: null });
+
+    if (success === ids.length) {
+      toast.success(
+        `Unsent ${success} mass message${success === 1 ? '' : 's'}`
+      );
+    } else if (success > 0 && failed) {
+      toast.error(`Unsent ${success} of ${ids.length}`);
+    } else if (success > 0 && bulkAbortRef.current) {
+      toast.success(
+        `Stopped after unsending ${success} of ${ids.length}`
+      );
+    }
+  }, [
+    selectedCreatorId,
+    bulkUnsending,
+    deletingId,
+    historyTab,
+    messages,
+    selectedIds,
+    confirm,
+    toast,
+  ]);
 
   const handleSend = useCallback(async () => {
     if (!selectedCreatorId || sending || translatingOutgoing) return;
@@ -849,7 +987,52 @@ export default function FourBasedMassMessage() {
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap justify-end">
+                {historyTab === 'sent' && (selectedIds.size > 0 || bulkUnsending) && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {bulkUnsending ? (
+                      <>
+                        <span className="text-xs text-gray-500 dark:text-zinc-400">
+                          Unsending {bulkProgress.done}/{bulkProgress.total}…
+                        </span>
+                        <button
+                          type="button"
+                          onClick={stopBulkUnsend}
+                          className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800"
+                        >
+                          Stop
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-xs text-gray-500 dark:text-zinc-400">
+                          {selectedIds.size} selected
+                        </span>
+                        <button
+                          type="button"
+                          onClick={selectAllVisible}
+                          className="px-2.5 py-1.5 text-xs font-medium rounded-lg text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800"
+                        >
+                          Select all
+                        </button>
+                        <button
+                          type="button"
+                          onClick={clearSelection}
+                          className="px-2.5 py-1.5 text-xs font-medium rounded-lg text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800"
+                        >
+                          Clear
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handleBulkUnsend()}
+                          className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25"
+                        >
+                          Unsend selected
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
                 <div className="inline-flex rounded-lg border border-gray-200 dark:border-zinc-800 p-0.5 bg-gray-50 dark:bg-zinc-900/60">
                   {(
                     [
@@ -861,7 +1044,8 @@ export default function FourBasedMassMessage() {
                       key={tab.id}
                       type="button"
                       onClick={() => setHistoryTab(tab.id)}
-                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                      disabled={bulkUnsending}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors disabled:opacity-40 ${
                         historyTab === tab.id
                           ? 'bg-white dark:bg-zinc-800 text-gray-900 dark:text-white shadow-sm'
                           : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
@@ -874,7 +1058,8 @@ export default function FourBasedMassMessage() {
                 <button
                   type="button"
                   onClick={() => void loadMessages({ tab: historyTab })}
-                  className="p-2 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800"
+                  disabled={bulkUnsending}
+                  className="p-2 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 disabled:opacity-40"
                   title="Refresh"
                 >
                   <RefreshCw
@@ -918,17 +1103,33 @@ export default function FourBasedMassMessage() {
                 const includeNames = (msg.include_user_list || [])
                   .map((listId) => listNameById.get(listId) || listId)
                   .filter(Boolean);
+                const canSelect = historyTab === 'sent' && Boolean(id);
+                const isSelected = canSelect && selectedIds.has(id);
+                const isBulkCurrent = bulkUnsending && bulkProgress.currentId === id;
                 return (
                   <article
                     key={id}
                     className={`rounded-2xl border p-4 ${
                       historyTab === 'unsent'
                         ? 'border-gray-200 dark:border-zinc-800 bg-gray-50/60 dark:bg-zinc-900/40 opacity-70'
-                        : 'border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40'
+                        : isSelected
+                          ? 'border-4based-500/40 bg-4based-500/5 dark:bg-4based-500/10'
+                          : 'border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40'
                     }`}
                   >
                     <div className="flex items-start justify-between gap-3 mb-2">
-                      <div className="min-w-0 flex-1">
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
+                        {canSelect && (
+                          <input
+                            type="checkbox"
+                            className="mt-1 shrink-0"
+                            checked={isSelected}
+                            disabled={bulkUnsending}
+                            onChange={() => toggleSelectedId(id)}
+                            aria-label="Select mass message"
+                          />
+                        )}
+                        <div className="min-w-0 flex-1">
                         <p className="text-sm text-gray-900 dark:text-white whitespace-pre-wrap break-words">
                           {msg.message || (
                             <span className="text-gray-400 italic">No text</span>
@@ -938,6 +1139,9 @@ export default function FourBasedMassMessage() {
                           {when && <span>{when}</span>}
                           {historyTab === 'unsent' && (
                             <span className="text-red-400 font-medium">Unsent</span>
+                          )}
+                          {isBulkCurrent && (
+                            <span className="text-amber-500 font-medium">Unsending…</span>
                           )}
                           {priceCoins > 0 && (
                             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-4based-500/15 text-4based-500 font-semibold">
@@ -957,16 +1161,21 @@ export default function FourBasedMassMessage() {
                             Include: {includeNames.join(', ')}
                           </p>
                         )}
+                        </div>
                       </div>
                       {historyTab === 'sent' && (
                         <button
                           type="button"
                           onClick={() => void handleDelete(id)}
-                          disabled={deletingId === id}
+                          disabled={
+                            deletingId === id ||
+                            bulkUnsending ||
+                            Boolean(deletingId)
+                          }
                           className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-500/10 disabled:opacity-40"
                           title="Unsend mass message"
                         >
-                          {deletingId === id ? (
+                          {deletingId === id || isBulkCurrent ? (
                             <Loader2 className="w-4 h-4 animate-spin" />
                           ) : (
                             <Trash2 className="w-4 h-4" />
