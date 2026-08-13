@@ -27,6 +27,10 @@ export interface MessagingDashboardEntry {
   priceNet: number | null;
   currency: string;
   purchased: boolean;
+  unlockedAt?: string | null;
+  payoutVerified?: boolean;
+  payoutTxnId?: string | null;
+  attributionSource?: string | null;
   chatterSalesTotal: number;
   mediaCount: number;
   pictureCount: number;

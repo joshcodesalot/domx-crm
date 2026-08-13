@@ -769,6 +769,20 @@ async function listNotifications(creator, { limit = 15, next } = {}) {
   return result.data;
 }
 
+/** Payout ledger: CHAT_PRODUCT / TIP / SUBSCRIPTION / PAYOUT rows. */
+async function listTransactionHistory(creator, { limit = 10, next } = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const safeLimit = Math.min(Math.max(Number(limit) || 10, 1), 50);
+  const result = await requestJson({
+    method: 'GET',
+    path: `/transactions/history${buildQuery({ limit: safeLimit, next })}`,
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
 async function markNotificationsReadAll(creator) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
@@ -1555,6 +1569,7 @@ module.exports = {
   getUnreadCount,
   getNotificationsUnreadCount,
   listNotifications,
+  listTransactionHistory,
   markNotificationsReadAll,
   countUnreadChatsFromList,
   countUnreadNotificationsFromList,

@@ -130,6 +130,14 @@ function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
         >
           {entry.purchased ? 'Yes' : 'No'}
         </span>
+        {entry.purchased && entry.unlockedAt ? (
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 whitespace-nowrap">
+            {(() => {
+              const unlocked = formatSentTime(entry.unlockedAt);
+              return `${unlocked.date} ${unlocked.time}`;
+            })()}
+          </div>
+        ) : null}
       </td>
       <td className="px-4 py-3 align-top">
         {mediaLabel === '--' ? (

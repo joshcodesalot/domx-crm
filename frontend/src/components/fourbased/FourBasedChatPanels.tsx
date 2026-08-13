@@ -1214,6 +1214,9 @@ export function FourBasedChatThread({
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>({});
+  const [messageUnlockMeta, setMessageUnlockMeta] = useState<
+    Record<string, { purchased: boolean; unlockedAt: string | null }>
+  >({});
   const [messageUnsends, setMessageUnsends] = useState<
     Record<string, MessageUnsendRecord>
   >({});
@@ -1622,6 +1625,7 @@ export function FourBasedChatThread({
     setMessagesHasMore(false);
     messagesHasMoreRef.current = false;
     setMessageSenders({});
+    setMessageUnlockMeta({});
     setMessageUnsends({});
     setFanProfile(null);
     setDraft('');
@@ -1648,6 +1652,7 @@ export function FourBasedChatThread({
       .then((result) => {
         if (threadKeyRef.current !== `${creatorId}:${chatId}`) return;
         setMessageSenders(result.senders || {});
+        setMessageUnlockMeta(result.unlockMeta || {});
       })
       .catch(() => {
         // best-effort
@@ -2595,6 +2600,26 @@ export function FourBasedChatThread({
               (localKey ? messageSenders[localKey] : undefined) ||
               (msgKey ? messageSenders[msgKey] : undefined)
             : undefined;
+          const unlockInfo =
+            messageUnlockMeta[`4based:${msg._id}`] ||
+            (localKey ? messageUnlockMeta[localKey] : undefined) ||
+            (msgKey ? messageUnlockMeta[msgKey] : undefined);
+          const unlockedLabel =
+            unlockInfo?.purchased && unlockInfo.unlockedAt
+              ? (() => {
+                  try {
+                    const d = new Date(unlockInfo.unlockedAt);
+                    return d.toLocaleString(undefined, {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: 'numeric',
+                      minute: '2-digit',
+                    });
+                  } catch {
+                    return null;
+                  }
+                })()
+              : null;
           // Prefer 900xxx to match native open-pic (often media-public CDN).
           const mediaUrl = deleted ? null : messageMediaUrl(msg, '900xxx.jpg');
           const isVideo = !deleted && isMessageVideo(msg);
@@ -2830,6 +2855,11 @@ export function FourBasedChatThread({
                   {sentBy && !deleted && (
                     <div className="px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-zinc-900/90 border border-gray-200 dark:border-zinc-800 text-[9px] font-medium text-gray-500 dark:text-zinc-400 shadow-sm">
                       Sent by {sentBy}
+                    </div>
+                  )}
+                  {unlockedLabel && !deleted && (
+                    <div className="px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 text-[9px] font-medium text-emerald-700 dark:text-emerald-400 shadow-sm">
+                      Unlocked {unlockedLabel}
                     </div>
                   )}
                   {deleted && unsentBy && (

@@ -240,6 +240,11 @@ export interface MessagingDashboardEntry {
   priceNet: number | null;
   currency: string;
   purchased: boolean;
+  unlockedAt?: string | null;
+  payoutVerified?: boolean;
+  payoutVerifiedAt?: string | null;
+  payoutTxnId?: string | null;
+  attributionSource?: string | null;
   chatterSalesTotal: number;
   mediaCount: number;
   pictureCount: number;
@@ -1352,16 +1357,94 @@ export async function getMessagingDashboardSenders(filters: {
   creatorId: string;
   chatId: string;
   limit?: number;
-}): Promise<{ senders: Record<string, string> }> {
+}): Promise<{
+  senders: Record<string, string>;
+  unlockMeta?: Record<string, { purchased: boolean; unlockedAt: string | null }>;
+}> {
   const params = new URLSearchParams();
   params.set('creatorId', filters.creatorId);
   params.set('chatId', filters.chatId);
   if (filters.limit != null) {
     params.set('limit', String(filters.limit));
   }
-  return request<{ senders: Record<string, string> }>(
-    `/api/messaging-dashboard/senders?${params.toString()}`
-  );
+  return request<{
+    senders: Record<string, string>;
+    unlockMeta?: Record<string, { purchased: boolean; unlockedAt: string | null }>;
+  }>(`/api/messaging-dashboard/senders?${params.toString()}`);
+}
+
+export interface SaleReconciliationEvent {
+  id: string;
+  creatorId: string | null;
+  creatorName: string | null;
+  platform: 'maloum' | '4based';
+  eventType: string;
+  status: string;
+  messagingEntryId: string | null;
+  maloumMessageId: string | null;
+  payoutTxnId: string | null;
+  fanId: string | null;
+  fanUsername: string | null;
+  chatId: string | null;
+  amount: number | null;
+  currency: string | null;
+  unlockedAt: string | null;
+  reason: string | null;
+  detailJson: unknown;
+  recoveredMessageText: string | null;
+  recoveredMediaJson: unknown;
+  resolvedBy: string | null;
+  resolvedAt: string | null;
+  resolution: string | null;
+  createdAt: string;
+}
+
+export async function getSaleReconciliation(filters: {
+  yearMonth?: string;
+  status?: string;
+  platform?: 'maloum' | '4based' | '';
+  creatorId?: string;
+  tab?: 'needs_review' | 'cleared' | 'deleted_imports' | '';
+  page?: number;
+  limit?: number;
+} = {}): Promise<{
+  yearMonth: string;
+  data: SaleReconciliationEvent[];
+  pagination: { page: number; limit: number; total: number };
+}> {
+  const params = new URLSearchParams();
+  if (filters.yearMonth) params.set('yearMonth', filters.yearMonth);
+  if (filters.status) params.set('status', filters.status);
+  if (filters.platform) params.set('platform', filters.platform);
+  if (filters.creatorId) params.set('creatorId', filters.creatorId);
+  if (filters.tab) params.set('tab', filters.tab);
+  if (filters.page != null) params.set('page', String(filters.page));
+  if (filters.limit != null) params.set('limit', String(filters.limit));
+  const q = params.toString();
+  return request(`/api/sale-reconciliation${q ? `?${q}` : ''}`);
+}
+
+export async function resolveSaleReconciliation(
+  id: string,
+  body: {
+    action: 'confirm_false' | 'restore_sale' | 'dismiss' | 'reassign';
+    chatterId?: string;
+  }
+): Promise<{ event: SaleReconciliationEvent }> {
+  return request(`/api/sale-reconciliation/${encodeURIComponent(id)}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function reconcileCreatorPayouts(
+  creatorId: string,
+  yearMonth?: string
+): Promise<Record<string, unknown>> {
+  return request(`/api/creators/${encodeURIComponent(creatorId)}/reconcile-payouts`, {
+    method: 'POST',
+    body: JSON.stringify({ yearMonth }),
+  });
 }
 
 export interface MessageUnsendRecord {

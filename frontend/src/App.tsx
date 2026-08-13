@@ -30,6 +30,7 @@ import FourBasedNotifications from '@/pages/FourBasedNotifications';
 import MessagePro from '@/pages/MessagePro';
 import MessagePro4Based from '@/pages/MessagePro4Based';
 import MessagingDashboard from '@/pages/MessagingDashboard';
+import FalseSalesReview from '@/pages/FalseSalesReview';
 import AnalyticsCharts from '@/pages/AnalyticsCharts';
 import CreatorAnalytics from '@/pages/CreatorAnalytics';
 import AccountSettings from '@/pages/AccountSettings';
@@ -214,6 +215,7 @@ function AppRoutes() {
                   path="/dashboard/creator-analytics"
                   element={<CreatorAnalytics />}
                 />
+                <Route path="/dashboard/false-sales" element={<FalseSalesReview />} />
               </Route>
               <Route element={<PermissionRoute permission="analytics.view" />}>
                 <Route path="/dashboard/messaging" element={<MessagingDashboard />} />

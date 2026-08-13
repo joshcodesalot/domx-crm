@@ -141,6 +141,11 @@ function toDashboardEntry(row) {
     priceNet: row.priceNet != null ? Number(row.priceNet) : null,
     currency: row.currency,
     purchased: row.purchased,
+    unlockedAt: row.unlockedAt || null,
+    payoutVerified: Boolean(row.payoutVerified),
+    payoutVerifiedAt: row.payoutVerifiedAt || null,
+    payoutTxnId: row.payoutTxnId || null,
+    attributionSource: row.attributionSource || null,
     mediaCount: row.mediaCount,
     pictureCount: row.pictureCount,
     videoCount: row.videoCount,
@@ -196,6 +201,7 @@ async function unlockSaleByMessageId({
   maloumMessageId,
   priceNet = null,
   notificationId = null,
+  unlockedAt = null,
 } = {}) {
   if (!maloumMessageId || typeof maloumMessageId !== 'string') {
     return {
@@ -232,16 +238,21 @@ async function unlockSaleByMessageId({
   }
 
   const parsedPriceNet = parsePriceNet(priceNet);
+  const unlockedAtIso =
+    unlockedAt && !Number.isNaN(Date.parse(unlockedAt))
+      ? new Date(unlockedAt).toISOString()
+      : new Date().toISOString();
 
   const result = await pool.query(
     `UPDATE messaging_dashboard_entries
      SET purchased = true,
          "priceNet" = COALESCE("priceNet", $1),
+         "unlockedAt" = COALESCE("unlockedAt", $2::timestamptz),
          "updatedAt" = NOW()
-     WHERE "maloumMessageId" = $2
+     WHERE "maloumMessageId" = $3
        AND purchased = false
      RETURNING *`,
-    [parsedPriceNet, maloumMessageId]
+    [parsedPriceNet, unlockedAtIso, maloumMessageId]
   );
 
   if (result.rows.length === 0) {
@@ -517,6 +528,7 @@ async function processMaloumSaleAndTipNotifications(creatorId, notifications) {
         maloumMessageId: messageId,
         priceNet: entry.net,
         notificationId,
+        unlockedAt: entry.createdAt || null,
       });
       results.push({ type, ...result });
       continue;
@@ -585,6 +597,7 @@ async function backfillEntryPriceNet(maloumMessageId, priceNet, notificationId =
     `UPDATE messaging_dashboard_entries
      SET "priceNet" = COALESCE("priceNet", $1),
          purchased = true,
+         "unlockedAt" = COALESCE("unlockedAt", NOW()),
          "updatedAt" = NOW()
      WHERE "maloumMessageId" = $2
        AND ("priceNet" IS NULL OR purchased = false)
@@ -739,6 +752,7 @@ async function repairFourBasedSaleOrphans(creatorId) {
       maloumMessageId: match.maloumMessageId,
       priceNet: Number.isFinite(priceNet) ? priceNet : null,
       notificationId: activityId,
+      unlockedAt: orphan.unlockedAt || orphan.sentAt || orphan.createdAt || null,
     });
     await deleteFourBasedSaleOrphan(activityId);
     results.push({
@@ -756,11 +770,13 @@ async function ensureFourBasedSaleUnlocked({
   maloumMessageId,
   priceNet = null,
   notificationId = null,
+  unlockedAt = null,
 } = {}) {
   const unlock = await unlockSaleByMessageId({
     maloumMessageId,
     priceNet,
     notificationId,
+    unlockedAt,
   });
 
   if (unlock.updated) return unlock;
@@ -798,6 +814,10 @@ async function clearPurchasedForFourBasedMessage(messageId) {
   const result = await pool.query(
     `UPDATE messaging_dashboard_entries
      SET purchased = false,
+         "unlockedAt" = NULL,
+         "payoutVerified" = false,
+         "payoutVerifiedAt" = NULL,
+         "payoutTxnId" = NULL,
          "updatedAt" = NOW()
      WHERE "maloumMessageId" = $1
        AND purchased = true
@@ -908,6 +928,7 @@ async function repairFourBasedPurchasedFlags(
       maloumMessageId: match.maloumMessageId,
       priceNet,
       notificationId: activityId,
+      unlockedAt: createdAt,
     });
     if (unlocked.updated) reunlocked += 1;
     if (activityId) await deleteFourBasedSaleOrphan(activityId);
@@ -920,6 +941,10 @@ async function repairFourBasedPurchasedFlags(
     const unverified = await pool.query(
       `UPDATE messaging_dashboard_entries
        SET purchased = false,
+           "unlockedAt" = NULL,
+           "payoutVerified" = false,
+           "payoutVerifiedAt" = NULL,
+           "payoutTxnId" = NULL,
            "updatedAt" = NOW()
        WHERE "creatorId" = $1
          AND platform = '4based'
@@ -943,6 +968,10 @@ async function repairFourBasedPurchasedFlags(
   const unsentClear = await pool.query(
     `UPDATE messaging_dashboard_entries m
      SET purchased = false,
+         "unlockedAt" = NULL,
+         "payoutVerified" = false,
+         "payoutVerifiedAt" = NULL,
+         "payoutTxnId" = NULL,
          "updatedAt" = NOW()
      FROM message_unsends u
      WHERE m."creatorId" = $1
@@ -1071,6 +1100,8 @@ async function logFourBasedSale({
       "priceNet",
       currency,
       purchased,
+      "unlockedAt",
+      "attributionSource",
       "mediaCount",
       "pictureCount",
       "videoCount",
@@ -1081,7 +1112,7 @@ async function logFourBasedSale({
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
       $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-      $21, $22, $23, $24, $25, $26, $27, $28
+      $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
     )
     ON CONFLICT ("maloumMessageId") DO NOTHING
     RETURNING *`,
@@ -1107,6 +1138,8 @@ async function logFourBasedSale({
       parsedPriceNet,
       'USD',
       true,
+      sentAt,
+      'orphan_sale',
       0,
       0,
       0,
@@ -1193,6 +1226,7 @@ async function processFourBasedSaleAndTipNotifications(creatorId, activities) {
           maloumMessageId: match.maloumMessageId,
           priceNet,
           notificationId: activityId,
+          unlockedAt: createdAt,
         });
         // Drop orphan stub so Chatter Sales does not double-count.
         await deleteFourBasedSaleOrphan(activityId);
@@ -1402,7 +1436,8 @@ router.get(
     );
 
     const result = await pool.query(
-      `SELECT "maloumMessageId", "optimisticMessageId", "chatterName"
+      `SELECT "maloumMessageId", "optimisticMessageId", "chatterName",
+              purchased, "unlockedAt", "contentType"
        FROM messaging_dashboard_entries
        WHERE "creatorId" = $1 AND "chatId" = $2
        ORDER BY "sentAt" DESC
@@ -1411,6 +1446,7 @@ router.get(
     );
 
     const senders = {};
+    const unlockMeta = {};
     for (const row of result.rows) {
       if (row.maloumMessageId && row.chatterName) {
         senders[row.maloumMessageId] = row.chatterName;
@@ -1418,9 +1454,25 @@ router.get(
       if (row.optimisticMessageId && row.chatterName) {
         senders[row.optimisticMessageId] = row.chatterName;
       }
+      if (
+        row.contentType === 'chat_product' &&
+        row.purchased &&
+        row.maloumMessageId
+      ) {
+        const meta = {
+          purchased: true,
+          unlockedAt: row.unlockedAt
+            ? new Date(row.unlockedAt).toISOString()
+            : null,
+        };
+        unlockMeta[row.maloumMessageId] = meta;
+        if (row.optimisticMessageId) {
+          unlockMeta[row.optimisticMessageId] = meta;
+        }
+      }
     }
 
-    res.json({ senders });
+    res.json({ senders, unlockMeta });
   }
 );
 
@@ -4598,6 +4650,13 @@ router.patch(
              WHEN $1 = true THEN COALESCE("priceNet", $2)
              ELSE "priceNet"
            END,
+           "unlockedAt" = CASE
+             WHEN $1 = true THEN COALESCE("unlockedAt", NOW())
+             ELSE NULL
+           END,
+           "payoutVerified" = CASE WHEN $1 = false THEN false ELSE "payoutVerified" END,
+           "payoutVerifiedAt" = CASE WHEN $1 = false THEN NULL ELSE "payoutVerifiedAt" END,
+           "payoutTxnId" = CASE WHEN $1 = false THEN NULL ELSE "payoutTxnId" END,
            "updatedAt" = NOW()
        WHERE "maloumMessageId" = $3
        RETURNING *`,

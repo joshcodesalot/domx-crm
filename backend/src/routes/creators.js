@@ -31,6 +31,11 @@ const maloumClient = require('../services/maloumClient');
 const { applyModeration } = require('../services/contentModeration');
 const messagingDashboard = require('./messagingDashboard');
 const {
+  scheduleThrottledReconcile,
+  reconcileCreatorPayouts,
+  parseYearMonth,
+} = require('../services/salePayoutReconciler');
+const {
   connectCreatorById,
   disconnectCreator,
 } = require('../services/fourBasedSocket');
@@ -3590,6 +3595,8 @@ router.get(
         console.warn('4based purchased repair failed:', err.message || err);
       }
 
+      scheduleThrottledReconcile(id);
+
       res.json(badges);
     } catch (err) {
       return handleFourBasedError(res, err, 'Get 4based badges error:');
@@ -3651,6 +3658,8 @@ router.get(
       } catch (err) {
         console.warn('4based purchased repair failed:', err.message || err);
       }
+
+      scheduleThrottledReconcile(id);
 
       res.json({
         activities,
@@ -4862,6 +4871,8 @@ router.get(
         console.warn('Maloum sale/tip sync failed:', err.message);
       }
 
+      scheduleThrottledReconcile(id);
+
       const toCount = (value) =>
         typeof value === 'number' ? value : Number(value) || 0;
 
@@ -4907,6 +4918,8 @@ router.get(
         console.warn('Maloum sale/tip sync failed:', err.message);
       }
 
+      scheduleThrottledReconcile(id);
+
       res.json({
         next: payload?.next ?? null,
         notifications,
@@ -4914,6 +4927,40 @@ router.get(
       });
     } catch (err) {
       return handleMaloumError(res, err, 'List Maloum notifications error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/reconcile-payouts',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const role = req.user?.role;
+    if (role !== 'owner' && role !== 'manager') {
+      return res.status(403).json({ error: 'Owner or manager access required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const yearMonth = parseYearMonth(req.body?.yearMonth);
+      const result = await reconcileCreatorPayouts(id, {
+        yearMonth,
+        force: true,
+      });
+      res.json(result);
+    } catch (err) {
+      console.error('Reconcile payouts error:', err);
+      res.status(500).json({ error: 'Failed to reconcile payouts' });
     }
   }
 );

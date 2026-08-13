@@ -584,6 +584,50 @@ async function listActivities(creator, { offset = 0, limit = 20, types } = {}) {
   return result.data;
 }
 
+/**
+ * Creator payout/share stats (file_stack unlocks, tips, message shares).
+ * Prefer buyer_process_type === 'file_stack' for real PPV sales.
+ */
+async function listProcessStats(
+  creator,
+  {
+    offset = 0,
+    limit = 40,
+    bookingdateFrom = null,
+    bookingdateTo = null,
+    statisticType = 'all',
+  } = {}
+) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const sort = encodeURIComponent(JSON.stringify({ created_at: 'desc' }));
+  const safeLimit = Math.min(Math.max(Number(limit) || 40, 1), 100);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const params = [
+    `statistic_type=${encodeURIComponent(statisticType || 'all')}`,
+    `limit=${safeLimit}`,
+    `sort=${sort}`,
+    `offset=${safeOffset}`,
+    'type=share',
+    'with_invoice=true',
+    'with_buyer=true',
+    'with_file_stack=true',
+  ];
+  if (bookingdateFrom) {
+    params.push(`bookingdate_from=${encodeURIComponent(bookingdateFrom)}`);
+  }
+  if (bookingdateTo) {
+    params.push(`bookingdate_to=${encodeURIComponent(bookingdateTo)}`);
+  }
+  const result = await requestJson({
+    url: `${REST_BASE}/user/${providerUserId}/process/stats?${params.join('&')}`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  return result.data;
+}
+
 async function resetActivities(creator) {
   const { token, resource, cookies, proxyUrl } = authContext(creator);
   const result = await requestJson({
@@ -1152,6 +1196,7 @@ async function createTransfer(
     price: Number(price) || 0,
     is_subscription_item: Boolean(isSubscriptionItem),
     is_teaser: Boolean(isTeaser),
+    orientation: 1,
   };
   if (typeof folder === 'string' && folder.trim()) {
     exIf.belongs_to_folders = [folder.trim()];
@@ -1271,6 +1316,8 @@ async function uploadFeedPhotoToStorage(
         headers,
         body: form,
         dispatcher,
+        headersTimeout: 300_000,
+        bodyTimeout: 300_000,
       });
     } catch (err) {
       throw proxyFailureError(err);
@@ -1287,9 +1334,9 @@ async function uploadFeedPhotoToStorage(
         parsed
       );
     }
-    lastParsed = parsed;
-    if (parsed?.complete) {
-      return parsed;
+    lastParsed = parsed || { ok: true, status: response.status };
+    if (parsed?.complete || chunkId === chunkCount - 1) {
+      return lastParsed;
     }
   }
 
@@ -1332,6 +1379,7 @@ async function uploadFeedPhoto(
     price: 0,
     is_subscription_item: false,
     is_teaser: false,
+    orientation: 1,
   };
   if (typeof folder === 'string' && folder.trim()) {
     exIf.belongs_to_folders = [folder.trim()];
@@ -1572,6 +1620,7 @@ module.exports = {
   getUnread,
   getBadges,
   listActivities,
+  listProcessStats,
   resetActivities,
   getChat,
   listTrendingFileStacks,

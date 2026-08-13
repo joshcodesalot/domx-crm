@@ -28,6 +28,7 @@ interface SidebarProps {
     | 'analytics'
     | 'charts'
     | 'creatorAnalytics'
+    | 'falseSales'
     | 'chatter'
     | 'creators'
     | 'staff'
@@ -236,6 +237,16 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             title="Messaging Analytics"
           >
             <BarChart2 className="w-5 h-5" />
+          </button>
+        )}
+        {(user?.role === 'owner' || user?.role === 'manager') && (
+          <button
+            type="button"
+            onClick={() => navigate('/dashboard/false-sales')}
+            className={navClass('falseSales')}
+            title="False Sales Review"
+          >
+            <ShieldAlert className="w-5 h-5" />
           </button>
         )}
         {hasPermission('creators.view') && (
