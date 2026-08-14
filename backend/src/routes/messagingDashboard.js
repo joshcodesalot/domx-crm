@@ -55,6 +55,7 @@ const {
 } = require('../services/workSchedule');
 
 const { requireElectronServiceKey } = require('../middleware/electronServiceKey');
+const { fetchReflectedTotalSales } = require('../services/salePayoutReconciler');
 
 /** Business-TZ calendar date when activity tracking shipped (v1.6.27). Used for rate metrics only. */
 const ACTIVITY_METRICS_CUTOVER =
@@ -4023,6 +4024,16 @@ router.get(
           ? creators.find((c) => c.creatorId === creatorIdFilter) || null
           : null;
 
+      let reflectedTotalSales = [];
+      let reflectedTotalSalesError = null;
+      if (creatorIdFilter) {
+        const reflected = await fetchReflectedTotalSales(creatorIdFilter);
+        reflectedTotalSales = Array.isArray(reflected.amounts)
+          ? reflected.amounts
+          : [];
+        reflectedTotalSalesError = reflected.error || null;
+      }
+
       res.json({
         scope: scope.mode,
         period: { startDate: periodStart, endDate: periodEnd },
@@ -4034,6 +4045,8 @@ router.get(
           totalSales: totalSalesMerged,
           tipSales: tipSalesMerged,
           ppvSales: ppvSalesMerged,
+          reflectedTotalSales,
+          reflectedTotalSalesError,
           revenuePerFan: revenuePerFan(ppvSalesMerged, aggregate.fansWhoUnlocked),
           salesPerMessage: salesPerMessage(totalSalesMerged, aggregate.messagesSent),
           unlockRateByPriceBand: buildPriceBandsFromRows(priceBandResult.rows),

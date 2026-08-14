@@ -783,6 +783,19 @@ async function listTransactionHistory(creator, { limit = 10, next } = {}) {
   return result.data;
 }
 
+/** Wallet / available-for-payout balance. */
+async function getUserBalance(creator) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const result = await requestJson({
+    method: 'GET',
+    path: '/users/balance',
+    proxyUrl,
+    accessToken,
+    timezone,
+  });
+  return result.data;
+}
+
 async function markNotificationsReadAll(creator) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
@@ -1570,6 +1583,7 @@ module.exports = {
   getNotificationsUnreadCount,
   listNotifications,
   listTransactionHistory,
+  getUserBalance,
   markNotificationsReadAll,
   countUnreadChatsFromList,
   countUnreadNotificationsFromList,

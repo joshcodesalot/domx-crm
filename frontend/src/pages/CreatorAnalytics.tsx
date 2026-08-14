@@ -77,6 +77,11 @@ function MetricCard({
         {label}
       </p>
       <p className="text-xl font-semibold text-gray-900 dark:text-gray-100">{value}</p>
+      {hint ? (
+        <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1 leading-snug">
+          {hint}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -407,6 +412,23 @@ export default function CreatorAnalytics() {
               <MetricCard
                 label="Total Sales"
                 value={formatCurrencyAmounts(summary?.totalSales)}
+              />
+              <MetricCard
+                label="Reflected total sales"
+                value={
+                  creatorId && (summary?.reflectedTotalSales?.length || 0) > 0
+                    ? formatCurrencyAmounts(summary?.reflectedTotalSales)
+                    : '--'
+                }
+                hint={
+                  summary?.reflectedTotalSalesError
+                    ? summary.reflectedTotalSalesError
+                    : selectedPlatform === '4based'
+                      ? '4based provision sum for this calendar month'
+                      : selectedPlatform === 'maloum'
+                        ? 'Maloum available for next payout'
+                        : 'Select a creator to load the payout-site total'
+                }
               />
               <MetricCard
                 label="Messages Sent"

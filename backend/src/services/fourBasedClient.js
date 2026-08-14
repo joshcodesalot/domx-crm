@@ -628,6 +628,32 @@ async function listProcessStats(
   return result.data;
 }
 
+/** Period netto total (Provision sum). Response is a bare number. */
+async function getProcessSumNetto(
+  creator,
+  { bookingdateFrom = null, bookingdateTo = null, statisticType = 'all' } = {}
+) {
+  const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
+  const params = [
+    `statistic_type=${encodeURIComponent(statisticType || 'all')}`,
+    'type=share',
+  ];
+  if (bookingdateFrom) {
+    params.push(`bookingdate_from=${encodeURIComponent(bookingdateFrom)}`);
+  }
+  if (bookingdateTo) {
+    params.push(`bookingdate_to=${encodeURIComponent(bookingdateTo)}`);
+  }
+  const result = await requestJson({
+    url: `${REST_BASE}/user/${providerUserId}/process/sum/netto?${params.join('&')}`,
+    proxyUrl,
+    cookies,
+    token,
+    resource,
+  });
+  return result.data;
+}
+
 async function resetActivities(creator) {
   const { token, resource, cookies, proxyUrl } = authContext(creator);
   const result = await requestJson({
@@ -1621,6 +1647,7 @@ module.exports = {
   getBadges,
   listActivities,
   listProcessStats,
+  getProcessSumNetto,
   resetActivities,
   getChat,
   listTrendingFileStacks,

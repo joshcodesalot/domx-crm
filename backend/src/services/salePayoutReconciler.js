@@ -2,6 +2,8 @@ const { randomUUID } = require('crypto');
 const pool = require('../db/pool');
 const maloumClient = require('./maloumClient');
 const fourBasedClient = require('./fourBasedClient');
+const { decryptJson, decryptSecret } = require('./crypto');
+const { decryptAccessToken } = require('./maloumAuthTokens');
 const {
   BUSINESS_TZ,
   calendarDateString,
@@ -113,14 +115,118 @@ function parseAmount(value) {
   return Number.isFinite(n) ? Math.abs(n) : null;
 }
 
-async function loadCreator(creatorId) {
+/**
+ * Load creator metadata + decrypted platform auth (same shape chat routes use).
+ * Raw DB rows have encrypted tokens and cannot call Maloum/4based APIs.
+ */
+async function loadAuthedCreator(creatorId) {
   const result = await pool.query(
-    `SELECT *
+    `SELECT id, platform, "displayName", username, "avatarUrl", "providerUserId",
+            "encryptedSession", "encryptedAccessToken", "encryptedProxy", "accountId"
      FROM creators
      WHERE id = $1`,
     [creatorId]
   );
-  return result.rows[0] || null;
+  if (result.rows.length === 0) {
+    return { error: 'creator_not_found' };
+  }
+
+  const row = result.rows[0];
+  const platform = row.platform === '4based' ? '4based' : 'maloum';
+  const meta = {
+    id: row.id,
+    platform,
+    displayName: row.displayName,
+    username: row.username || null,
+    avatarUrl: row.avatarUrl || null,
+    accountId: row.accountId || null,
+    providerUserId: row.providerUserId || null,
+  };
+
+  let session = {};
+  try {
+    if (row.encryptedSession) {
+      session = decryptJson(row.encryptedSession) || {};
+    }
+  } catch {
+    return { error: `Failed to decrypt ${platform} session` };
+  }
+
+  if (platform === 'maloum') {
+    const accessToken =
+      decryptAccessToken(row.encryptedAccessToken) ||
+      decryptSecret(row.encryptedAccessToken) ||
+      null;
+    let proxyUrl = decryptSecret(row.encryptedProxy) || null;
+    if (!proxyUrl) {
+      try {
+        proxyUrl = maloumClient.resolveMaloumProxyUrl(null);
+      } catch {
+        proxyUrl = null;
+      }
+    }
+    if (!accessToken) {
+      return { error: 'Maloum account is missing auth credentials. Please reconnect.' };
+    }
+    if (!proxyUrl) {
+      return {
+        error:
+          'Maloum proxy is required. Set MALOUM_PROXY_URL in backend .env or reconnect with a proxy.',
+      };
+    }
+    return {
+      meta,
+      creator: {
+        ...meta,
+        accessToken,
+        proxyUrl,
+        timezone: 'UTC',
+        session: {
+          ...session,
+          providerUserId: row.providerUserId || null,
+          accessToken,
+        },
+      },
+    };
+  }
+
+  const accessToken =
+    decryptSecret(row.encryptedAccessToken) || session.token || null;
+  let proxyUrl = decryptSecret(row.encryptedProxy) || null;
+  if (!proxyUrl) {
+    try {
+      proxyUrl = fourBasedClient.resolveFourBasedProxyUrl(null);
+    } catch {
+      proxyUrl = null;
+    }
+  }
+  const providerUserId = row.providerUserId || session.providerUserId || null;
+  if (!accessToken || !providerUserId) {
+    return { error: '4based account is missing auth credentials. Please reconnect.' };
+  }
+  if (!proxyUrl) {
+    return {
+      error:
+        '4based proxy is required. Set FOURBASED_PROXY_URL in backend .env or reconnect with a proxy.',
+    };
+  }
+
+  return {
+    meta,
+    creator: {
+      ...meta,
+      providerUserId,
+      accessToken,
+      proxyUrl,
+      session: {
+        ...session,
+        providerUserId,
+        token: accessToken,
+        cookies: session.cookies || {},
+        resource: session.resource || null,
+      },
+    },
+  };
 }
 
 async function insertReconciliationEvent({
@@ -610,7 +716,7 @@ async function importDeletedSale({
   return { imported: Boolean(messagingEntryId), entryId: messagingEntryId };
 }
 
-async function reconcileMaloum(creatorRow, { monthFrom, monthTo, fetchFrom }) {
+async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchFrom }) {
   const summary = {
     verified: 0,
     cleared: 0,
@@ -618,7 +724,7 @@ async function reconcileMaloum(creatorRow, { monthFrom, monthTo, fetchFrom }) {
     exceptions: 0,
   };
 
-  const payoutRows = await fetchMaloumPayouts(creatorRow, {
+  const payoutRows = await fetchMaloumPayouts(authedCreator, {
     fromIso: fetchFrom,
     toIso: monthTo,
   });
@@ -638,7 +744,7 @@ async function reconcileMaloum(creatorRow, { monthFrom, monthTo, fetchFrom }) {
        AND purchased = true
        AND "payoutVerified" = false
        AND "sentAt" <= $2::timestamptz`,
-    [creatorRow.id, monthTo]
+    [meta.id, monthTo]
   );
 
   const matchedMessageIds = new Set();
@@ -654,7 +760,7 @@ async function reconcileMaloum(creatorRow, { monthFrom, monthTo, fetchFrom }) {
       summary.verified += 1;
     } else if (matches.length > 1) {
       await insertReconciliationEvent({
-        creatorId: creatorRow.id,
+        creatorId: meta.id,
         platform: 'maloum',
         eventType: 'ambiguous_match',
         status: 'needs_review',
@@ -702,13 +808,13 @@ async function reconcileMaloum(creatorRow, { monthFrom, monthTo, fetchFrom }) {
     }
 
     const recovered = await recoverMaloumMessage(
-      creatorRow,
+      authedCreator,
       sale.chatId,
       sale.messageId
     );
     const result = await importDeletedSale({
-      creator: creatorRow,
-      creatorRow,
+      creator: authedCreator,
+      creatorRow: meta,
       platform: 'maloum',
       sale,
       recovered,
@@ -720,7 +826,7 @@ async function reconcileMaloum(creatorRow, { monthFrom, monthTo, fetchFrom }) {
   return summary;
 }
 
-async function reconcileFourBased(creatorRow, { monthFrom, monthTo, fetchFrom }) {
+async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fetchFrom }) {
   const summary = {
     verified: 0,
     cleared: 0,
@@ -728,7 +834,7 @@ async function reconcileFourBased(creatorRow, { monthFrom, monthTo, fetchFrom })
     exceptions: 0,
   };
 
-  const payoutRows = await fetchFourBasedPayouts(creatorRow, {
+  const payoutRows = await fetchFourBasedPayouts(authedCreator, {
     fromIso: fetchFrom,
     toIso: monthTo,
   });
@@ -744,7 +850,7 @@ async function reconcileFourBased(creatorRow, { monthFrom, monthTo, fetchFrom })
        AND "payoutVerified" = false
        AND "sentAt" <= $2::timestamptz
        AND "maloumMessageId" NOT LIKE '4based-tip:%'`,
-    [creatorRow.id, monthTo]
+    [meta.id, monthTo]
   );
 
   /** @type {Set<string>} */
@@ -773,7 +879,7 @@ async function reconcileFourBased(creatorRow, { monthFrom, monthTo, fetchFrom })
       summary.verified += 1;
     } else if (matches.length > 1) {
       await insertReconciliationEvent({
-        creatorId: creatorRow.id,
+        creatorId: meta.id,
         platform: '4based',
         eventType: 'ambiguous_match',
         status: 'needs_review',
@@ -807,7 +913,7 @@ async function reconcileFourBased(creatorRow, { monthFrom, monthTo, fetchFrom })
       sale.unlockedAt <= monthTo;
     if (!inMonth) continue;
 
-    const existingMatch = await findFourBasedEntryForPayout(creatorRow.id, sale);
+    const existingMatch = await findFourBasedEntryForPayout(meta.id, sale);
     if (existingMatch) {
       await markVerified(existingMatch.id, {
         payoutTxnId: sale.payoutTxnId,
@@ -831,10 +937,10 @@ async function reconcileFourBased(creatorRow, { monthFrom, monthTo, fetchFrom })
       continue;
     }
 
-    const recovered = await recoverFourBasedMessage(creatorRow, sale.fanId, sale);
+    const recovered = await recoverFourBasedMessage(authedCreator, sale.fanId, sale);
     const result = await importDeletedSale({
-      creator: creatorRow,
-      creatorRow,
+      creator: authedCreator,
+      creatorRow: meta,
       platform: '4based',
       sale,
       recovered,
@@ -863,12 +969,13 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false } =
     }
   }
 
-  const creatorRow = await loadCreator(creatorId);
-  if (!creatorRow) {
-    return { skipped: true, reason: 'creator_not_found' };
+  const loaded = await loadAuthedCreator(creatorId);
+  if (loaded.error) {
+    return { skipped: true, reason: loaded.error };
   }
 
-  const platform = creatorRow.platform === '4based' ? '4based' : 'maloum';
+  const { meta, creator: authedCreator } = loaded;
+  const platform = meta.platform;
   const bounds = monthBounds(yearMonth);
   const capYm = monthsBefore(bounds.yearMonth, SWEEP_CAP_MONTHS);
   const capFrom = monthBounds(capYm).monthFrom;
@@ -897,13 +1004,13 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false } =
   let summary;
   try {
     if (platform === '4based') {
-      summary = await reconcileFourBased(creatorRow, {
+      summary = await reconcileFourBased(authedCreator, meta, {
         monthFrom: bounds.monthFrom,
         monthTo: bounds.monthTo,
         fetchFrom,
       });
     } else {
-      summary = await reconcileMaloum(creatorRow, {
+      summary = await reconcileMaloum(authedCreator, meta, {
         monthFrom: bounds.monthFrom,
         monthTo: bounds.monthTo,
         fetchFrom,
@@ -950,9 +1057,71 @@ function scheduleThrottledReconcile(creatorId) {
   });
 }
 
+/**
+ * Live payout-page total for Creator Analytics.
+ * Maloum: available-for-payout balance. 4based: current-month provision sum.
+ */
+async function fetchReflectedTotalSales(creatorId) {
+  const empty = { amounts: [], error: null };
+  if (!creatorId || !isValidUuid(creatorId)) return empty;
+
+  const loaded = await loadAuthedCreator(creatorId);
+  if (loaded.error) {
+    return { amounts: [], error: loaded.error };
+  }
+
+  const { meta, creator } = loaded;
+  try {
+    if (meta.platform === '4based') {
+      const bounds = monthBounds();
+      const raw = await fourBasedClient.getProcessSumNetto(creator, {
+        bookingdateFrom: bounds.monthFrom,
+        bookingdateTo: bounds.monthTo,
+      });
+      const amount =
+        typeof raw === 'number'
+          ? raw
+          : Number(raw?.netto ?? raw?.amount ?? raw);
+      if (!Number.isFinite(amount)) {
+        return { amounts: [], error: '4based provision sum was empty' };
+      }
+      return {
+        amounts: [{ currency: 'USD', amount: Math.round(Math.abs(amount) * 100) / 100 }],
+        error: null,
+      };
+    }
+
+    const payload = await maloumClient.getUserBalance(creator);
+    const balance = payload?.balance && typeof payload.balance === 'object'
+      ? payload.balance
+      : payload;
+    const amount = Number(
+      balance?.payoutAmount ?? balance?.net ?? payload?.payoutAmount ?? payload?.net
+    );
+    const currency =
+      typeof balance?.currency === 'string' && balance.currency.trim()
+        ? balance.currency.trim().toUpperCase()
+        : 'EUR';
+    if (!Number.isFinite(amount)) {
+      return { amounts: [], error: 'Maloum payout balance was empty' };
+    }
+    return {
+      amounts: [{ currency, amount: Math.round(Math.abs(amount) * 100) / 100 }],
+      error: null,
+    };
+  } catch (err) {
+    return {
+      amounts: [],
+      error: err?.message || 'Failed to load reflected total sales',
+    };
+  }
+}
+
 module.exports = {
   reconcileCreatorPayouts,
   scheduleThrottledReconcile,
+  fetchReflectedTotalSales,
+  loadAuthedCreator,
   parseYearMonth,
   monthBounds,
   monthStartDateString,

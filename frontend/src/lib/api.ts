@@ -1198,6 +1198,8 @@ export interface CreatorOverviewSummary {
   p50ResponseSeconds: number | null;
   p90ResponseSeconds: number | null;
   totalSales: CurrencyAmount[];
+  reflectedTotalSales?: CurrencyAmount[];
+  reflectedTotalSalesError?: string | null;
   tipSales: CurrencyAmount[];
   ppvSales: CurrencyAmount[];
   revenuePerFan: CurrencyAmount[];
