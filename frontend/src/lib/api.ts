@@ -303,6 +303,9 @@ export interface CreateMessagingDashboardEntryInput {
   videoCount?: number;
   mediaJson?: Array<{
     mediaId?: string;
+    vaultFileStackId?: string | null;
+    fileStackId?: string | null;
+    collectionId?: string | null;
     type?: string;
     width?: number;
     height?: number;
@@ -1697,6 +1700,10 @@ export interface FourBasedFileStack {
   source?: string[];
   /** Fan user ids who purchased this PPV stack. */
   user_paid?: string[];
+  /** Parent stack id when this item is a collection child. */
+  collection_id?: string;
+  /** Extra media in a multi-item PPV; each child often repeats the full price. */
+  collection?: FourBasedFileStack[];
   [key: string]: unknown;
 }
 

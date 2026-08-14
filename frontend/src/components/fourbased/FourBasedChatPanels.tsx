@@ -518,6 +518,80 @@ function isVideoItem(item: FourBasedVaultItem | null | undefined): boolean {
   return type.includes('video');
 }
 
+function fourBasedPpvMediaJson(
+  vaultItems: FourBasedVaultItem[],
+  parentFileStackId: string | null,
+  collection: unknown[] | null | undefined
+): Array<{
+  mediaId: string;
+  vaultFileStackId: string | null;
+  fileStackId: string | null;
+  collectionId: string | null;
+  type: 'video' | 'image';
+}> {
+  const seen = new Set<string>();
+  const items: Array<{
+    mediaId: string;
+    vaultFileStackId: string | null;
+    fileStackId: string | null;
+    collectionId: string | null;
+    type: 'video' | 'image';
+  }> = [];
+
+  const push = (entry: {
+    mediaId: string;
+    vaultFileStackId: string | null;
+    fileStackId: string | null;
+    collectionId: string | null;
+    type: 'video' | 'image';
+  }) => {
+    const key = [
+      entry.mediaId,
+      entry.vaultFileStackId,
+      entry.fileStackId,
+      entry.collectionId,
+    ]
+      .filter(Boolean)
+      .join(':');
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    items.push(entry);
+  };
+
+  for (const item of vaultItems) {
+    const vaultId = vaultItemId(item);
+    push({
+      mediaId: vaultId,
+      vaultFileStackId: vaultId || null,
+      fileStackId: parentFileStackId,
+      collectionId: parentFileStackId,
+      type: isVideoItem(item) ? 'video' : 'image',
+    });
+  }
+
+  for (const child of Array.isArray(collection) ? collection : []) {
+    if (!child || typeof child !== 'object') continue;
+    const c = child as Record<string, unknown>;
+    const childId = String(c._id || c.id || '').trim();
+    const vaultId = String(c.vault_file_stack_id || c.vaultFileStackId || '').trim();
+    const collectionId = String(
+      c.collection_id || c.collectionId || parentFileStackId || ''
+    ).trim();
+    if (!childId && !vaultId) continue;
+    if (childId && parentFileStackId && childId === parentFileStackId) continue;
+    const typeRaw = String(c.fileStackType || c.type || '').toLowerCase();
+    push({
+      mediaId: childId || vaultId,
+      vaultFileStackId: vaultId || null,
+      fileStackId: childId || parentFileStackId,
+      collectionId: collectionId || parentFileStackId,
+      type: typeRaw.includes('video') ? 'video' : 'image',
+    });
+  }
+
+  return items;
+}
+
 function isPersistedFourBasedMessageId(id?: string | null): boolean {
   if (!id) return false;
   if (id.startsWith('temp-') || id.startsWith('optimistic-')) return false;
@@ -2052,6 +2126,7 @@ export function FourBasedChatThread({
 
       let sentMessage: FourBasedMessage | null = null;
       let sentFileStackId: string | null = null;
+      let sentCollection: unknown[] = [];
 
       if (vaultForLog.length > 0) {
         // HAR: free media with no caption uses a single space as message body
@@ -2073,6 +2148,9 @@ export function FourBasedChatThread({
               result.message?.file_stack?._id ||
               ''
           ).trim() || null;
+        sentCollection = Array.isArray(result.fileStack?.collection)
+          ? result.fileStack.collection
+          : [];
         clearMediaAttachments();
       } else {
         const result = await sendFourBasedMessage(creatorId, chatId, {
@@ -2132,15 +2210,7 @@ export function FourBasedChatThread({
           pictureCount,
           videoCount,
           mediaJson: hasMedia
-            ? vaultForLog.map((item) => {
-                const vaultId = vaultItemId(item);
-                return {
-                  mediaId: vaultId,
-                  vaultFileStackId: vaultId || null,
-                  fileStackId: sentFileStackId,
-                  type: isVideoItem(item) ? 'video' : 'image',
-                };
-              })
+            ? fourBasedPpvMediaJson(vaultForLog, sentFileStackId, sentCollection)
             : null,
           previousFanMessageAt: responseSnapshot.previousFanMessageAt,
           responseTimeSeconds: responseSnapshot.responseTimeSeconds,

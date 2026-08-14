@@ -832,13 +832,34 @@ async function backfillEntryPriceNet(maloumMessageId, priceNet, notificationId =
 const FOURBASED_SEND_ROW_BASE = `
   "creatorId" = $1
   AND "fanId" = $2
+  AND "contentType" = 'chat_product'
   AND "maloumMessageId" LIKE '4based:%'
   AND "maloumMessageId" NOT LIKE '4based-sale:%'
   AND "maloumMessageId" NOT LIKE '4based-tip:%'
+  AND "maloumMessageId" NOT LIKE '4based-payout:%'
 `;
 
+const FOURBASED_PRICE_EPSILON = 0.05;
+/** Child collection sale activities land within seconds of the parent unlock. */
+const FOURBASED_DUPLICATE_UNLOCK_WINDOW_SECONDS = 5 * 60;
+
+function pushUniqueId(ids, value) {
+  if (value == null) return;
+  const id = String(value).trim();
+  if (id && !ids.includes(id)) ids.push(id);
+}
+
+function fourBasedActivityFileStackIds(entry) {
+  const ids = [];
+  pushUniqueId(ids, entry?.file_stack_id);
+  pushUniqueId(ids, entry?.file_stack?._id);
+  pushUniqueId(ids, entry?.file_stack?.collection_id);
+  return ids;
+}
+
 function fourBasedSendOrderSql(soldAtParam) {
-  // Prefer real send logs (have message/media), then unpurchased, then closest to sale time.
+  // Prefer real send logs (have message/media), then unpurchased, then sent
+  // before the sale, then closest to sale time.
   return `
     ORDER BY
       CASE
@@ -846,70 +867,193 @@ function fourBasedSendOrderSql(soldAtParam) {
         ELSE 1
       END,
       CASE WHEN purchased = false THEN 0 ELSE 1 END,
+      CASE WHEN "sentAt" <= ${soldAtParam}::timestamptz THEN 0 ELSE 1 END,
       ABS(EXTRACT(EPOCH FROM ("sentAt" - ${soldAtParam}::timestamptz))) ASC,
       "sentAt" DESC
   `;
 }
 
+function parseFourBasedSoldAt(soldAt) {
+  return soldAt && !Number.isNaN(Date.parse(soldAt))
+    ? new Date(soldAt).toISOString()
+    : new Date().toISOString();
+}
+
 /**
- * Match a 4based sale activity to the original DomX PPV send log row.
- * Hard match only: media / file-stack ids stored on the send log.
+ * Match a 4based sale to the original DomX PPV send log row.
+ * Prefer media / file-stack ids (including collection parent ids); optionally
+ * fall back to fan + price + send time for unpurchased rows only.
  */
 async function findFourBasedSendRow({
   creatorId,
   fanId,
   vaultFileStackId = null,
   fileStackId = null,
+  fileStackIds = null,
+  priceNet = null,
   soldAt = null,
+  allowPriceFallback = true,
 } = {}) {
   if (!creatorId || !isValidUuid(creatorId) || !fanId) return null;
-  if (!vaultFileStackId && !fileStackId) return null;
 
-  const soldAtIso =
-    soldAt && !Number.isNaN(Date.parse(soldAt))
-      ? new Date(soldAt).toISOString()
-      : new Date().toISOString();
+  const soldAtIso = parseFourBasedSoldAt(soldAt);
+  const parsedPrice =
+    priceNet != null && Number.isFinite(Number(priceNet))
+      ? Math.abs(Number(priceNet))
+      : null;
 
-  const values = [creatorId, fanId];
-  const mediaConds = [];
-  let paramIndex = 3;
-
-  if (vaultFileStackId) {
-    const vaultId = String(vaultFileStackId);
-    mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
-    values.push(JSON.stringify([{ mediaId: vaultId }]));
-    paramIndex += 1;
-    mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
-    values.push(JSON.stringify([{ vaultFileStackId: vaultId }]));
-    paramIndex += 1;
-    mediaConds.push(`"mediaJson"::text LIKE $${paramIndex}`);
-    values.push(`%${vaultId}%`);
-    paramIndex += 1;
+  const stackIds = [];
+  pushUniqueId(stackIds, fileStackId);
+  if (Array.isArray(fileStackIds)) {
+    for (const id of fileStackIds) pushUniqueId(stackIds, id);
   }
 
-  if (fileStackId) {
-    const stackId = String(fileStackId);
-    mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
-    values.push(JSON.stringify([{ fileStackId: stackId }]));
-    paramIndex += 1;
-    mediaConds.push(`"mediaJson"::text LIKE $${paramIndex}`);
-    values.push(`%${stackId}%`);
-    paramIndex += 1;
+  if (vaultFileStackId || stackIds.length > 0) {
+    const values = [creatorId, fanId];
+    const mediaConds = [];
+    let paramIndex = 3;
+
+    if (vaultFileStackId) {
+      const vaultId = String(vaultFileStackId);
+      mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+      values.push(JSON.stringify([{ mediaId: vaultId }]));
+      paramIndex += 1;
+      mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+      values.push(JSON.stringify([{ vaultFileStackId: vaultId }]));
+      paramIndex += 1;
+      mediaConds.push(`"mediaJson"::text LIKE $${paramIndex}`);
+      values.push(`%${vaultId}%`);
+      paramIndex += 1;
+    }
+
+    for (const stackId of stackIds) {
+      mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+      values.push(JSON.stringify([{ fileStackId: stackId }]));
+      paramIndex += 1;
+      mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+      values.push(JSON.stringify([{ collectionId: stackId }]));
+      paramIndex += 1;
+      mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+      values.push(JSON.stringify([{ mediaId: stackId }]));
+      paramIndex += 1;
+      mediaConds.push(`"mediaJson"::text LIKE $${paramIndex}`);
+      values.push(`%${stackId}%`);
+      paramIndex += 1;
+    }
+
+    values.push(soldAtIso);
+    const soldAtParam = `$${paramIndex}`;
+
+    const byMedia = await pool.query(
+      `SELECT *
+       FROM messaging_dashboard_entries
+       WHERE ${FOURBASED_SEND_ROW_BASE}
+         AND (${mediaConds.join(' OR ')})
+       ${fourBasedSendOrderSql(soldAtParam)}
+       LIMIT 1`,
+      values
+    );
+    if (byMedia.rows[0]) return byMedia.rows[0];
   }
 
-  values.push(soldAtIso);
-  const soldAtParam = `$${paramIndex}`;
+  if (!allowPriceFallback || parsedPrice == null) return null;
 
-  const byMedia = await pool.query(
+  const byPrice = await pool.query(
     `SELECT *
      FROM messaging_dashboard_entries
      WHERE ${FOURBASED_SEND_ROW_BASE}
-       AND (${mediaConds.join(' OR ')})
-     ${fourBasedSendOrderSql(soldAtParam)}
+       AND purchased = false
+       AND "priceNet" IS NOT NULL
+       AND ABS("priceNet"::float - $3::float) <= $4
+       AND "sentAt" <= $5::timestamptz
+     ${fourBasedSendOrderSql('$5')}
      LIMIT 1`,
-    values
+    [creatorId, fanId, parsedPrice, FOURBASED_PRICE_EPSILON, soldAtIso]
   );
-  return byMedia.rows[0] || null;
+  return byPrice.rows[0] || null;
+}
+
+/**
+ * Same fan + price already purchased in a tight unlock window — a collection
+ * child activity for the same PPV, not a second sale.
+ */
+async function findFourBasedDuplicatePurchasedSend({
+  creatorId,
+  fanId,
+  priceNet = null,
+  soldAt = null,
+} = {}) {
+  if (!creatorId || !isValidUuid(creatorId) || !fanId) return null;
+  const parsedPrice =
+    priceNet != null && Number.isFinite(Number(priceNet))
+      ? Math.abs(Number(priceNet))
+      : null;
+  if (parsedPrice == null) return null;
+
+  const soldAtIso = parseFourBasedSoldAt(soldAt);
+  const result = await pool.query(
+    `SELECT *
+     FROM messaging_dashboard_entries
+     WHERE ${FOURBASED_SEND_ROW_BASE}
+       AND purchased = true
+       AND "priceNet" IS NOT NULL
+       AND ABS("priceNet"::float - $3::float) <= $4
+       AND "sentAt" <= $5::timestamptz
+       AND ABS(
+         EXTRACT(
+           EPOCH FROM (
+             COALESCE("unlockedAt", "sentAt") - $5::timestamptz
+           )
+         )
+       ) <= $6
+     ${fourBasedSendOrderSql('$5')}
+     LIMIT 1`,
+    [
+      creatorId,
+      fanId,
+      parsedPrice,
+      FOURBASED_PRICE_EPSILON,
+      soldAtIso,
+      FOURBASED_DUPLICATE_UNLOCK_WINDOW_SECONDS,
+    ]
+  );
+  return result.rows[0] || null;
+}
+
+async function matchFourBasedSaleToSendRow({
+  creatorId,
+  fanId,
+  vaultFileStackId = null,
+  fileStackIds = null,
+  priceNet = null,
+  soldAt = null,
+} = {}) {
+  const mediaMatch = await findFourBasedSendRow({
+    creatorId,
+    fanId,
+    vaultFileStackId,
+    fileStackIds,
+    priceNet,
+    soldAt,
+    allowPriceFallback: false,
+  });
+  if (mediaMatch) return mediaMatch;
+
+  const duplicate = await findFourBasedDuplicatePurchasedSend({
+    creatorId,
+    fanId,
+    priceNet,
+    soldAt,
+  });
+  if (duplicate) return duplicate;
+
+  return findFourBasedSendRow({
+    creatorId,
+    fanId,
+    priceNet,
+    soldAt,
+    allowPriceFallback: true,
+  });
 }
 
 /**
@@ -943,11 +1087,24 @@ async function repairFourBasedSaleOrphans(creatorId) {
 
     const priceNet =
       orphan.priceNet != null ? Number(orphan.priceNet) : null;
-    const match = await findFourBasedSendRow({
-      creatorId,
-      fanId,
-      soldAt: orphan.sentAt || orphan.createdAt || null,
-    });
+    const soldAt = orphan.unlockedAt || orphan.sentAt || orphan.createdAt || null;
+    const parsedPrice = Number.isFinite(priceNet) ? priceNet : null;
+    // Prefer collapsing into an already-purchased send (collection child
+    // stubs) before price-matching a different pending PPV.
+    const match =
+      (await findFourBasedDuplicatePurchasedSend({
+        creatorId,
+        fanId,
+        priceNet: parsedPrice,
+        soldAt,
+      })) ||
+      (await findFourBasedSendRow({
+        creatorId,
+        fanId,
+        priceNet: parsedPrice,
+        soldAt,
+        allowPriceFallback: true,
+      }));
 
     if (!match?.maloumMessageId) continue;
 
@@ -1034,10 +1191,9 @@ const FOURBASED_REPAIR_SALE_PAGE_SIZE = 100;
 const FOURBASED_REPAIR_SALE_MAX_PAGES = 5;
 
 /**
- * Repair false 4based Purchased: Yes flags:
- * 1) unsent send rows → purchased false
- * 2) hard-match sale activities → re-unlock
- * 3) purchased chat_product in activity window without hard match → purchased false
+ * Re-unlock 4based send rows from sale activities.
+ * Unsent messages are forced back to purchased=false; unmatched purchases
+ * are left purchased so payout/activity misses cannot hide real sales.
  */
 async function repairFourBasedPurchasedFlags(
   creatorId,
@@ -1066,7 +1222,6 @@ async function repairFourBasedPurchasedFlags(
   pushSales(seedActivities);
 
   let activityPages = 0;
-  let salePagesIncomplete = false;
   if (typeof fetchSalePage === 'function') {
     for (let page = 0; page < FOURBASED_REPAIR_SALE_MAX_PAGES; page += 1) {
       const offset = page * FOURBASED_REPAIR_SALE_PAGE_SIZE;
@@ -1078,34 +1233,21 @@ async function repairFourBasedPurchasedFlags(
           '4based sale repair page fetch failed:',
           err.message || err
         );
-        salePagesIncomplete = true;
         break;
       }
       const list = Array.isArray(pageRows) ? pageRows : [];
       activityPages += 1;
       pushSales(list);
       if (list.length < FOURBASED_REPAIR_SALE_PAGE_SIZE) break;
-      if (page === FOURBASED_REPAIR_SALE_MAX_PAGES - 1) {
-        salePagesIncomplete = true;
-      }
     }
   } else if (sales.length > 0) {
     activityPages = 1;
   }
 
-  const matchedIds = new Set();
   let reunlocked = 0;
-  let oldestSaleMs = null;
 
   for (const entry of sales) {
     const createdAt = activityCreatedAt(entry);
-    if (createdAt) {
-      const ms = Date.parse(createdAt);
-      if (!Number.isNaN(ms) && (oldestSaleMs == null || ms < oldestSaleMs)) {
-        oldestSaleMs = ms;
-      }
-    }
-
     const fanId = entry?.user_id || entry?.user?._id
       ? String(entry.user_id || entry.user._id)
       : null;
@@ -1114,24 +1256,27 @@ async function repairFourBasedPurchasedFlags(
     const vaultFileStackId = entry?.file_stack?.vault_file_stack_id
       ? String(entry.file_stack.vault_file_stack_id)
       : null;
-    const fileStackId =
-      entry?.file_stack_id || entry?.file_stack?._id
-        ? String(entry.file_stack_id || entry.file_stack._id)
-        : null;
-    if (!vaultFileStackId && !fileStackId) continue;
-
+    const fileStackIds = fourBasedActivityFileStackIds(entry);
     const priceNet = activityAmountDollars(entry);
+    if (
+      !vaultFileStackId &&
+      fileStackIds.length === 0 &&
+      (priceNet == null || !Number.isFinite(Number(priceNet)))
+    ) {
+      continue;
+    }
+
     const activityId = entry?._id || entry?.id ? String(entry._id || entry.id) : null;
-    const match = await findFourBasedSendRow({
+    const match = await matchFourBasedSaleToSendRow({
       creatorId,
       fanId,
       vaultFileStackId,
-      fileStackId,
+      fileStackIds,
+      priceNet,
       soldAt: createdAt,
     });
     if (!match?.maloumMessageId) continue;
 
-    matchedIds.add(String(match.maloumMessageId));
     const unlocked = await ensureFourBasedSaleUnlocked({
       maloumMessageId: match.maloumMessageId,
       priceNet,
@@ -1140,42 +1285,6 @@ async function repairFourBasedPurchasedFlags(
     });
     if (unlocked.updated) reunlocked += 1;
     if (activityId) await deleteFourBasedSaleOrphan(activityId);
-  }
-
-  let clearedUnverified = 0;
-  if (oldestSaleMs != null && !salePagesIncomplete) {
-    const windowStartIso = new Date(oldestSaleMs).toISOString();
-    const graceCutoffIso = new Date(Date.now() - 45 * 60 * 1000).toISOString();
-    const matchedList = [...matchedIds];
-    const unverified = await pool.query(
-      `UPDATE messaging_dashboard_entries
-       SET purchased = false,
-           "unlockedAt" = NULL,
-           "payoutVerified" = false,
-           "payoutVerifiedAt" = NULL,
-           "payoutTxnId" = NULL,
-           "updatedAt" = NOW()
-       WHERE "creatorId" = $1
-         AND platform = '4based'
-         AND purchased = true
-         AND "contentType" = 'chat_product'
-         AND "maloumMessageId" LIKE '4based:%'
-         AND "maloumMessageId" NOT LIKE '4based-sale:%'
-         AND "maloumMessageId" NOT LIKE '4based-tip:%'
-         AND "sentAt" >= $2::timestamptz
-         AND COALESCE("unlockedAt", "updatedAt", "sentAt") < $4::timestamptz
-         AND (
-           cardinality($3::text[]) = 0
-           OR NOT ("maloumMessageId" = ANY($3::text[]))
-         )
-       RETURNING id`,
-      [creatorId, windowStartIso, matchedList, graceCutoffIso]
-    );
-    clearedUnverified = unverified.rows.length;
-  } else if (salePagesIncomplete) {
-    console.warn(
-      `Skipping 4based unverified purchase clear for ${creatorId}: sale activity pages incomplete`
-    );
   }
 
   // After re-unlock: force unsent messages back to not purchased (audit row kept).
@@ -1203,7 +1312,7 @@ async function repairFourBasedPurchasedFlags(
 
   return {
     clearedUnsent: unsentClear.rows.length,
-    clearedUnverified,
+    clearedUnverified: 0,
     reunlocked,
     activityPages,
   };
@@ -1421,16 +1530,13 @@ async function processFourBasedSaleAndTipNotifications(creatorId, activities) {
       const vaultFileStackId = entry?.file_stack?.vault_file_stack_id
         ? String(entry.file_stack.vault_file_stack_id)
         : null;
-      const fileStackId =
-        entry?.file_stack_id || entry?.file_stack?._id
-          ? String(entry.file_stack_id || entry.file_stack._id)
-          : null;
+      const fileStackIds = fourBasedActivityFileStackIds(entry);
 
-      const match = await findFourBasedSendRow({
+      const match = await matchFourBasedSaleToSendRow({
         creatorId,
         fanId,
         vaultFileStackId,
-        fileStackId,
+        fileStackIds,
         priceNet,
         soldAt: createdAt,
       });

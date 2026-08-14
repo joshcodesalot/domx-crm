@@ -11,12 +11,12 @@ const {
 } = require('./businessTimezone');
 
 const RECONCILE_THROTTLE_MS = 5 * 60 * 1000;
-const FALSE_UNLOCK_GRACE_MS = 45 * 60 * 1000;
 const MALOUM_PAGE_LIMIT = 20;
 const MALOUM_MAX_PAGES = 40;
 const FOURBASED_PAGE_LIMIT = 40;
 const FOURBASED_MAX_PAGES = 40;
 const SWEEP_CAP_MONTHS = 6;
+const FOURBASED_PRICE_EPSILON = 0.05;
 
 /** @type {Map<string, number>} */
 const lastReconcileAtByCreator = new Map();
@@ -375,10 +375,14 @@ function normalizeFourBasedSales(rows) {
       const vaultFileStackId = r?.file_stack?.vault_file_stack_id
         ? String(r.file_stack.vault_file_stack_id)
         : null;
+      const collectionId = r?.file_stack?.collection_id
+        ? String(r.file_stack.collection_id)
+        : null;
       return {
         payoutTxnId: String(r._id || r.id),
         fileStackId,
         vaultFileStackId,
+        collectionId,
         fanId: r.buyer_id || r.buyer?._id ? String(r.buyer_id || r.buyer._id) : null,
         fanUsername:
           typeof r.buyer?.name === 'string' ? r.buyer.name : null,
@@ -409,6 +413,8 @@ function mediaJsonHasId(mediaJson, ids) {
       'vault_file_stack_id',
       'fileStackId',
       'file_stack_id',
+      'collectionId',
+      'collection_id',
       'id',
       '_id',
     ]) {
@@ -418,10 +424,14 @@ function mediaJsonHasId(mediaJson, ids) {
   return false;
 }
 
-async function findFourBasedEntryForPayout(creatorId, sale) {
+async function findFourBasedEntryForPayout(
+  creatorId,
+  sale,
+  { allowPurchased = false, preferPurchased = false } = {}
+) {
   if (!creatorId || !sale?.fanId) return null;
-  if (!sale.fileStackId && !sale.vaultFileStackId) return null;
 
+  const soldAtIso = sale.unlockedAt || new Date().toISOString();
   const result = await pool.query(
     `SELECT *
      FROM messaging_dashboard_entries
@@ -433,296 +443,277 @@ async function findFourBasedEntryForPayout(creatorId, sale) {
        AND "maloumMessageId" NOT LIKE '4based-sale:%'
        AND "maloumMessageId" NOT LIKE '4based-tip:%'
        AND "maloumMessageId" NOT LIKE '4based-payout:%'
-     ORDER BY "sentAt" DESC
+     ORDER BY
+       CASE WHEN purchased = ${preferPurchased ? 'true' : 'false'} THEN 0 ELSE 1 END,
+       CASE WHEN "sentAt" <= $3::timestamptz THEN 0 ELSE 1 END,
+       ABS(EXTRACT(EPOCH FROM ("sentAt" - $3::timestamptz))) ASC,
+       "sentAt" DESC
      LIMIT 40`,
-    [creatorId, sale.fanId]
+    [creatorId, sale.fanId, soldAtIso]
   );
 
-  const ids = [sale.fileStackId, sale.vaultFileStackId];
+  const ids = [sale.fileStackId, sale.vaultFileStackId, sale.collectionId].filter(
+    Boolean
+  );
+  if (ids.length > 0) {
+    for (const row of result.rows) {
+      if (mediaJsonHasId(row.mediaJson, ids)) return row;
+    }
+  }
+
+  const amount =
+    sale.amount != null && Number.isFinite(Number(sale.amount))
+      ? Math.abs(Number(sale.amount))
+      : null;
+  if (amount == null) return null;
+
+  const soldMs = Date.parse(soldAtIso);
+  let best = null;
+  let bestDelta = Infinity;
   for (const row of result.rows) {
-    if (mediaJsonHasId(row.mediaJson, ids)) return row;
-  }
-  return null;
-}
-
-async function recoverMaloumMessage(creator, chatId, messageId) {
-  if (!chatId || !messageId) return { text: null, mediaJson: null };
-  try {
-    let next;
-    for (let page = 0; page < 8; page += 1) {
-      const payload = await maloumClient.getMessages(creator, chatId, {
-        limit: 30,
-        next,
-      });
-      const list = Array.isArray(payload?.data)
-        ? payload.data
-        : Array.isArray(payload)
-          ? payload
-          : [];
-      const found = list.find(
-        (m) => String(m?._id || m?.id || '') === String(messageId)
-      );
-      if (found) {
-        const text =
-          typeof found.content?.text === 'string'
-            ? found.content.text
-            : typeof found.text === 'string'
-              ? found.text
-              : null;
-        const assets = Array.isArray(found.content?.assets)
-          ? found.content.assets
-          : [];
-        const mediaJson = assets.map((a) => ({
-          mediaId: a?.mediaId || a?._id || a?.id || undefined,
-          type: a?.type || undefined,
-        }));
-        return { text, mediaJson: mediaJson.length ? mediaJson : null };
-      }
-      next = payload?.next || null;
-      if (!next || list.length === 0) break;
+    if (row.priceNet == null) continue;
+    if (row.purchased && !allowPurchased) continue;
+    const price = Math.abs(Number(row.priceNet));
+    if (!Number.isFinite(price) || Math.abs(price - amount) > FOURBASED_PRICE_EPSILON) {
+      continue;
     }
-  } catch (err) {
-    console.warn('Maloum chat recovery failed:', err.message || err);
-  }
-  return { text: null, mediaJson: null };
-}
-
-async function recoverFourBasedMessage(creator, fanId, sale) {
-  if (!fanId) return { text: null, mediaJson: null, chatId: null };
-  try {
-    const chat = await fourBasedClient.getChatByUser(creator, fanId);
-    const chatId = chat?._id || chat?.id ? String(chat._id || chat.id) : null;
-    if (!chatId) return { text: null, mediaJson: null, chatId: null };
-
-    for (let offset = 0; offset < 100; offset += 20) {
-      const payload = await fourBasedClient.getMessages(creator, chatId, {
-        limit: 20,
-        offset,
-      });
-      const list = Array.isArray(payload)
-        ? payload
-        : Array.isArray(payload?.data)
-          ? payload.data
-          : [];
-      const found = list.find((m) => {
-        const fs = m?.file_stack || m?.fileStack;
-        if (!fs) return false;
-        const ids = [
-          fs._id,
-          fs.id,
-          fs.vault_file_stack_id,
-          fs.vaultFileStackId,
-        ]
-          .filter(Boolean)
-          .map(String);
-        return (
-          (sale.fileStackId && ids.includes(String(sale.fileStackId))) ||
-          (sale.vaultFileStackId &&
-            ids.includes(String(sale.vaultFileStackId)))
-        );
-      });
-      if (found) {
-        const text =
-          typeof found.message === 'string'
-            ? found.message
-            : typeof found.text === 'string'
-              ? found.text
-              : null;
-        const fs = found.file_stack || found.fileStack;
-        const mediaJson = fs
-          ? [
-              {
-                mediaId: String(
-                  fs.vault_file_stack_id || fs._id || fs.id || ''
-                ),
-                fileStackId: fs._id || fs.id ? String(fs._id || fs.id) : undefined,
-                vaultFileStackId: fs.vault_file_stack_id
-                  ? String(fs.vault_file_stack_id)
-                  : undefined,
-                type: fs.fileStackType || fs.type || undefined,
-              },
-            ]
-          : null;
-        return { text, mediaJson, chatId };
-      }
-      if (list.length < 20) break;
+    const sentMs = row.sentAt ? new Date(row.sentAt).getTime() : NaN;
+    if (Number.isFinite(sentMs) && Number.isFinite(soldMs) && sentMs > soldMs) {
+      continue;
     }
-    return { text: null, mediaJson: null, chatId };
-  } catch (err) {
-    console.warn('4based chat recovery failed:', err.message || err);
+    const delta =
+      Number.isFinite(sentMs) && Number.isFinite(soldMs)
+        ? Math.abs(sentMs - soldMs)
+        : Infinity;
+    const purchasedRank = preferPurchased
+      ? row.purchased
+        ? 0
+        : 1
+      : row.purchased
+        ? 1
+        : 0;
+    const bestRank = best
+      ? preferPurchased
+        ? best.purchased
+          ? 0
+          : 1
+        : best.purchased
+          ? 1
+          : 0
+      : 0;
+    if (
+      !best ||
+      purchasedRank < bestRank ||
+      (purchasedRank === bestRank && delta < bestDelta)
+    ) {
+      best = row;
+      bestDelta = delta;
+    }
   }
-  return { text: null, mediaJson: null, chatId: null };
+  return best;
 }
 
-async function markVerified(entryId, { payoutTxnId, unlockedAt }) {
+async function markVerified(entryId, { payoutTxnId, unlockedAt, purchased = false }) {
   await pool.query(
     `UPDATE messaging_dashboard_entries
      SET "payoutVerified" = true,
          "payoutVerifiedAt" = NOW(),
          "payoutTxnId" = COALESCE($2, "payoutTxnId"),
          "unlockedAt" = COALESCE("unlockedAt", $3::timestamptz),
+         purchased = CASE WHEN $4::boolean THEN true ELSE purchased END,
          "updatedAt" = NOW()
      WHERE id = $1`,
-    [entryId, payoutTxnId || null, unlockedAt || null]
+    [entryId, payoutTxnId || null, unlockedAt || null, purchased === true]
   );
 }
 
-function isWithinFalseUnlockGrace(entry) {
-  const raw = entry?.unlockedAt || entry?.updatedAt || entry?.sentAt;
-  if (!raw) return true;
-  const t = new Date(raw).getTime();
-  if (!Number.isFinite(t)) return true;
-  return Date.now() - t < FALSE_UNLOCK_GRACE_MS;
-}
-
-async function clearFalseUnlock(entry, { reason, payoutDetail }) {
-  await pool.query(
-    `UPDATE messaging_dashboard_entries
-     SET purchased = false,
-         "unlockedAt" = NULL,
-         "payoutVerified" = false,
-         "payoutVerifiedAt" = NULL,
-         "payoutTxnId" = NULL,
+async function restoreClearedFalseUnlocks(creatorId) {
+  if (!creatorId || !isValidUuid(creatorId)) return 0;
+  const result = await pool.query(
+    `UPDATE messaging_dashboard_entries e
+     SET purchased = true,
+         "unlockedAt" = COALESCE(e."unlockedAt", ev."unlockedAt", e."sentAt"),
+         "priceNet" = COALESCE(e."priceNet", ev.amount),
          "updatedAt" = NOW()
-     WHERE id = $1`,
-    [entry.id]
+     FROM sale_reconciliation_events ev
+     WHERE ev."eventType" = 'false_unlock_cleared'
+       AND ev."messagingEntryId" = e.id
+       AND e.purchased = false
+       AND e."creatorId" = $1
+       AND NOT EXISTS (
+         SELECT 1
+         FROM message_unsends u
+         WHERE u."creatorId" = e."creatorId"
+           AND u.platform = e.platform
+           AND (
+             (
+               e.platform = '4based'
+               AND e."maloumMessageId" LIKE '4based:%'
+               AND e."maloumMessageId" NOT LIKE '4based-sale:%'
+               AND e."maloumMessageId" NOT LIKE '4based-tip:%'
+               AND e."maloumMessageId" NOT LIKE '4based-payout:%'
+               AND u."platformMessageId" = substring(
+                 e."maloumMessageId" from length('4based:') + 1
+               )
+             )
+             OR (
+               e.platform = 'maloum'
+               AND u."platformMessageId" = e."maloumMessageId"
+             )
+           )
+       )
+     RETURNING e.id`,
+    [creatorId]
   );
-
-  await insertReconciliationEvent({
-    creatorId: entry.creatorId,
-    platform: entry.platform === '4based' ? '4based' : 'maloum',
-    eventType: 'false_unlock_cleared',
-    status: 'resolved',
-    messagingEntryId: entry.id,
-    maloumMessageId: entry.maloumMessageId,
-    fanId: entry.fanId,
-    fanUsername: entry.fanUsername,
-    chatId: entry.chatId,
-    amount: entry.priceNet != null ? Number(entry.priceNet) : null,
-    currency: entry.currency,
-    unlockedAt: entry.unlockedAt || null,
-    reason,
-    detailJson: payoutDetail || null,
-    resolution: 'auto_cleared',
-    resolvedAt: new Date().toISOString(),
-  });
+  return result.rows.length;
 }
 
-async function importDeletedSale({
-  creator,
-  creatorRow,
-  platform,
-  sale,
-  recovered,
-}) {
-  const maloumMessageId =
-    platform === 'maloum'
-      ? String(sale.messageId)
-      : `4based-payout:${sale.payoutTxnId}`;
+async function mergeFourBasedStubs(creatorId) {
+  if (!creatorId || !isValidUuid(creatorId)) return 0;
 
-  const existing = await pool.query(
-    `SELECT id FROM messaging_dashboard_entries WHERE "maloumMessageId" = $1`,
-    [maloumMessageId]
+  const bulk = await pool.query(
+    `WITH matched AS (
+       SELECT DISTINCT ON (stub.id)
+         stub.id AS stub_id,
+         send.id AS send_id,
+         stub."priceNet" AS stub_price,
+         stub."unlockedAt" AS stub_unlocked,
+         stub."sentAt" AS stub_sent,
+         stub."payoutTxnId" AS stub_payout
+       FROM messaging_dashboard_entries stub
+       JOIN messaging_dashboard_entries send
+         ON send."creatorId" = stub."creatorId"
+        AND send.platform = '4based'
+        AND send."contentType" = 'chat_product'
+        AND send."fanId" IS NOT NULL
+        AND send."fanId" = stub."fanId"
+        AND send.purchased = true
+        AND send."maloumMessageId" LIKE '4based:%'
+        AND send."maloumMessageId" NOT LIKE '4based-sale:%'
+        AND send."maloumMessageId" NOT LIKE '4based-tip:%'
+        AND send."maloumMessageId" NOT LIKE '4based-payout:%'
+        AND send."priceNet" IS NOT NULL
+        AND stub."priceNet" IS NOT NULL
+        AND ABS(send."priceNet"::float - stub."priceNet"::float) <= $2
+        AND send."sentAt" <= COALESCE(stub."unlockedAt", stub."sentAt")
+       WHERE stub."creatorId" = $1
+         AND stub.platform = '4based'
+         AND stub."contentType" = 'chat_product'
+         AND (
+           stub."maloumMessageId" LIKE '4based-sale:%'
+           OR stub."maloumMessageId" LIKE '4based-payout:%'
+           OR stub."attributionSource" IN ('orphan_sale', 'deleted_import')
+         )
+       ORDER BY
+         stub.id,
+         ABS(
+           EXTRACT(
+             EPOCH FROM (
+               send."sentAt" - COALESCE(stub."unlockedAt", stub."sentAt")
+             )
+           )
+         ) ASC
+     ),
+     updated AS (
+       UPDATE messaging_dashboard_entries send
+       SET purchased = true,
+           "priceNet" = COALESCE(send."priceNet", m.stub_price),
+           "unlockedAt" = COALESCE(send."unlockedAt", m.stub_unlocked, m.stub_sent),
+           "payoutTxnId" = COALESCE(send."payoutTxnId", m.stub_payout),
+           "payoutVerified" = CASE
+             WHEN m.stub_payout IS NOT NULL THEN true
+             ELSE send."payoutVerified"
+           END,
+           "payoutVerifiedAt" = CASE
+             WHEN m.stub_payout IS NOT NULL THEN NOW()
+             ELSE send."payoutVerifiedAt"
+           END,
+           "updatedAt" = NOW()
+       FROM matched m
+       WHERE send.id = m.send_id
+       RETURNING send.id
+     )
+     SELECT m.stub_id
+     FROM matched m
+     WHERE (SELECT COUNT(*) FROM updated) >= 0`,
+    [creatorId, FOURBASED_PRICE_EPSILON]
   );
-  if (existing.rows.length > 0) {
-    await markVerified(existing.rows[0].id, {
-      payoutTxnId: sale.payoutTxnId,
-      unlockedAt: sale.unlockedAt,
-    });
-    return { imported: false, entryId: existing.rows[0].id };
+  const stubIds = bulk.rows.map((row) => row.stub_id).filter(Boolean);
+  if (stubIds.length > 0) {
+    await pool.query(
+      `DELETE FROM messaging_dashboard_entries WHERE id = ANY($1::uuid[])`,
+      [stubIds]
+    );
   }
+  let merged = stubIds.length;
 
-  const unlockedAt = sale.unlockedAt || new Date().toISOString();
-  const chatId =
-    recovered.chatId ||
-    sale.chatId ||
-    (sale.fanId
-      ? platform === '4based'
-        ? `4based-payout:${sale.fanId}`
-        : String(sale.chatId || sale.fanId)
-      : `deleted:${sale.payoutTxnId}`);
+  for (let pass = 0; pass < 5; pass += 1) {
+    const stubs = await pool.query(
+      `SELECT *
+       FROM messaging_dashboard_entries
+       WHERE "creatorId" = $1
+         AND platform = '4based'
+         AND "contentType" = 'chat_product'
+         AND (
+           "maloumMessageId" LIKE '4based-sale:%'
+           OR "maloumMessageId" LIKE '4based-payout:%'
+           OR "attributionSource" IN ('orphan_sale', 'deleted_import')
+         )
+       ORDER BY "sentAt" DESC
+       LIMIT 200`,
+      [creatorId]
+    );
+    if (stubs.rows.length === 0) break;
 
-  const mediaJson = recovered.mediaJson || null;
-  const pictureCount = Array.isArray(mediaJson)
-    ? mediaJson.filter((m) => !String(m?.type || '').includes('video')).length
-    : 0;
-  const videoCount = Array.isArray(mediaJson)
-    ? mediaJson.filter((m) => String(m?.type || '').includes('video')).length
-    : 0;
+    let passMerged = 0;
+    for (const stub of stubs.rows) {
+      const match = await findFourBasedEntryForPayout(
+        creatorId,
+        {
+          fanId: stub.fanId,
+          fileStackId: null,
+          vaultFileStackId: null,
+          collectionId: null,
+          amount: stub.priceNet != null ? Number(stub.priceNet) : null,
+          unlockedAt: stub.unlockedAt || stub.sentAt,
+        },
+        { allowPurchased: true, preferPurchased: true }
+      );
+      if (!match || String(match.id) === String(stub.id)) continue;
 
-  const entryId = randomUUID();
-  const insert = await pool.query(
-    `INSERT INTO messaging_dashboard_entries (
-      id, "creatorId", "creatorName", "creatorUsername", "creatorAvatarUrl",
-      platform, "chatterId", "chatterName", "chatterEmail",
-      "chatId", "fanId", "fanUsername", "maloumMessageId", "optimisticMessageId",
-      "contentType", "englishMessage", "germanTranslatedMessage", "actualSentText",
-      "priceNet", currency, purchased, "unlockedAt",
-      "payoutVerified", "payoutVerifiedAt", "payoutTxnId", "attributionSource",
-      "mediaCount", "pictureCount", "videoCount", "mediaJson",
-      "previousFanMessageAt", "responseTimeSeconds", "sentAt"
-    ) VALUES (
-      $1,$2,$3,$4,$5,
-      $6,NULL,'Deleted',NULL,
-      $7,$8,$9,$10,NULL,
-      'chat_product',$11,NULL,$11,
-      $12,$13,true,$14,
-      true,NOW(),$15,'deleted_import',
-      $16,$17,$18,$19::jsonb,
-      NULL,NULL,$14
-    )
-    ON CONFLICT ("maloumMessageId") DO NOTHING
-    RETURNING id`,
-    [
-      entryId,
-      creatorRow.id,
-      creatorRow.displayName || 'Deleted',
-      creatorRow.username || null,
-      creatorRow.avatarUrl || null,
-      platform,
-      chatId,
-      sale.fanId || null,
-      sale.fanUsername || null,
-      maloumMessageId,
-      recovered.text || null,
-      sale.amount,
-      sale.currency || (platform === '4based' ? 'USD' : 'EUR'),
-      unlockedAt,
-      sale.payoutTxnId,
-      mediaJson ? mediaJson.length : 0,
-      pictureCount,
-      videoCount,
-      mediaJson ? JSON.stringify(mediaJson) : null,
-    ]
-  );
-
-  const messagingEntryId = insert.rows[0]?.id || null;
-  const needsReview = !recovered.text;
-  await insertReconciliationEvent({
-    creatorId: creatorRow.id,
-    platform,
-    eventType: 'payout_orphan_imported',
-    status: needsReview ? 'needs_review' : 'resolved',
-    messagingEntryId,
-    maloumMessageId,
-    payoutTxnId: sale.payoutTxnId,
-    fanId: sale.fanId,
-    fanUsername: sale.fanUsername,
-    chatId,
-    amount: sale.amount,
-    currency: sale.currency,
-    unlockedAt,
-    reason: needsReview
-      ? 'imported_under_deleted_chat_recovery_incomplete'
-      : 'imported_under_deleted',
-    detailJson: { payoutTxnId: sale.payoutTxnId },
-    recoveredMessageText: recovered.text || null,
-    recoveredMediaJson: recovered.mediaJson || null,
-    resolution: needsReview ? null : 'auto_imported',
-    resolvedAt: needsReview ? null : new Date().toISOString(),
-  });
-
-  return { imported: Boolean(messagingEntryId), entryId: messagingEntryId };
+      await pool.query(
+        `UPDATE messaging_dashboard_entries
+         SET purchased = true,
+             "priceNet" = COALESCE("priceNet", $2),
+             "unlockedAt" = COALESCE("unlockedAt", $3::timestamptz),
+             "payoutTxnId" = COALESCE("payoutTxnId", $4),
+             "payoutVerified" = CASE
+               WHEN $4::text IS NOT NULL THEN true
+               ELSE "payoutVerified"
+             END,
+             "payoutVerifiedAt" = CASE
+               WHEN $4::text IS NOT NULL THEN NOW()
+               ELSE "payoutVerifiedAt"
+             END,
+             "updatedAt" = NOW()
+         WHERE id = $1`,
+        [
+          match.id,
+          stub.priceNet != null ? Number(stub.priceNet) : null,
+          stub.unlockedAt || stub.sentAt || null,
+          stub.payoutTxnId || null,
+        ]
+      );
+      await pool.query(
+        `DELETE FROM messaging_dashboard_entries WHERE id = $1`,
+        [stub.id]
+      );
+      passMerged += 1;
+    }
+    merged += passMerged;
+    if (passMerged === 0) break;
+  }
+  return merged;
 }
 
 async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchFrom }) {
@@ -731,6 +722,8 @@ async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchF
     cleared: 0,
     imported: 0,
     exceptions: 0,
+    restored: 0,
+    merged: 0,
   };
 
   const payoutRows = await fetchMaloumPayouts(authedCreator, {
@@ -738,7 +731,6 @@ async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchF
     toIso: monthTo,
   });
   const sales = normalizeMaloumSales(payoutRows);
-  const ledgerTruncated = payoutRows.length >= MALOUM_PAGE_LIMIT * MALOUM_MAX_PAGES;
   const byMessage = new Map();
   for (const sale of sales) {
     if (!byMessage.has(sale.messageId)) byMessage.set(sale.messageId, []);
@@ -765,6 +757,7 @@ async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchF
       await markVerified(entry.id, {
         payoutTxnId: matches[0].payoutTxnId,
         unlockedAt: matches[0].unlockedAt,
+        purchased: true,
       });
       matchedMessageIds.add(String(entry.maloumMessageId));
       summary.verified += 1;
@@ -783,17 +776,6 @@ async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchF
         detailJson: { payoutTxnIds: matches.map((m) => m.payoutTxnId) },
       });
       summary.exceptions += 1;
-    } else if (ledgerTruncated || isWithinFalseUnlockGrace(entry)) {
-      if (ledgerTruncated) {
-        console.warn(
-          `Skipping false-unlock clear for ${entry.id}: payout ledger page cap reached`
-        );
-      }
-    } else {
-      await clearFalseUnlock(entry, {
-        reason: 'no_payout_match_for_purchased_row',
-      });
-      summary.cleared += 1;
     }
   }
 
@@ -812,31 +794,13 @@ async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchF
       [sale.messageId]
     );
     if (existing.rows.length > 0) {
-      const row = existing.rows[0];
-      if (row.purchased) {
-        await markVerified(row.id, {
-          payoutTxnId: sale.payoutTxnId,
-          unlockedAt: sale.unlockedAt,
-        });
-        summary.verified += 1;
-      }
-      continue;
+      await markVerified(existing.rows[0].id, {
+        payoutTxnId: sale.payoutTxnId,
+        unlockedAt: sale.unlockedAt,
+        purchased: true,
+      });
+      summary.verified += 1;
     }
-
-    const recovered = await recoverMaloumMessage(
-      authedCreator,
-      sale.chatId,
-      sale.messageId
-    );
-    const result = await importDeletedSale({
-      creator: authedCreator,
-      creatorRow: meta,
-      platform: 'maloum',
-      sale,
-      recovered,
-    });
-    if (result.imported) summary.imported += 1;
-    if (!recovered.text) summary.exceptions += 1;
   }
 
   return summary;
@@ -848,6 +812,8 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
     cleared: 0,
     imported: 0,
     exceptions: 0,
+    restored: 0,
+    merged: 0,
   };
 
   const payoutRows = await fetchFourBasedPayouts(authedCreator, {
@@ -855,8 +821,6 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
     toIso: monthTo,
   });
   const sales = normalizeFourBasedSales(payoutRows);
-  const ledgerTruncated =
-    payoutRows.length >= FOURBASED_PAGE_LIMIT * FOURBASED_MAX_PAGES;
 
   const candidates = await pool.query(
     `SELECT *
@@ -872,8 +836,6 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
   );
 
   /** @type {Set<string>} */
-  const matchedEntryIds = new Set();
-  /** @type {Set<string>} */
   const matchedPayoutIds = new Set();
 
   for (const entry of candidates.rows) {
@@ -881,18 +843,35 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
       if (sale.fanId && entry.fanId && String(sale.fanId) !== String(entry.fanId)) {
         return false;
       }
-      return mediaJsonHasId(entry.mediaJson, [
+      if (mediaJsonHasId(entry.mediaJson, [
         sale.fileStackId,
         sale.vaultFileStackId,
-      ]);
+        sale.collectionId,
+      ])) {
+        return true;
+      }
+      const entryPrice =
+        entry.priceNet != null ? Math.abs(Number(entry.priceNet)) : NaN;
+      const saleAmount =
+        sale.amount != null ? Math.abs(Number(sale.amount)) : NaN;
+      if (
+        !Number.isFinite(entryPrice) ||
+        !Number.isFinite(saleAmount) ||
+        Math.abs(entryPrice - saleAmount) > FOURBASED_PRICE_EPSILON
+      ) {
+        return false;
+      }
+      const sentMs = entry.sentAt ? new Date(entry.sentAt).getTime() : NaN;
+      const soldMs = sale.unlockedAt ? Date.parse(sale.unlockedAt) : NaN;
+      return !Number.isFinite(sentMs) || !Number.isFinite(soldMs) || sentMs <= soldMs;
     });
 
     if (matches.length === 1) {
       await markVerified(entry.id, {
         payoutTxnId: matches[0].payoutTxnId,
         unlockedAt: matches[0].unlockedAt,
+        purchased: true,
       });
-      matchedEntryIds.add(String(entry.id));
       matchedPayoutIds.add(matches[0].payoutTxnId);
       summary.verified += 1;
     } else if (matches.length > 1) {
@@ -910,22 +889,6 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
         detailJson: { payoutTxnIds: matches.map((m) => m.payoutTxnId) },
       });
       summary.exceptions += 1;
-    } else if (
-      String(entry.maloumMessageId || '').startsWith('4based-payout:')
-    ) {
-      // Already a payout import stub without media match — leave for month import path
-      matchedEntryIds.add(String(entry.id));
-    } else if (ledgerTruncated || isWithinFalseUnlockGrace(entry)) {
-      if (ledgerTruncated) {
-        console.warn(
-          `Skipping false-unlock clear for ${entry.id}: payout ledger page cap reached`
-        );
-      }
-    } else {
-      await clearFalseUnlock(entry, {
-        reason: 'no_payout_match_for_purchased_row',
-      });
-      summary.cleared += 1;
     }
   }
 
@@ -942,6 +905,7 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
       await markVerified(existingMatch.id, {
         payoutTxnId: sale.payoutTxnId,
         unlockedAt: sale.unlockedAt,
+        purchased: true,
       });
       summary.verified += 1;
       continue;
@@ -957,20 +921,9 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
       await markVerified(existingPayout.rows[0].id, {
         payoutTxnId: sale.payoutTxnId,
         unlockedAt: sale.unlockedAt,
+        purchased: true,
       });
-      continue;
     }
-
-    const recovered = await recoverFourBasedMessage(authedCreator, sale.fanId, sale);
-    const result = await importDeletedSale({
-      creator: authedCreator,
-      creatorRow: meta,
-      platform: '4based',
-      sale,
-      recovered,
-    });
-    if (result.imported) summary.imported += 1;
-    if (!recovered.text) summary.exceptions += 1;
   }
 
   return summary;
@@ -986,16 +939,19 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false } =
     return { skipped: true, reason: 'invalid_creator' };
   }
 
+  const restored = await restoreClearedFalseUnlocks(creatorId);
+  const merged = await mergeFourBasedStubs(creatorId);
+
   if (!force) {
     const last = lastReconcileAtByCreator.get(creatorId) || 0;
     if (Date.now() - last < RECONCILE_THROTTLE_MS) {
-      return { skipped: true, reason: 'throttled' };
+      return { skipped: true, reason: 'throttled', restored, merged };
     }
   }
 
   const loaded = await loadAuthedCreator(creatorId);
   if (loaded.error) {
-    return { skipped: true, reason: loaded.error };
+    return { skipped: true, reason: loaded.error, restored, merged };
   }
 
   const { meta, creator: authedCreator } = loaded;
@@ -1050,7 +1006,14 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false } =
       error: err.message || String(err),
       yearMonth: bounds.yearMonth,
       platform,
+      restored,
+      merged,
     };
+  }
+
+  let mergedAfter = merged;
+  if (platform === '4based') {
+    mergedAfter += await mergeFourBasedStubs(creatorId);
   }
 
   return {
@@ -1061,6 +1024,8 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false } =
     monthFrom: bounds.monthFrom,
     monthTo: bounds.monthTo,
     ...summary,
+    restored,
+    merged: mergedAfter,
   };
 }
 
@@ -1069,8 +1034,6 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false } =
  */
 function scheduleThrottledReconcile(creatorId) {
   if (!creatorId || !isValidUuid(creatorId)) return;
-  const last = lastReconcileAtByCreator.get(creatorId) || 0;
-  if (Date.now() - last < RECONCILE_THROTTLE_MS) return;
   setImmediate(() => {
     reconcileCreatorPayouts(creatorId).catch((err) => {
       console.warn(
