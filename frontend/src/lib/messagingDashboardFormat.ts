@@ -54,6 +54,7 @@ export interface MessagingDashboardPagination {
 export interface MessagingDashboardResponse {
   data: MessagingDashboardEntry[];
   pagination: MessagingDashboardPagination;
+  totals?: { currency: 'EUR' | 'USD'; amount: number }[];
   lastUpdated: string;
 }
 
@@ -134,6 +135,18 @@ export function resolveDashboardCurrency(
     return normalized;
   }
   return platform === '4based' ? 'USD' : 'EUR';
+}
+
+/** Net take: Maloum 80%, 4based 70%. */
+export function netTakeAmount(
+  priceNet: number | null | undefined,
+  platform?: 'maloum' | '4based' | null
+): number | null {
+  if (priceNet == null || Number.isNaN(Number(priceNet))) {
+    return null;
+  }
+  const take = platform === '4based' ? 0.7 : 0.8;
+  return Math.abs(Number(priceNet)) * take;
 }
 
 /** Maloum = EUR, 4based = USD. */

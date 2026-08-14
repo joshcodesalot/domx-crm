@@ -20,9 +20,11 @@ const suggestReplyRoutes = require('./routes/suggestReply');
 const eventsRoutes = require('./routes/events');
 const moderationRoutes = require('./routes/moderation');
 const activityRoutes = require('./routes/activity');
+const contentScheduleRoutes = require('./routes/contentSchedule');
 const {
   startMaloumTokenRefreshScheduler,
 } = require('./services/maloumTokenRefresh');
+const { startContentScheduleRunner } = require('./services/contentScheduleRunner');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -70,6 +72,7 @@ app.use('/api/suggest-reply', suggestReplyRoutes);
 app.use('/api/events', eventsRoutes);
 app.use('/api/moderation', moderationRoutes);
 app.use('/api/activity', activityRoutes);
+app.use('/api/scheduled-content', contentScheduleRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
@@ -95,4 +98,5 @@ app.listen(PORT, () => {
     resumeRunningJobs: resumeFourBasedFanScrapeJobs,
   } = require('./services/fourbasedFanScrapeRunner');
   void resumeFourBasedFanScrapeJobs();
+  startContentScheduleRunner();
 });

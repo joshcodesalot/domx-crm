@@ -401,11 +401,15 @@ const BUILTIN_CHAT_FILTERS = new Set([
 
 async function listChats(
   creator,
-  { limit = 30, offset = 0, listName, userListId } = {}
+  { limit = 30, offset = 0, listName, userListId, userName } = {}
 ) {
   const { providerUserId, token, resource, cookies, proxyUrl } = authContext(creator);
   const safeLimit = Math.min(Math.max(Number(limit) || 30, 1), 100);
   const safeOffset = Math.max(Number(offset) || 0, 0);
+  const searchName =
+    typeof userName === 'string' && userName.trim().length >= 3
+      ? userName.trim()
+      : null;
 
   const builtin =
     typeof listName === 'string' && BUILTIN_CHAT_FILTERS.has(listName.trim())
@@ -417,7 +421,15 @@ async function listChats(
       : null;
 
   let url;
-  if (builtin || listId) {
+  if (searchName) {
+    const sort = encodeURIComponent(JSON.stringify({ updated_at: 'desc' }));
+    url =
+      `${REST_BASE}/user/${providerUserId}/chatsByList` +
+      `?user_name=${encodeURIComponent(searchName)}` +
+      `&with_users=true&deleted_user_id=${providerUserId}` +
+      `&with_last_message=true&without_empty_chats=true` +
+      `&limit=${safeLimit}&offset=${safeOffset}&sort=${sort}`;
+  } else if (builtin || listId) {
     const sort = encodeURIComponent(JSON.stringify({ chat_updated_at: 'desc' }));
     url =
       `${REST_BASE}/user/${providerUserId}/chatsByList` +

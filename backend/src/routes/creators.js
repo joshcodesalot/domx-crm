@@ -35,6 +35,7 @@ const {
   reconcileCreatorPayouts,
   parseYearMonth,
 } = require('../services/salePayoutReconciler');
+const massMessageUnsendAllRunner = require('../services/massMessageUnsendAllRunner');
 const {
   connectCreatorById,
   disconnectCreator,
@@ -3163,6 +3164,14 @@ router.get(
 
       const limit = Math.min(Number(req.query.limit) || 30, 100);
       const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const searchRaw =
+        typeof req.query.search === 'string' ? req.query.search.trim() : '';
+      if (searchRaw && searchRaw.length < 3) {
+        return res.status(400).json({
+          error: 'Search must be at least 3 characters.',
+        });
+      }
+      const userName = searchRaw || undefined;
       const filterRaw =
         typeof req.query.filter === 'string' ? req.query.filter.trim() : '';
       const listId =
@@ -3173,7 +3182,7 @@ router.get(
         filterRaw && fourBasedClient.BUILTIN_CHAT_FILTERS.has(filterRaw)
           ? filterRaw
           : undefined;
-      if (filterRaw && !listName && !listId) {
+      if (!userName && filterRaw && !listName && !listId) {
         return res.status(400).json({
           error:
             'Invalid filter. Use online, unread, read, follower, subscribers, or listId.',
@@ -3182,8 +3191,9 @@ router.get(
       const chats = await fourBasedClient.listChats(loaded.creator, {
         limit,
         offset,
-        listName,
-        userListId: listId,
+        listName: userName ? undefined : listName,
+        userListId: userName ? undefined : listId,
+        userName,
       });
       res.json({
         chats: Array.isArray(chats) ? chats : chats?.items || chats || [],
@@ -3560,7 +3570,7 @@ router.get(
         fourBasedClient
           .listActivities(loaded.creator, {
             offset: 0,
-            limit: 15,
+            limit: 50,
             types: 'sale,tip',
           })
           .catch((err) => {
@@ -4287,6 +4297,77 @@ router.post(
   }
 );
 
+router.post(
+  '/:id/4based/mass-messages/unsend-all',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+      const progress = massMessageUnsendAllRunner.startUnsendAll('4based', id);
+      res.json({ progress });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Start 4based unsend-all error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/mass-messages/unsend-all',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+      res.json({ progress: massMessageUnsendAllRunner.snapshot('4based', id) });
+    } catch (err) {
+      console.error('Get 4based unsend-all error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/:id/4based/mass-messages/unsend-all/stop',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+      const progress = massMessageUnsendAllRunner.stopUnsendAll('4based', id);
+      res.json({ progress });
+    } catch (err) {
+      console.error('Stop 4based unsend-all error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
 router.delete(
   '/:id/4based/mass-messages/:massMessageId',
   authenticate,
@@ -4857,13 +4938,11 @@ router.get(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      const [messagesUnread, notificationsUnread, notificationsPayload] = await Promise.all([
+      const [messagesUnread, notificationsUnread, notifications] = await Promise.all([
         maloumClient.getUnreadCount(loaded.creator),
         maloumClient.getNotificationsUnreadCount(loaded.creator),
-        maloumClient.listNotifications(loaded.creator, { limit: 15 }),
+        maloumClient.listRecentNotifications(loaded.creator, { pages: 3, limit: 15 }),
       ]);
-
-      const notifications = maloumClient.normalizeListData(notificationsPayload);
 
       try {
         await messagingDashboard.processMaloumSaleAndTipNotifications(id, notifications);
@@ -5329,6 +5408,77 @@ router.post(
       return res.status(201).json({ ok: true });
     } catch (err) {
       return handleMaloumError(res, err, 'Send Maloum broadcast error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/maloum/broadcasts/unsend-all',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+      const progress = massMessageUnsendAllRunner.startUnsendAll('maloum', id);
+      res.json({ progress });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Start Maloum unsend-all error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/broadcasts/unsend-all',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+      res.json({ progress: massMessageUnsendAllRunner.snapshot('maloum', id) });
+    } catch (err) {
+      console.error('Get Maloum unsend-all error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/:id/maloum/broadcasts/unsend-all/stop',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+      const progress = massMessageUnsendAllRunner.stopUnsendAll('maloum', id);
+      res.json({ progress });
+    } catch (err) {
+      console.error('Stop Maloum unsend-all error:', err);
+      res.status(500).json({ error: 'Internal server error' });
     }
   }
 );

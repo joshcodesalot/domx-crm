@@ -4,7 +4,9 @@ const { decryptJson, decryptSecret } = require('./crypto');
 const fourBasedClient = require('./fourBasedClient');
 
 const COMMENT_DELAY_MS = 1200;
-const STEP_DELAY_MS = 400;
+const FAN_COOLDOWN_MIN_MS = 45_000;
+const FAN_COOLDOWN_MAX_MS = 60_000;
+const COOLDOWN_POLL_MS = 500;
 const TRENDING_PAGE_SIZE = 60;
 const COMMENT_PAGE_SIZE = 20;
 
@@ -13,6 +15,27 @@ const activeRuns = new Map();
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomFanCooldownMs() {
+  return (
+    FAN_COOLDOWN_MIN_MS +
+    Math.floor(Math.random() * (FAN_COOLDOWN_MAX_MS - FAN_COOLDOWN_MIN_MS + 1))
+  );
+}
+
+function formatCooldownSeconds(ms) {
+  return (ms / 1000).toFixed(3);
+}
+
+async function sleepInterruptible(ms, motherCreatorId, generation) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    await assertStillRunning(motherCreatorId, generation);
+    const remaining = end - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(remaining, COOLDOWN_POLL_MS));
+  }
 }
 
 function defaultCheckpoint() {
@@ -591,12 +614,14 @@ async function runImportColdDm(motherCreatorId, job, generation) {
         };
       }
 
+      const cooldownMs = randomFanCooldownMs();
       cp = {
         ...cp,
         importCreatorIndex: cp.importCreatorIndex + 1,
+        statusMessage: `Import DM · fan ${cp.importFanIndex + 1}/${fans.length} · creator ${cp.importCreatorIndex + 1}/${targetIds.length} · sent ${cp.processedFans} · cooldown ${formatCooldownSeconds(cooldownMs)}s`,
       };
       await saveCheckpoint(motherCreatorId, cp, 'running');
-      await sleep(STEP_DELAY_MS);
+      await sleepInterruptible(cooldownMs, motherCreatorId, generation);
     }
 
     cp = {
@@ -682,12 +707,13 @@ async function runTrendingScrape(motherCreatorId, job, generation) {
         for (const comment of comments) {
           await assertStillRunning(motherCreatorId, generation);
           cp = await processFan(creator, job, comment?.user, postId, cp);
+          const cooldownMs = randomFanCooldownMs();
           cp = {
             ...cp,
-            statusMessage: `Post ${cp.postIndex + 1}/${cp.currentPagePostIds.length} @ offset ${cp.trendingOffset} · fans ${cp.processedFans}${cp.skippedPosts ? ` · skipped posts ${cp.skippedPosts}` : ''}`,
+            statusMessage: `Post ${cp.postIndex + 1}/${cp.currentPagePostIds.length} @ offset ${cp.trendingOffset} · fans ${cp.processedFans}${cp.skippedPosts ? ` · skipped posts ${cp.skippedPosts}` : ''} · cooldown ${formatCooldownSeconds(cooldownMs)}s`,
           };
           await saveCheckpoint(motherCreatorId, cp, 'running');
-          await sleep(STEP_DELAY_MS);
+          await sleepInterruptible(cooldownMs, motherCreatorId, generation);
         }
 
         if (comments.length < COMMENT_PAGE_SIZE) {

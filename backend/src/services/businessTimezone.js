@@ -221,10 +221,108 @@ function resolveAnalyticsPeriod(input = {}, maxDays = 90, options = {}) {
   };
 }
 
+/**
+ * Convert a wall-clock time in `timeZone` to a UTC Date.
+ * @param {number} year
+ * @param {number} month 1-12
+ * @param {number} day
+ * @param {number} hour
+ * @param {number} minute
+ * @param {string} [timeZone]
+ * @returns {Date}
+ */
+function zonedWallTimeToUtc(year, month, day, hour, minute, timeZone = BUSINESS_TZ) {
+  const tz = normalizeTimeZone(timeZone);
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, 0);
+  const offsetMs = (instant) => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date(instant));
+    const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+    const asUtc = Date.UTC(
+      Number(map.year),
+      Number(map.month) - 1,
+      Number(map.day),
+      Number(map.hour),
+      Number(map.minute),
+      Number(map.second)
+    );
+    return asUtc - instant;
+  };
+  let instant = utcGuess - offsetMs(utcGuess);
+  instant = utcGuess - offsetMs(instant);
+  return new Date(instant);
+}
+
+/**
+ * Parse a schedule datetime in `timeZone` unless an ISO offset/Z is present.
+ * Accepts "YYYY-MM-DD HH:mm", "YYYY-MM-DDTHH:mm", or full ISO.
+ * @param {unknown} value
+ * @param {string} [timeZone]
+ * @returns {Date|null}
+ */
+function parseBusinessDateTime(value, timeZone = BUSINESS_TZ) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const tz = normalizeTimeZone(timeZone);
+
+  const isoWithZone = raw.match(
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/
+  );
+  if (isoWithZone) {
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const match = raw.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/
+  );
+  if (!match) {
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = match[4] != null ? Number(match[4]) : 0;
+  const minute = match[5] != null ? Number(match[5]) : 0;
+  if (
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day) ||
+    !Number.isFinite(hour) ||
+    !Number.isFinite(minute)
+  ) {
+    return null;
+  }
+  return zonedWallTimeToUtc(year, month, day, hour, minute, tz);
+}
+
+function calendarTimeString(date = new Date(), timeZone = BUSINESS_TZ) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: normalizeTimeZone(timeZone),
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${map.hour}:${map.minute}`;
+}
+
 module.exports = {
   BUSINESS_TZ,
   normalizeTimeZone,
   calendarDateString,
+  calendarTimeString,
   monthStartDateString,
   weekStartDateString,
   buildDateRange,
@@ -232,4 +330,6 @@ module.exports = {
   isValidDateString,
   resolveAnalyticsPeriod,
   PRESET_PERIOD_DAYS,
+  zonedWallTimeToUtc,
+  parseBusinessDateTime,
 };

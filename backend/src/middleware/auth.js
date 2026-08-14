@@ -49,6 +49,7 @@ async function authenticate(req, res, next) {
       roleName: user.roleName,
       roleRank: user.roleRank,
       mustChangePassword: user.mustChangePassword,
+      timezone: user.timezone || 'Europe/Berlin',
       permissions,
     };
     next();

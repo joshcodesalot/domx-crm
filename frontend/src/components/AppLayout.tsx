@@ -9,6 +9,7 @@ interface AppLayoutProps {
     | 'charts'
     | 'creatorAnalytics'
     | 'falseSales'
+    | 'salesLogs'
     | 'creators'
     | 'staff'
     | 'moderation'

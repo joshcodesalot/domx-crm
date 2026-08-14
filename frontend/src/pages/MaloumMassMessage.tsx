@@ -8,6 +8,7 @@ import {
 } from 'react';
 import {
   Box,
+  CalendarClock,
   Check,
   Folder,
   FolderOpen,
@@ -30,6 +31,7 @@ import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
+import ScheduleDateTimePicker from '@/components/ScheduleDateTimePicker';
 import maloumIcon from '@/assets/maloum_icon.png';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmDialogContext';
@@ -45,6 +47,7 @@ import {
 } from '@/components/maloum/MaloumChatPanels';
 import {
   getCreators,
+  getMassUnsendAll,
   listMaloumBroadcasts,
   listMaloumChatLists,
   listAllMaloumVaultFolders,
@@ -53,13 +56,18 @@ import {
   maloumMediaUrl,
   revokeMaloumBroadcast,
   sendMaloumBroadcast,
+  createScheduledContent,
+  startMassUnsendAll,
+  stopMassUnsendAll,
   translateToGerman,
   type Creator,
   type MaloumBroadcast,
   type MaloumChatListItem,
   type MaloumVaultFolder,
   type MaloumVaultMediaItem,
+  type MassUnsendAllProgress,
 } from '@/lib/api';
+import { berlinNowParts, berlinWallToIso, useStaffTimeZone } from '@/lib/berlinTime';
 
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const CURRENCY_SYMBOL = '€';
@@ -227,6 +235,12 @@ export default function MaloumMassMessage() {
     currentId: string | null;
   }>({ done: 0, total: 0, currentId: null });
   const bulkAbortRef = useRef(false);
+  const timeZone = useStaffTimeZone();
+  const berlin = berlinNowParts(timeZone);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState(berlin.date);
+  const [scheduleTime, setScheduleTime] = useState(berlin.time);
+  const [unsendAll, setUnsendAll] = useState<MassUnsendAllProgress | null>(null);
 
   const [chatLists, setChatLists] = useState<MaloumChatListItem[]>([]);
   const [chatListsNext, setChatListsNext] = useState<string | null>(null);
@@ -373,11 +387,46 @@ export default function MaloumMassMessage() {
     bulkAbortRef.current = true;
     setBulkUnsending(false);
     setBulkProgress({ done: 0, total: 0, currentId: null });
+    setUnsendAll(null);
     if (selectedCreatorId) {
       void loadBroadcasts();
       void loadChatLists();
     }
   }, [selectedCreatorId, loadBroadcasts, loadChatLists]);
+
+  useEffect(() => {
+    if (!selectedCreatorId) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const result = await getMassUnsendAll(selectedCreatorId, 'maloum');
+        if (cancelled) return;
+        setUnsendAll(result.progress);
+        if (result.progress.status === 'running') {
+          timer = window.setTimeout(() => void poll(), 2000);
+        }
+      } catch {
+        if (!cancelled) {
+          timer = window.setTimeout(() => void poll(), 4000);
+        }
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [selectedCreatorId, unsendAll?.status]);
+
+  useEffect(() => {
+    if (
+      unsendAll?.status === 'completed' ||
+      unsendAll?.status === 'stopped'
+    ) {
+      void loadBroadcasts();
+    }
+  }, [unsendAll?.status, loadBroadcasts]);
 
   const loadVaultFolders = useCallback(async () => {
     if (!selectedCreatorId) return;
@@ -664,6 +713,24 @@ export default function MaloumMassMessage() {
     toast,
   ]);
 
+  const handleUnsendAll = useCallback(async () => {
+    if (!selectedCreatorId || unsendAll?.status === 'running') return;
+    const ok = await confirm({
+      title: 'Delete all sent',
+      message:
+        'Delete every mass message that is still sent in this creator’s history (not just this page)? Each delete waits a random 5–10s.',
+      confirmLabel: 'Delete all',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    try {
+      const result = await startMassUnsendAll(selectedCreatorId, 'maloum');
+      setUnsendAll(result.progress);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to start unsend all');
+    }
+  }, [selectedCreatorId, unsendAll?.status, confirm, toast]);
+
   const handleSend = useCallback(async () => {
     if (!selectedCreatorId || sending || translatingOutgoing) return;
     const englishDraft = draft.trim();
@@ -679,6 +746,40 @@ export default function MaloumMassMessage() {
     setSending(true);
     setSendError(null);
     try {
+      const mediaPayload = selectedVaultItems.map((item) => {
+        const uploadId = vaultUploadId(item);
+        if (!uploadId) throw new Error('Selected vault item is missing uploadId');
+        return {
+          mediaId: uploadId,
+          type: item.media?.type || 'picture',
+          width: item.media?.width,
+          height: item.media?.height,
+        };
+      });
+      const priceNet = Number(ppvPrice) || 0;
+
+      if (scheduleEnabled) {
+        await createScheduledContent({
+          kind: 'mass_message',
+          creatorId: selectedCreatorId,
+          platform: 'maloum',
+          runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
+          bodyText: englishDraft,
+          payload: {
+            includeFromLists: includeIds,
+            excludeFromLists: excludeIds,
+            media: mediaPayload,
+            price: mediaPayload.length > 0 && priceNet > 0 ? priceNet : 0,
+          },
+        });
+        toast.success(`Mass message scheduled (${timeZone})`);
+        setDraft('');
+        setSelectedVaultItems([]);
+        setPpvPrice('');
+        setPriceDraft('');
+        return;
+      }
+
       let textToSend = englishDraft;
       if (autoTranslateOutgoing && englishDraft) {
         setTranslatingOutgoing(true);
@@ -696,18 +797,6 @@ export default function MaloumMassMessage() {
         }
       }
 
-      const mediaPayload = selectedVaultItems.map((item) => {
-        const uploadId = vaultUploadId(item);
-        if (!uploadId) throw new Error('Selected vault item is missing uploadId');
-        return {
-          mediaId: uploadId,
-          type: item.media?.type || 'picture',
-          width: item.media?.width,
-          height: item.media?.height,
-        };
-      });
-
-      const priceNet = Number(ppvPrice) || 0;
       await sendMaloumBroadcast(selectedCreatorId, {
         includeFromLists: includeIds,
         excludeFromLists: excludeIds,
@@ -739,6 +828,11 @@ export default function MaloumMassMessage() {
     autoTranslateOutgoing,
     ppvPrice,
     loadBroadcasts,
+    scheduleEnabled,
+    scheduleDate,
+    scheduleTime,
+    timeZone,
+    toast,
   ]);
 
   return (
@@ -827,11 +921,38 @@ export default function MaloumMassMessage() {
                     {selectedCreator?.displayName || 'Creator'} — Sent mass messages
                   </h1>
                   <p className="text-xs text-gray-500 dark:text-zinc-500">
-                    Managers and above only
+                    Managers and above. Schedule uses your account timezone.
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-wrap justify-end">
+                {unsendAll?.status === 'running' ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500">
+                      Deleting all {unsendAll.done}
+                      {unsendAll.totalEstimate ? `/${unsendAll.totalEstimate}` : ''}…
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!selectedCreatorId) return;
+                        void stopMassUnsendAll(selectedCreatorId, 'maloum');
+                      }}
+                      className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 dark:border-zinc-700"
+                    >
+                      Stop
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleUnsendAll()}
+                    disabled={bulkUnsending}
+                    className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 disabled:opacity-40"
+                  >
+                    Unsend all sent
+                  </button>
+                )}
                 {(selectedIds.size > 0 || bulkUnsending) && (
                   <div className="flex items-center gap-2 flex-wrap">
                     {bulkUnsending ? (
@@ -1172,6 +1293,26 @@ export default function MaloumMassMessage() {
                 <p className="text-xs text-gray-500">Translating to German…</p>
               )}
 
+              <label className="flex items-center justify-between gap-3">
+                <span className="text-xs font-medium text-gray-700 dark:text-zinc-300 inline-flex items-center gap-1.5">
+                  <CalendarClock className="w-3.5 h-3.5" />
+                  Schedule instead of sending now
+                </span>
+                <ToggleSwitch
+                  checked={scheduleEnabled}
+                  onChange={setScheduleEnabled}
+                  aria-label="Schedule mass message"
+                />
+              </label>
+              {scheduleEnabled && (
+                <ScheduleDateTimePicker
+                  date={scheduleDate}
+                  time={scheduleTime}
+                  onDateChange={setScheduleDate}
+                  onTimeChange={setScheduleTime}
+                />
+              )}
+
               <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50">
                 <button
                   type="button"
@@ -1202,10 +1343,12 @@ export default function MaloumMassMessage() {
                     includeIds.length === 0
                   }
                   className="p-3 rounded-xl bg-domx-600 text-white hover:bg-domx-500 shadow-lg shadow-domx-600/20 shrink-0 disabled:opacity-40"
-                  title="Send mass message"
+                  title={scheduleEnabled ? 'Schedule mass message' : 'Send mass message'}
                 >
                   {sending || translatingOutgoing ? (
                     <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : scheduleEnabled ? (
+                    <CalendarClock className="w-5 h-5" />
                   ) : (
                     <Send className="w-5 h-5" />
                   )}

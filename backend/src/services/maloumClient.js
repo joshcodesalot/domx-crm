@@ -769,6 +769,21 @@ async function listNotifications(creator, { limit = 15, next } = {}) {
   return result.data;
 }
 
+async function listRecentNotifications(creator, { pages = 3, limit = 15 } = {}) {
+  const all = [];
+  let next;
+  const maxPages = Math.min(Math.max(Number(pages) || 3, 1), 8);
+  const pageLimit = Math.min(Math.max(Number(limit) || 15, 1), 50);
+  for (let i = 0; i < maxPages; i += 1) {
+    const payload = await listNotifications(creator, { limit: pageLimit, next });
+    const list = normalizeListData(payload);
+    all.push(...list);
+    next = payload?.next || null;
+    if (!next || list.length === 0) break;
+  }
+  return all;
+}
+
 /** Payout ledger: CHAT_PRODUCT / TIP / SUBSCRIPTION / PAYOUT rows. */
 async function listTransactionHistory(creator, { limit = 10, next } = {}) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
@@ -1582,6 +1597,7 @@ module.exports = {
   getUnreadCount,
   getNotificationsUnreadCount,
   listNotifications,
+  listRecentNotifications,
   listTransactionHistory,
   getUserBalance,
   markNotificationsReadAll,

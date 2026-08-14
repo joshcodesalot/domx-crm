@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   BarChart2,
   Bell,
+  CalendarDays,
   LayoutGrid,
   LineChart,
   LogOut,
@@ -9,6 +10,7 @@ import {
   MessageSquare,
   Newspaper,
   PanelsTopLeft,
+  Receipt,
   ShieldAlert,
   Sparkles,
   Settings,
@@ -29,11 +31,13 @@ interface SidebarProps {
     | 'charts'
     | 'creatorAnalytics'
     | 'falseSales'
+    | 'salesLogs'
     | 'chatter'
     | 'creators'
     | 'staff'
     | 'moderation'
-    | 'account';
+    | 'account'
+    | 'schedule';
 }
 
 export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
@@ -48,7 +52,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   const isFourBasedActive =
     hash.includes('/chatter/4based') || hash.includes('/message-pro/4based');
   const isMaloumActive =
-    activePage === 'chatter' && !isFourBasedActive;
+    activePage === 'chatter' && !isFourBasedActive && !hash.includes('/chatter/schedule');
 
   async function handleLogout() {
     await logout();
@@ -123,6 +127,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       | 'fan-scraper'
       | 'ai-bulk-reply'
       | 'notifications'
+      | 'schedule'
   ) {
     setMaloumMenuOpen(false);
     if (view === 'message-pro') {
@@ -135,6 +140,10 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     }
     if (view === 'feed') {
       navigate('/chatter/maloum/feed');
+      return;
+    }
+    if (view === 'schedule') {
+      navigate('/chatter/schedule');
       return;
     }
     if (view === 'fan-scraper') {
@@ -161,6 +170,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       | 'fan-scraper'
       | 'ai-bulk-reply'
       | 'notifications'
+      | 'schedule'
   ) {
     setFourBasedMenuOpen(false);
     if (view === 'message-pro') {
@@ -173,6 +183,10 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     }
     if (view === 'feed') {
       navigate('/chatter/4based/feed');
+      return;
+    }
+    if (view === 'schedule') {
+      navigate('/chatter/schedule');
       return;
     }
     if (view === 'fan-scraper') {
@@ -239,6 +253,16 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             <BarChart2 className="w-5 h-5" />
           </button>
         )}
+        {hasPermission('analytics.view') && (
+          <button
+            type="button"
+            onClick={() => navigate('/dashboard/sales-logs')}
+            className={navClass('salesLogs')}
+            title="Sales Logs"
+          >
+            <Receipt className="w-5 h-5" />
+          </button>
+        )}
         {(user?.role === 'owner' || user?.role === 'manager') && (
           <button
             type="button"
@@ -247,6 +271,16 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             title="False Sales Review"
           >
             <ShieldAlert className="w-5 h-5" />
+          </button>
+        )}
+        {hasPermission('mass_messages.send') && (
+          <button
+            type="button"
+            onClick={() => navigate('/chatter/schedule')}
+            className={navClass('schedule')}
+            title="Content schedule"
+          >
+            <CalendarDays className="w-5 h-5" />
           </button>
         )}
         {hasPermission('creators.view') && (
@@ -329,6 +363,17 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                   >
                     <Newspaper className="w-4 h-4 shrink-0" />
                     Feed
+                  </button>
+                )}
+                {hasPermission('mass_messages.send') && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void handleMaloumNavigate('schedule')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                  >
+                    <CalendarDays className="w-4 h-4 shrink-0" />
+                    Schedule
                   </button>
                 )}
                 {hasPermission('mass_messages.send') && (
@@ -437,6 +482,17 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                   >
                     <Newspaper className="w-4 h-4 shrink-0" />
                     Feed
+                  </button>
+                )}
+                {hasPermission('mass_messages.send') && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void handleFourBasedNavigate('schedule')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                  >
+                    <CalendarDays className="w-4 h-4 shrink-0" />
+                    Schedule
                   </button>
                 )}
                 {hasPermission('mass_messages.send') && (

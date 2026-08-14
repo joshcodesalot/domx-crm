@@ -8,6 +8,7 @@ import {
 } from 'react';
 import {
   Box,
+  CalendarClock,
   Check,
   Image as ImageIcon,
   Loader2,
@@ -28,6 +29,7 @@ import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
+import ScheduleDateTimePicker from '@/components/ScheduleDateTimePicker';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import { formatRelativeTime } from '@/components/fourbased/FourBasedChatPanels';
 import { useAuth } from '@/context/AuthContext';
@@ -36,11 +38,13 @@ import { useStaffSync } from '@/context/StaffSyncContext';
 import { useToast } from '@/context/ToastContext';
 import {
   countFourBasedMassMessageReceivers,
+  createScheduledContent,
   deleteFourBasedMassMessage,
   fourBasedMediaUrl,
   fourBasedPreviewPath,
   getCreators,
   getFourBasedProfile,
+  getMassUnsendAll,
   listFourBasedMassMessages,
   listFourBasedUserLists,
   listFourBasedVault,
@@ -49,13 +53,17 @@ import {
   pickFourBasedSourceUrl,
   resolveFourBasedMediaSrc,
   sendFourBasedMassMessage,
+  startMassUnsendAll,
+  stopMassUnsendAll,
   translateToGerman,
   type Creator,
   type FourBasedMassMessage,
   type FourBasedMassMessageTab,
   type FourBasedUserList,
   type FourBasedVaultItem,
+  type MassUnsendAllProgress,
 } from '@/lib/api';
+import { berlinNowParts, berlinWallToIso, useStaffTimeZone } from '@/lib/berlinTime';
 
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const CURRENCY_SYMBOL = '$';
@@ -212,6 +220,12 @@ export default function FourBasedMassMessage() {
     currentId: string | null;
   }>({ done: 0, total: 0, currentId: null });
   const bulkAbortRef = useRef(false);
+  const timeZone = useStaffTimeZone();
+  const berlin = berlinNowParts(timeZone);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState(berlin.date);
+  const [scheduleTime, setScheduleTime] = useState(berlin.time);
+  const [unsendAll, setUnsendAll] = useState<MassUnsendAllProgress | null>(null);
 
   const [userLists, setUserLists] = useState<FourBasedUserList[]>([]);
   const [listsOffset, setListsOffset] = useState(0);
@@ -389,6 +403,7 @@ export default function FourBasedMassMessage() {
     bulkAbortRef.current = true;
     setBulkUnsending(false);
     setBulkProgress({ done: 0, total: 0, currentId: null });
+    setUnsendAll(null);
     if (selectedCreatorId) {
       void loadMessages({ tab: 'sent' });
       void loadUserLists();
@@ -419,6 +434,40 @@ export default function FourBasedMassMessage() {
     void loadMessages({ tab: historyTab });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyTab]);
+
+  useEffect(() => {
+    if (!selectedCreatorId) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const result = await getMassUnsendAll(selectedCreatorId, '4based');
+        if (cancelled) return;
+        setUnsendAll(result.progress);
+        if (result.progress.status === 'running') {
+          timer = window.setTimeout(() => void poll(), 2000);
+        }
+      } catch {
+        if (!cancelled) {
+          timer = window.setTimeout(() => void poll(), 4000);
+        }
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [selectedCreatorId, unsendAll?.status]);
+
+  useEffect(() => {
+    if (
+      unsendAll?.status === 'completed' ||
+      unsendAll?.status === 'stopped'
+    ) {
+      void loadMessages({ tab: 'sent' });
+    }
+  }, [unsendAll?.status, loadMessages]);
 
   useEffect(() => {
     if (!selectedCreatorId) {
@@ -781,6 +830,24 @@ export default function FourBasedMassMessage() {
     toast,
   ]);
 
+  const handleUnsendAll = useCallback(async () => {
+    if (!selectedCreatorId || unsendAll?.status === 'running') return;
+    const ok = await confirm({
+      title: 'Unsend all sent',
+      message:
+        'Unsend every mass message that is still sent in this creator’s history (not just this page)? Each delete waits a random 5–10s. You can stop it later.',
+      confirmLabel: 'Unsend all',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    try {
+      const result = await startMassUnsendAll(selectedCreatorId, '4based');
+      setUnsendAll(result.progress);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to start unsend all');
+    }
+  }, [selectedCreatorId, unsendAll?.status, confirm, toast]);
+
   const handleSend = useCallback(async () => {
     if (!selectedCreatorId || sending || translatingOutgoing) return;
     const englishDraft = draft.trim();
@@ -796,23 +863,6 @@ export default function FourBasedMassMessage() {
     setSending(true);
     setSendError(null);
     try {
-      let textToSend = englishDraft;
-      if (autoTranslateOutgoing && englishDraft) {
-        setTranslatingOutgoing(true);
-        try {
-          textToSend = await translateToGerman(englishDraft, []);
-        } catch (err) {
-          setSendError(
-            err instanceof Error
-              ? err.message
-              : 'Translation failed. Message was not sent.'
-          );
-          return;
-        } finally {
-          setTranslatingOutgoing(false);
-        }
-      }
-
       const vaults = selectedVaultItems
         .map((item, index) => {
           const id = vaultItemId(item);
@@ -829,6 +879,46 @@ export default function FourBasedMassMessage() {
       const dollars = Number(ppvPrice) || 0;
       const priceCoins =
         vaults.length > 0 && dollars > 0 ? dollarsToCoins(dollars) : 0;
+
+      if (scheduleEnabled) {
+        await createScheduledContent({
+          kind: 'mass_message',
+          creatorId: selectedCreatorId,
+          platform: '4based',
+          runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
+          bodyText: englishDraft,
+          payload: {
+            filter: audienceFilters,
+            includeUserList: includeIds,
+            excludeUserList: excludeIds,
+            vaults: vaults.length > 0 ? vaults : undefined,
+            priceCoins: priceCoins > 0 ? priceCoins : undefined,
+          },
+        });
+        toast.success(`Mass message scheduled (${timeZone})`);
+        setDraft('');
+        setSelectedVaultItems([]);
+        setPpvPrice('');
+        setPriceDraft('');
+        return;
+      }
+
+      let textToSend = englishDraft;
+      if (autoTranslateOutgoing && englishDraft) {
+        setTranslatingOutgoing(true);
+        try {
+          textToSend = await translateToGerman(englishDraft, []);
+        } catch (err) {
+          setSendError(
+            err instanceof Error
+              ? err.message
+              : 'Translation failed. Message was not sent.'
+          );
+          return;
+        } finally {
+          setTranslatingOutgoing(false);
+        }
+      }
 
       await sendFourBasedMassMessage(selectedCreatorId, {
         message: textToSend,
@@ -865,6 +955,11 @@ export default function FourBasedMassMessage() {
     autoTranslateOutgoing,
     ppvPrice,
     loadMessages,
+    scheduleEnabled,
+    scheduleDate,
+    scheduleTime,
+    timeZone,
+    toast,
   ]);
 
   const vaultLightbox =
@@ -983,11 +1078,43 @@ export default function FourBasedMassMessage() {
                     {selectedCreator?.displayName || 'Creator'} — Mass messages
                   </h1>
                   <p className="text-xs text-gray-500 dark:text-zinc-500">
-                    Sent and Unsent (deleted). No scheduling.
+                    Sent and Unsent (deleted). Schedule uses your account timezone.
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-wrap justify-end">
+                {historyTab === 'sent' && (
+                  unsendAll?.status === 'running' ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">
+                        Unsending all {unsendAll.done}
+                        {unsendAll.totalEstimate
+                          ? `/${unsendAll.totalEstimate}`
+                          : ''}
+                        …
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!selectedCreatorId) return;
+                          void stopMassUnsendAll(selectedCreatorId, '4based');
+                        }}
+                        className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 dark:border-zinc-700"
+                      >
+                        Stop
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void handleUnsendAll()}
+                      disabled={bulkUnsending}
+                      className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 disabled:opacity-40"
+                    >
+                      Unsend all sent
+                    </button>
+                  )
+                )}
                 {historyTab === 'sent' && (selectedIds.size > 0 || bulkUnsending) && (
                   <div className="flex items-center gap-2 flex-wrap">
                     {bulkUnsending ? (
@@ -1384,6 +1511,26 @@ export default function FourBasedMassMessage() {
                 <p className="text-xs text-gray-500">Translating to German…</p>
               )}
 
+              <label className="flex items-center justify-between gap-3">
+                <span className="text-xs font-medium text-gray-700 dark:text-zinc-300 inline-flex items-center gap-1.5">
+                  <CalendarClock className="w-3.5 h-3.5" />
+                  Schedule instead of sending now
+                </span>
+                <ToggleSwitch
+                  checked={scheduleEnabled}
+                  onChange={setScheduleEnabled}
+                  aria-label="Schedule mass message"
+                />
+              </label>
+              {scheduleEnabled && (
+                <ScheduleDateTimePicker
+                  date={scheduleDate}
+                  time={scheduleTime}
+                  onDateChange={setScheduleDate}
+                  onTimeChange={setScheduleTime}
+                />
+              )}
+
               <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-4based-500/50">
                 <button
                   type="button"
@@ -1414,10 +1561,12 @@ export default function FourBasedMassMessage() {
                     audienceFilters.length === 0
                   }
                   className="p-3 rounded-xl bg-4based-500 text-white hover:opacity-90 shadow-lg shadow-4based-500/20 shrink-0 disabled:opacity-40"
-                  title="Send mass message"
+                  title={scheduleEnabled ? 'Schedule mass message' : 'Send mass message'}
                 >
                   {sending || translatingOutgoing ? (
                     <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : scheduleEnabled ? (
+                    <CalendarClock className="w-5 h-5" />
                   ) : (
                     <Send className="w-5 h-5" />
                   )}

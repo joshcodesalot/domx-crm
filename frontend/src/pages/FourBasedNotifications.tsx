@@ -26,6 +26,7 @@ import {
   type Creator,
   type FourBasedActivity,
 } from '@/lib/api';
+import { runWithConcurrency } from '@/lib/runWithConcurrency';
 
 const BADGE_POLL_MS = 15_000;
 const PAGE_LIMIT = 20;
@@ -150,14 +151,18 @@ export default function FourBasedNotifications() {
   const refreshBadges = useCallback(async (creatorIds: string[]) => {
     if (creatorIds.length === 0) return;
     const updates: Record<string, number> = {};
-    for (const id of creatorIds) {
+    await runWithConcurrency(creatorIds, 3, async (id) => {
       try {
         const result = await getFourBasedBadges(id);
         updates[id] = Number(result.notifications) || 0;
-      } catch {
-        // best-effort
+      } catch (err) {
+        console.warn(
+          '4based badge poll failed:',
+          id,
+          err instanceof Error ? err.message : err
+        );
       }
-    }
+    });
     if (Object.keys(updates).length > 0) {
       setUnreadByCreatorId((prev) => ({ ...prev, ...updates }));
     }

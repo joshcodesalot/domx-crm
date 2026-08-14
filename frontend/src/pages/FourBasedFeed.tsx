@@ -8,6 +8,7 @@ import {
 } from 'react';
 import {
   Box,
+  CalendarClock,
   Check,
   Folder,
   FolderOpen,
@@ -26,6 +27,7 @@ import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
+import ScheduleDateTimePicker from '@/components/ScheduleDateTimePicker';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import { formatRelativeTime } from '@/components/fourbased/FourBasedChatPanels';
 import { useConfirm } from '@/context/ConfirmDialogContext';
@@ -43,10 +45,12 @@ import {
   resolveFourBasedMediaSrc,
   translateToGerman,
   uploadFourBasedFeedPhoto,
+  createScheduledContent,
   type Creator,
   type FourBasedFeedPost,
   type FourBasedVaultItem,
 } from '@/lib/api';
+import { berlinNowParts, berlinWallToIso, useStaffTimeZone } from '@/lib/berlinTime';
 
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const PAGE_SIZE = 24;
@@ -184,6 +188,11 @@ export default function FourBasedFeed() {
   const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
     readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
   );
+  const timeZone = useStaffTimeZone();
+  const berlin = berlinNowParts(timeZone);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState(berlin.date);
+  const [scheduleTime, setScheduleTime] = useState(berlin.time);
 
   const [vaultOpen, setVaultOpen] = useState(false);
   const [vaultFolders, setVaultFolders] = useState<string[]>([]);
@@ -413,6 +422,40 @@ export default function FourBasedFeed() {
     setPosting(true);
     setPostError(null);
     try {
+      if (scheduleEnabled) {
+        if (mediaSource === 'upload' && uploadFile) {
+          await createScheduledContent({
+            kind: 'feed_post',
+            creatorId: selectedCreatorId,
+            platform: '4based',
+            runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
+            bodyText: draft.trim(),
+            payload: { folder: uploadFolder },
+            file: uploadFile,
+          });
+        } else if (selectedVaultItem) {
+          const vaultId = vaultItemId(selectedVaultItem);
+          if (!vaultId) throw new Error('Could not resolve vault item id');
+          await createScheduledContent({
+            kind: 'feed_post',
+            creatorId: selectedCreatorId,
+            platform: '4based',
+            runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
+            bodyText: draft.trim(),
+            payload: {
+              vaultId,
+              vaultGuid:
+                typeof selectedVaultItem.guid === 'string'
+                  ? selectedVaultItem.guid
+                  : undefined,
+            },
+          });
+        }
+        toast.success(`Post scheduled (${timeZone})`);
+        resetCompose();
+        return;
+      }
+
       let caption = draft.trim();
       if (caption && autoTranslateOutgoing) {
         setTranslatingOutgoing(true);
@@ -474,6 +517,10 @@ export default function FourBasedFeed() {
     toast,
     resetCompose,
     loadPosts,
+    scheduleEnabled,
+    scheduleDate,
+    scheduleTime,
+    timeZone,
   ]);
 
   const handleDelete = useCallback(
@@ -769,6 +816,26 @@ export default function FourBasedFeed() {
                 </p>
               )}
 
+              <label className="flex items-center justify-between gap-3">
+                <span className="text-xs font-medium text-gray-700 dark:text-zinc-300 inline-flex items-center gap-1.5">
+                  <CalendarClock className="w-3.5 h-3.5" />
+                  Schedule instead of posting now
+                </span>
+                <ToggleSwitch
+                  checked={scheduleEnabled}
+                  onChange={setScheduleEnabled}
+                  aria-label="Schedule feed post"
+                />
+              </label>
+              {scheduleEnabled && (
+                <ScheduleDateTimePicker
+                  date={scheduleDate}
+                  time={scheduleTime}
+                  onDateChange={setScheduleDate}
+                  onTimeChange={setScheduleTime}
+                />
+              )}
+
               <button
                 type="button"
                 onClick={() => void handlePost()}
@@ -777,10 +844,12 @@ export default function FourBasedFeed() {
               >
                 {posting || translatingOutgoing ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
+                ) : scheduleEnabled ? (
+                  <CalendarClock className="w-4 h-4" />
                 ) : (
                   <Send className="w-4 h-4" />
                 )}
-                Publish post
+                {scheduleEnabled ? 'Schedule post' : 'Publish post'}
               </button>
             </div>
           </section>

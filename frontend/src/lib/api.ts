@@ -273,6 +273,7 @@ export interface MessagingDashboardPagination {
 export interface MessagingDashboardResponse {
   data: MessagingDashboardEntry[];
   pagination: MessagingDashboardPagination;
+  totals?: CurrencyAmount[];
   lastUpdated: string;
 }
 
@@ -1299,6 +1300,7 @@ export async function getMessagingDashboard(filters: {
   platform?: 'maloum' | '4based';
   purchased?: boolean;
   contentType?: 'chat_product' | 'tip';
+  salesOnly?: boolean;
   page?: number;
   limit?: number;
 } = {}): Promise<MessagingDashboardResponse> {
@@ -1330,6 +1332,10 @@ export async function getMessagingDashboard(filters: {
 
   if (filters.contentType) {
     params.set('contentType', filters.contentType);
+  }
+
+  if (filters.salesOnly) {
+    params.set('salesOnly', 'true');
   }
 
   if (filters.page) {
@@ -1841,6 +1847,7 @@ export async function listFourBasedChats(
     offset?: number;
     filter?: FourBasedChatFilter | null;
     listId?: string | null;
+    search?: string | null;
   } = {}
 ): Promise<{ chats: FourBasedChat[]; providerUserId: string }> {
   const params = new URLSearchParams();
@@ -1848,6 +1855,9 @@ export async function listFourBasedChats(
   if (options.offset != null) params.set('offset', String(options.offset));
   if (options.filter) params.set('filter', options.filter);
   if (options.listId) params.set('listId', options.listId);
+  if (options.search && options.search.trim().length >= 3) {
+    params.set('search', options.search.trim());
+  }
   const query = params.toString();
   return request(
     `/api/creators/${creatorId}/4based/chats${query ? `?${query}` : ''}`
@@ -3884,5 +3894,287 @@ export async function updateModerationEvent(
     method: 'PATCH',
     body: JSON.stringify({ status }),
   });
+}
+
+export type ScheduledContentKind = 'mass_message' | 'feed_post';
+export type ScheduledContentStatus =
+  | 'pending'
+  | 'running'
+  | 'sent'
+  | 'failed'
+  | 'cancelled';
+
+export interface ScheduledContentJob {
+  id: string;
+  kind: ScheduledContentKind;
+  creatorId: string;
+  creatorName: string | null;
+  platform: 'maloum' | '4based';
+  runAt: string;
+  status: ScheduledContentStatus;
+  bodyText: string;
+  imageFileName: string | null;
+  hasImage: boolean;
+  payload: Record<string, unknown>;
+  lastError: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreatorScheduleSettings {
+  creatorId: string;
+  displayName?: string;
+  platform?: 'maloum' | '4based';
+  audienceFilters: string[];
+  includeListIds: string[];
+  excludeListIds: string[];
+  categoryIds: string[];
+}
+
+export interface MassUnsendAllProgress {
+  status: 'idle' | 'running' | 'starting' | 'completed' | 'stopped' | 'failed';
+  done: number;
+  failed: number;
+  totalEstimate: number;
+  currentId: string | null;
+  lastError: string | null;
+  startedAt?: number;
+}
+
+export async function listScheduledContent(options: {
+  from?: string;
+  to?: string;
+  status?: string;
+  creatorId?: string;
+} = {}): Promise<{ jobs: ScheduledContentJob[] }> {
+  const params = new URLSearchParams();
+  if (options.from) params.set('from', options.from);
+  if (options.to) params.set('to', options.to);
+  if (options.status) params.set('status', options.status);
+  if (options.creatorId) params.set('creatorId', options.creatorId);
+  const query = params.toString();
+  return request(`/api/scheduled-content${query ? `?${query}` : ''}`);
+}
+
+export async function listScheduleSettings(): Promise<{
+  settings: CreatorScheduleSettings[];
+}> {
+  return request('/api/scheduled-content/settings');
+}
+
+export async function updateScheduleSettings(
+  creatorId: string,
+  payload: {
+    audienceFilters?: string[];
+    includeListIds?: string[];
+    excludeListIds?: string[];
+    categoryIds?: string[];
+  }
+): Promise<{ settings: CreatorScheduleSettings }> {
+  return request(`/api/scheduled-content/settings/${creatorId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createScheduledContent(input: {
+  kind: ScheduledContentKind;
+  creatorId: string;
+  platform: 'maloum' | '4based';
+  runAt: string;
+  bodyText?: string;
+  payload?: Record<string, unknown>;
+  file?: File | null;
+}): Promise<{ job: ScheduledContentJob }> {
+  if (input.file) {
+    const form = new FormData();
+    form.append('kind', input.kind);
+    form.append('creatorId', input.creatorId);
+    form.append('platform', input.platform);
+    form.append('runAt', input.runAt);
+    form.append('bodyText', input.bodyText || '');
+    if (input.payload) form.append('payload', JSON.stringify(input.payload));
+    form.append('file', input.file);
+    const token = getToken();
+    const headers: HeadersInit = {};
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(`${API_URL}/api/scheduled-content`, {
+      method: 'POST',
+      headers,
+      body: form,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new ApiError((data as { error?: string }).error || 'Schedule failed', {
+        status: response.status,
+      });
+    }
+    return data as { job: ScheduledContentJob };
+  }
+  return request('/api/scheduled-content', {
+    method: 'POST',
+    body: JSON.stringify({
+      kind: input.kind,
+      creatorId: input.creatorId,
+      platform: input.platform,
+      runAt: input.runAt,
+      bodyText: input.bodyText || '',
+      payload: input.payload || {},
+    }),
+  });
+}
+
+export interface ScheduledImportAsset {
+  id: string;
+  originalFileName: string;
+  mimeType: string | null;
+  createdAt: string;
+}
+
+export interface ScheduledImportPreviewRow {
+  index: number;
+  included: boolean;
+  kind: ScheduledContentKind | null;
+  platform: 'maloum' | '4based' | null;
+  model: string;
+  creatorId: string | null;
+  creatorName: string | null;
+  date: string;
+  time: string;
+  runAt: string | null;
+  bodyText: string;
+  imageFileName: string | null;
+  assetId: string | null;
+  errors: string[];
+}
+
+export async function previewScheduledContentImport(
+  jobsJson: string,
+  files: File[]
+): Promise<{
+  rows: ScheduledImportPreviewRow[];
+  assets: ScheduledImportAsset[];
+  unusedFiles: string[];
+  timeZone: string;
+}> {
+  const form = new FormData();
+  form.append('jobs', jobsJson);
+  for (const file of files) form.append('files', file);
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`${API_URL}/api/scheduled-content/import`, {
+    method: 'POST',
+    headers,
+    body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new ApiError((data as { error?: string }).error || 'Import failed', {
+      status: response.status,
+    });
+  }
+  return data as {
+    rows: ScheduledImportPreviewRow[];
+    assets: ScheduledImportAsset[];
+    unusedFiles: string[];
+    timeZone: string;
+  };
+}
+
+export async function commitScheduledContentImport(
+  rows: Array<{
+    included: boolean;
+    kind: ScheduledContentKind;
+    platform: 'maloum' | '4based';
+    creatorId: string;
+    runAt: string;
+    bodyText: string;
+    assetId?: string | null;
+    payload?: Record<string, unknown>;
+  }>
+): Promise<{
+  jobs: ScheduledContentJob[];
+  errors: Array<{ index: number; error: string }>;
+}> {
+  return request('/api/scheduled-content/import/commit', {
+    method: 'POST',
+    body: JSON.stringify({ rows }),
+  });
+}
+
+export async function uploadScheduledContentAsset(
+  file: File
+): Promise<{ asset: ScheduledImportAsset }> {
+  const form = new FormData();
+  form.append('file', file);
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`${API_URL}/api/scheduled-content/assets`, {
+    method: 'POST',
+    headers,
+    body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new ApiError((data as { error?: string }).error || 'Upload failed', {
+      status: response.status,
+    });
+  }
+  return data as { asset: ScheduledImportAsset };
+}
+
+export async function updateScheduledContent(
+  id: string,
+  payload: { runAt?: string; bodyText?: string }
+): Promise<{ job: ScheduledContentJob }> {
+  return request(`/api/scheduled-content/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function cancelScheduledContent(
+  id: string
+): Promise<{ ok: boolean }> {
+  return request(`/api/scheduled-content/${id}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function startMassUnsendAll(
+  creatorId: string,
+  platform: 'maloum' | '4based'
+): Promise<{ progress: MassUnsendAllProgress }> {
+  const path =
+    platform === '4based'
+      ? `/api/creators/${creatorId}/4based/mass-messages/unsend-all`
+      : `/api/creators/${creatorId}/maloum/broadcasts/unsend-all`;
+  return request(path, { method: 'POST', body: JSON.stringify({}) });
+}
+
+export async function getMassUnsendAll(
+  creatorId: string,
+  platform: 'maloum' | '4based'
+): Promise<{ progress: MassUnsendAllProgress }> {
+  const path =
+    platform === '4based'
+      ? `/api/creators/${creatorId}/4based/mass-messages/unsend-all`
+      : `/api/creators/${creatorId}/maloum/broadcasts/unsend-all`;
+  return request(path);
+}
+
+export async function stopMassUnsendAll(
+  creatorId: string,
+  platform: 'maloum' | '4based'
+): Promise<{ progress: MassUnsendAllProgress }> {
+  const path =
+    platform === '4based'
+      ? `/api/creators/${creatorId}/4based/mass-messages/unsend-all/stop`
+      : `/api/creators/${creatorId}/maloum/broadcasts/unsend-all/stop`;
+  return request(path, { method: 'POST', body: JSON.stringify({}) });
 }
 

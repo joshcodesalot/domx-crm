@@ -11,3 +11,5 @@ frontend/release/
 Thumbs.db
 *.local
 backend/data/jwt-secret
+backend/data/scheduled-media/*
+!backend/data/scheduled-media/.gitkeep

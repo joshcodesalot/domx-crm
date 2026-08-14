@@ -11,6 +11,7 @@ const {
 } = require('./businessTimezone');
 
 const RECONCILE_THROTTLE_MS = 5 * 60 * 1000;
+const FALSE_UNLOCK_GRACE_MS = 45 * 60 * 1000;
 const MALOUM_PAGE_LIMIT = 20;
 const MALOUM_MAX_PAGES = 40;
 const FOURBASED_PAGE_LIMIT = 40;
@@ -566,6 +567,14 @@ async function markVerified(entryId, { payoutTxnId, unlockedAt }) {
   );
 }
 
+function isWithinFalseUnlockGrace(entry) {
+  const raw = entry?.unlockedAt || entry?.updatedAt || entry?.sentAt;
+  if (!raw) return true;
+  const t = new Date(raw).getTime();
+  if (!Number.isFinite(t)) return true;
+  return Date.now() - t < FALSE_UNLOCK_GRACE_MS;
+}
+
 async function clearFalseUnlock(entry, { reason, payoutDetail }) {
   await pool.query(
     `UPDATE messaging_dashboard_entries
@@ -729,6 +738,7 @@ async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchF
     toIso: monthTo,
   });
   const sales = normalizeMaloumSales(payoutRows);
+  const ledgerTruncated = payoutRows.length >= MALOUM_PAGE_LIMIT * MALOUM_MAX_PAGES;
   const byMessage = new Map();
   for (const sale of sales) {
     if (!byMessage.has(sale.messageId)) byMessage.set(sale.messageId, []);
@@ -773,6 +783,12 @@ async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchF
         detailJson: { payoutTxnIds: matches.map((m) => m.payoutTxnId) },
       });
       summary.exceptions += 1;
+    } else if (ledgerTruncated || isWithinFalseUnlockGrace(entry)) {
+      if (ledgerTruncated) {
+        console.warn(
+          `Skipping false-unlock clear for ${entry.id}: payout ledger page cap reached`
+        );
+      }
     } else {
       await clearFalseUnlock(entry, {
         reason: 'no_payout_match_for_purchased_row',
@@ -839,6 +855,8 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
     toIso: monthTo,
   });
   const sales = normalizeFourBasedSales(payoutRows);
+  const ledgerTruncated =
+    payoutRows.length >= FOURBASED_PAGE_LIMIT * FOURBASED_MAX_PAGES;
 
   const candidates = await pool.query(
     `SELECT *
@@ -897,6 +915,12 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
     ) {
       // Already a payout import stub without media match — leave for month import path
       matchedEntryIds.add(String(entry.id));
+    } else if (ledgerTruncated || isWithinFalseUnlockGrace(entry)) {
+      if (ledgerTruncated) {
+        console.warn(
+          `Skipping false-unlock clear for ${entry.id}: payout ledger page cap reached`
+        );
+      }
     } else {
       await clearFalseUnlock(entry, {
         reason: 'no_payout_match_for_purchased_row',

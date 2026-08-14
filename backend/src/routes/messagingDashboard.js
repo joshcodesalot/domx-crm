@@ -511,6 +511,181 @@ async function logTip({
   };
 }
 
+async function logMaloumSale({
+  creatorId,
+  fanId = null,
+  fanUsername = null,
+  maloumMessageId,
+  chatId = null,
+  priceNet = null,
+  notificationId = null,
+  createdAt = null,
+} = {}) {
+  if (!creatorId || !isValidUuid(creatorId)) {
+    return {
+      updated: false,
+      reason: 'creatorId_required',
+      maloumMessageId: maloumMessageId || null,
+      notificationId,
+    };
+  }
+
+  if (!maloumMessageId || typeof maloumMessageId !== 'string') {
+    return {
+      updated: false,
+      reason: 'maloumMessageId_required',
+      maloumMessageId: maloumMessageId || null,
+      notificationId,
+    };
+  }
+
+  const existing = await pool.query(
+    `SELECT *
+     FROM messaging_dashboard_entries
+     WHERE "maloumMessageId" = $1`,
+    [maloumMessageId]
+  );
+
+  if (existing.rows.length > 0) {
+    const backfill = await backfillEntryPriceNet(
+      maloumMessageId,
+      priceNet,
+      notificationId
+    );
+    if (backfill.updated) return backfill;
+    return {
+      updated: false,
+      reason: 'already_logged',
+      entry: toDashboardEntry({
+        ...existing.rows[0],
+        chatterSalesTotal: null,
+      }),
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  const enriched = await enrichCreatorFields(creatorId);
+  if (!enriched) {
+    return {
+      updated: false,
+      reason: 'creator_not_found',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  const tipContext = await resolveTipContext(creatorId, fanId);
+  if (!tipContext) {
+    return {
+      updated: false,
+      reason: 'no_chatter_context',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  const parsedPriceNet = parsePriceNet(priceNet);
+  const sentAt =
+    createdAt && !Number.isNaN(Date.parse(createdAt))
+      ? new Date(createdAt).toISOString()
+      : new Date().toISOString();
+  const resolvedChatId =
+    (typeof chatId === 'string' && chatId.trim() && chatId) ||
+    tipContext.chatId;
+
+  const result = await pool.query(
+    `INSERT INTO messaging_dashboard_entries (
+      id,
+      "creatorId",
+      "creatorName",
+      "creatorUsername",
+      "creatorAvatarUrl",
+      platform,
+      "chatterId",
+      "chatterName",
+      "chatterEmail",
+      "chatId",
+      "fanId",
+      "fanUsername",
+      "maloumMessageId",
+      "optimisticMessageId",
+      "contentType",
+      "englishMessage",
+      "germanTranslatedMessage",
+      "actualSentText",
+      "priceNet",
+      currency,
+      purchased,
+      "unlockedAt",
+      "attributionSource",
+      "mediaCount",
+      "pictureCount",
+      "videoCount",
+      "mediaJson",
+      "previousFanMessageAt",
+      "responseTimeSeconds",
+      "sentAt"
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+      $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+      $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
+    )
+    ON CONFLICT ("maloumMessageId") DO NOTHING
+    RETURNING *`,
+    [
+      randomUUID(),
+      creatorId,
+      enriched.creatorName,
+      enriched.creatorUsername,
+      enriched.creatorAvatarUrl,
+      enriched.platform,
+      tipContext.chatterId,
+      tipContext.chatterName,
+      tipContext.chatterEmail,
+      resolvedChatId,
+      fanId,
+      fanUsername,
+      maloumMessageId,
+      null,
+      'chat_product',
+      null,
+      null,
+      null,
+      parsedPriceNet,
+      'EUR',
+      true,
+      sentAt,
+      'orphan_sale',
+      0,
+      0,
+      0,
+      null,
+      null,
+      null,
+      sentAt,
+    ]
+  );
+
+  if (result.rows.length === 0) {
+    return {
+      updated: false,
+      reason: 'already_logged',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  return {
+    updated: true,
+    entry: toDashboardEntry({
+      ...result.rows[0],
+      chatterSalesTotal: null,
+    }),
+    notificationId,
+  };
+}
+
 async function processMaloumSaleAndTipNotifications(creatorId, notifications) {
   const list = Array.isArray(notifications) ? notifications : [];
   const results = [];
@@ -531,6 +706,33 @@ async function processMaloumSaleAndTipNotifications(creatorId, notifications) {
         notificationId,
         unlockedAt: entry.createdAt || null,
       });
+      if (result.reason === 'entry_not_found') {
+        const stub = await logMaloumSale({
+          creatorId,
+          fanId: entry.fanId ? String(entry.fanId) : null,
+          fanUsername: entry.fanUsername
+            ? String(entry.fanUsername)
+            : entry.fanNickname
+              ? String(entry.fanNickname)
+              : null,
+          maloumMessageId: messageId,
+          chatId: entry.chatId || entry.chat
+            ? String(entry.chatId || entry.chat)
+            : null,
+          priceNet: entry.net,
+          notificationId,
+          createdAt: entry.createdAt || null,
+        });
+        if (!stub.updated) {
+          console.warn(
+            'Maloum sale stub skipped:',
+            stub.reason || 'unknown',
+            messageId
+          );
+        }
+        results.push({ type, ...stub, stubbed: true });
+        continue;
+      }
       results.push({ type, ...result });
       continue;
     }
@@ -864,6 +1066,7 @@ async function repairFourBasedPurchasedFlags(
   pushSales(seedActivities);
 
   let activityPages = 0;
+  let salePagesIncomplete = false;
   if (typeof fetchSalePage === 'function') {
     for (let page = 0; page < FOURBASED_REPAIR_SALE_MAX_PAGES; page += 1) {
       const offset = page * FOURBASED_REPAIR_SALE_PAGE_SIZE;
@@ -875,12 +1078,16 @@ async function repairFourBasedPurchasedFlags(
           '4based sale repair page fetch failed:',
           err.message || err
         );
+        salePagesIncomplete = true;
         break;
       }
       const list = Array.isArray(pageRows) ? pageRows : [];
       activityPages += 1;
       pushSales(list);
       if (list.length < FOURBASED_REPAIR_SALE_PAGE_SIZE) break;
+      if (page === FOURBASED_REPAIR_SALE_MAX_PAGES - 1) {
+        salePagesIncomplete = true;
+      }
     }
   } else if (sales.length > 0) {
     activityPages = 1;
@@ -936,8 +1143,9 @@ async function repairFourBasedPurchasedFlags(
   }
 
   let clearedUnverified = 0;
-  if (oldestSaleMs != null) {
+  if (oldestSaleMs != null && !salePagesIncomplete) {
     const windowStartIso = new Date(oldestSaleMs).toISOString();
+    const graceCutoffIso = new Date(Date.now() - 45 * 60 * 1000).toISOString();
     const matchedList = [...matchedIds];
     const unverified = await pool.query(
       `UPDATE messaging_dashboard_entries
@@ -955,14 +1163,19 @@ async function repairFourBasedPurchasedFlags(
          AND "maloumMessageId" NOT LIKE '4based-sale:%'
          AND "maloumMessageId" NOT LIKE '4based-tip:%'
          AND "sentAt" >= $2::timestamptz
+         AND COALESCE("unlockedAt", "updatedAt", "sentAt") < $4::timestamptz
          AND (
            cardinality($3::text[]) = 0
            OR NOT ("maloumMessageId" = ANY($3::text[]))
          )
        RETURNING id`,
-      [creatorId, windowStartIso, matchedList]
+      [creatorId, windowStartIso, matchedList, graceCutoffIso]
     );
     clearedUnverified = unverified.rows.length;
+  } else if (salePagesIncomplete) {
+    console.warn(
+      `Skipping 4based unverified purchase clear for ${creatorId}: sale activity pages incomplete`
+    );
   }
 
   // After re-unlock: force unsent messages back to not purchased (audit row kept).
@@ -4251,6 +4464,7 @@ router.get(
       platform,
       purchased,
       contentType,
+      salesOnly,
       page = '1',
       limit = '20',
     } = req.query;
@@ -4325,6 +4539,15 @@ router.get(
       paramIndex += 1;
     }
 
+    const salesOnlyEnabled = salesOnly === 'true' || salesOnly === '1';
+    if (salesOnlyEnabled) {
+      conditions.push(`m."priceNet" IS NOT NULL`);
+      conditions.push(`(
+        m."contentType" = 'tip'
+        OR (m."contentType" = 'chat_product' AND m.purchased = true)
+      )`);
+    }
+
     const parsedPage = Math.max(Number.parseInt(String(page), 10) || 1, 1);
     const parsedLimit = Math.min(Math.max(Number.parseInt(String(limit), 10) || 20, 1), 100);
     const offset = (parsedPage - 1) * parsedLimit;
@@ -4364,6 +4587,19 @@ router.get(
     const from = total === 0 ? 0 : offset + 1;
     const to = total === 0 ? 0 : Math.min(offset + dataResult.rows.length, total);
 
+    let totals = [];
+    if (salesOnlyEnabled) {
+      const totalsResult = await pool.query(
+        `SELECT UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
+         FROM messaging_dashboard_entries m
+         ${whereClause}
+         GROUP BY 1`,
+        values
+      );
+      totals = currencyAmountRowsToList(totalsResult.rows).filter((row) => row.amount > 0);
+    }
+
     res.json({
       data: dataResult.rows.map(toDashboardEntry),
       pagination: {
@@ -4373,6 +4609,7 @@ router.get(
         from,
         to,
       },
+      totals,
       lastUpdated: new Date().toISOString(),
     });
   }
@@ -4506,6 +4743,7 @@ router.post(
         platform = COALESCE(EXCLUDED.platform, messaging_dashboard_entries.platform),
         "chatterName" = EXCLUDED."chatterName",
         "chatterEmail" = EXCLUDED."chatterEmail",
+        "chatId" = COALESCE(EXCLUDED."chatId", messaging_dashboard_entries."chatId"),
         "fanId" = COALESCE(EXCLUDED."fanId", messaging_dashboard_entries."fanId"),
         "fanUsername" = COALESCE(EXCLUDED."fanUsername", messaging_dashboard_entries."fanUsername"),
         "optimisticMessageId" = COALESCE(EXCLUDED."optimisticMessageId", messaging_dashboard_entries."optimisticMessageId"),

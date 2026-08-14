@@ -14,61 +14,52 @@ function fallbackDims(buffer, inputMime) {
 }
 
 /**
- * Bake EXIF orientation into pixel data so width/height match visual display.
- * Skips re-encode when orientation is already 1 / missing.
- * Falls back to the original buffer + image-size if sharp fails.
+ * Bake EXIF orientation, convert HDR/P3 to sRGB JPEG, optionally downscale.
+ * Matches native 4Based/Maloum website canvas export so thumbs are not washed out.
  *
  * @param {Buffer} buffer
- * @param {string} [mimeType]
+ * @param {{ mimeType?: string, maxEdge?: number }} [options]
  * @returns {Promise<{ buffer: Buffer, width: number, height: number, mimeType: string }>}
  */
-async function autoOrientImage(buffer, mimeType = '') {
+async function prepareFeedPhoto(buffer, { mimeType = '', maxEdge } = {}) {
   const inputMime = typeof mimeType === 'string' ? mimeType.toLowerCase() : '';
 
   try {
-    const meta = await sharp(buffer, { failOn: 'none' }).metadata();
-    const orientation = Number(meta.orientation) || 1;
-    if (orientation === 1) {
-      const width = Number(meta.width);
-      const height = Number(meta.height);
-      if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
-        return {
-          buffer,
-          width,
-          height,
-          mimeType: inputMime || 'application/octet-stream',
-        };
-      }
-      return fallbackDims(buffer, inputMime);
+    let pipeline = sharp(buffer, { failOn: 'none' })
+      .rotate()
+      .pipelineColourspace('rgb16')
+      .toColourspace('srgb');
+
+    if (typeof pipeline.withIccProfile === 'function') {
+      pipeline = pipeline.withIccProfile('srgb');
     }
 
-    const format = (meta.format || '').toLowerCase();
-    let outMime = 'image/jpeg';
-    let pipeline = sharp(buffer, { failOn: 'none' }).rotate().keepIccProfile();
-
-    if (inputMime.includes('png') || format === 'png') {
-      outMime = 'image/png';
-      pipeline = pipeline.png();
-    } else if (inputMime.includes('webp') || format === 'webp') {
-      outMime = 'image/webp';
-      pipeline = pipeline.webp({ quality: 92 });
-    } else {
-      outMime = 'image/jpeg';
-      pipeline = pipeline.jpeg({ quality: 92 });
+    const edge = Number(maxEdge);
+    if (Number.isFinite(edge) && edge > 0) {
+      pipeline = pipeline.resize({
+        width: Math.round(edge),
+        height: Math.round(edge),
+        fit: 'inside',
+        withoutEnlargement: true,
+      });
     }
 
-    const outBuffer = await pipeline.toBuffer();
+    const outBuffer = await pipeline.jpeg({ quality: 90 }).toBuffer();
     const orientedMeta = await sharp(outBuffer).metadata();
     const width = Number(orientedMeta.width);
     const height = Number(orientedMeta.height);
     if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
-      throw new Error('Invalid oriented dimensions');
+      throw new Error('Invalid prepared dimensions');
     }
 
-    return { buffer: outBuffer, width, height, mimeType: outMime };
+    return { buffer: outBuffer, width, height, mimeType: 'image/jpeg' };
   } catch {
     return fallbackDims(buffer, inputMime);
   }
 }
 
-module.exports = { autoOrientImage };
+async function autoOrientImage(buffer, mimeType = '') {
+  return prepareFeedPhoto(buffer, { mimeType });
+}
+
+module.exports = { prepareFeedPhoto, autoOrientImage };

@@ -3,6 +3,7 @@ import Sidebar from '@/components/Sidebar';
 import { MaloumSingleCreatorChat } from '@/components/maloum/MaloumChatPanels';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import { getCreators, getMaloumBadges, type Creator } from '@/lib/api';
+import { runWithConcurrency } from '@/lib/runWithConcurrency';
 
 const BADGE_POLL_MS = 15_000;
 const CREATOR_POLL_MS = 15_000;
@@ -55,15 +56,19 @@ export default function ChatterMaloum() {
     if (creatorIds.length === 0) return;
     const messageUpdates: Record<string, number> = {};
     const notificationUpdates: Record<string, number> = {};
-    for (const id of creatorIds) {
+    await runWithConcurrency(creatorIds, 3, async (id) => {
       try {
         const result = await getMaloumBadges(id);
         messageUpdates[id] = Number(result.messages) || 0;
         notificationUpdates[id] = Number(result.notifications) || 0;
-      } catch {
-        // best-effort
+      } catch (err) {
+        console.warn(
+          'Maloum badge poll failed:',
+          id,
+          err instanceof Error ? err.message : err
+        );
       }
-    }
+    });
     if (Object.keys(messageUpdates).length > 0) {
       setUnreadByCreatorId((prev) => ({ ...prev, ...messageUpdates }));
     }

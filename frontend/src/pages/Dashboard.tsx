@@ -42,6 +42,21 @@ function formatCurrencyAmounts(amounts: CurrencyAmount[] | undefined): string {
   return amounts.map((item) => formatMoney(item.amount, item.currency)).join(' · ');
 }
 
+function mergeCurrencyAmounts(
+  ...lists: Array<CurrencyAmount[] | undefined>
+): CurrencyAmount[] {
+  const map = new Map<string, number>();
+  for (const list of lists) {
+    for (const item of list || []) {
+      const currency = item.currency === 'USD' ? 'USD' : 'EUR';
+      map.set(currency, (map.get(currency) || 0) + (Number(item.amount) || 0));
+    }
+  }
+  return Array.from(map.entries())
+    .map(([currency, amount]) => ({ currency, amount }))
+    .sort((a, b) => a.currency.localeCompare(b.currency));
+}
+
 function dayTotal(amounts: CurrencyAmount[]): number {
   return amounts.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
 }
@@ -97,10 +112,14 @@ function MetricCard({
   label,
   value,
   hint,
+  to,
+  linkLabel,
 }: {
   label: string;
   value: string;
   hint?: string;
+  to?: string;
+  linkLabel?: string;
 }) {
   return (
     <div className="p-5 border border-gray-200 dark:border-white/5 rounded-lg bg-gray-50/50 dark:bg-transparent">
@@ -108,6 +127,14 @@ function MetricCard({
         {label}
       </p>
       <p className="text-xl font-semibold text-gray-900 dark:text-gray-100">{value}</p>
+      {to ? (
+        <Link
+          to={to}
+          className="mt-2 inline-block text-xs text-gray-600 dark:text-gray-300 underline-offset-2 hover:underline"
+        >
+          {linkLabel || 'View logs'}
+        </Link>
+      ) : null}
     </div>
   );
 }
@@ -308,6 +335,19 @@ export default function Dashboard() {
     () => formatPeriodRangeLabel(startDate, endDate),
     [startDate, endDate]
   );
+
+  const totalSalesAmounts = useMemo(
+    () => mergeCurrencyAmounts(overview?.tipSales, overview?.ppvSales),
+    [overview?.tipSales, overview?.ppvSales]
+  );
+
+  const salesLogsHref = useMemo(() => {
+    const params = new URLSearchParams();
+    if (startDate) params.set('startDate', startDate);
+    if (endDate) params.set('endDate', endDate);
+    const query = params.toString();
+    return query ? `/dashboard/sales-logs?${query}` : '/dashboard/sales-logs';
+  }, [startDate, endDate]);
 
   const loadData = useCallback(
     async (options: { silent?: boolean } = {}) => {
@@ -552,11 +592,11 @@ export default function Dashboard() {
           <div className="space-y-12">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <MetricCard
-                label="Period Sales"
-                value={formatCurrencyAmounts(
-                  overview?.totalRevenue || overview?.totalSales
-                )}
-                hint={`Net purchased revenue for ${periodLabel} (${overview?.timeZone || viewerTimeZone})`}
+                label="Total Sales"
+                value={formatCurrencyAmounts(totalSalesAmounts)}
+                hint={`Net PPV unlocks + tips for ${periodLabel} (${overview?.timeZone || viewerTimeZone}; Maloum 80% / 4based 70%)`}
+                to={canViewTeamAnalytics ? salesLogsHref : undefined}
+                linkLabel="View logs"
               />
               <MetricCard
                 label="Monthly Revenue"

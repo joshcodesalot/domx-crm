@@ -23,6 +23,7 @@ import MaloumFanScraper from '@/pages/MaloumFanScraper';
 import FourBasedFanScraper from '@/pages/FourBasedFanScraper';
 import FourBasedMassMessage from '@/pages/FourBasedMassMessage';
 import FourBasedFeed from '@/pages/FourBasedFeed';
+import ContentSchedule from '@/pages/ContentSchedule';
 import MaloumAiBulkReply from '@/pages/MaloumAiBulkReply';
 import FourBasedAiBulkReply from '@/pages/FourBasedAiBulkReply';
 import MaloumNotifications from '@/pages/MaloumNotifications';
@@ -30,6 +31,7 @@ import FourBasedNotifications from '@/pages/FourBasedNotifications';
 import MessagePro from '@/pages/MessagePro';
 import MessagePro4Based from '@/pages/MessagePro4Based';
 import MessagingDashboard from '@/pages/MessagingDashboard';
+import SalesLogs from '@/pages/SalesLogs';
 import FalseSalesReview from '@/pages/FalseSalesReview';
 import AnalyticsCharts from '@/pages/AnalyticsCharts';
 import CreatorAnalytics from '@/pages/CreatorAnalytics';
@@ -219,6 +221,7 @@ function AppRoutes() {
               </Route>
               <Route element={<PermissionRoute permission="analytics.view" />}>
                 <Route path="/dashboard/messaging" element={<MessagingDashboard />} />
+                <Route path="/dashboard/sales-logs" element={<SalesLogs />} />
               </Route>
               <Route element={<PermissionRoute permission="staff.view" />}>
                 <Route path="/staff/manage" element={<ManageStaff />} />
@@ -251,6 +254,7 @@ function AppRoutes() {
                 />
               </Route>
               <Route element={<PermissionRoute permission="mass_messages.send" />}>
+                <Route path="/chatter/schedule" element={<ContentSchedule />} />
                 <Route path="/chatter/maloum/mass-message" element={<MaloumMassMessage />} />
                 <Route path="/chatter/maloum/feed" element={<MaloumFeed />} />
                 <Route

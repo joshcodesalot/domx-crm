@@ -8,6 +8,7 @@ import {
 } from 'react';
 import {
   Box,
+  CalendarClock,
   Check,
   Folder,
   FolderOpen,
@@ -26,6 +27,7 @@ import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
+import ScheduleDateTimePicker from '@/components/ScheduleDateTimePicker';
 import maloumIcon from '@/assets/maloum_icon.png';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
@@ -49,12 +51,14 @@ import {
   maloumMediaUrl,
   translateToGerman,
   uploadMaloumFeedPhoto,
+  createScheduledContent,
   type Creator,
   type MaloumCategory,
   type MaloumFeedPost,
   type MaloumVaultFolder,
   type MaloumVaultMediaItem,
 } from '@/lib/api';
+import { berlinNowParts, berlinWallToIso, useStaffTimeZone } from '@/lib/berlinTime';
 
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const MAX_CATEGORIES = 3;
@@ -189,6 +193,11 @@ export default function MaloumFeed() {
   const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
     readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
   );
+  const timeZone = useStaffTimeZone();
+  const berlin = berlinNowParts(timeZone);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState(berlin.date);
+  const [scheduleTime, setScheduleTime] = useState(berlin.time);
 
   const [categories, setCategories] = useState<MaloumCategory[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
@@ -480,6 +489,42 @@ export default function MaloumFeed() {
     setPosting(true);
     setPostError(null);
     try {
+      if (scheduleEnabled) {
+        if (mediaSource === 'upload' && uploadFile) {
+          await createScheduledContent({
+            kind: 'feed_post',
+            creatorId: selectedCreatorId,
+            platform: 'maloum',
+            runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
+            bodyText: draft.trim(),
+            payload: {
+              folderId: uploadFolderId,
+              categories: selectedCategoryIds,
+              public: isPublic,
+            },
+            file: uploadFile,
+          });
+        } else if (selectedVaultItem) {
+          const mediaId = vaultUploadId(selectedVaultItem);
+          if (!mediaId) throw new Error('Could not resolve media id');
+          await createScheduledContent({
+            kind: 'feed_post',
+            creatorId: selectedCreatorId,
+            platform: 'maloum',
+            runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
+            bodyText: draft.trim(),
+            payload: {
+              mediaId,
+              categories: selectedCategoryIds,
+              public: isPublic,
+            },
+          });
+        }
+        toast.success(`Post scheduled (${timeZone})`);
+        resetCompose();
+        return;
+      }
+
       let mediaId: string | null = null;
       if (mediaSource === 'upload' && uploadFile && uploadFolderId) {
         setPostPhase('uploading');
@@ -541,6 +586,10 @@ export default function MaloumFeed() {
     toast,
     resetCompose,
     loadPosts,
+    scheduleEnabled,
+    scheduleDate,
+    scheduleTime,
+    timeZone,
   ]);
 
   const handleDelete = useCallback(
@@ -895,6 +944,26 @@ export default function MaloumFeed() {
                 </p>
               )}
 
+              <label className="flex items-center justify-between gap-3">
+                <span className="text-xs font-medium text-gray-700 dark:text-zinc-300 inline-flex items-center gap-1.5">
+                  <CalendarClock className="w-3.5 h-3.5" />
+                  Schedule instead of posting now
+                </span>
+                <ToggleSwitch
+                  checked={scheduleEnabled}
+                  onChange={setScheduleEnabled}
+                  aria-label="Schedule feed post"
+                />
+              </label>
+              {scheduleEnabled && (
+                <ScheduleDateTimePicker
+                  date={scheduleDate}
+                  time={scheduleTime}
+                  onDateChange={setScheduleDate}
+                  onTimeChange={setScheduleTime}
+                />
+              )}
+
               <button
                 type="button"
                 onClick={() => void handlePost()}
@@ -903,10 +972,12 @@ export default function MaloumFeed() {
               >
                 {posting || translatingOutgoing ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
+                ) : scheduleEnabled ? (
+                  <CalendarClock className="w-4 h-4" />
                 ) : (
                   <Send className="w-4 h-4" />
                 )}
-                Publish post
+                {scheduleEnabled ? 'Schedule post' : 'Publish post'}
               </button>
             </div>
           </section>

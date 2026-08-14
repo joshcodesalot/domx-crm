@@ -1298,6 +1298,7 @@ export function MaloumChatThread({
     void loadUnsends();
     const timer = window.setInterval(() => {
       void loadMessages({ silent: true });
+      void loadSenders();
     }, MESSAGE_POLL_MS);
     return () => window.clearInterval(timer);
   }, [chatId, creatorId, initialChat, loadMessages, loadSenders, loadUnsends]);

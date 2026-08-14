@@ -16,6 +16,7 @@ import {
   type Creator,
   type FourBasedChat,
 } from '@/lib/api';
+import { runWithConcurrency } from '@/lib/runWithConcurrency';
 
 const BADGE_POLL_INTERVAL_MS = 15_000;
 const CREATOR_POLL_INTERVAL_MS = 15_000;
@@ -75,19 +76,22 @@ export default function Chatter4Based() {
 
   const refreshCreatorBadges = useCallback(async (creatorIds: string[]) => {
     if (creatorIds.length === 0) return;
-    // Serialize to avoid burning concurrent ISP proxy sessions.
     const updates: Record<string, CreatorUnreadCounts> = {};
-    for (const creatorId of creatorIds) {
+    await runWithConcurrency(creatorIds, 3, async (creatorId) => {
       try {
         const badges = await getFourBasedBadges(creatorId);
         updates[creatorId] = {
           messages: Number(badges.messages) || 0,
           notifications: Number(badges.notifications) || 0,
         };
-      } catch {
-        // Best-effort; leave previous counts for this creator
+      } catch (err) {
+        console.warn(
+          '4based badge poll failed:',
+          creatorId,
+          err instanceof Error ? err.message : err
+        );
       }
-    }
+    });
     if (Object.keys(updates).length === 0) return;
     setBadgeCountsByCreatorId((prev) => ({ ...prev, ...updates }));
   }, []);

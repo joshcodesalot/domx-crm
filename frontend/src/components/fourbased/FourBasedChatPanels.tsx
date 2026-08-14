@@ -22,6 +22,7 @@ import {
   Pin,
   Play,
   RefreshCw,
+  Search,
   Send,
   ShieldCheck,
   Trash2,
@@ -95,6 +96,8 @@ const FAN_PANEL_OPEN_KEY = 'domx-4based-fan-panel';
 const MAX_TRANSLATION_HISTORY = 8;
 const CHAT_LIST_POLL_MS = 10_000;
 const MESSAGE_POLL_MS = 10_000;
+const INBOX_SEARCH_MIN_CHARS = 3;
+const INBOX_SEARCH_DEBOUNCE_MS = 300;
 const MESSAGE_PAGE_LIMIT = 30;
 const CHAT_PAGE_LIMIT = 30;
 const NEAR_BOTTOM_PX = 120;
@@ -679,6 +682,8 @@ export function FourBasedChatList({
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
   const [userLists, setUserLists] = useState<FourBasedUserList[]>([]);
   const [listsOpen, setListsOpen] = useState(false);
+  const [inboxSearchDraft, setInboxSearchDraft] = useState('');
+  const [inboxSearch, setInboxSearch] = useState('');
   const [pinningChatId, setPinningChatId] = useState<string | null>(null);
   const creatorIdRef = useRef(creatorId);
   const chatCountRef = useRef(0);
@@ -690,7 +695,7 @@ export function FourBasedChatList({
     opts?: { append?: boolean; offset?: number; silent?: boolean } | boolean
   ) => Promise<void>) | null>(null);
   const prevMessagesUnreadRef = useRef(messagesUnread);
-  const filterKey = `${inboxFilter}:${selectedListId || ''}`;
+  const filterKey = `${inboxFilter}:${selectedListId || ''}:${inboxSearch}`;
   const prevFilterKeyRef = useRef(filterKey);
 
   useEffect(() => {
@@ -714,6 +719,8 @@ export function FourBasedChatList({
     setInboxFilter('all');
     setSelectedListId(null);
     setListsOpen(false);
+    setInboxSearchDraft('');
+    setInboxSearch('');
     setPinningChatId(null);
     setChatsError(null);
     setChatsOffset(0);
@@ -747,12 +754,14 @@ export function FourBasedChatList({
         const result = await listFourBasedChats(creatorId, {
           limit: CHAT_PAGE_LIMIT,
           offset,
-          filter: selectedListId
-            ? null
-            : inboxFilter === 'all'
+          filter:
+            inboxSearch || selectedListId
               ? null
-              : inboxFilter,
-          listId: selectedListId,
+              : inboxFilter === 'all'
+                ? null
+                : inboxFilter,
+          listId: inboxSearch ? null : selectedListId,
+          search: inboxSearch || null,
         });
         if (creatorIdRef.current !== creatorId) return;
         const page = Array.isArray(result.chats) ? result.chats : [];
@@ -798,8 +807,16 @@ export function FourBasedChatList({
         }
       }
     },
-    [creatorId, inboxFilter, selectedListId]
+    [creatorId, inboxFilter, selectedListId, inboxSearch]
   );
+
+  useEffect(() => {
+    const trimmed = inboxSearchDraft.trim();
+    const timer = window.setTimeout(() => {
+      setInboxSearch(trimmed.length >= INBOX_SEARCH_MIN_CHARS ? trimmed : '');
+    }, INBOX_SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [inboxSearchDraft]);
 
   function handleChatsScroll(e: UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
@@ -966,6 +983,29 @@ export function FourBasedChatList({
         </div>
       )}
       <div className="px-2 py-2 border-b border-gray-200 dark:border-zinc-800/60 shrink-0 space-y-1.5">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 dark:text-zinc-500 pointer-events-none" />
+          <input
+            type="search"
+            value={inboxSearchDraft}
+            onChange={(e) => setInboxSearchDraft(e.target.value)}
+            placeholder="Search users (3+ letters)"
+            className="w-full pl-8 pr-8 py-1.5 text-[11px] rounded-lg border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-4based-500/40"
+          />
+          {inboxSearchDraft ? (
+            <button
+              type="button"
+              onClick={() => {
+                setInboxSearchDraft('');
+                setInboxSearch('');
+              }}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded text-gray-400 hover:text-gray-700 dark:hover:text-zinc-200"
+              aria-label="Clear search"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          ) : null}
+        </div>
         <div className="flex flex-wrap gap-1">
           {INBOX_FILTERS.map((chip) => {
             const active =
@@ -1045,7 +1085,9 @@ export function FourBasedChatList({
       >
         {chatsError && <p className="text-xs text-red-400 p-3">{chatsError}</p>}
         {!chatsLoading && !chatsError && chats.length === 0 && (
-          <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">No chats yet.</p>
+          <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">
+            {inboxSearch ? 'No chats match your search.' : 'No chats yet.'}
+          </p>
         )}
         {sortedChats.map((chat) => {
           const peer = fanFromChat(chat, providerUserId);
@@ -1597,6 +1639,21 @@ export function FourBasedChatThread({
     [creatorId, chatId]
   );
 
+  const loadSenders = useCallback(async () => {
+    try {
+      const result = await getMessagingDashboardSenders({
+        creatorId,
+        chatId,
+        limit: 200,
+      });
+      if (threadKeyRef.current !== `${creatorId}:${chatId}`) return;
+      setMessageSenders(result.senders || {});
+      setMessageUnlockMeta(result.unlockMeta || {});
+    } catch {
+      // best-effort
+    }
+  }, [creatorId, chatId]);
+
   const loadFanProfile = useCallback(
     async (fanId: string) => {
       if (!fanId) {
@@ -1648,15 +1705,7 @@ export function FourBasedChatThread({
     nearBottomRef.current = true;
     preserveScrollRef.current = null;
     void loadMessages();
-    void getMessagingDashboardSenders({ creatorId, chatId, limit: 200 })
-      .then((result) => {
-        if (threadKeyRef.current !== `${creatorId}:${chatId}`) return;
-        setMessageSenders(result.senders || {});
-        setMessageUnlockMeta(result.unlockMeta || {});
-      })
-      .catch(() => {
-        // best-effort
-      });
+    void loadSenders();
     void getMessageUnsends({
       creatorId,
       chatId,
@@ -1670,14 +1719,15 @@ export function FourBasedChatThread({
       .catch(() => {
         // best-effort
       });
-  }, [creatorId, chatId, initialChat, loadMessages]);
+  }, [creatorId, chatId, initialChat, loadMessages, loadSenders]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       void loadMessages({ silent: true });
+      void loadSenders();
     }, MESSAGE_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [loadMessages]);
+  }, [loadMessages, loadSenders]);
 
   useEffect(() => {
     return onSyncEvent((event) => {

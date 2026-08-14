@@ -126,8 +126,9 @@ export default function AccountSettings() {
               ))}
             </select>
             <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-              Org schedules and activity day keys stay on Europe/Berlin. Your selection
-              controls Overview, Charts, Creator Analytics, and team performance periods.
+              Content schedule date and time use this timezone. Activity day keys stay
+              on Europe/Berlin. Analytics periods on Overview, Charts, Creator Analytics,
+              and team performance also follow this selection.
             </p>
           </div>
 
