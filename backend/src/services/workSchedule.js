@@ -1,5 +1,6 @@
 /**
- * Per-staff weekly work schedules in Europe/Berlin.
+ * Per-staff weekly work schedules.
+ * Idle on-shift checks use Philippine Time (PHT, Asia/Manila, no DST).
  * Overnight: endTime <= startTime (e.g. 23:00 → 08:00).
  * Shift-start attribution: events in [D+start, end) count toward calendar date D.
  */
@@ -10,6 +11,9 @@ const {
   buildDateRangeBetween,
   calendarDateString,
 } = require('./businessTimezone');
+
+/** Staff work-schedule wall clock (PHT). */
+const SCHEDULE_TZ = 'Asia/Manila';
 
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/;
 
@@ -56,7 +60,108 @@ function isOvernight(startTime, endTime) {
 }
 
 /**
- * JS day-of-week for a YYYY-MM-DD in Europe/Berlin (0=Sun … 6=Sat).
+ * HH:MM:SS → seconds since midnight.
+ * @param {string} time
+ */
+function timeToSeconds(time) {
+  const normalized = normalizeTime(time);
+  if (!normalized) return 0;
+  const [hh, mm, ss] = normalized.split(':').map(Number);
+  return hh * 3600 + mm * 60 + (ss || 0);
+}
+
+/**
+ * Wall-clock date/time/DOW for an instant in a timezone.
+ * @param {Date} date
+ * @param {string} [timeZone]
+ * @returns {{ dateStr: string, time: string, dow: number }}
+ */
+function wallClockInTimeZone(date, timeZone = SCHEDULE_TZ) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date instanceof Date ? date : new Date(date));
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  const dateStr = `${map.year}-${map.month}-${map.day}`;
+  return {
+    dateStr,
+    time: `${map.hour}:${map.minute}:${map.second}`,
+    dow: dayOfWeekForDate(dateStr),
+  };
+}
+
+/**
+ * True when `date` falls inside the weekly schedule (PHT).
+ * No schedule rows → all day (same as messaging analytics).
+ * Overnight spill from the previous weekday still counts.
+ * @param {Date} date
+ * @param {Map<number, ScheduleDay>|undefined} week
+ */
+function isDateWithinWeekSchedule(date, week) {
+  if (!week || week.size === 0) return true;
+
+  const wall = wallClockInTimeZone(date, SCHEDULE_TZ);
+  const localTime = wall.time;
+  const today = week.get(wall.dow);
+  if (today) {
+    const start = normalizeTime(today.startTime);
+    const end = normalizeTime(today.endTime);
+    if (start && end) {
+      if (!isOvernight(start, end)) {
+        if (localTime >= start && localTime < end) return true;
+      } else if (localTime >= start) {
+        return true;
+      }
+    }
+  }
+
+  const prev = week.get((wall.dow + 6) % 7);
+  if (prev && isOvernight(prev.startTime, prev.endTime)) {
+    const end = normalizeTime(prev.endTime);
+    if (end && localTime < end) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Scheduled seconds that fall on a PHT calendar date, including
+ * previous-day overnight spill into this morning.
+ * No schedule → full day (86400).
+ * @param {string} dateStr YYYY-MM-DD
+ * @param {Map<number, ScheduleDay>|undefined} week
+ */
+function scheduledSecondsOnCalendarDay(dateStr, week) {
+  if (!week || week.size === 0) return 24 * 3600;
+
+  let seconds = 0;
+  const dow = dayOfWeekForDate(dateStr);
+  const today = week.get(dow);
+  if (today) {
+    const start = timeToSeconds(today.startTime);
+    const end = timeToSeconds(today.endTime);
+    if (end > start) {
+      seconds += end - start;
+    } else {
+      seconds += 86400 - start;
+    }
+  }
+
+  const prev = week.get((dow + 6) % 7);
+  if (prev && isOvernight(prev.startTime, prev.endTime)) {
+    seconds += timeToSeconds(prev.endTime);
+  }
+  return seconds;
+}
+
+/**
+ * JS day-of-week for a YYYY-MM-DD (0=Sun … 6=Sat).
  * Uses UTC noon so the calendar date is stable (PH has no DST).
  * @param {string} dateStr
  */
@@ -327,10 +432,15 @@ async function expandTodayWindows(userIds, schedules) {
 
 module.exports = {
   BUSINESS_TZ,
+  SCHEDULE_TZ,
   TIME_RE,
   normalizeTime,
   formatTimeShort,
   isOvernight,
+  timeToSeconds,
+  wallClockInTimeZone,
+  isDateWithinWeekSchedule,
+  scheduledSecondsOnCalendarDay,
   dayOfWeekForDate,
   nextCalendarDate,
   manilaTimestampSql,

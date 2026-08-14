@@ -898,9 +898,10 @@ export default function Dashboard() {
               <div>
                 <h3 className="text-sm font-medium mb-1">Staff Performance</h3>
                 <p className="text-xs text-gray-400 mb-4">
-                  Period and lifetime sales; messages count only during scheduled
-                  hours. Period/Weekly/Total Rev/hr and Msg/hr use sales ÷ total
-                  tracked time (active + idle) for that window.
+                  Period and lifetime sales; messages and idle count only during
+                  scheduled hours (PHT). Period/Weekly/Total Rev/hr and Msg/hr use
+                  sales ÷ total tracked time (active + schedule-capped idle) for
+                  that window.
                 </p>
                 <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden">
                   <div className="overflow-x-auto">

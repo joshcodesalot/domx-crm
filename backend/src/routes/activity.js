@@ -12,6 +12,10 @@ const {
   resolveAnalyticsPeriod,
 } = require('../services/businessTimezone');
 const { getUserTimeZone } = require('../services/rbac');
+const {
+  loadSchedulesByUserId,
+  isDateWithinWeekSchedule,
+} = require('../services/workSchedule');
 
 const router = express.Router();
 
@@ -118,8 +122,11 @@ router.post('/heartbeat', authenticate, async (req, res) => {
         if (hadRecentInput) {
           activeSecondsToday += intervalSeconds;
         } else {
-          // Session present (fresh heartbeat chain) but no recent input → idle
-          idleSecondsToday += intervalSeconds;
+          // Idle only accrues during the staff PHT shift (or all day if none).
+          const schedules = await loadSchedulesByUserId([userId]);
+          if (isDateWithinWeekSchedule(now, schedules.get(userId))) {
+            idleSecondsToday += intervalSeconds;
+          }
         }
       }
     } else if (clientInputAt) {

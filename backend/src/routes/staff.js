@@ -16,6 +16,7 @@ const {
 const { emitToUser } = require('../services/userEventBus');
 const { generateTempPassword } = require('../services/passwordUtils');
 const {
+  SCHEDULE_TZ,
   loadSchedulesByUserId,
   parseScheduleDaysPayload,
   formatTimeShort,
@@ -411,7 +412,7 @@ router.get(
 
       res.json({
         userId: id,
-        timeZone: 'Europe/Berlin',
+        timeZone: SCHEDULE_TZ,
         days,
       });
     } catch (err) {
@@ -475,7 +476,7 @@ router.put(
 
       res.json({
         userId: id,
-        timeZone: 'Europe/Berlin',
+        timeZone: SCHEDULE_TZ,
         days,
       });
     } catch (err) {
