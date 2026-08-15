@@ -235,6 +235,76 @@ async function loadAuthedCreator(creatorId) {
   };
 }
 
+async function resolvePendingUnverifiedForEntry(entryId) {
+  if (!entryId) return 0;
+  const result = await pool.query(
+    `UPDATE sale_reconciliation_events
+     SET status = 'resolved',
+         resolution = 'auto_matched',
+         "resolvedAt" = NOW()
+     WHERE "messagingEntryId" = $1
+       AND "eventType" = 'pending_unverified'
+       AND status = 'needs_review'
+     RETURNING id`,
+    [entryId]
+  );
+  return result.rows.length;
+}
+
+async function queuePendingUnverifiedPurchases(
+  creatorId,
+  platform,
+  { monthFrom, monthTo }
+) {
+  if (!creatorId || !platform) return 0;
+  const leftover = await pool.query(
+    `SELECT id, "maloumMessageId", "fanId", "fanUsername", "chatId",
+            "priceNet", currency, "unlockedAt", "sentAt"
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+       AND platform = $2
+       AND "contentType" = 'chat_product'
+       AND purchased = true
+       AND "payoutVerified" = false
+       AND "priceNet" IS NOT NULL
+       AND "maloumMessageId" NOT LIKE '4based-tip:%'
+       AND COALESCE("unlockedAt", "sentAt") >= $3::timestamptz
+       AND COALESCE("unlockedAt", "sentAt") <= $4::timestamptz`,
+    [creatorId, platform, monthFrom, monthTo]
+  );
+
+  let queued = 0;
+  for (const row of leftover.rows) {
+    const existing = await pool.query(
+      `SELECT id
+       FROM sale_reconciliation_events
+       WHERE "messagingEntryId" = $1
+         AND "eventType" = 'pending_unverified'
+         AND status = 'needs_review'
+       LIMIT 1`,
+      [row.id]
+    );
+    if (existing.rows.length > 0) continue;
+    await insertReconciliationEvent({
+      creatorId,
+      platform,
+      eventType: 'pending_unverified',
+      status: 'needs_review',
+      messagingEntryId: row.id,
+      maloumMessageId: row.maloumMessageId,
+      fanId: row.fanId || null,
+      fanUsername: row.fanUsername || null,
+      chatId: row.chatId || null,
+      amount: row.priceNet != null ? Number(row.priceNet) : null,
+      currency: row.currency || (platform === '4based' ? 'USD' : 'EUR'),
+      unlockedAt: row.unlockedAt || row.sentAt || null,
+      reason: 'purchased_without_payout',
+    });
+    queued += 1;
+  }
+  return queued;
+}
+
 async function resolveAmbiguousMatchesForEntry(entryId) {
   if (!entryId) return 0;
   const result = await pool.query(
@@ -834,6 +904,7 @@ async function markVerified(entryId, { payoutTxnId, unlockedAt, purchased = fals
     [entryId, payoutTxnId || null, unlockedAt || null, purchased === true]
   );
   await resolveAmbiguousMatchesForEntry(entryId);
+  await resolvePendingUnverifiedForEntry(entryId);
 }
 
 async function restoreClearedFalseUnlocks(creatorId) {
@@ -2132,6 +2203,11 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false, mo
     mergedAfter += await mergeFourBasedStubs(creatorId);
   }
 
+  const pendingQueued = await queuePendingUnverifiedPurchases(creatorId, platform, {
+    monthFrom: bounds.monthFrom,
+    monthTo: bounds.monthTo,
+  });
+
   return {
     skipped: false,
     yearMonth: bounds.yearMonth,
@@ -2142,6 +2218,7 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false, mo
     ...summary,
     restored,
     merged: mergedAfter,
+    pendingQueued,
   };
 }
 

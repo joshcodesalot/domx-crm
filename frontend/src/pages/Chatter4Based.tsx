@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Bell, MessageSquare } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
@@ -13,10 +14,17 @@ import fourBasedIcon from '@/assets/4based_icon.ico';
 import {
   getCreators,
   getFourBasedBadges,
+  getFourBasedChat,
+  getFourBasedChatByUser,
   type Creator,
   type FourBasedChat,
 } from '@/lib/api';
 import { runWithConcurrency } from '@/lib/runWithConcurrency';
+
+function isRealFourBasedChatId(chatId: string | null | undefined): boolean {
+  if (!chatId) return false;
+  return /^[a-f0-9]{24}$/i.test(chatId);
+}
 
 const BADGE_POLL_INTERVAL_MS = 15_000;
 const CREATOR_POLL_INTERVAL_MS = 15_000;
@@ -25,10 +33,15 @@ type CreatorUnreadCounts = { messages: number; notifications: number };
 
 export default function Chatter4Based() {
   const { onSyncEvent } = useStaffSync();
+  const [searchParams] = useSearchParams();
+  const deepLinkCreatorId = searchParams.get('creatorId') || '';
+  const deepLinkFanId = searchParams.get('fanId') || '';
+  const deepLinkChatId = searchParams.get('chatId') || '';
 
   const [creators, setCreators] = useState<Creator[]>([]);
   const [creatorsLoading, setCreatorsLoading] = useState(true);
   const [creatorsError, setCreatorsError] = useState<string | null>(null);
+  const [openChatError, setOpenChatError] = useState<string | null>(null);
   const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
   const [badgeCountsByCreatorId, setBadgeCountsByCreatorId] = useState<
     Record<string, CreatorUnreadCounts>
@@ -118,9 +131,59 @@ export default function Chatter4Based() {
   }, [creators, refreshCreatorBadges]);
 
   useEffect(() => {
+    if (
+      deepLinkCreatorId &&
+      creators.some((creator) => creator.id === deepLinkCreatorId)
+    ) {
+      setSelectedCreatorId(deepLinkCreatorId);
+    }
+  }, [creators, deepLinkCreatorId]);
+
+  useEffect(() => {
     setSelectedChatId(null);
     setSelectedChat(null);
+    setOpenChatError(null);
   }, [selectedCreatorId]);
+
+  useEffect(() => {
+    if (!selectedCreatorId) return;
+    if (deepLinkCreatorId && selectedCreatorId !== deepLinkCreatorId) return;
+    const realChatId = isRealFourBasedChatId(deepLinkChatId) ? deepLinkChatId : '';
+    if (!realChatId && !deepLinkFanId) return;
+
+    let cancelled = false;
+    setOpenChatError(null);
+
+    const open = async () => {
+      try {
+        if (realChatId) {
+          const result = await getFourBasedChat(selectedCreatorId, realChatId);
+          if (cancelled || !result.chat?._id) return;
+          setSelectedChatId(result.chat._id);
+          setSelectedChat(result.chat);
+          return;
+        }
+        const result = await getFourBasedChatByUser(selectedCreatorId, deepLinkFanId);
+        if (cancelled) return;
+        if (!result.chat?._id) {
+          setOpenChatError('Could not open this fan chat.');
+          return;
+        }
+        setSelectedChatId(result.chat._id);
+        setSelectedChat(result.chat);
+      } catch (err) {
+        if (cancelled) return;
+        setOpenChatError(
+          err instanceof Error ? err.message : 'Could not open this fan chat.'
+        );
+      }
+    };
+
+    void open();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCreatorId, deepLinkCreatorId, deepLinkFanId, deepLinkChatId]);
 
   useEffect(() => {
     return onSyncEvent((event) => {
@@ -255,7 +318,9 @@ export default function Chatter4Based() {
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-gray-500 dark:text-zinc-500 chatter-thread-bg relative">
             <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95" />
-            <span className="relative z-10">Select a creator chat to start</span>
+            <span className="relative z-10">
+              {openChatError || 'Select a creator chat to start'}
+            </span>
           </div>
         )}
       </main>

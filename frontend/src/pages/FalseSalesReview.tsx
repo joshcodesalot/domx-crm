@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import {
@@ -43,6 +44,29 @@ function formatEta(seconds: number | null | undefined): string {
   const minutes = Math.floor(total / 60);
   const rest = total % 60;
   return rest > 0 ? `~${minutes}m ${rest}s left` : `~${minutes}m left`;
+}
+
+function isRealPlatformChatId(chatId: string | null | undefined): boolean {
+  if (!chatId) return false;
+  return !chatId.includes(':');
+}
+
+function reviewChatHref(event: SaleReconciliationEvent): string | null {
+  if (!event.creatorId) return null;
+  const realChatId = isRealPlatformChatId(event.chatId) ? event.chatId : null;
+  if (event.platform === '4based') {
+    if (!event.fanId && !realChatId) return null;
+    const params = new URLSearchParams({ creatorId: event.creatorId });
+    if (event.fanId) params.set('fanId', event.fanId);
+    if (realChatId) params.set('chatId', realChatId);
+    return `/chatter/4based?${params.toString()}`;
+  }
+  if (!realChatId) return null;
+  const params = new URLSearchParams({
+    creatorId: event.creatorId,
+    chatId: realChatId,
+  });
+  return `/chatter?${params.toString()}`;
 }
 
 function reconcileButtonLabel(job: ReconcileAllJob | null, starting: boolean): string {
@@ -352,7 +376,9 @@ export default function FalseSalesReview() {
                   </td>
                 </tr>
               ) : (
-                events.map((event) => (
+                events.map((event) => {
+                  const chatHref = reviewChatHref(event);
+                  return (
                   <tr
                     key={event.id}
                     className="border-t border-gray-100 dark:border-white/5"
@@ -392,50 +418,66 @@ export default function FalseSalesReview() {
                       ) : null}
                     </td>
                     <td className="px-4 py-3">
-                      {event.status === 'needs_review' ? (
-                        <div className="flex flex-col gap-1">
-                          <button
-                            type="button"
+                      <div className="flex flex-col gap-1">
+                        {chatHref ? (
+                          <Link
+                            to={chatHref}
                             className="text-xs text-left text-gray-700 dark:text-gray-200 hover:underline"
-                            onClick={() =>
-                              void handleResolve(event.id, 'confirm_false')
-                            }
                           >
-                            Confirm false
-                          </button>
-                          <button
-                            type="button"
-                            className="text-xs text-left text-gray-700 dark:text-gray-200 hover:underline"
-                            onClick={() =>
-                              void handleResolve(event.id, 'restore_sale')
-                            }
+                            Open chat
+                          </Link>
+                        ) : (
+                          <span
+                            className="text-xs text-gray-400"
+                            title="No fan or chat id on this row"
                           >
-                            Restore sale
-                          </button>
-                          <button
-                            type="button"
-                            className="text-xs text-left text-gray-700 dark:text-gray-200 hover:underline"
-                            onClick={() => void handleResolve(event.id, 'dismiss')}
-                          >
-                            Dismiss
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!reassignChatterId}
-                            className="text-xs text-left text-gray-700 dark:text-gray-200 hover:underline disabled:opacity-40"
-                            onClick={() =>
-                              void handleResolve(event.id, 'reassign')
-                            }
-                          >
-                            Reassign
-                          </button>
-                        </div>
-                      ) : (
-                        <span className="text-xs text-gray-400">--</span>
-                      )}
+                            Open chat
+                          </span>
+                        )}
+                        {event.status === 'needs_review' ? (
+                          <>
+                            <button
+                              type="button"
+                              className="text-xs text-left text-gray-700 dark:text-gray-200 hover:underline"
+                              onClick={() =>
+                                void handleResolve(event.id, 'confirm_false')
+                              }
+                            >
+                              Confirm false
+                            </button>
+                            <button
+                              type="button"
+                              className="text-xs text-left text-gray-700 dark:text-gray-200 hover:underline"
+                              onClick={() =>
+                                void handleResolve(event.id, 'restore_sale')
+                              }
+                            >
+                              Restore sale
+                            </button>
+                            <button
+                              type="button"
+                              className="text-xs text-left text-gray-700 dark:text-gray-200 hover:underline"
+                              onClick={() => void handleResolve(event.id, 'dismiss')}
+                            >
+                              Dismiss
+                            </button>
+                            <button
+                              type="button"
+                              disabled={!reassignChatterId}
+                              className="text-xs text-left text-gray-700 dark:text-gray-200 hover:underline disabled:opacity-40"
+                              onClick={() =>
+                                void handleResolve(event.id, 'reassign')
+                              }
+                            >
+                              Reassign
+                            </button>
+                          </>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

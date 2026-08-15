@@ -919,6 +919,7 @@ export interface OverviewCreatorStats {
   totalSales: CurrencyAmount[];
   tipSales?: CurrencyAmount[];
   ppvSales?: CurrencyAmount[];
+  pendingSales?: CurrencyAmount[];
   revenuePerFan?: CurrencyAmount[];
   salesPerMessage?: CurrencyAmount[];
   avgPpvPrice?: number | null;
@@ -1206,6 +1207,7 @@ export interface CreatorOverviewSummary {
   reflectedTotalSalesError?: string | null;
   tipSales: CurrencyAmount[];
   ppvSales: CurrencyAmount[];
+  pendingSales?: CurrencyAmount[];
   revenuePerFan: CurrencyAmount[];
   salesPerMessage: CurrencyAmount[];
   unlockRateByPriceBand: OverviewPriceBand[];
@@ -2011,6 +2013,15 @@ export async function getFourBasedChat(
   chatId: string
 ): Promise<{ chat: FourBasedChat; providerUserId: string }> {
   return request(`/api/creators/${creatorId}/4based/chats/${encodeURIComponent(chatId)}`);
+}
+
+export async function getFourBasedChatByUser(
+  creatorId: string,
+  fanId: string
+): Promise<{ chat: FourBasedChat; providerUserId: string }> {
+  return request(
+    `/api/creators/${creatorId}/4based/chats/user/${encodeURIComponent(fanId)}`
+  );
 }
 
 export async function getFourBasedMessages(
@@ -4084,6 +4095,25 @@ export interface ScheduledImportPreviewRow {
   errors: string[];
 }
 
+function uploadResponseError(
+  response: Response,
+  data: { error?: string },
+  fallback: string
+): ApiError {
+  if (response.status === 413) {
+    return new ApiError('Images are too large to upload. Try a smaller file.', {
+      status: 413,
+    });
+  }
+  const fromBody = typeof data.error === 'string' ? data.error.trim() : '';
+  if (fromBody) {
+    return new ApiError(fromBody, { status: response.status });
+  }
+  return new ApiError(`${fallback} (${response.status})`, {
+    status: response.status,
+  });
+}
+
 export async function previewScheduledContentImport(
   jobsJson: string,
   files: File[]
@@ -4104,11 +4134,9 @@ export async function previewScheduledContentImport(
     headers,
     body: form,
   });
-  const data = await response.json().catch(() => ({}));
+  const data = (await response.json().catch(() => ({}))) as { error?: string };
   if (!response.ok) {
-    throw new ApiError((data as { error?: string }).error || 'Import failed', {
-      status: response.status,
-    });
+    throw uploadResponseError(response, data, 'Import failed');
   }
   return data as {
     rows: ScheduledImportPreviewRow[];
@@ -4152,11 +4180,12 @@ export async function uploadScheduledContentAsset(
     headers,
     body: form,
   });
-  const data = await response.json().catch(() => ({}));
+  const data = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    asset?: ScheduledImportAsset;
+  };
   if (!response.ok) {
-    throw new ApiError((data as { error?: string }).error || 'Upload failed', {
-      status: response.status,
-    });
+    throw uploadResponseError(response, data, 'Upload failed');
   }
   return data as { asset: ScheduledImportAsset };
 }

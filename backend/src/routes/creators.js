@@ -1859,6 +1859,16 @@ async function loadFourBasedCreator(creatorId) {
   };
 }
 
+function extractFourBasedChat(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (payload._id) return payload;
+  if (payload.chat && payload.chat._id) return payload.chat;
+  if (payload.data && payload.data._id) return payload.data;
+  if (Array.isArray(payload) && payload[0]?._id) return payload[0];
+  if (Array.isArray(payload.items) && payload.items[0]?._id) return payload.items[0];
+  return null;
+}
+
 function handleFourBasedError(res, err, label) {
   if (err instanceof fourBasedClient.WrongPasswordError) {
     return res.status(400).json({ error: 'Password not correct' });
@@ -3708,6 +3718,46 @@ router.post(
       res.json({ ok: true });
     } catch (err) {
       return handleFourBasedError(res, err, 'Reset 4based activities error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/4based/chats/user/:fanId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, fanId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!fanId) {
+      return res.status(400).json({ error: 'fanId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadFourBasedCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const payload = await fourBasedClient.getChatByUser(loaded.creator, fanId);
+      const chat = extractFourBasedChat(payload);
+      if (!chat?._id) {
+        return res.status(404).json({ error: 'No chat found for this fan' });
+      }
+
+      res.json({
+        chat,
+        providerUserId: loaded.creator.providerUserId,
+      });
+    } catch (err) {
+      return handleFourBasedError(res, err, 'Get 4based chat by user error:');
     }
   }
 );

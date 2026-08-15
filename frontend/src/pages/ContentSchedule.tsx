@@ -9,7 +9,9 @@ import {
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ScheduleDateTimePicker from '@/components/ScheduleDateTimePicker';
-import ScheduleVaultPicker from '@/components/ScheduleVaultPicker';
+import ScheduleVaultPicker, {
+  type ScheduleVaultPick,
+} from '@/components/ScheduleVaultPicker';
 import { useToast } from '@/context/ToastContext';
 import {
   cancelScheduledContent,
@@ -65,6 +67,70 @@ type ReviewRow = {
   vaultThumb: string | null;
   payload: Record<string, unknown>;
 };
+
+function firstRecord(value: unknown): Record<string, unknown> | null {
+  if (!Array.isArray(value) || !value[0] || typeof value[0] !== 'object') return null;
+  return value[0] as Record<string, unknown>;
+}
+
+function vaultIdsFromPayload(payload: Record<string, unknown>): {
+  vaultId: string;
+  vaultGuid: string;
+  mediaId: string;
+} {
+  const vaultItem = firstRecord(payload.vaults);
+  const mediaItem = firstRecord(payload.media);
+  return {
+    vaultId: String(payload.vaultId || vaultItem?.id || ''),
+    vaultGuid: String(payload.vaultGuid || vaultItem?.guid || ''),
+    mediaId: String(payload.mediaId || mediaItem?.mediaId || ''),
+  };
+}
+
+function vaultPayloadForKind(
+  kind: ReviewRow['kind'],
+  platform: ReviewRow['platform'],
+  source: Record<string, unknown>
+): Record<string, unknown> {
+  const { vaultId, vaultGuid, mediaId } = vaultIdsFromPayload(source);
+  if (kind === 'mass_message') {
+    if (platform === '4based' && vaultId) {
+      return {
+        vaults: [
+          {
+            id: vaultId,
+            guid: vaultGuid || crypto.randomUUID(),
+            position: 0,
+            is_teaser: false,
+          },
+        ],
+      };
+    }
+    if (platform === 'maloum' && mediaId) {
+      return { media: [{ mediaId, type: 'picture' }] };
+    }
+    return {};
+  }
+  if (kind === 'feed_post') {
+    if (platform === '4based' && vaultId) {
+      return vaultGuid ? { vaultId, vaultGuid } : { vaultId };
+    }
+    if (platform === 'maloum' && mediaId) {
+      return { mediaId };
+    }
+  }
+  return {};
+}
+
+function jobHasVaultMedia(job: ScheduledContentJob): boolean {
+  const payload = job.payload && typeof job.payload === 'object' ? job.payload : {};
+  const { vaultId, mediaId } = vaultIdsFromPayload(payload);
+  return (
+    (Array.isArray(payload.vaults) && payload.vaults.length > 0) ||
+    (Array.isArray(payload.media) && payload.media.length > 0) ||
+    Boolean(vaultId || mediaId)
+  );
+}
 
 function LocalThumb({ file }: { file: File }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -239,38 +305,63 @@ export default function ContentSchedule() {
   const handlePreview = async () => {
     setImporting(true);
     try {
-      const result = await previewScheduledContentImport(jsonText, files);
-      const byName = new Map(
-        files.map((file) => [file.name.trim().toLowerCase(), file])
-      );
+      const uploadedAssets: ScheduledImportAsset[] = [];
       const nextFiles: Record<string, File> = {};
-      for (const asset of result.assets) {
-        const file = byName.get(asset.originalFileName.trim().toLowerCase());
-        if (file) nextFiles[asset.id] = file;
+      const failedNames: string[] = [];
+      for (const file of files) {
+        try {
+          const uploaded = await uploadScheduledContentAsset(file);
+          uploadedAssets.push(uploaded.asset);
+          nextFiles[uploaded.asset.id] = file;
+        } catch {
+          failedNames.push(file.name);
+        }
       }
-      const rows: ReviewRow[] = result.rows.map((row) => ({
-        key: `row-${row.index}`,
-        included: true,
-        kind: row.kind || '',
-        platform: row.platform || '',
-        model: row.model,
-        creatorId: row.creatorId || '',
-        date: row.date,
-        time: row.time,
-        bodyText: row.bodyText,
-        imageSource: 'upload',
-        assetId: row.assetId,
-        imageFileName: row.imageFileName || '',
-        vaultLabel: '',
-        vaultThumb: null,
-        payload: {},
-      }));
-      setAssets(result.assets);
+      const result = await previewScheduledContentImport(jsonText, []);
+      const assetByName = new Map(
+        uploadedAssets.map((asset) => [
+          asset.originalFileName.trim().toLowerCase(),
+          asset,
+        ])
+      );
+      const usedNames = new Set<string>();
+      const rows: ReviewRow[] = result.rows.map((row) => {
+        const fileName = (row.imageFileName || '').trim().toLowerCase();
+        const matched = fileName ? assetByName.get(fileName) : null;
+        if (matched) usedNames.add(fileName);
+        return {
+          key: `row-${row.index}`,
+          included: true,
+          kind: row.kind || '',
+          platform: row.platform || '',
+          model: row.model,
+          creatorId: row.creatorId || '',
+          date: row.date,
+          time: row.time,
+          bodyText: row.bodyText,
+          imageSource: 'upload',
+          assetId: row.assetId || matched?.id || null,
+          imageFileName: row.imageFileName || matched?.originalFileName || '',
+          vaultLabel: '',
+          vaultThumb: null,
+          payload: {},
+        };
+      });
+      const unusedFiles = uploadedAssets
+        .filter(
+          (asset) =>
+            !usedNames.has(asset.originalFileName.trim().toLowerCase())
+        )
+        .map((asset) => asset.originalFileName);
+      setAssets(uploadedAssets);
       setFileByAssetId(nextFiles);
       setReviewRows(rows);
       setSelectedRowKey(rows[0]?.key || null);
-      if (result.unusedFiles.length > 0) {
-        toast.success(`Unused images available to assign: ${result.unusedFiles.join(', ')}`);
+      if (failedNames.length > 0) {
+        toast.error(`Could not upload: ${failedNames.join(', ')}`);
+      }
+      if (unusedFiles.length > 0) {
+        toast.success(`Unused images available to assign: ${unusedFiles.join(', ')}`);
       }
       toast.success(`Review ${rows.length} row${rows.length === 1 ? '' : 's'} before scheduling`);
     } catch (err) {
@@ -484,11 +575,20 @@ export default function ContentSchedule() {
                             <td className="p-2">
                               <select
                                 value={row.kind}
-                                onChange={(e) =>
+                                onChange={(e) => {
+                                  const kind = e.target.value as ReviewRow['kind'];
                                   updateRow(row.key, {
-                                    kind: e.target.value as ReviewRow['kind'],
-                                  })
-                                }
+                                    kind,
+                                    payload:
+                                      row.imageSource === 'vault'
+                                        ? vaultPayloadForKind(
+                                            kind,
+                                            row.platform,
+                                            row.payload
+                                          )
+                                        : row.payload,
+                                  });
+                                }}
                                 className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-1 py-1"
                               >
                                 <option value="">Kind</option>
@@ -656,6 +756,51 @@ export default function ContentSchedule() {
                                     </>
                                   )}
                                 </>
+                              ) : row.kind === 'mass_message' ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (!row.creatorId) {
+                                        toast.error('Choose a creator first');
+                                        return;
+                                      }
+                                      updateRow(row.key, { imageSource: 'vault' });
+                                      setVaultRowKey(row.key);
+                                    }}
+                                    className={`px-2 py-1 rounded-lg ${
+                                      row.vaultLabel
+                                        ? 'bg-domx-600 text-white'
+                                        : 'bg-gray-100 dark:bg-zinc-800'
+                                    }`}
+                                  >
+                                    {row.vaultLabel || 'Optional vault item'}
+                                  </button>
+                                  {row.vaultThumb && (
+                                    <img
+                                      src={row.vaultThumb}
+                                      alt=""
+                                      className="w-16 h-16 rounded-lg object-cover"
+                                    />
+                                  )}
+                                  {row.vaultLabel && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        updateRow(row.key, {
+                                          payload: {},
+                                          vaultLabel: '',
+                                          vaultThumb: null,
+                                        });
+                                      }}
+                                      className="block text-[11px] text-gray-400 hover:text-gray-600"
+                                    >
+                                      Clear
+                                    </button>
+                                  )}
+                                </>
                               ) : (
                                 <p className="text-gray-400">Text only</p>
                               )}
@@ -698,6 +843,11 @@ export default function ContentSchedule() {
                       {job.imageFileName && (
                         <p className="text-[11px] text-gray-400">{job.imageFileName}</p>
                       )}
+                      {!job.imageFileName &&
+                        job.kind === 'mass_message' &&
+                        jobHasVaultMedia(job) && (
+                          <p className="text-[11px] text-gray-400">Vault media</p>
+                        )}
                     </div>
                     {job.status === 'pending' && (
                       <button
@@ -950,11 +1100,15 @@ export default function ContentSchedule() {
           creatorId={vaultRow.creatorId}
           platform={vaultRow.platform}
           onClose={() => setVaultRowKey(null)}
-          onSelect={(pick) => {
+          onSelect={(pick: ScheduleVaultPick) => {
             updateRow(vaultRow.key, {
               imageSource: 'vault',
               assetId: null,
-              payload: pick.payload,
+              payload: vaultPayloadForKind(
+                vaultRow.kind,
+                vaultRow.platform,
+                pick.payload
+              ),
               vaultLabel: pick.label,
               vaultThumb: pick.thumbUrl,
             });

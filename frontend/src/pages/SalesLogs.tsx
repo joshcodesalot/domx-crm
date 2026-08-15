@@ -299,6 +299,9 @@ export default function SalesLogs() {
             <span className="hidden sm:inline h-4 w-px bg-gray-200 dark:bg-white/10" />
             <span className="font-medium text-gray-800 dark:text-gray-200">
               Total Sales: {formatCurrencyAmounts(totals)}
+              <span className="ml-1 font-normal text-gray-500 dark:text-gray-400">
+                (verified PPV + tips)
+              </span>
             </span>
             <span className="hidden sm:inline h-4 w-px bg-gray-200 dark:bg-white/10" />
             <span>

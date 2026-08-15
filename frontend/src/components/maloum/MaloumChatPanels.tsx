@@ -3058,6 +3058,7 @@ type MaloumSingleCreatorChatProps = {
   onSelectCreator: (id: string) => void;
   unreadByCreatorId?: Record<string, number>;
   notificationUnreadByCreatorId?: Record<string, number>;
+  initialChatId?: string | null;
 };
 
 export function MaloumSingleCreatorChat({
@@ -3067,9 +3068,11 @@ export function MaloumSingleCreatorChat({
   onSelectCreator,
   unreadByCreatorId = {},
   notificationUnreadByCreatorId = {},
+  initialChatId = null,
 }: MaloumSingleCreatorChatProps) {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [selectedChat, setSelectedChat] = useState<MaloumChat | null>(null);
+  const [openChatError, setOpenChatError] = useState<string | null>(null);
   const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
     readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
   );
@@ -3085,7 +3088,31 @@ export function MaloumSingleCreatorChat({
   useEffect(() => {
     setSelectedChatId(null);
     setSelectedChat(null);
+    setOpenChatError(null);
   }, [selectedCreatorId]);
+
+  useEffect(() => {
+    if (!selectedCreatorId || !initialChatId || initialChatId.includes(':')) {
+      return;
+    }
+    let cancelled = false;
+    setOpenChatError(null);
+    void getMaloumChat(selectedCreatorId, initialChatId)
+      .then((result) => {
+        if (cancelled || !result.chat?._id) return;
+        setSelectedChatId(result.chat._id);
+        setSelectedChat(result.chat);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setOpenChatError(
+          err instanceof Error ? err.message : 'Could not open this chat.'
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCreatorId, initialChatId]);
 
   useEffect(() => {
     const sync = () => {
@@ -3222,7 +3249,9 @@ export function MaloumSingleCreatorChat({
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-gray-500 dark:text-zinc-500 chatter-thread-bg relative">
             <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95" />
-            <span className="relative z-10">Select a creator chat to start</span>
+            <span className="relative z-10">
+              {openChatError || 'Select a creator chat to start'}
+            </span>
           </div>
         )}
       </main>

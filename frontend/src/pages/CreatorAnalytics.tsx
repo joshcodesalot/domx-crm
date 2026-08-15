@@ -412,6 +412,7 @@ export default function CreatorAnalytics() {
               <MetricCard
                 label="Total Sales"
                 value={formatCurrencyAmounts(summary?.totalSales)}
+                hint="Payout-verified PPVs + tips (Maloum 80% / 4based 70%)"
               />
               <MetricCard
                 label="Reflected total sales"
@@ -441,6 +442,12 @@ export default function CreatorAnalytics() {
               <MetricCard
                 label="PPV Sales"
                 value={formatCurrencyAmounts(summary?.ppvSales)}
+                hint="Payout-verified PPV only"
+              />
+              <MetricCard
+                label="Pending sales"
+                value={formatCurrencyAmounts(summary?.pendingSales)}
+                hint="Purchased PPVs with no payout match yet"
               />
               <MetricCard
                 label="Pending PPVs"

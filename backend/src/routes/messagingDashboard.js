@@ -36,6 +36,11 @@ const {
   SERIES_CURRENCY_EXPR,
   NET_SALES_EXPR,
   NET_SALES_EXPR_UNALIASED,
+  COUNTED_TIP_FILTER,
+  COUNTED_PPV_FILTER,
+  COUNTED_SALES_FILTER,
+  COUNTED_SALES_FILTER_UNALIASED,
+  PENDING_PPV_FILTER,
   parseExtendedMessageStats,
   salesPerMessage,
   revenuePerFan,
@@ -2029,11 +2034,10 @@ router.get(
             `SELECT m."chatterId",
                     UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                     COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                      WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                      WHERE ${COUNTED_SALES_FILTER}
                     ), 0)::float AS "totalSales",
                     COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                      WHERE m.purchased = true
-                        AND m."priceNet" IS NOT NULL
+                      WHERE ${COUNTED_SALES_FILTER}
                         AND date_trunc('month', m."sentAt" AT TIME ZONE '${tz}')
                             = date_trunc('month', NOW() AT TIME ZONE '${tz}')
                     ), 0)::float AS "monthlySales"
@@ -2074,8 +2078,7 @@ router.get(
               `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
                FROM messaging_dashboard_entries
-               WHERE purchased = true
-                 AND "priceNet" IS NOT NULL
+               WHERE ${COUNTED_SALES_FILTER_UNALIASED}
                  AND ("sentAt" AT TIME ZONE '${tz}')::date >= $2::date
                  AND ("sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND "chatterId" = ANY($1::uuid[])
@@ -2086,8 +2089,7 @@ router.get(
               `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
                FROM messaging_dashboard_entries
-               WHERE purchased = true
-                 AND "priceNet" IS NOT NULL
+               WHERE ${COUNTED_SALES_FILTER_UNALIASED}
                  AND ("sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND ("sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY 1`,
@@ -2097,8 +2099,7 @@ router.get(
           `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
                   COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
            FROM messaging_dashboard_entries
-           WHERE purchased = true
-             AND "priceNet" IS NOT NULL
+           WHERE ${COUNTED_SALES_FILTER_UNALIASED}
              AND date_trunc('month', "sentAt" AT TIME ZONE '${tz}')
                  = date_trunc('month', NOW() AT TIME ZONE '${tz}')
              ${chatterClause}
@@ -2114,7 +2115,7 @@ router.get(
                SELECT d.day::text AS date,
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                        WHERE ${COUNTED_SALES_FILTER}
                       ), 0)::float AS amount
                FROM days d
                LEFT JOIN messaging_dashboard_entries m
@@ -2128,7 +2129,7 @@ router.get(
                SELECT d.day::text AS date,
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                        WHERE ${COUNTED_SALES_FILTER}
                       ), 0)::float AS amount
                FROM days d
                LEFT JOIN messaging_dashboard_entries m
@@ -2160,8 +2161,7 @@ router.get(
               `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
                FROM messaging_dashboard_entries
-               WHERE purchased = true
-                 AND "priceNet" IS NOT NULL
+               WHERE ${COUNTED_SALES_FILTER_UNALIASED}
                  AND ("sentAt" AT TIME ZONE '${tz}')::date >= $2::date
                  AND ("sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND "chatterId" = ANY($1::uuid[])
@@ -2172,8 +2172,7 @@ router.get(
               `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
                FROM messaging_dashboard_entries
-               WHERE purchased = true
-                 AND "priceNet" IS NOT NULL
+               WHERE ${COUNTED_SALES_FILTER_UNALIASED}
                  AND ("sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND ("sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY 1`,
@@ -2223,8 +2222,7 @@ router.get(
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
-               WHERE m.purchased = true
-                 AND m."priceNet" IS NOT NULL
+               WHERE ${COUNTED_SALES_FILTER}
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
@@ -2236,8 +2234,7 @@ router.get(
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
-               WHERE m.purchased = true
-                 AND m."priceNet" IS NOT NULL
+               WHERE ${COUNTED_SALES_FILTER}
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY m."chatterId", 2`,
@@ -2339,7 +2336,7 @@ router.get(
               `SELECT
                   CASE
                     WHEN m."contentType" = 'tip' THEN 'tip'
-                    WHEN m."contentType" = 'chat_product' AND m.purchased = true THEN 'ppv'
+                    WHEN ${COUNTED_PPV_FILTER} THEN 'ppv'
                     ELSE NULL
                   END AS kind,
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
@@ -2348,7 +2345,7 @@ router.get(
                WHERE m."priceNet" IS NOT NULL
                  AND (
                    m."contentType" = 'tip'
-                   OR (m."contentType" = 'chat_product' AND m.purchased = true)
+                   OR (${COUNTED_PPV_FILTER})
                  )
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
@@ -2360,7 +2357,7 @@ router.get(
               `SELECT
                   CASE
                     WHEN m."contentType" = 'tip' THEN 'tip'
-                    WHEN m."contentType" = 'chat_product' AND m.purchased = true THEN 'ppv'
+                    WHEN ${COUNTED_PPV_FILTER} THEN 'ppv'
                     ELSE NULL
                   END AS kind,
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
@@ -2369,7 +2366,7 @@ router.get(
                WHERE m."priceNet" IS NOT NULL
                  AND (
                    m."contentType" = 'tip'
-                   OR (m."contentType" = 'chat_product' AND m.purchased = true)
+                   OR (${COUNTED_PPV_FILTER})
                  )
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
@@ -2422,10 +2419,10 @@ router.get(
                     WHERE m."contentType" IN ('text', 'media', 'chat_product')
                   )::int AS "messagesSent",
                   COUNT(*) FILTER (
-                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                    WHERE ${COUNTED_SALES_FILTER}
                   )::int AS "salesCount",
                   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                    WHERE ${COUNTED_SALES_FILTER}
                   ), 0)::float AS "salesAmount"
                FROM messaging_dashboard_entries m
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
@@ -2442,10 +2439,10 @@ router.get(
                     WHERE m."contentType" IN ('text', 'media', 'chat_product')
                   )::int AS "messagesSent",
                   COUNT(*) FILTER (
-                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                    WHERE ${COUNTED_SALES_FILTER}
                   )::int AS "salesCount",
                   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                    WHERE ${COUNTED_SALES_FILTER}
                   ), 0)::float AS "salesAmount"
                FROM messaging_dashboard_entries m
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
@@ -2461,8 +2458,7 @@ router.get(
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
-               WHERE m.purchased = true
-                 AND m."priceNet" IS NOT NULL
+               WHERE ${COUNTED_SALES_FILTER}
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
@@ -2474,8 +2470,7 @@ router.get(
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
-               WHERE m.purchased = true
-                 AND m."priceNet" IS NOT NULL
+               WHERE ${COUNTED_SALES_FILTER}
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY m.platform, 2`,
@@ -2516,13 +2511,13 @@ router.get(
               `SELECT m."creatorId",
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                        WHERE ${COUNTED_SALES_FILTER}
                       ), 0)::float AS "totalSalesAmount",
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "tipSalesAmount",
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                        WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
+                        WHERE ${COUNTED_PPV_FILTER}
                       ), 0)::float AS "ppvSalesAmount"
                FROM messaging_dashboard_entries m
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
@@ -2535,13 +2530,13 @@ router.get(
               `SELECT m."creatorId",
                       UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                        WHERE ${COUNTED_SALES_FILTER}
                       ), 0)::float AS "totalSalesAmount",
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                         WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "tipSalesAmount",
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                        WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
+                        WHERE ${COUNTED_PPV_FILTER}
                       ), 0)::float AS "ppvSalesAmount"
                FROM messaging_dashboard_entries m
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
@@ -2579,10 +2574,10 @@ router.get(
                         WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "tipSalesAmount",
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                        WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
+                        WHERE ${COUNTED_PPV_FILTER}
                       ), 0)::float AS "ppvSalesAmount",
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                        WHERE ${COUNTED_SALES_FILTER}
                       ), 0)::float AS "periodSalesAmount"
                FROM messaging_dashboard_entries m
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
@@ -2598,10 +2593,10 @@ router.get(
                         WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
                       ), 0)::float AS "tipSalesAmount",
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                        WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
+                        WHERE ${COUNTED_PPV_FILTER}
                       ), 0)::float AS "ppvSalesAmount",
                       COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                        WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                        WHERE ${COUNTED_SALES_FILTER}
                       ), 0)::float AS "periodSalesAmount"
                FROM messaging_dashboard_entries m
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
@@ -2614,8 +2609,7 @@ router.get(
           `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
                   COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
            FROM messaging_dashboard_entries
-           WHERE purchased = true
-             AND "priceNet" IS NOT NULL
+           WHERE ${COUNTED_SALES_FILTER_UNALIASED}
              ${chatterClause}
            GROUP BY 1`,
           selfParams
@@ -3403,8 +3397,7 @@ router.get(
                FROM messaging_dashboard_entries m
                JOIN users u ON u.id = m."chatterId"
                WHERE u.role = ANY($1::text[])
-                 AND m.purchased = true
-                 AND m."priceNet" IS NOT NULL
+                 AND ${COUNTED_SALES_FILTER}
                  AND ${windowExistsSql}
                GROUP BY m."chatterId", 2`,
               leaderboardParams
@@ -4001,14 +3994,17 @@ router.get(
           `SELECT m."creatorId",
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                    WHERE ${COUNTED_SALES_FILTER}
                   ), 0)::float AS "totalSalesAmount",
                   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
                     WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
                   ), 0)::float AS "tipSalesAmount",
                   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                    WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
-                  ), 0)::float AS "ppvSalesAmount"
+                    WHERE ${COUNTED_PPV_FILTER}
+                  ), 0)::float AS "ppvSalesAmount",
+                  COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
+                    WHERE ${PENDING_PPV_FILTER}
+                  ), 0)::float AS "pendingSalesAmount"
            FROM messaging_dashboard_entries m
            WHERE ${dateClause}
              ${chatterClause}
@@ -4022,7 +4018,7 @@ router.get(
                   MAX(m."chatterName") AS "chatterName",
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                    WHERE ${COUNTED_SALES_FILTER}
                   ), 0)::float AS amount
            FROM messaging_dashboard_entries m
            WHERE ${dateClause}
@@ -4036,7 +4032,7 @@ router.get(
                   m.platform,
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                    WHERE ${COUNTED_SALES_FILTER}
                   ), 0)::float AS amount
            FROM messaging_dashboard_entries m
            WHERE ${dateClause}
@@ -4070,10 +4066,10 @@ router.get(
                 WHERE m."contentType" IN ('text', 'media', 'chat_product')
               )::int AS "messagesSent",
               COUNT(*) FILTER (
-                WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                WHERE ${COUNTED_SALES_FILTER}
               )::int AS "salesCount",
               COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                WHERE ${COUNTED_SALES_FILTER}
               ), 0)::float AS "salesAmount"
            FROM messaging_dashboard_entries m
            WHERE ${dateClause}
@@ -4087,7 +4083,7 @@ router.get(
           `SELECT (m."sentAt" AT TIME ZONE '${tz}')::date::text AS date,
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                    WHERE ${COUNTED_SALES_FILTER}
                   ), 0)::float AS amount
            FROM messaging_dashboard_entries m
            WHERE ${dateClause}
@@ -4102,7 +4098,7 @@ router.get(
                   MAX(m."fanUsername") AS "fanUsername",
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-                    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+                    WHERE ${COUNTED_SALES_FILTER}
                   ), 0)::float AS amount
            FROM messaging_dashboard_entries m
            WHERE m."fanId" IS NOT NULL
@@ -4111,10 +4107,10 @@ router.get(
              ${creatorClause}
            GROUP BY m."fanId", 3
            HAVING COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-             WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+             WHERE ${COUNTED_SALES_FILTER}
            ), 0) > 0
            ORDER BY SUM(${NET_SALES_EXPR}) FILTER (
-             WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+             WHERE ${COUNTED_SALES_FILTER}
            ) DESC
            LIMIT 20`,
           baseParams
@@ -4131,7 +4127,8 @@ router.get(
           `SELECT
               CASE
                 WHEN m."contentType" = 'tip' THEN 'tip'
-                WHEN m."contentType" = 'chat_product' AND m.purchased = true THEN 'ppv'
+                WHEN ${COUNTED_PPV_FILTER} THEN 'ppv'
+                WHEN ${PENDING_PPV_FILTER} THEN 'pending'
                 ELSE NULL
               END AS kind,
               UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
@@ -4140,7 +4137,8 @@ router.get(
            WHERE m."priceNet" IS NOT NULL
              AND (
                m."contentType" = 'tip'
-               OR (m."contentType" = 'chat_product' AND m.purchased = true)
+               OR (${COUNTED_PPV_FILTER})
+               OR (${PENDING_PPV_FILTER})
              )
              AND ${dateClause}
              ${chatterClause}
@@ -4158,6 +4156,7 @@ router.get(
             totalSales: [],
             tipSales: [],
             ppvSales: [],
+            pendingSales: [],
           });
         }
         const entry = salesByCreator.get(creatorKey);
@@ -4165,9 +4164,11 @@ router.get(
         const totalAmt = Number(row.totalSalesAmount) || 0;
         const tipAmt = Number(row.tipSalesAmount) || 0;
         const ppvAmt = Number(row.ppvSalesAmount) || 0;
+        const pendingAmt = Number(row.pendingSalesAmount) || 0;
         if (totalAmt > 0) entry.totalSales.push({ currency, amount: totalAmt });
         if (tipAmt > 0) entry.tipSales.push({ currency, amount: tipAmt });
         if (ppvAmt > 0) entry.ppvSales.push({ currency, amount: ppvAmt });
+        if (pendingAmt > 0) entry.pendingSales.push({ currency, amount: pendingAmt });
       }
 
       const chatterSalesByCreator = new Map();
@@ -4221,10 +4222,12 @@ router.get(
           totalSales: [],
           tipSales: [],
           ppvSales: [],
+          pendingSales: [],
         };
         const totalSales = mergeCurrencyAmounts(sales.totalSales);
         const tipSales = mergeCurrencyAmounts(sales.tipSales);
         const ppvSales = mergeCurrencyAmounts(sales.ppvSales);
+        const pendingSales = mergeCurrencyAmounts(sales.pendingSales);
         const salesByChatter = [
           ...(chatterSalesByCreator.get(creatorKey)?.values() || []),
         ]
@@ -4268,6 +4271,7 @@ router.get(
           totalSales,
           tipSales,
           ppvSales,
+          pendingSales,
           revenuePerFan: revenuePerFan(ppvSales, stats.fansWhoUnlocked),
           salesPerMessage: salesPerMessage(totalSales, stats.messagesSent),
           salesByChatter,
@@ -4277,17 +4281,20 @@ router.get(
 
       const tipSales = [];
       const ppvSales = [];
+      const pendingSales = [];
       for (const row of tipPpvSalesResult.rows) {
         const amount = Number(row.amount) || 0;
         if (amount <= 0 || !row.kind) continue;
         const item = { currency: normalizeCurrency(row.currency), amount };
         if (row.kind === 'tip') tipSales.push(item);
-        else ppvSales.push(item);
+        else if (row.kind === 'pending') pendingSales.push(item);
+        else if (row.kind === 'ppv') ppvSales.push(item);
       }
 
       const aggregate = parseExtendedMessageStats(aggregateStatsResult.rows[0] || {});
       const tipSalesMerged = mergeCurrencyAmounts(tipSales);
       const ppvSalesMerged = mergeCurrencyAmounts(ppvSales);
+      const pendingSalesMerged = mergeCurrencyAmounts(pendingSales);
       const totalSalesMerged = mergeCurrencyAmounts(tipSalesMerged, ppvSalesMerged);
 
       const dayMap = new Map();
@@ -4364,6 +4371,7 @@ router.get(
           totalSales: totalSalesMerged,
           tipSales: tipSalesMerged,
           ppvSales: ppvSalesMerged,
+          pendingSales: pendingSalesMerged,
           reflectedTotalSales,
           reflectedTotalSalesError,
           revenuePerFan: revenuePerFan(ppvSalesMerged, aggregate.fansWhoUnlocked),
@@ -4650,7 +4658,7 @@ router.get(
       conditions.push(`m."priceNet" IS NOT NULL`);
       conditions.push(`(
         m."contentType" = 'tip'
-        OR (m."contentType" = 'chat_product' AND m.purchased = true)
+        OR (${COUNTED_PPV_FILTER})
       )`);
     }
 
@@ -4660,8 +4668,8 @@ router.get(
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const salesWhereClause = whereClause
-      ? `${whereClause} AND m.purchased = true AND m."priceNet" IS NOT NULL`
-      : `WHERE m.purchased = true AND m."priceNet" IS NOT NULL`;
+      ? `${whereClause} AND ${COUNTED_SALES_FILTER}`
+      : `WHERE ${COUNTED_SALES_FILTER}`;
 
     const countResult = await pool.query(
       `SELECT COUNT(*)::int AS total

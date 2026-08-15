@@ -266,8 +266,8 @@ server {
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
 
-        # Allow avatar uploads if needed
-        client_max_body_size 10M;
+        # Scheduled-content image imports (up to 25MB per file)
+        client_max_body_size 200M;
     }
 }
 ```

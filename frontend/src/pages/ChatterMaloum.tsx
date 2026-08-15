@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import Sidebar from '@/components/Sidebar';
 import { MaloumSingleCreatorChat } from '@/components/maloum/MaloumChatPanels';
 import { useStaffSync } from '@/context/StaffSyncContext';
@@ -10,6 +11,9 @@ const CREATOR_POLL_MS = 15_000;
 
 export default function ChatterMaloum() {
   const { onSyncEvent } = useStaffSync();
+  const [searchParams] = useSearchParams();
+  const deepLinkCreatorId = searchParams.get('creatorId') || '';
+  const deepLinkChatId = searchParams.get('chatId') || '';
   const [creators, setCreators] = useState<Creator[]>([]);
   const [creatorsLoading, setCreatorsLoading] = useState(true);
   const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
@@ -98,6 +102,15 @@ export default function ChatterMaloum() {
   }, [creators, refreshBadges]);
 
   useEffect(() => {
+    if (
+      deepLinkCreatorId &&
+      creators.some((creator) => creator.id === deepLinkCreatorId)
+    ) {
+      setSelectedCreatorId(deepLinkCreatorId);
+    }
+  }, [creators, deepLinkCreatorId]);
+
+  useEffect(() => {
     return onSyncEvent((event) => {
       if (
         event.type === 'creator:access-granted' ||
@@ -118,6 +131,7 @@ export default function ChatterMaloum() {
         onSelectCreator={setSelectedCreatorId}
         unreadByCreatorId={unreadByCreatorId}
         notificationUnreadByCreatorId={notificationUnreadByCreatorId}
+        initialChatId={deepLinkChatId || null}
       />
     </div>
   );

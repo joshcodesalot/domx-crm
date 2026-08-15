@@ -60,6 +60,30 @@ function asIdList(value) {
   return [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))];
 }
 
+function normalizeMassPayload(platform, payload) {
+  const next = payload && typeof payload === 'object' ? { ...payload } : {};
+  if (platform === '4based') {
+    const vaults = Array.isArray(next.vaults) ? next.vaults : [];
+    if (vaults.length === 0 && next.vaultId) {
+      next.vaults = [
+        {
+          id: String(next.vaultId),
+          guid: next.vaultGuid || undefined,
+          position: 0,
+          is_teaser: false,
+        },
+      ];
+    }
+  } else if (platform === 'maloum') {
+    const media = Array.isArray(next.media) ? next.media : [];
+    const mediaId = next.mediaId || next.uploadId;
+    if (media.length === 0 && mediaId) {
+      next.media = [{ mediaId: String(mediaId), type: 'picture' }];
+    }
+  }
+  return next;
+}
+
 function mapJob(row) {
   return {
     id: row.id,
@@ -729,7 +753,7 @@ router.post('/import/commit', async (req, res) => {
         bodyText,
         imageFileName,
         storedPath,
-        payload: kind === 'feed_post' ? payload : {},
+        payload: kind === 'mass_message' ? normalizeMassPayload(platform, payload) : payload,
         userId: req.user.id,
       });
       created.push(mapJob({ ...row, displayName: creator.rows[0].displayName }));

@@ -594,14 +594,14 @@ export default function Dashboard() {
               <MetricCard
                 label="Total Sales"
                 value={formatCurrencyAmounts(totalSalesAmounts)}
-                hint={`Net PPV unlocks + tips for ${periodLabel} (${overview?.timeZone || viewerTimeZone}; Maloum 80% / 4based 70%)`}
+                hint={`Payout-verified PPVs + tips for ${periodLabel} (${overview?.timeZone || viewerTimeZone}; Maloum 80% / 4based 70%)`}
                 to={canViewTeamAnalytics ? salesLogsHref : undefined}
                 linkLabel="View logs"
               />
               <MetricCard
                 label="Monthly Revenue"
                 value={formatCurrencyAmounts(overview?.monthlyRevenue)}
-                hint={`Net purchased revenue this calendar month (${overview?.timeZone || viewerTimeZone})`}
+                hint={`Payout-verified PPVs + tips this calendar month (${overview?.timeZone || viewerTimeZone})`}
               />
               <MetricCard
                 label="Avg Response Time"

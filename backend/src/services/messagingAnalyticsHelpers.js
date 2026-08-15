@@ -177,8 +177,46 @@ function netSalesExpr(alias = 'm') {
   );
 }
 
+function colPrefix(alias) {
+  return alias ? `${alias}.` : '';
+}
+
+function countedTipFilter(alias = 'm') {
+  const p = colPrefix(alias);
+  return `${p}"contentType" = 'tip' AND ${p}"priceNet" IS NOT NULL`;
+}
+
+function countedPpvFilter(alias = 'm') {
+  const p = colPrefix(alias);
+  return (
+    `${p}"contentType" = 'chat_product'` +
+    ` AND ${p}purchased = true` +
+    ` AND ${p}"payoutVerified" = true` +
+    ` AND ${p}"priceNet" IS NOT NULL`
+  );
+}
+
+function countedSalesFilter(alias = 'm') {
+  return `(${countedTipFilter(alias)} OR ${countedPpvFilter(alias)})`;
+}
+
+function pendingPpvFilter(alias = 'm') {
+  const p = colPrefix(alias);
+  return (
+    `${p}"contentType" = 'chat_product'` +
+    ` AND ${p}purchased = true` +
+    ` AND ${p}"payoutVerified" = false` +
+    ` AND ${p}"priceNet" IS NOT NULL`
+  );
+}
+
 const NET_SALES_EXPR = netSalesExpr('m');
 const NET_SALES_EXPR_UNALIASED = netSalesExpr('');
+const COUNTED_TIP_FILTER = countedTipFilter('m');
+const COUNTED_PPV_FILTER = countedPpvFilter('m');
+const COUNTED_SALES_FILTER = countedSalesFilter('m');
+const COUNTED_SALES_FILTER_UNALIASED = countedSalesFilter('');
+const PENDING_PPV_FILTER = pendingPpvFilter('m');
 
 const SERIES_MESSAGE_SELECT = `
   COUNT(*) FILTER (
@@ -198,13 +236,13 @@ const SERIES_MESSAGE_SELECT = `
   )::int AS "uniqueFansMessaged",
   ${SERIES_CURRENCY_EXPR} AS currency,
   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-    WHERE m.purchased = true AND m."priceNet" IS NOT NULL
+    WHERE ${COUNTED_SALES_FILTER}
   ), 0)::float AS revenue,
   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-    WHERE m."contentType" = 'tip' AND m."priceNet" IS NOT NULL
+    WHERE ${COUNTED_TIP_FILTER}
   ), 0)::float AS "tipRevenue",
   COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
-    WHERE m."contentType" = 'chat_product' AND m.purchased = true AND m."priceNet" IS NOT NULL
+    WHERE ${COUNTED_PPV_FILTER}
   ), 0)::float AS "ppvRevenue"
 `;
 
@@ -275,8 +313,17 @@ module.exports = {
   SERIES_MESSAGE_SELECT,
   SERIES_CURRENCY_EXPR,
   netSalesExpr,
+  countedTipFilter,
+  countedPpvFilter,
+  countedSalesFilter,
+  pendingPpvFilter,
   NET_SALES_EXPR,
   NET_SALES_EXPR_UNALIASED,
+  COUNTED_TIP_FILTER,
+  COUNTED_PPV_FILTER,
+  COUNTED_SALES_FILTER,
+  COUNTED_SALES_FILTER_UNALIASED,
+  PENDING_PPV_FILTER,
   parseExtendedMessageStats,
   periodDateClause,
 };
