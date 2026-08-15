@@ -1448,6 +1448,33 @@ export async function resolveSaleReconciliation(
   });
 }
 
+export interface ReconcileAllJob {
+  status: 'running' | 'done' | 'error';
+  yearMonth: string;
+  total: number;
+  done: number;
+  currentName: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  etaSeconds: number | null;
+  verified: number;
+  exceptions: number;
+  errors: { creatorId: string | null; name: string | null; message: string }[];
+}
+
+export async function getReconcileAllStatus(): Promise<{ job: ReconcileAllJob | null }> {
+  return request('/api/sale-reconciliation/reconcile-all');
+}
+
+export async function startReconcileAll(
+  yearMonth?: string
+): Promise<{ job: ReconcileAllJob }> {
+  return request('/api/sale-reconciliation/reconcile-all', {
+    method: 'POST',
+    body: JSON.stringify({ yearMonth }),
+  });
+}
+
 export async function reconcileCreatorPayouts(
   creatorId: string,
   yearMonth?: string

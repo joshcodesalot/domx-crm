@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import {
   getCreators,
+  getReconcileAllStatus,
   getSaleReconciliation,
   getStaff,
-  reconcileCreatorPayouts,
+  startReconcileAll,
   resolveSaleReconciliation,
   type Creator,
+  type ReconcileAllJob,
   type SaleReconciliationEvent,
   type User,
 } from '@/lib/api';
@@ -34,6 +36,24 @@ function formatUnlocked(unlockedAt: string | null | undefined): string {
   return `${formatted.date} ${formatted.time}`;
 }
 
+function formatEta(seconds: number | null | undefined): string {
+  if (seconds == null) return 'Estimating…';
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return `~${total}s left`;
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return rest > 0 ? `~${minutes}m ${rest}s left` : `~${minutes}m left`;
+}
+
+function reconcileButtonLabel(job: ReconcileAllJob | null, starting: boolean): string {
+  if (starting && !job) return 'Starting…';
+  if (!job || job.status !== 'running') return 'Reconcile all';
+  const parts = [`Reconciling ${job.done} / ${job.total}`];
+  if (job.currentName) parts.push(job.currentName);
+  parts.push(formatEta(job.etaSeconds));
+  return parts.join(' — ');
+}
+
 export default function FalseSalesReview() {
   const [tab, setTab] = useState<TabId>('needs_review');
   const [yearMonth, setYearMonth] = useState(currentYearMonth);
@@ -44,9 +64,11 @@ export default function FalseSalesReview() {
   const [events, setEvents] = useState<SaleReconciliationEvent[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [reconciling, setReconciling] = useState(false);
+  const [reconcileJob, setReconcileJob] = useState<ReconcileAllJob | null>(null);
+  const [startingReconcile, setStartingReconcile] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reassignChatterId, setReassignChatterId] = useState('');
+  const wasReconciling = useRef(false);
 
   const loadLists = useCallback(async () => {
     try {
@@ -92,6 +114,48 @@ export default function FalseSalesReview() {
     void loadEvents();
   }, [loadEvents]);
 
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+
+    async function poll() {
+      try {
+        const result = await getReconcileAllStatus();
+        if (cancelled) return;
+        const job = result.job || null;
+        setReconcileJob(job);
+        if (job?.status === 'running') {
+          timer = window.setTimeout(() => {
+            void poll();
+          }, 1000);
+        }
+      } catch {
+        if (!cancelled) {
+          timer = window.setTimeout(() => {
+            void poll();
+          }, 2000);
+        }
+      }
+    }
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [startingReconcile]);
+
+  useEffect(() => {
+    if (reconcileJob?.status === 'running') {
+      wasReconciling.current = true;
+      return;
+    }
+    if (wasReconciling.current && reconcileJob && reconcileJob.status !== 'running') {
+      wasReconciling.current = false;
+      void loadEvents();
+    }
+  }, [reconcileJob, loadEvents]);
+
   const tabLabels = useMemo(
     () =>
       [
@@ -103,19 +167,25 @@ export default function FalseSalesReview() {
   );
 
   async function handleReconcile() {
-    if (!creatorId) {
-      setError('Select a creator to reconcile');
-      return;
-    }
-    setReconciling(true);
+    setStartingReconcile(true);
     setError(null);
     try {
-      await reconcileCreatorPayouts(creatorId, yearMonth);
-      await loadEvents();
+      const result = await startReconcileAll(yearMonth);
+      setReconcileJob(result.job);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Reconcile failed');
+      const message = err instanceof Error ? err.message : 'Reconcile failed';
+      if (/already running/i.test(message)) {
+        try {
+          const status = await getReconcileAllStatus();
+          setReconcileJob(status.job);
+        } catch {
+          setError(message);
+        }
+      } else {
+        setError(message);
+      }
     } finally {
-      setReconciling(false);
+      setStartingReconcile(false);
     }
   }
 
@@ -187,13 +257,24 @@ export default function FalseSalesReview() {
           </button>
           <button
             type="button"
-            disabled={!creatorId || reconciling}
+            disabled={startingReconcile || reconcileJob?.status === 'running'}
             onClick={() => void handleReconcile()}
             className="inline-flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-gray-900 text-white dark:bg-white dark:text-gray-900 disabled:opacity-50"
           >
-            {reconciling ? 'Reconciling…' : 'Reconcile now'}
+            {reconcileButtonLabel(reconcileJob, startingReconcile)}
           </button>
         </div>
+        {reconcileJob?.status === 'running' ? (
+          <div className="text-sm text-gray-600 dark:text-gray-300">
+            {reconcileButtonLabel(reconcileJob, false)}
+          </div>
+        ) : null}
+        {reconcileJob && reconcileJob.status !== 'running' && reconcileJob.errors.length > 0 ? (
+          <div className="text-sm text-amber-700 dark:text-amber-400">
+            Finished with {reconcileJob.errors.length} creator
+            {reconcileJob.errors.length === 1 ? '' : 's'} skipped or failed.
+          </div>
+        ) : null}
 
         <div className="flex gap-2 border-b border-gray-200 dark:border-white/10">
           {tabLabels.map((item) => (

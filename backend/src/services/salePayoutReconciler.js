@@ -17,6 +17,7 @@ const FOURBASED_PAGE_LIMIT = 40;
 const FOURBASED_MAX_PAGES = 40;
 const SWEEP_CAP_MONTHS = 6;
 const FOURBASED_PRICE_EPSILON = 0.05;
+const FOURBASED_GROUP_WINDOW_MS = 5 * 60 * 1000;
 
 /** @type {Map<string, number>} */
 const lastReconcileAtByCreator = new Map();
@@ -230,6 +231,22 @@ async function loadAuthedCreator(creatorId) {
   };
 }
 
+async function resolveAmbiguousMatchesForEntry(entryId) {
+  if (!entryId) return 0;
+  const result = await pool.query(
+    `UPDATE sale_reconciliation_events
+     SET status = 'resolved',
+         resolution = 'auto_matched',
+         "resolvedAt" = NOW()
+     WHERE "messagingEntryId" = $1
+       AND "eventType" = 'ambiguous_match'
+       AND status = 'needs_review'
+     RETURNING id`,
+    [entryId]
+  );
+  return result.rows.length;
+}
+
 async function insertReconciliationEvent({
   creatorId,
   platform,
@@ -252,6 +269,54 @@ async function insertReconciliationEvent({
   resolvedBy = null,
   resolvedAt = null,
 } = {}) {
+  if (eventType === 'ambiguous_match' && messagingEntryId) {
+    const existing = await pool.query(
+      `SELECT id
+       FROM sale_reconciliation_events
+       WHERE "messagingEntryId" = $1
+         AND "eventType" = 'ambiguous_match'
+         AND status = 'needs_review'
+       ORDER BY "createdAt" ASC
+       LIMIT 1`,
+      [messagingEntryId]
+    );
+    if (existing.rows.length > 0) {
+      await pool.query(
+        `UPDATE sale_reconciliation_events
+         SET "detailJson" = COALESCE($2::jsonb, "detailJson"),
+             "fanId" = COALESCE($3, "fanId"),
+             "fanUsername" = COALESCE($4, "fanUsername"),
+             "chatId" = COALESCE($5, "chatId"),
+             "unlockedAt" = COALESCE("unlockedAt", $6::timestamptz),
+             amount = COALESCE(amount, $7),
+             "payoutTxnId" = COALESCE("payoutTxnId", $8)
+         WHERE id = $1`,
+        [
+          existing.rows[0].id,
+          detailJson ? JSON.stringify(detailJson) : null,
+          fanId || null,
+          fanUsername || null,
+          chatId || null,
+          unlockedAt || null,
+          amount != null ? Number(amount) : null,
+          payoutTxnId || null,
+        ]
+      );
+      await pool.query(
+        `UPDATE sale_reconciliation_events
+         SET status = 'resolved',
+             resolution = 'duplicate',
+             "resolvedAt" = NOW()
+         WHERE "messagingEntryId" = $1
+           AND "eventType" = 'ambiguous_match'
+           AND status = 'needs_review'
+           AND id <> $2`,
+        [messagingEntryId, existing.rows[0].id]
+      );
+      return existing.rows[0].id;
+    }
+  }
+
   const id = randomUUID();
   await pool.query(
     `INSERT INTO sale_reconciliation_events (
@@ -375,9 +440,7 @@ function normalizeFourBasedSales(rows) {
       const vaultFileStackId = r?.file_stack?.vault_file_stack_id
         ? String(r.file_stack.vault_file_stack_id)
         : null;
-      const collectionId = r?.file_stack?.collection_id
-        ? String(r.file_stack.collection_id)
-        : null;
+      const collectionId = firstFourBasedCollectionId(r?.file_stack);
       return {
         payoutTxnId: String(r._id || r.id),
         fileStackId,
@@ -400,6 +463,249 @@ function normalizeFourBasedSales(rows) {
       };
     })
     .filter((r) => r.fileStackId || r.vaultFileStackId);
+}
+
+function firstFourBasedCollectionId(fileStack) {
+  if (!fileStack || typeof fileStack !== 'object') return null;
+  if (fileStack.collection_id) return String(fileStack.collection_id);
+  if (fileStack.collectionId) return String(fileStack.collectionId);
+  const ids = fileStack.collection_ids || fileStack.collectionIds;
+  if (Array.isArray(ids) && ids[0]) return String(ids[0]);
+  return null;
+}
+
+function fourBasedSaleMediaIds(sale) {
+  const ids = [];
+  const push = (value) => {
+    if (value == null) return;
+    const id = String(value).trim();
+    if (id && !ids.includes(id)) ids.push(id);
+  };
+  if (Array.isArray(sale?.fileStackIds)) {
+    for (const id of sale.fileStackIds) push(id);
+  }
+  if (Array.isArray(sale?.vaultFileStackIds)) {
+    for (const id of sale.vaultFileStackIds) push(id);
+  }
+  if (Array.isArray(sale?.collectionIds)) {
+    for (const id of sale.collectionIds) push(id);
+  }
+  push(sale?.fileStackId);
+  push(sale?.vaultFileStackId);
+  push(sale?.collectionId);
+  return ids;
+}
+
+function entryHasMediaIds(mediaJson) {
+  if (!mediaJson || !Array.isArray(mediaJson)) return false;
+  for (const item of mediaJson) {
+    if (!item || typeof item !== 'object') continue;
+    for (const key of [
+      'mediaId',
+      'vaultFileStackId',
+      'vault_file_stack_id',
+      'fileStackId',
+      'file_stack_id',
+      'collectionId',
+      'collection_id',
+      'id',
+      '_id',
+    ]) {
+      if (item[key] != null && String(item[key]).trim()) return true;
+    }
+  }
+  return false;
+}
+
+function buildFourBasedPayoutGroup(members) {
+  const list = Array.isArray(members) ? members.filter(Boolean) : [];
+  const sortedByAmount = list.slice().sort((a, b) => {
+    const aa = a.amount != null ? Number(a.amount) : 0;
+    const ba = b.amount != null ? Number(b.amount) : 0;
+    return ba - aa;
+  });
+  const primary = sortedByAmount[0] || {};
+  const payoutTxnIds = [];
+  const fileStackIds = [];
+  const vaultFileStackIds = [];
+  const collectionIds = [];
+  const pushUnique = (target, value) => {
+    if (value == null) return;
+    const id = String(value);
+    if (id && !target.includes(id)) target.push(id);
+  };
+  for (const member of list) {
+    pushUnique(payoutTxnIds, member.payoutTxnId);
+    pushUnique(fileStackIds, member.fileStackId);
+    pushUnique(vaultFileStackIds, member.vaultFileStackId);
+    pushUnique(collectionIds, member.collectionId);
+  }
+  const unlockedAts = list
+    .map((member) => member.unlockedAt)
+    .filter(Boolean)
+    .sort();
+  return {
+    groupId: payoutTxnIds.slice().sort().join(','),
+    payoutTxnId: primary.payoutTxnId || payoutTxnIds[0] || null,
+    payoutTxnIds,
+    fileStackId: fileStackIds[0] || null,
+    vaultFileStackId: vaultFileStackIds[0] || null,
+    collectionId: collectionIds[0] || null,
+    fileStackIds,
+    vaultFileStackIds,
+    collectionIds,
+    fanId: primary.fanId || null,
+    fanUsername: primary.fanUsername || null,
+    amount: primary.amount != null ? Number(primary.amount) : null,
+    currency: 'USD',
+    unlockedAt: unlockedAts[0] || primary.unlockedAt || null,
+    members: list,
+  };
+}
+
+/**
+ * Collapse multi-file / collection child payouts into one sale group.
+ * Singles with no shared collection/vault stay as one-item groups.
+ */
+function groupFourBasedPayouts(sales) {
+  const list = Array.isArray(sales) ? sales.slice() : [];
+  list.sort((a, b) => {
+    const am = a.unlockedAt ? Date.parse(a.unlockedAt) : 0;
+    const bm = b.unlockedAt ? Date.parse(b.unlockedAt) : 0;
+    return am - bm;
+  });
+
+  const used = new Set();
+  const groups = [];
+
+  for (let i = 0; i < list.length; i += 1) {
+    if (used.has(i)) continue;
+    const seed = list[i];
+    const members = [seed];
+    used.add(i);
+    const groupKey = seed.collectionId || seed.vaultFileStackId || null;
+    const seedMs = seed.unlockedAt ? Date.parse(seed.unlockedAt) : NaN;
+
+    if (seed.fanId && groupKey) {
+      for (let j = i + 1; j < list.length; j += 1) {
+        if (used.has(j)) continue;
+        const other = list[j];
+        if (String(other.fanId || '') !== String(seed.fanId)) continue;
+        const otherKey = other.collectionId || other.vaultFileStackId || null;
+        if (!otherKey || otherKey !== groupKey) continue;
+        const otherMs = other.unlockedAt ? Date.parse(other.unlockedAt) : NaN;
+        if (Number.isFinite(seedMs) && Number.isFinite(otherMs)) {
+          if (otherMs - seedMs > FOURBASED_GROUP_WINDOW_MS) break;
+          if (Math.abs(otherMs - seedMs) > FOURBASED_GROUP_WINDOW_MS) continue;
+        } else if (Number.isFinite(seedMs) || Number.isFinite(otherMs)) {
+          continue;
+        }
+        members.push(other);
+        used.add(j);
+      }
+    }
+
+    groups.push(buildFourBasedPayoutGroup(members));
+  }
+
+  return groups;
+}
+
+function scoreFourBasedMatch(entry, group) {
+  const entryFan = entry?.fanId ? String(entry.fanId) : null;
+  const saleFan = group?.fanId ? String(group.fanId) : null;
+  if (!entryFan || !saleFan || entryFan !== saleFan) return null;
+
+  const sentMs = entry.sentAt ? new Date(entry.sentAt).getTime() : NaN;
+  const soldMs = group.unlockedAt ? Date.parse(group.unlockedAt) : NaN;
+  if (Number.isFinite(sentMs) && Number.isFinite(soldMs) && sentMs > soldMs) {
+    return null;
+  }
+  const delta =
+    Number.isFinite(sentMs) && Number.isFinite(soldMs)
+      ? Math.abs(soldMs - sentMs)
+      : Infinity;
+
+  const mediaIds = fourBasedSaleMediaIds(group);
+  if (mediaJsonHasId(entry.mediaJson, mediaIds)) {
+    return { score: 0, delta, kind: 'media' };
+  }
+  if (entryHasMediaIds(entry.mediaJson)) {
+    return null;
+  }
+
+  const entryPrice =
+    entry.priceNet != null ? Math.abs(Number(entry.priceNet)) : NaN;
+  const saleAmount =
+    group.amount != null ? Math.abs(Number(group.amount)) : NaN;
+  if (
+    !Number.isFinite(entryPrice) ||
+    !Number.isFinite(saleAmount) ||
+    Math.abs(entryPrice - saleAmount) > FOURBASED_PRICE_EPSILON
+  ) {
+    return null;
+  }
+  return { score: 1, delta, kind: 'price' };
+}
+
+function assignFourBasedMatches(entries, groups) {
+  const pairs = [];
+  for (const entry of entries) {
+    for (const group of groups) {
+      const scored = scoreFourBasedMatch(entry, group);
+      if (scored) pairs.push({ entry, group, ...scored });
+    }
+  }
+  pairs.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    if (a.delta !== b.delta) return a.delta - b.delta;
+    return String(a.entry.id).localeCompare(String(b.entry.id));
+  });
+
+  const usedEntries = new Set();
+  const usedGroups = new Set();
+  const assignments = [];
+
+  for (const pair of pairs) {
+    const entryId = String(pair.entry.id);
+    const groupId = pair.group.groupId;
+    if (usedEntries.has(entryId) || usedGroups.has(groupId)) continue;
+    const tied = pairs.some((other) => (
+      other !== pair
+      && String(other.entry.id) === entryId
+      && other.score === pair.score
+      && !usedGroups.has(other.group.groupId)
+    ));
+    if (tied) continue;
+    usedEntries.add(entryId);
+    usedGroups.add(groupId);
+    assignments.push(pair);
+  }
+
+  const ambiguous = [];
+  for (const entry of entries) {
+    const entryId = String(entry.id);
+    if (usedEntries.has(entryId)) continue;
+    const leftover = pairs.filter(
+      (pair) =>
+        String(pair.entry.id) === entryId && !usedGroups.has(pair.group.groupId)
+    );
+    if (leftover.length === 0) continue;
+    const best = Math.min(...leftover.map((pair) => pair.score));
+    const top = leftover.filter((pair) => pair.score === best);
+    if (top.length === 1) {
+      usedEntries.add(entryId);
+      usedGroups.add(top[0].group.groupId);
+      assignments.push(top[0]);
+    } else if (top.length > 1) {
+      ambiguous.push({
+        entry,
+        groups: top.map((pair) => pair.group),
+      });
+    }
+  }
+
+  return { assignments, ambiguous, usedGroups, usedEntries };
 }
 
 function mediaJsonHasId(mediaJson, ids) {
@@ -452,9 +758,7 @@ async function findFourBasedEntryForPayout(
     [creatorId, sale.fanId, soldAtIso]
   );
 
-  const ids = [sale.fileStackId, sale.vaultFileStackId, sale.collectionId].filter(
-    Boolean
-  );
+  const ids = fourBasedSaleMediaIds(sale);
   if (ids.length > 0) {
     for (const row of result.rows) {
       if (mediaJsonHasId(row.mediaJson, ids)) return row;
@@ -525,6 +829,7 @@ async function markVerified(entryId, { payoutTxnId, unlockedAt, purchased = fals
      WHERE id = $1`,
     [entryId, payoutTxnId || null, unlockedAt || null, purchased === true]
   );
+  await resolveAmbiguousMatchesForEntry(entryId);
 }
 
 async function restoreClearedFalseUnlocks(creatorId) {
@@ -769,6 +1074,9 @@ async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchF
         status: 'needs_review',
         messagingEntryId: entry.id,
         maloumMessageId: entry.maloumMessageId,
+        fanId: entry.fanId || null,
+        fanUsername: entry.fanUsername || null,
+        chatId: entry.chatId || null,
         amount: entry.priceNet != null ? Number(entry.priceNet) : null,
         currency: entry.currency,
         unlockedAt: entry.unlockedAt,
@@ -821,6 +1129,7 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
     toIso: monthTo,
   });
   const sales = normalizeFourBasedSales(payoutRows);
+  const groups = groupFourBasedPayouts(sales);
 
   const candidates = await pool.query(
     `SELECT *
@@ -835,94 +1144,100 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
     [meta.id, monthTo]
   );
 
+  const { assignments, ambiguous, usedGroups, usedEntries } =
+    assignFourBasedMatches(candidates.rows, groups);
+
   /** @type {Set<string>} */
   const matchedPayoutIds = new Set();
-
-  for (const entry of candidates.rows) {
-    const matches = sales.filter((sale) => {
-      if (sale.fanId && entry.fanId && String(sale.fanId) !== String(entry.fanId)) {
-        return false;
-      }
-      if (mediaJsonHasId(entry.mediaJson, [
-        sale.fileStackId,
-        sale.vaultFileStackId,
-        sale.collectionId,
-      ])) {
-        return true;
-      }
-      const entryPrice =
-        entry.priceNet != null ? Math.abs(Number(entry.priceNet)) : NaN;
-      const saleAmount =
-        sale.amount != null ? Math.abs(Number(sale.amount)) : NaN;
-      if (
-        !Number.isFinite(entryPrice) ||
-        !Number.isFinite(saleAmount) ||
-        Math.abs(entryPrice - saleAmount) > FOURBASED_PRICE_EPSILON
-      ) {
-        return false;
-      }
-      const sentMs = entry.sentAt ? new Date(entry.sentAt).getTime() : NaN;
-      const soldMs = sale.unlockedAt ? Date.parse(sale.unlockedAt) : NaN;
-      return !Number.isFinite(sentMs) || !Number.isFinite(soldMs) || sentMs <= soldMs;
-    });
-
-    if (matches.length === 1) {
-      await markVerified(entry.id, {
-        payoutTxnId: matches[0].payoutTxnId,
-        unlockedAt: matches[0].unlockedAt,
-        purchased: true,
-      });
-      matchedPayoutIds.add(matches[0].payoutTxnId);
-      summary.verified += 1;
-    } else if (matches.length > 1) {
-      await insertReconciliationEvent({
-        creatorId: meta.id,
-        platform: '4based',
-        eventType: 'ambiguous_match',
-        status: 'needs_review',
-        messagingEntryId: entry.id,
-        maloumMessageId: entry.maloumMessageId,
-        amount: entry.priceNet != null ? Number(entry.priceNet) : null,
-        currency: entry.currency,
-        unlockedAt: entry.unlockedAt,
-        reason: 'multiple_payout_rows_for_media',
-        detailJson: { payoutTxnIds: matches.map((m) => m.payoutTxnId) },
-      });
-      summary.exceptions += 1;
+  const markGroupUsed = (group) => {
+    if (!group) return;
+    usedGroups.add(group.groupId);
+    for (const payoutTxnId of group.payoutTxnIds || []) {
+      matchedPayoutIds.add(String(payoutTxnId));
     }
+    if (group.payoutTxnId) matchedPayoutIds.add(String(group.payoutTxnId));
+  };
+
+  for (const pair of assignments) {
+    await markVerified(pair.entry.id, {
+      payoutTxnId: pair.group.payoutTxnId,
+      unlockedAt: pair.group.unlockedAt || pair.entry.unlockedAt,
+      purchased: true,
+    });
+    usedEntries.add(String(pair.entry.id));
+    markGroupUsed(pair.group);
+    summary.verified += 1;
   }
 
-  for (const sale of sales) {
-    if (matchedPayoutIds.has(sale.payoutTxnId)) continue;
+  for (const item of ambiguous) {
+    const payoutTxnIds = item.groups.flatMap((group) => group.payoutTxnIds || []);
+    await insertReconciliationEvent({
+      creatorId: meta.id,
+      platform: '4based',
+      eventType: 'ambiguous_match',
+      status: 'needs_review',
+      messagingEntryId: item.entry.id,
+      maloumMessageId: item.entry.maloumMessageId,
+      fanId: item.entry.fanId || null,
+      fanUsername: item.entry.fanUsername || null,
+      chatId: item.entry.chatId || null,
+      amount: item.entry.priceNet != null ? Number(item.entry.priceNet) : null,
+      currency: item.entry.currency,
+      unlockedAt: item.entry.unlockedAt || item.groups[0]?.unlockedAt || null,
+      reason: 'multiple_payout_rows_for_media',
+      detailJson: { payoutTxnIds },
+    });
+    summary.exceptions += 1;
+  }
+
+  for (const group of groups) {
+    if (usedGroups.has(group.groupId)) continue;
+    if ((group.payoutTxnIds || []).some((id) => matchedPayoutIds.has(String(id)))) {
+      continue;
+    }
     const inMonth =
-      sale.unlockedAt &&
-      sale.unlockedAt >= monthFrom &&
-      sale.unlockedAt <= monthTo;
+      group.unlockedAt &&
+      group.unlockedAt >= monthFrom &&
+      group.unlockedAt <= monthTo;
     if (!inMonth) continue;
 
-    const existingMatch = await findFourBasedEntryForPayout(meta.id, sale);
-    if (existingMatch) {
+    const existingMatch = await findFourBasedEntryForPayout(meta.id, group);
+    if (
+      existingMatch
+      && !usedEntries.has(String(existingMatch.id))
+      && !existingMatch.payoutVerified
+    ) {
       await markVerified(existingMatch.id, {
-        payoutTxnId: sale.payoutTxnId,
-        unlockedAt: sale.unlockedAt,
+        payoutTxnId: group.payoutTxnId,
+        unlockedAt: group.unlockedAt,
         purchased: true,
       });
+      usedEntries.add(String(existingMatch.id));
+      markGroupUsed(group);
       summary.verified += 1;
       continue;
     }
 
+    const payoutKeys = (group.payoutTxnIds || [group.payoutTxnId]).filter(Boolean);
+    if (payoutKeys.length === 0) continue;
     const existingPayout = await pool.query(
       `SELECT id FROM messaging_dashboard_entries
-       WHERE "maloumMessageId" = $1 OR "payoutTxnId" = $2
+       WHERE "maloumMessageId" = ANY($1::text[])
+          OR "payoutTxnId" = ANY($2::text[])
        LIMIT 1`,
-      [`4based-payout:${sale.payoutTxnId}`, sale.payoutTxnId]
+      [
+        payoutKeys.map((id) => `4based-payout:${id}`),
+        payoutKeys.map(String),
+      ]
     );
     if (existingPayout.rows.length > 0) {
       await markVerified(existingPayout.rows[0].id, {
-        payoutTxnId: sale.payoutTxnId,
-        unlockedAt: sale.unlockedAt,
+        payoutTxnId: group.payoutTxnId,
+        unlockedAt: group.unlockedAt,
         purchased: true,
       });
+      usedEntries.add(String(existingPayout.rows[0].id));
+      markGroupUsed(group);
     }
   }
 
@@ -932,9 +1247,9 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
 /**
  * Reconcile DomX purchased PPVs against platform payout ledgers.
  * @param {string} creatorId
- * @param {{ yearMonth?: string, force?: boolean }} [options]
+ * @param {{ yearMonth?: string, force?: boolean, monthOnly?: boolean }} [options]
  */
-async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false } = {}) {
+async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false, monthOnly = false } = {}) {
   if (!creatorId || !isValidUuid(creatorId)) {
     return { skipped: true, reason: 'invalid_creator' };
   }
@@ -957,26 +1272,27 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false } =
   const { meta, creator: authedCreator } = loaded;
   const platform = meta.platform;
   const bounds = monthBounds(yearMonth);
-  const capYm = monthsBefore(bounds.yearMonth, SWEEP_CAP_MONTHS);
-  const capFrom = monthBounds(capYm).monthFrom;
-
-  const earliest = await pool.query(
-    `SELECT MIN(COALESCE("unlockedAt", "sentAt")) AS earliest
-     FROM messaging_dashboard_entries
-     WHERE "creatorId" = $1
-       AND "contentType" = 'chat_product'
-       AND purchased = true
-       AND "payoutVerified" = false
-       AND "sentAt" <= $2::timestamptz`,
-    [creatorId, bounds.monthTo]
-  );
-
   let fetchFrom = bounds.monthFrom;
-  const earliestIso = earliest.rows[0]?.earliest
-    ? new Date(earliest.rows[0].earliest).toISOString()
-    : null;
-  if (earliestIso && earliestIso < fetchFrom) {
-    fetchFrom = earliestIso < capFrom ? capFrom : earliestIso;
+
+  if (!monthOnly) {
+    const capYm = monthsBefore(bounds.yearMonth, SWEEP_CAP_MONTHS);
+    const capFrom = monthBounds(capYm).monthFrom;
+    const earliest = await pool.query(
+      `SELECT MIN(COALESCE("unlockedAt", "sentAt")) AS earliest
+       FROM messaging_dashboard_entries
+       WHERE "creatorId" = $1
+         AND "contentType" = 'chat_product'
+         AND purchased = true
+         AND "payoutVerified" = false
+         AND "sentAt" <= $2::timestamptz`,
+      [creatorId, bounds.monthTo]
+    );
+    const earliestIso = earliest.rows[0]?.earliest
+      ? new Date(earliest.rows[0].earliest).toISOString()
+      : null;
+    if (earliestIso && earliestIso < fetchFrom) {
+      fetchFrom = earliestIso < capFrom ? capFrom : earliestIso;
+    }
   }
 
   lastReconcileAtByCreator.set(creatorId, Date.now());
@@ -1027,6 +1343,155 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false } =
     restored,
     merged: mergedAfter,
   };
+}
+
+/** @type {object | null} */
+let reconcileAllJob = null;
+
+function snapshotReconcileAllJob() {
+  if (!reconcileAllJob) return null;
+  return {
+    status: reconcileAllJob.status,
+    yearMonth: reconcileAllJob.yearMonth,
+    total: reconcileAllJob.total,
+    done: reconcileAllJob.done,
+    currentName: reconcileAllJob.currentName,
+    startedAt: reconcileAllJob.startedAt,
+    finishedAt: reconcileAllJob.finishedAt,
+    etaSeconds: reconcileAllJob.etaSeconds,
+    verified: reconcileAllJob.verified,
+    exceptions: reconcileAllJob.exceptions,
+    errors: Array.isArray(reconcileAllJob.errors)
+      ? reconcileAllJob.errors.slice()
+      : [],
+  };
+}
+
+function getReconcileAllStatus() {
+  return snapshotReconcileAllJob();
+}
+
+function updateReconcileAllEta(job, startedMs) {
+  if (!job || job.total <= 0) {
+    if (job) job.etaSeconds = 0;
+    return;
+  }
+  if (job.done <= 0 || job.done >= job.total) {
+    job.etaSeconds = job.done >= job.total ? 0 : null;
+    return;
+  }
+  const elapsed = Date.now() - startedMs;
+  job.etaSeconds = Math.max(
+    0,
+    Math.round((elapsed / job.done) * (job.total - job.done) / 1000)
+  );
+}
+
+async function runReconcileAll(job) {
+  const startedMs = Date.now();
+  try {
+    const result = await pool.query(
+      `SELECT id, "displayName", username, platform
+       FROM creators
+       ORDER BY LOWER(COALESCE("displayName", username, '')) ASC, id ASC`
+    );
+    const creators = result.rows;
+    job.total = creators.length;
+    if (creators.length === 0) {
+      job.status = 'done';
+      job.finishedAt = new Date().toISOString();
+      job.etaSeconds = 0;
+      return;
+    }
+
+    for (const creator of creators) {
+      const name = creator.displayName || creator.username || creator.id;
+      job.currentName = name;
+      try {
+        const summary = await reconcileCreatorPayouts(creator.id, {
+          yearMonth: job.yearMonth,
+          force: true,
+          monthOnly: true,
+        });
+        job.verified += Number(summary.verified) || 0;
+        job.exceptions += Number(summary.exceptions) || 0;
+        if (summary.error) {
+          job.errors.push({
+            creatorId: creator.id,
+            name,
+            message: summary.error,
+          });
+        } else if (summary.skipped && summary.reason) {
+          job.errors.push({
+            creatorId: creator.id,
+            name,
+            message: summary.reason,
+          });
+        }
+      } catch (err) {
+        job.errors.push({
+          creatorId: creator.id,
+          name,
+          message: err.message || String(err),
+        });
+      }
+      job.done += 1;
+      updateReconcileAllEta(job, startedMs);
+    }
+
+    job.currentName = null;
+    job.status = 'done';
+    job.finishedAt = new Date().toISOString();
+    job.etaSeconds = 0;
+  } catch (err) {
+    job.status = 'error';
+    job.currentName = null;
+    job.finishedAt = new Date().toISOString();
+    job.etaSeconds = 0;
+    job.errors.push({
+      creatorId: null,
+      name: null,
+      message: err.message || String(err),
+    });
+  }
+}
+
+function startReconcileAll({ yearMonth } = {}) {
+  if (reconcileAllJob?.status === 'running') {
+    return {
+      started: false,
+      reason: 'already_running',
+      job: snapshotReconcileAllJob(),
+    };
+  }
+
+  const job = {
+    status: 'running',
+    yearMonth: parseYearMonth(yearMonth),
+    total: 0,
+    done: 0,
+    currentName: null,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    etaSeconds: null,
+    verified: 0,
+    exceptions: 0,
+    errors: [],
+  };
+  reconcileAllJob = job;
+  setImmediate(() => {
+    runReconcileAll(job).catch((err) => {
+      job.status = 'error';
+      job.finishedAt = new Date().toISOString();
+      job.etaSeconds = 0;
+      job.errors.push({
+        creatorId: null,
+        name: null,
+        message: err.message || String(err),
+      });
+    });
+  });
+  return { started: true, job: snapshotReconcileAllJob() };
 }
 
 /**
@@ -1107,6 +1572,8 @@ async function fetchReflectedTotalSales(creatorId) {
 module.exports = {
   reconcileCreatorPayouts,
   scheduleThrottledReconcile,
+  startReconcileAll,
+  getReconcileAllStatus,
   fetchReflectedTotalSales,
   loadAuthedCreator,
   parseYearMonth,

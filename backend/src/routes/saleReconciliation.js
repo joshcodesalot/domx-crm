@@ -4,6 +4,8 @@ const { authenticate } = require('../middleware/auth');
 const {
   parseYearMonth,
   monthBounds,
+  startReconcileAll,
+  getReconcileAllStatus,
 } = require('../services/salePayoutReconciler');
 
 const router = express.Router();
@@ -141,6 +143,32 @@ router.get(
       console.error('List sale reconciliation error:', err);
       res.status(500).json({ error: 'Failed to list reconciliation events' });
     }
+  }
+);
+
+router.get(
+  '/reconcile-all',
+  authenticate,
+  requireOwnerOrManager,
+  async (_req, res) => {
+    res.json({ job: getReconcileAllStatus() });
+  }
+);
+
+router.post(
+  '/reconcile-all',
+  authenticate,
+  requireOwnerOrManager,
+  async (req, res) => {
+    const yearMonth = parseYearMonth(req.body?.yearMonth);
+    const result = startReconcileAll({ yearMonth });
+    if (!result.started && result.reason === 'already_running') {
+      return res.status(409).json({
+        error: 'A reconcile-all job is already running',
+        job: result.job,
+      });
+    }
+    res.json({ job: result.job });
   }
 );
 
