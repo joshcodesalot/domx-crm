@@ -637,16 +637,48 @@ function buildFourBasedPayoutGroup(members) {
   };
 }
 
+function fourBasedPayoutGroupKeys(sale) {
+  const keys = [];
+  const push = (value) => {
+    if (value == null) return;
+    const id = String(value).trim();
+    if (id && !keys.includes(id)) keys.push(id);
+  };
+  push(sale?.collectionId);
+  push(sale?.fileStackId);
+  return keys;
+}
+
+function fourBasedPayoutKeysOverlap(a, b) {
+  const left = fourBasedPayoutGroupKeys(a);
+  const right = fourBasedPayoutGroupKeys(b);
+  if (left.length === 0 || right.length === 0) return false;
+  return left.some((key) => right.includes(key));
+}
+
+function fourBasedUnlockMs(sale) {
+  return sale?.unlockedAt ? Date.parse(sale.unlockedAt) : NaN;
+}
+
+function fourBasedUnlocksWithinWindow(a, b) {
+  const aMs = fourBasedUnlockMs(a);
+  const bMs = fourBasedUnlockMs(b);
+  if (!Number.isFinite(aMs) && !Number.isFinite(bMs)) return true;
+  if (!Number.isFinite(aMs) || !Number.isFinite(bMs)) return false;
+  return Math.abs(aMs - bMs) <= FOURBASED_GROUP_WINDOW_MS;
+}
+
 /**
  * Collapse multi-file / collection child payouts into one sale group.
- * Singles with no shared collection/vault stay as one-item groups.
+ * Parent fileStackId and child collection_id share a key; vault ids do not.
+ * Singles with no overlapping parent/child ids stay as one-item groups.
  */
 function groupFourBasedPayouts(sales) {
   const list = Array.isArray(sales) ? sales.slice() : [];
   list.sort((a, b) => {
-    const am = a.unlockedAt ? Date.parse(a.unlockedAt) : 0;
-    const bm = b.unlockedAt ? Date.parse(b.unlockedAt) : 0;
-    return am - bm;
+    const am = fourBasedUnlockMs(a);
+    const bm = fourBasedUnlockMs(b);
+    return (Number.isFinite(am) ? am : 0) - (Number.isFinite(bm) ? bm : 0);
   });
 
   const used = new Set();
@@ -657,25 +689,27 @@ function groupFourBasedPayouts(sales) {
     const seed = list[i];
     const members = [seed];
     used.add(i);
-    const groupKey = seed.collectionId || seed.vaultFileStackId || null;
-    const seedMs = seed.unlockedAt ? Date.parse(seed.unlockedAt) : NaN;
 
-    if (seed.fanId && groupKey) {
-      for (let j = i + 1; j < list.length; j += 1) {
-        if (used.has(j)) continue;
-        const other = list[j];
-        if (String(other.fanId || '') !== String(seed.fanId)) continue;
-        const otherKey = other.collectionId || other.vaultFileStackId || null;
-        if (!otherKey || otherKey !== groupKey) continue;
-        const otherMs = other.unlockedAt ? Date.parse(other.unlockedAt) : NaN;
-        if (Number.isFinite(seedMs) && Number.isFinite(otherMs)) {
-          if (otherMs - seedMs > FOURBASED_GROUP_WINDOW_MS) break;
-          if (Math.abs(otherMs - seedMs) > FOURBASED_GROUP_WINDOW_MS) continue;
-        } else if (Number.isFinite(seedMs) || Number.isFinite(otherMs)) {
-          continue;
+    if (seed.fanId && fourBasedPayoutGroupKeys(seed).length > 0) {
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (let j = 0; j < list.length; j += 1) {
+          if (used.has(j)) continue;
+          const other = list[j];
+          if (String(other.fanId || '') !== String(seed.fanId)) continue;
+          const inWindow = members.every((member) =>
+            fourBasedUnlocksWithinWindow(member, other)
+          );
+          if (!inWindow) continue;
+          const overlaps = members.some((member) =>
+            fourBasedPayoutKeysOverlap(member, other)
+          );
+          if (!overlaps) continue;
+          members.push(other);
+          used.add(j);
+          grew = true;
         }
-        members.push(other);
-        used.add(j);
       }
     }
 

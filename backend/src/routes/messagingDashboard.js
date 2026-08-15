@@ -859,6 +859,8 @@ function fourBasedActivityFileStackIds(entry) {
   pushUniqueId(ids, entry?.file_stack_id);
   pushUniqueId(ids, entry?.file_stack?._id);
   pushUniqueId(ids, entry?.file_stack?.collection_id);
+  pushUniqueId(ids, entry?.file_stack?.vault_file_stack_id);
+  pushUniqueId(ids, entry?.file_stack?.vaultFileStackId);
   return ids;
 }
 
@@ -1559,6 +1561,23 @@ async function processFourBasedSaleAndTipNotifications(creatorId, activities) {
           type,
           ...result,
           matchedMaloumMessageId: match.maloumMessageId,
+        });
+        continue;
+      }
+
+      const duplicate = await findFourBasedDuplicatePurchasedSend({
+        creatorId,
+        fanId,
+        priceNet,
+        soldAt: createdAt,
+      });
+      if (duplicate?.maloumMessageId) {
+        await deleteFourBasedSaleOrphan(activityId);
+        results.push({
+          type,
+          updated: false,
+          reason: 'collection_child_duplicate',
+          matchedMaloumMessageId: duplicate.maloumMessageId,
         });
         continue;
       }
