@@ -18,6 +18,10 @@ const FOURBASED_MAX_PAGES = 40;
 const SWEEP_CAP_MONTHS = 6;
 const FOURBASED_PRICE_EPSILON = 0.05;
 const FOURBASED_GROUP_WINDOW_MS = 5 * 60 * 1000;
+const FOURBASED_COINS_PER_DOLLAR = 121;
+const ORPHAN_CHAT_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
+const ORPHAN_CHAT_PAGE_LIMIT = 40;
+const ORPHAN_CHAT_MAX_PAGES = 3;
 
 /** @type {Map<string, number>} */
 const lastReconcileAtByCreator = new Map();
@@ -1021,6 +1025,697 @@ async function mergeFourBasedStubs(creatorId) {
   return merged;
 }
 
+function isFourBasedOrphanEntry(row) {
+  const id = String(row?.maloumMessageId || '');
+  if (/^4based:[a-f0-9]{24}$/i.test(id)) return false;
+  return (
+    id.startsWith('4based-sale:') ||
+    id.startsWith('4based-payout:') ||
+    row?.attributionSource === 'orphan_sale' ||
+    row?.attributionSource === 'deleted_import'
+  );
+}
+
+function extractFourBasedChatId(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (Array.isArray(payload) && payload[0]?._id) return String(payload[0]._id);
+  if (payload._id) return String(payload._id);
+  if (payload.chat?._id) return String(payload.chat._id);
+  if (payload.data?._id) return String(payload.data._id);
+  if (Array.isArray(payload.items) && payload.items[0]?._id) {
+    return String(payload.items[0]._id);
+  }
+  return null;
+}
+
+function asMessageList(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.messages)) return payload.messages;
+  return [];
+}
+
+function fileStackFromMessage(message) {
+  if (!message || typeof message !== 'object') return null;
+  const fileStack = message.file_stack || message.fileStack;
+  return fileStack && typeof fileStack === 'object' ? fileStack : null;
+}
+
+function fileStackMediaIds(fileStack) {
+  const ids = [];
+  const push = (value) => {
+    if (value == null) return;
+    const id = String(value).trim();
+    if (id && !ids.includes(id)) ids.push(id);
+  };
+  if (!fileStack || typeof fileStack !== 'object') return ids;
+  push(fileStack._id);
+  push(fileStack.id);
+  push(fileStack.vault_file_stack_id);
+  push(fileStack.vaultFileStackId);
+  push(firstFourBasedCollectionId(fileStack));
+  const children = fileStack.collection || fileStack.children || [];
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      if (!child || typeof child !== 'object') continue;
+      push(child._id);
+      push(child.id);
+      push(child.vault_file_stack_id);
+      push(child.vaultFileStackId);
+      push(child.collection_id);
+      push(child.collectionId);
+    }
+  }
+  return ids;
+}
+
+function messageUsdPrice(fileStack) {
+  const coins = Number(
+    fileStack?.price ?? fileStack?.amount ?? fileStack?.price_coins
+  );
+  if (!Number.isFinite(coins) || coins <= 0) return null;
+  return Math.abs(coins) / FOURBASED_COINS_PER_DOLLAR;
+}
+
+function mediaJsonFromFileStack(fileStack) {
+  if (!fileStack || typeof fileStack !== 'object') return null;
+  const parentId = fileStack._id || fileStack.id || null;
+  const collectionId = firstFourBasedCollectionId(fileStack) || parentId;
+  const items = [];
+  const children = fileStack.collection || fileStack.children || [];
+  const push = (entry) => {
+    if (!entry.mediaId && !entry.vaultFileStackId && !entry.fileStackId) return;
+    items.push(entry);
+  };
+  if (Array.isArray(children) && children.length > 0) {
+    for (const child of children) {
+      if (!child || typeof child !== 'object') continue;
+      const childId = child._id || child.id || null;
+      const vaultId = child.vault_file_stack_id || child.vaultFileStackId || null;
+      const typeRaw = String(child.fileStackType || child.type || '').toLowerCase();
+      push({
+        mediaId: String(childId || vaultId || ''),
+        vaultFileStackId: vaultId ? String(vaultId) : null,
+        fileStackId: String(childId || parentId || ''),
+        collectionId: String(
+          child.collection_id || child.collectionId || collectionId || ''
+        ),
+        type: typeRaw.includes('video') ? 'video' : 'image',
+      });
+    }
+  }
+  if (items.length === 0) {
+    const vaultId = fileStack.vault_file_stack_id || fileStack.vaultFileStackId || null;
+    const typeRaw = String(fileStack.fileStackType || fileStack.type || '').toLowerCase();
+    push({
+      mediaId: String(vaultId || parentId || ''),
+      vaultFileStackId: vaultId ? String(vaultId) : null,
+      fileStackId: parentId ? String(parentId) : null,
+      collectionId: collectionId ? String(collectionId) : null,
+      type: typeRaw.includes('video') ? 'video' : 'image',
+    });
+  }
+  return items.length > 0 ? items : null;
+}
+
+function scoreChatPpvMessage(message, group) {
+  const fileStack = fileStackFromMessage(message);
+  if (!fileStack) return null;
+
+  const sender = String(message.user_id || message.user?._id || '');
+  const fanId = group?.fanId ? String(group.fanId) : '';
+  if (fanId && sender && sender === fanId) return null;
+
+  const usd = messageUsdPrice(fileStack);
+  const sentAt = toIsoOrNull(message.created_at || message.createdAt);
+  const sentMs = sentAt ? Date.parse(sentAt) : NaN;
+  const soldMs = group?.unlockedAt ? Date.parse(group.unlockedAt) : NaN;
+  if (Number.isFinite(sentMs) && Number.isFinite(soldMs)) {
+    if (sentMs > soldMs + FOURBASED_GROUP_WINDOW_MS) return null;
+    if (soldMs - sentMs > ORPHAN_CHAT_LOOKBACK_MS) return null;
+  }
+
+  const messageIds = fileStackMediaIds(fileStack);
+  const groupIds = fourBasedSaleMediaIds(group);
+  const mediaHit = messageIds.some((id) => groupIds.includes(id));
+  const priceHit =
+    usd != null &&
+    group?.amount != null &&
+    Math.abs(usd - Number(group.amount)) <= FOURBASED_PRICE_EPSILON;
+
+  if (!mediaHit && !priceHit) return null;
+  if (!mediaHit && messageIds.length > 0 && groupIds.length > 0) return null;
+
+  const delta =
+    Number.isFinite(sentMs) && Number.isFinite(soldMs)
+      ? Math.abs(soldMs - sentMs)
+      : Infinity;
+  const paid = fileStack.user_paid === true || fileStack.userPaid === true;
+  return {
+    score: mediaHit ? 0 : 1,
+    paidRank: paid ? 0 : 1,
+    delta,
+    message,
+    fileStack,
+    sentAt,
+    usd,
+  };
+}
+
+function findUniqueChatPpv(messages, group) {
+  const scored = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const row = scoreChatPpvMessage(message, group);
+    if (row) scored.push(row);
+  }
+  if (scored.length === 0) return { status: 'not_found' };
+
+  scored.sort((a, b) => {
+    if (a.score !== b.score) return a.score - b.score;
+    if (a.paidRank !== b.paidRank) return a.paidRank - b.paidRank;
+    if (a.delta !== b.delta) return a.delta - b.delta;
+    return String(a.message?._id || '').localeCompare(String(b.message?._id || ''));
+  });
+  const best = scored[0];
+  const sameKind = scored.filter((row) => row.score === best.score);
+  const uniqueIds = new Set(
+    sameKind.map((row) => String(row.message?._id || row.message?.id || ''))
+  );
+  uniqueIds.delete('');
+  if (uniqueIds.size > 1) return { status: 'ambiguous' };
+  return { status: 'matched', ...best };
+}
+
+async function loadFanChatForRecovery(authedCreator, fanId, cache) {
+  const key = String(fanId);
+  if (cache.has(key)) return cache.get(key);
+  try {
+    const payload = await fourBasedClient.getChatByUser(authedCreator, fanId);
+    const chatId = extractFourBasedChatId(payload);
+    if (!chatId) {
+      const empty = { chatId: null, messages: [] };
+      cache.set(key, empty);
+      return empty;
+    }
+    const messages = [];
+    for (let page = 0; page < ORPHAN_CHAT_MAX_PAGES; page += 1) {
+      const raw = await fourBasedClient.getMessages(authedCreator, chatId, {
+        limit: ORPHAN_CHAT_PAGE_LIMIT,
+        offset: page * ORPHAN_CHAT_PAGE_LIMIT,
+      });
+      const list = asMessageList(raw);
+      messages.push(...list);
+      if (list.length < ORPHAN_CHAT_PAGE_LIMIT) break;
+    }
+    const result = { chatId, messages };
+    cache.set(key, result);
+    return result;
+  } catch (err) {
+    console.warn(
+      `4based orphan chat lookup failed for fan ${fanId}:`,
+      err.message || err
+    );
+    const failed = { chatId: null, messages: [], error: err.message || String(err) };
+    cache.set(key, failed);
+    return failed;
+  }
+}
+
+async function resolveInferredChatter(creatorId, fanId) {
+  if (!creatorId || !fanId) return null;
+  const result = await pool.query(
+    `SELECT "chatterId", "chatterName", "chatterEmail"
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+       AND "fanId" = $2
+       AND "chatterId" IS NOT NULL
+       AND "maloumMessageId" LIKE '4based:%'
+       AND "maloumMessageId" NOT LIKE '4based-sale:%'
+       AND "maloumMessageId" NOT LIKE '4based-tip:%'
+       AND "maloumMessageId" NOT LIKE '4based-payout:%'
+       AND (
+         "attributionSource" IS NULL
+         OR "attributionSource" = 'send_log'
+       )
+     ORDER BY "sentAt" DESC
+     LIMIT 1`,
+    [creatorId, fanId]
+  );
+  return result.rows[0] || null;
+}
+
+async function findEntryByPayoutGroup(creatorId, group) {
+  const payoutKeys = (group.payoutTxnIds || [group.payoutTxnId]).filter(Boolean);
+  if (payoutKeys.length === 0) return null;
+  const result = await pool.query(
+    `SELECT *
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+       AND (
+         "maloumMessageId" = ANY($2::text[])
+         OR "payoutTxnId" = ANY($3::text[])
+       )
+     ORDER BY
+       CASE WHEN "maloumMessageId" LIKE '4based:%'
+             AND "maloumMessageId" NOT LIKE '4based-sale:%'
+             AND "maloumMessageId" NOT LIKE '4based-payout:%'
+             AND "maloumMessageId" NOT LIKE '4based-tip:%'
+            THEN 0 ELSE 1 END,
+       "sentAt" DESC
+     LIMIT 1`,
+    [
+      creatorId,
+      payoutKeys.map((id) => `4based-payout:${id}`),
+      payoutKeys.map(String),
+    ]
+  );
+  return result.rows[0] || null;
+}
+
+async function findOrphanStubForGroup(creatorId, group) {
+  const byPayout = await findEntryByPayoutGroup(creatorId, group);
+  if (byPayout && isFourBasedOrphanEntry(byPayout)) return byPayout;
+  if (byPayout && !isFourBasedOrphanEntry(byPayout)) return null;
+
+  if (!group.fanId || group.amount == null) return null;
+  const byFan = await pool.query(
+    `SELECT *
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+       AND platform = '4based'
+       AND "contentType" = 'chat_product'
+       AND "fanId" = $2
+       AND (
+         "maloumMessageId" LIKE '4based-sale:%'
+         OR "maloumMessageId" LIKE '4based-payout:%'
+         OR "attributionSource" IN ('orphan_sale', 'deleted_import')
+       )
+       AND "priceNet" IS NOT NULL
+       AND ABS("priceNet"::float - $3) <= $4
+     ORDER BY ABS(
+       EXTRACT(
+         EPOCH FROM (
+           COALESCE("unlockedAt", "sentAt") - $5::timestamptz
+         )
+       )
+     ) ASC
+     LIMIT 2`,
+    [
+      creatorId,
+      group.fanId,
+      Number(group.amount),
+      FOURBASED_PRICE_EPSILON,
+      group.unlockedAt || new Date().toISOString(),
+    ]
+  );
+  if (byFan.rows.length === 1) return byFan.rows[0];
+  return null;
+}
+
+async function resolveOrphanReviewEvents({
+  creatorId,
+  messagingEntryId,
+  payoutTxnId,
+  resolution = 'auto_recovered',
+}) {
+  await pool.query(
+    `UPDATE sale_reconciliation_events
+     SET status = 'resolved',
+         resolution = $4,
+         "resolvedAt" = NOW()
+     WHERE "creatorId" = $1
+       AND "eventType" = 'payout_orphan_imported'
+       AND status = 'needs_review'
+       AND (
+         ($2::uuid IS NOT NULL AND "messagingEntryId" = $2)
+         OR ($3::text IS NOT NULL AND "payoutTxnId" = $3)
+       )`,
+    [creatorId, messagingEntryId || null, payoutTxnId || null, resolution]
+  );
+}
+
+async function upsertOrphanReviewEvent({
+  creatorId,
+  messagingEntryId = null,
+  maloumMessageId = null,
+  payoutTxnId = null,
+  fanId = null,
+  fanUsername = null,
+  chatId = null,
+  amount = null,
+  unlockedAt = null,
+  reason,
+  detailJson = null,
+  recoveredMessageText = null,
+  recoveredMediaJson = null,
+}) {
+  const existing = await pool.query(
+    `SELECT id
+     FROM sale_reconciliation_events
+     WHERE "creatorId" = $1
+       AND "eventType" = 'payout_orphan_imported'
+       AND status = 'needs_review'
+       AND (
+         ($2::uuid IS NOT NULL AND "messagingEntryId" = $2)
+         OR ($3::text IS NOT NULL AND "payoutTxnId" = $3)
+       )
+     ORDER BY "createdAt" ASC
+     LIMIT 1`,
+    [creatorId, messagingEntryId, payoutTxnId]
+  );
+  if (existing.rows.length > 0) {
+    await pool.query(
+      `UPDATE sale_reconciliation_events
+       SET reason = COALESCE($2, reason),
+           "detailJson" = COALESCE($3::jsonb, "detailJson"),
+           "fanId" = COALESCE($4, "fanId"),
+           "fanUsername" = COALESCE($5, "fanUsername"),
+           "chatId" = COALESCE($6, "chatId"),
+           "maloumMessageId" = COALESCE($7, "maloumMessageId"),
+           "messagingEntryId" = COALESCE("messagingEntryId", $8::uuid),
+           "recoveredMessageText" = COALESCE($9, "recoveredMessageText"),
+           "recoveredMediaJson" = COALESCE($10::jsonb, "recoveredMediaJson"),
+           amount = COALESCE(amount, $11),
+           "unlockedAt" = COALESCE("unlockedAt", $12::timestamptz)
+       WHERE id = $1`,
+      [
+        existing.rows[0].id,
+        reason || null,
+        detailJson ? JSON.stringify(detailJson) : null,
+        fanId || null,
+        fanUsername || null,
+        chatId || null,
+        maloumMessageId || null,
+        messagingEntryId || null,
+        recoveredMessageText || null,
+        recoveredMediaJson ? JSON.stringify(recoveredMediaJson) : null,
+        amount != null ? Number(amount) : null,
+        unlockedAt || null,
+      ]
+    );
+    return existing.rows[0].id;
+  }
+
+  return insertReconciliationEvent({
+    creatorId,
+    platform: '4based',
+    eventType: 'payout_orphan_imported',
+    status: 'needs_review',
+    messagingEntryId,
+    maloumMessageId,
+    payoutTxnId,
+    fanId,
+    fanUsername,
+    chatId,
+    amount,
+    currency: 'USD',
+    unlockedAt,
+    reason,
+    detailJson,
+    recoveredMessageText,
+    recoveredMediaJson,
+  });
+}
+
+async function applyRecoveredSend({
+  meta,
+  group,
+  chatId,
+  match,
+  stub = null,
+}) {
+  const rawId = match.message?._id || match.message?.id;
+  if (!rawId) return { recovered: false, reason: 'no_message_id' };
+  const maloumMessageId = `4based:${String(rawId)}`;
+  const sentAt = match.sentAt || group.unlockedAt || new Date().toISOString();
+  const mediaJson = mediaJsonFromFileStack(match.fileStack);
+  const text =
+    typeof match.message?.message === 'string' && match.message.message.trim()
+      ? match.message.message.trim()
+      : null;
+  const inferred = await resolveInferredChatter(meta.id, group.fanId);
+  const pictureCount = Array.isArray(mediaJson)
+    ? mediaJson.filter((item) => item.type !== 'video').length
+    : 0;
+  const videoCount = Array.isArray(mediaJson)
+    ? mediaJson.filter((item) => item.type === 'video').length
+    : 0;
+  const mediaCount = Array.isArray(mediaJson) ? mediaJson.length : 0;
+  const priceNet =
+    group.amount != null
+      ? Number(group.amount)
+      : match.usd != null
+        ? Number(match.usd)
+        : null;
+
+  const existingSend = await pool.query(
+    `SELECT *
+     FROM messaging_dashboard_entries
+     WHERE "maloumMessageId" = $1`,
+    [maloumMessageId]
+  );
+
+  let entryId = null;
+  let imported = false;
+
+  if (existingSend.rows.length > 0) {
+    const send = existingSend.rows[0];
+    entryId = send.id;
+    const keepChatter = send.chatterId && !isFourBasedOrphanEntry(send);
+    await pool.query(
+      `UPDATE messaging_dashboard_entries
+       SET "chatId" = COALESCE($2, "chatId"),
+           "fanId" = COALESCE("fanId", $3),
+           "fanUsername" = COALESCE("fanUsername", $4),
+           "priceNet" = COALESCE("priceNet", $5),
+           "mediaJson" = COALESCE("mediaJson", $6::jsonb),
+           "mediaCount" = CASE WHEN "mediaCount" > 0 THEN "mediaCount" ELSE $7 END,
+           "pictureCount" = CASE WHEN "pictureCount" > 0 THEN "pictureCount" ELSE $8 END,
+           "videoCount" = CASE WHEN "videoCount" > 0 THEN "videoCount" ELSE $9 END,
+           "actualSentText" = COALESCE("actualSentText", $10),
+           "chatterId" = CASE WHEN $11::boolean THEN "chatterId" ELSE $12 END,
+           "chatterName" = CASE WHEN $11::boolean THEN "chatterName" ELSE $13 END,
+           "chatterEmail" = CASE WHEN $11::boolean THEN "chatterEmail" ELSE $14 END,
+           "attributionSource" = CASE
+             WHEN $11::boolean THEN COALESCE("attributionSource", 'send_log')
+             WHEN $12::uuid IS NOT NULL THEN 'chat_recovered'
+             ELSE COALESCE("attributionSource", 'chat_recovered')
+           END,
+           purchased = true,
+           "updatedAt" = NOW()
+       WHERE id = $1`,
+      [
+        send.id,
+        chatId || null,
+        group.fanId || null,
+        group.fanUsername || null,
+        priceNet,
+        mediaJson ? JSON.stringify(mediaJson) : null,
+        mediaCount,
+        pictureCount,
+        videoCount,
+        text,
+        keepChatter,
+        inferred?.chatterId || null,
+        inferred?.chatterName || null,
+        inferred?.chatterEmail || null,
+      ]
+    );
+    if (stub && String(stub.id) !== String(send.id)) {
+      await pool.query(
+        `DELETE FROM messaging_dashboard_entries WHERE id = $1`,
+        [stub.id]
+      );
+    }
+  } else if (stub) {
+    try {
+      await pool.query(
+        `UPDATE messaging_dashboard_entries
+         SET "maloumMessageId" = $2,
+             "chatId" = COALESCE($3, "chatId"),
+             "fanId" = COALESCE("fanId", $4),
+             "fanUsername" = COALESCE("fanUsername", $5),
+             "priceNet" = COALESCE("priceNet", $6),
+             "mediaJson" = COALESCE($7::jsonb, "mediaJson"),
+             "mediaCount" = $8,
+             "pictureCount" = $9,
+             "videoCount" = $10,
+             "actualSentText" = COALESCE($11, "actualSentText"),
+             "sentAt" = $12::timestamptz,
+             "chatterId" = $13,
+             "chatterName" = $14,
+             "chatterEmail" = $15,
+             "attributionSource" = 'chat_recovered',
+             purchased = true,
+             "updatedAt" = NOW()
+         WHERE id = $1`,
+        [
+          stub.id,
+          maloumMessageId,
+          chatId || null,
+          group.fanId || null,
+          group.fanUsername || null,
+          priceNet,
+          mediaJson ? JSON.stringify(mediaJson) : null,
+          mediaCount,
+          pictureCount,
+          videoCount,
+          text,
+          sentAt,
+          inferred?.chatterId || null,
+          inferred?.chatterName || null,
+          inferred?.chatterEmail || null,
+        ]
+      );
+      entryId = stub.id;
+    } catch (err) {
+      if (err.code !== '23505') throw err;
+      const conflict = await pool.query(
+        `SELECT id FROM messaging_dashboard_entries WHERE "maloumMessageId" = $1`,
+        [maloumMessageId]
+      );
+      if (conflict.rows.length === 0) throw err;
+      entryId = conflict.rows[0].id;
+      await pool.query(
+        `DELETE FROM messaging_dashboard_entries WHERE id = $1`,
+        [stub.id]
+      );
+    }
+  } else {
+    const inserted = await pool.query(
+      `INSERT INTO messaging_dashboard_entries (
+        id,
+        "creatorId",
+        "creatorName",
+        "creatorUsername",
+        "creatorAvatarUrl",
+        platform,
+        "chatterId",
+        "chatterName",
+        "chatterEmail",
+        "chatId",
+        "fanId",
+        "fanUsername",
+        "maloumMessageId",
+        "contentType",
+        "actualSentText",
+        "priceNet",
+        currency,
+        purchased,
+        "unlockedAt",
+        "attributionSource",
+        "mediaCount",
+        "pictureCount",
+        "videoCount",
+        "mediaJson",
+        "sentAt"
+      ) VALUES (
+        $1, $2, $3, $4, $5, '4based',
+        $6, $7, $8, $9, $10, $11, $12, 'chat_product',
+        $13, $14, 'USD', true, $15, 'chat_recovered',
+        $16, $17, $18, $19, $20
+      )
+      ON CONFLICT ("maloumMessageId") DO UPDATE SET
+        "chatId" = COALESCE(EXCLUDED."chatId", messaging_dashboard_entries."chatId"),
+        "fanId" = COALESCE(messaging_dashboard_entries."fanId", EXCLUDED."fanId"),
+        "mediaJson" = COALESCE(messaging_dashboard_entries."mediaJson", EXCLUDED."mediaJson"),
+        purchased = true,
+        "updatedAt" = NOW()
+      RETURNING id`,
+      [
+        randomUUID(),
+        meta.id,
+        meta.displayName || meta.username || 'Unknown',
+        meta.username || null,
+        meta.avatarUrl || null,
+        inferred?.chatterId || null,
+        inferred?.chatterName || null,
+        inferred?.chatterEmail || null,
+        chatId || (group.fanId ? `4based-sale:${group.fanId}` : maloumMessageId),
+        group.fanId || null,
+        group.fanUsername || null,
+        maloumMessageId,
+        text,
+        priceNet,
+        group.unlockedAt || sentAt,
+        mediaCount,
+        pictureCount,
+        videoCount,
+        mediaJson ? JSON.stringify(mediaJson) : null,
+        sentAt,
+      ]
+    );
+    entryId = inserted.rows[0].id;
+    imported = true;
+  }
+
+  await markVerified(entryId, {
+    payoutTxnId: group.payoutTxnId,
+    unlockedAt: group.unlockedAt,
+    purchased: true,
+  });
+
+  if (inferred) {
+    await resolveOrphanReviewEvents({
+      creatorId: meta.id,
+      messagingEntryId: entryId,
+      payoutTxnId: group.payoutTxnId,
+      resolution: 'auto_recovered',
+    });
+    if (stub?.id && String(stub.id) !== String(entryId)) {
+      await resolveOrphanReviewEvents({
+        creatorId: meta.id,
+        messagingEntryId: stub.id,
+        payoutTxnId: group.payoutTxnId,
+        resolution: 'auto_recovered',
+      });
+    }
+  } else {
+    await upsertOrphanReviewEvent({
+      creatorId: meta.id,
+      messagingEntryId: entryId,
+      maloumMessageId,
+      payoutTxnId: group.payoutTxnId,
+      fanId: group.fanId,
+      fanUsername: group.fanUsername,
+      chatId,
+      amount: priceNet,
+      unlockedAt: group.unlockedAt,
+      reason: 'chat_recovered_chatter_unknown',
+      detailJson: { inferredChatter: false, messageId: String(rawId) },
+      recoveredMessageText: text,
+      recoveredMediaJson: mediaJson,
+    });
+  }
+
+  return { recovered: true, imported, entryId, chatterInferred: Boolean(inferred) };
+}
+
+async function recoverOrphanFromChat({
+  authedCreator,
+  meta,
+  group,
+  stub = null,
+  cache,
+}) {
+  if (!group?.fanId) return { recovered: false, reason: 'no_fan' };
+  const chat = await loadFanChatForRecovery(authedCreator, group.fanId, cache);
+  if (!chat.chatId) return { recovered: false, reason: chat.error || 'no_chat' };
+
+  const found = findUniqueChatPpv(chat.messages, group);
+  if (found.status !== 'matched') {
+    return { recovered: false, reason: found.status, chatId: chat.chatId };
+  }
+  return applyRecoveredSend({
+    meta,
+    group,
+    chatId: chat.chatId,
+    match: found,
+    stub,
+  });
+}
+
 async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchFrom }) {
   const summary = {
     verified: 0,
@@ -1114,7 +1809,11 @@ async function reconcileMaloum(authedCreator, meta, { monthFrom, monthTo, fetchF
   return summary;
 }
 
-async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fetchFrom }) {
+async function reconcileFourBased(
+  authedCreator,
+  meta,
+  { monthFrom, monthTo, fetchFrom, recoverOrphans = false }
+) {
   const summary = {
     verified: 0,
     cleared: 0,
@@ -1122,6 +1821,7 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
     exceptions: 0,
     restored: 0,
     merged: 0,
+    recovered: 0,
   };
 
   const payoutRows = await fetchFourBasedPayouts(authedCreator, {
@@ -1158,6 +1858,9 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
     if (group.payoutTxnId) matchedPayoutIds.add(String(group.payoutTxnId));
   };
 
+  /** @type {Array<{ group: object, stub: object | null }>} */
+  const orphanRecoveries = [];
+
   for (const pair of assignments) {
     await markVerified(pair.entry.id, {
       payoutTxnId: pair.group.payoutTxnId,
@@ -1167,6 +1870,9 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
     usedEntries.add(String(pair.entry.id));
     markGroupUsed(pair.group);
     summary.verified += 1;
+    if (recoverOrphans && isFourBasedOrphanEntry(pair.entry) && pair.group.fanId) {
+      orphanRecoveries.push({ group: pair.group, stub: pair.entry });
+    }
   }
 
   for (const item of ambiguous) {
@@ -1204,40 +1910,133 @@ async function reconcileFourBased(authedCreator, meta, { monthFrom, monthTo, fet
     const existingMatch = await findFourBasedEntryForPayout(meta.id, group);
     if (
       existingMatch
+      && !isFourBasedOrphanEntry(existingMatch)
       && !usedEntries.has(String(existingMatch.id))
-      && !existingMatch.payoutVerified
     ) {
-      await markVerified(existingMatch.id, {
-        payoutTxnId: group.payoutTxnId,
-        unlockedAt: group.unlockedAt,
-        purchased: true,
-      });
+      if (!existingMatch.payoutVerified) {
+        await markVerified(existingMatch.id, {
+          payoutTxnId: group.payoutTxnId,
+          unlockedAt: group.unlockedAt,
+          purchased: true,
+        });
+        summary.verified += 1;
+      }
       usedEntries.add(String(existingMatch.id));
       markGroupUsed(group);
-      summary.verified += 1;
       continue;
     }
 
-    const payoutKeys = (group.payoutTxnIds || [group.payoutTxnId]).filter(Boolean);
-    if (payoutKeys.length === 0) continue;
-    const existingPayout = await pool.query(
-      `SELECT id FROM messaging_dashboard_entries
-       WHERE "maloumMessageId" = ANY($1::text[])
-          OR "payoutTxnId" = ANY($2::text[])
-       LIMIT 1`,
-      [
-        payoutKeys.map((id) => `4based-payout:${id}`),
-        payoutKeys.map(String),
-      ]
-    );
-    if (existingPayout.rows.length > 0) {
-      await markVerified(existingPayout.rows[0].id, {
+    const payoutRow = await findEntryByPayoutGroup(meta.id, group);
+    if (payoutRow && !isFourBasedOrphanEntry(payoutRow)) {
+      if (!payoutRow.payoutVerified) {
+        await markVerified(payoutRow.id, {
+          payoutTxnId: group.payoutTxnId,
+          unlockedAt: group.unlockedAt,
+          purchased: true,
+        });
+        summary.verified += 1;
+      }
+      usedEntries.add(String(payoutRow.id));
+      markGroupUsed(group);
+      continue;
+    }
+
+    const stub = payoutRow || (await findOrphanStubForGroup(meta.id, group));
+    if (recoverOrphans && group.fanId) {
+      orphanRecoveries.push({ group, stub });
+      continue;
+    }
+    if (stub) {
+      await markVerified(stub.id, {
         payoutTxnId: group.payoutTxnId,
         unlockedAt: group.unlockedAt,
         purchased: true,
       });
-      usedEntries.add(String(existingPayout.rows[0].id));
+      usedEntries.add(String(stub.id));
       markGroupUsed(group);
+    }
+  }
+
+  if (recoverOrphans && orphanRecoveries.length > 0) {
+    const chatCache = new Map();
+    for (const item of orphanRecoveries) {
+      if (usedGroups.has(item.group.groupId) && !item.stub) continue;
+      try {
+        const result = await recoverOrphanFromChat({
+          authedCreator,
+          meta,
+          group: item.group,
+          stub: item.stub,
+          cache: chatCache,
+        });
+        if (result.recovered) {
+          if (result.entryId) usedEntries.add(String(result.entryId));
+          markGroupUsed(item.group);
+          summary.recovered += 1;
+          if (result.imported) summary.imported += 1;
+          continue;
+        }
+
+        if (item.stub) {
+          await markVerified(item.stub.id, {
+            payoutTxnId: item.group.payoutTxnId,
+            unlockedAt: item.group.unlockedAt,
+            purchased: true,
+          });
+          if (isFourBasedOrphanEntry(item.stub)) {
+            await pool.query(
+              `UPDATE messaging_dashboard_entries
+               SET "chatterId" = NULL,
+                   "chatterName" = NULL,
+                   "chatterEmail" = NULL,
+                   "updatedAt" = NOW()
+               WHERE id = $1
+                 AND (
+                   "attributionSource" IN ('orphan_sale', 'deleted_import')
+                   OR "maloumMessageId" LIKE '4based-sale:%'
+                   OR "maloumMessageId" LIKE '4based-payout:%'
+                 )`,
+              [item.stub.id]
+            );
+          }
+          usedEntries.add(String(item.stub.id));
+          markGroupUsed(item.group);
+          await upsertOrphanReviewEvent({
+            creatorId: meta.id,
+            messagingEntryId: item.stub.id,
+            maloumMessageId: item.stub.maloumMessageId,
+            payoutTxnId: item.group.payoutTxnId,
+            fanId: item.group.fanId,
+            fanUsername: item.group.fanUsername,
+            chatId: result.chatId || item.stub.chatId || null,
+            amount: item.group.amount,
+            unlockedAt: item.group.unlockedAt,
+            reason: 'chat_recovery_incomplete',
+            detailJson: { reason: result.reason || 'not_found' },
+          });
+          summary.exceptions += 1;
+          continue;
+        }
+
+        await upsertOrphanReviewEvent({
+          creatorId: meta.id,
+          payoutTxnId: item.group.payoutTxnId,
+          fanId: item.group.fanId,
+          fanUsername: item.group.fanUsername,
+          chatId: result.chatId || null,
+          amount: item.group.amount,
+          unlockedAt: item.group.unlockedAt,
+          reason: 'chat_recovery_incomplete',
+          detailJson: { reason: result.reason || 'not_found' },
+        });
+        summary.exceptions += 1;
+      } catch (err) {
+        console.warn(
+          `4based orphan recovery failed for ${item.group.payoutTxnId}:`,
+          err.message || err
+        );
+        summary.exceptions += 1;
+      }
     }
   }
 
@@ -1304,6 +2103,7 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false, mo
         monthFrom: bounds.monthFrom,
         monthTo: bounds.monthTo,
         fetchFrom,
+        recoverOrphans: monthOnly,
       });
     } else {
       summary = await reconcileMaloum(authedCreator, meta, {
@@ -1360,6 +2160,7 @@ function snapshotReconcileAllJob() {
     finishedAt: reconcileAllJob.finishedAt,
     etaSeconds: reconcileAllJob.etaSeconds,
     verified: reconcileAllJob.verified,
+    recovered: reconcileAllJob.recovered,
     exceptions: reconcileAllJob.exceptions,
     errors: Array.isArray(reconcileAllJob.errors)
       ? reconcileAllJob.errors.slice()
@@ -1414,6 +2215,7 @@ async function runReconcileAll(job) {
           monthOnly: true,
         });
         job.verified += Number(summary.verified) || 0;
+        job.recovered += Number(summary.recovered) || 0;
         job.exceptions += Number(summary.exceptions) || 0;
         if (summary.error) {
           job.errors.push({
@@ -1475,6 +2277,7 @@ function startReconcileAll({ yearMonth } = {}) {
     finishedAt: null,
     etaSeconds: null,
     verified: 0,
+    recovered: 0,
     exceptions: 0,
     errors: [],
   };

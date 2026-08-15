@@ -1458,6 +1458,7 @@ export interface ReconcileAllJob {
   finishedAt: string | null;
   etaSeconds: number | null;
   verified: number;
+  recovered?: number;
   exceptions: number;
   errors: { creatorId: string | null; name: string | null; message: string }[];
 }

@@ -269,10 +269,17 @@ export default function FalseSalesReview() {
             {reconcileButtonLabel(reconcileJob, false)}
           </div>
         ) : null}
-        {reconcileJob && reconcileJob.status !== 'running' && reconcileJob.errors.length > 0 ? (
-          <div className="text-sm text-amber-700 dark:text-amber-400">
-            Finished with {reconcileJob.errors.length} creator
-            {reconcileJob.errors.length === 1 ? '' : 's'} skipped or failed.
+        {reconcileJob && reconcileJob.status !== 'running' ? (
+          <div className="text-sm text-gray-600 dark:text-gray-300">
+            Finished: {reconcileJob.verified} verified
+            {reconcileJob.recovered ? `, ${reconcileJob.recovered} recovered from chat` : ''}
+            {reconcileJob.exceptions ? `, ${reconcileJob.exceptions} need review` : ''}
+            {reconcileJob.errors.length > 0
+              ? `, ${reconcileJob.errors.length} creator${
+                  reconcileJob.errors.length === 1 ? '' : 's'
+                } skipped or failed`
+              : ''}
+            .
           </div>
         ) : null}
 
