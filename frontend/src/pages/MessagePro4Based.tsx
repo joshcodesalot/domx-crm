@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Bell, Home, MessageSquare, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -9,17 +10,11 @@ import {
   UnreadBadge,
   partnerName,
 } from '@/components/fourbased/FourBasedChatPanels';
-import { useStaffSync } from '@/context/StaffSyncContext';
-import {
-  getCreators,
-  getFourBasedBadges,
-  type Creator,
-  type FourBasedChat,
-} from '@/lib/api';
-import { runWithConcurrency } from '@/lib/runWithConcurrency';
+import { useCreatorLive } from '@/context/CreatorLiveContext';
+import { usePollEnabled } from '@/hooks/useDocumentVisible';
+import { type Creator, type FourBasedChat } from '@/lib/api';
 
 const HOME_TAB_ID = 'home';
-const BADGE_POLL_MS = 15_000;
 
 interface FanTab {
   chatId: string;
@@ -34,22 +29,26 @@ interface CreatorWorkspace {
   activeTabId: string;
 }
 
-type CreatorUnreadCounts = { messages: number; notifications: number };
-
 function isOpenableCreator(creator: Creator): boolean {
   return creator.platform === '4based' && Boolean(creator.accountId || creator.id);
 }
 
 export default function MessagePro4Based() {
-  const { onSyncEvent } = useStaffSync();
-  const [creators, setCreators] = useState<Creator[]>([]);
+  const location = useLocation();
+  const pagePollEnabled = usePollEnabled(location.pathname === '/message-pro/4based');
+  const {
+    creators,
+    creatorsLoading: loading,
+    creatorsError: error,
+    badgesByCreatorId,
+    refreshBadges,
+  } = useCreatorLive({
+    platform: '4based',
+    wantBadges: true,
+    pollEnabled: pagePollEnabled,
+  });
   const [workspaces, setWorkspaces] = useState<CreatorWorkspace[]>([]);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [badgeCountsByCreatorId, setBadgeCountsByCreatorId] = useState<
-    Record<string, CreatorUnreadCounts>
-  >({});
   const [mountedHomeIds, setMountedHomeIds] = useState<string[]>([]);
 
   const openableCreators = useMemo(
@@ -61,56 +60,6 @@ export default function MessagePro4Based() {
     () => workspaces.find((w) => w.creator.id === activeAccountId) || null,
     [workspaces, activeAccountId]
   );
-
-  const loadCreators = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const { creators: list } = await getCreators();
-      setCreators(list.filter((c) => c.platform === '4based'));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load creators');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const refreshCreatorBadges = useCallback(async (creatorIds: string[]) => {
-    if (creatorIds.length === 0) return;
-    const updates: Record<string, CreatorUnreadCounts> = {};
-    await runWithConcurrency(creatorIds, 3, async (creatorId) => {
-      try {
-        const badges = await getFourBasedBadges(creatorId);
-        updates[creatorId] = {
-          messages: Number(badges.messages) || 0,
-          notifications: Number(badges.notifications) || 0,
-        };
-      } catch (err) {
-        console.warn(
-          '4based badge poll failed:',
-          creatorId,
-          err instanceof Error ? err.message : err
-        );
-      }
-    });
-    if (Object.keys(updates).length === 0) return;
-    setBadgeCountsByCreatorId((prev) => ({ ...prev, ...updates }));
-  }, []);
-
-  useEffect(() => {
-    void loadCreators();
-  }, [loadCreators]);
-
-  useEffect(() => {
-    return onSyncEvent((event) => {
-      if (
-        event.type === 'creator:access-granted' ||
-        event.type === 'creator:access-revoked'
-      ) {
-        void loadCreators();
-      }
-    });
-  }, [onSyncEvent, loadCreators]);
 
   useEffect(() => {
     setWorkspaces((prev) => {
@@ -134,24 +83,7 @@ export default function MessagePro4Based() {
       }
       return openableCreators[0]?.id || null;
     });
-
-    setBadgeCountsByCreatorId((prev) => {
-      const next: Record<string, CreatorUnreadCounts> = {};
-      for (const creator of openableCreators) {
-        if (prev[creator.id]) next[creator.id] = prev[creator.id];
-      }
-      return next;
-    });
   }, [openableCreators]);
-
-  useEffect(() => {
-    const ids = openableCreators.map((c) => c.id);
-    void refreshCreatorBadges(ids);
-    const timer = window.setInterval(() => {
-      void refreshCreatorBadges(ids);
-    }, BADGE_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [openableCreators, refreshCreatorBadges]);
 
   useEffect(() => {
     const openableIds = new Set(openableCreators.map((c) => c.id));
@@ -231,7 +163,7 @@ export default function MessagePro4Based() {
           {workspaces.map((workspace) => {
             const creatorId = workspace.creator.id;
             const active = creatorId === activeAccountId;
-            const unread = badgeCountsByCreatorId[creatorId] || {
+            const unread = badgesByCreatorId[creatorId] || {
               messages: 0,
               notifications: 0,
             };
@@ -352,14 +284,14 @@ export default function MessagePro4Based() {
                 >
                   <FourBasedChatList
                     creatorId={creatorId}
-                    pollEnabled={isActiveHome}
+                    pollEnabled={pagePollEnabled && isActiveHome}
                     messagesUnread={
-                      badgeCountsByCreatorId[creatorId]?.messages || 0
+                      badgesByCreatorId[creatorId]?.messages || 0
                     }
                     onSelectChat={(chat) => openFanTab(creatorId, chat)}
                     openActionLabel="Open tab"
                     onRefreshExtra={() => {
-                      void refreshCreatorBadges([creatorId]);
+                      void refreshBadges([creatorId]);
                     }}
                   />
                 </div>
@@ -371,6 +303,7 @@ export default function MessagePro4Based() {
                   creator={activeWorkspace.creator}
                   chatId={activeFanTab.chatId}
                   initialChat={activeFanTab.chat || null}
+                  pollEnabled={pagePollEnabled}
                   onClose={() =>
                     closeFanTab(activeWorkspace.creator.id, activeFanTab.chatId)
                   }

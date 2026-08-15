@@ -1268,7 +1268,9 @@ async function waitForUploadApproved(creator, uploadId, { folderId } = {}) {
       throw new MaloumApiError(`Upload ${status.toLowerCase()}`, 400, payload);
     }
 
-    await sleep(1500);
+    const elapsed = 90_000 - (deadline - Date.now());
+    const delay = elapsed < 15_000 ? 1500 : elapsed < 45_000 ? 3000 : 5000;
+    await sleep(delay);
   }
 
   throw new MaloumApiError(

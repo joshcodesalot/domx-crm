@@ -19,6 +19,7 @@ const {
   userSeesAllCreators,
   userCanAccessCreator,
   getUserIdsWithCreatorAccess,
+  invalidateCreatorAccessCache,
 } = require('../services/creatorAccess');
 const {
   buildEncryptedTokenFields,
@@ -38,6 +39,7 @@ const {
 const massMessageUnsendAllRunner = require('../services/massMessageUnsendAllRunner');
 const {
   connectCreatorById,
+  ensureCreatorSocket,
   disconnectCreator,
 } = require('../services/fourBasedSocket');
 const fourBasedMediaCache = require('../services/fourBasedMediaCache');
@@ -77,6 +79,26 @@ const fourBasedPhotoUpload = multer({
 const VALID_PLATFORMS = ['maloum', '4based'];
 const VALID_STATUSES = ['connected', 'error', 'pending'];
 const PENDING_TTL_MINUTES = 15;
+const BADGE_SIDE_EFFECT_MIN_MS = 60_000;
+const lastBadgeSideEffectAt = new Map();
+
+function scheduleBadgeSideEffects(creatorId, work) {
+  if (!creatorId) return;
+  const last = lastBadgeSideEffectAt.get(creatorId) || 0;
+  if (Date.now() - last < BADGE_SIDE_EFFECT_MIN_MS) return;
+  lastBadgeSideEffectAt.set(creatorId, Date.now());
+  setImmediate(() => {
+    Promise.resolve()
+      .then(work)
+      .catch((err) => {
+        console.warn(
+          'Badge side effects failed:',
+          creatorId,
+          err.message || err
+        );
+      });
+  });
+}
 
 const connectLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -1030,6 +1052,7 @@ router.post(
          VALUES ($1, $2, $3)`,
         [id, userId, req.user.id]
       );
+      invalidateCreatorAccessCache(id);
 
       await client.query(
         `UPDATE creators
@@ -1098,6 +1121,7 @@ router.delete(
          RETURNING id`,
         [id, userId]
       );
+      invalidateCreatorAccessCache(id);
 
       if (deleted.rows.length === 0) {
         await client.query('ROLLBACK');
@@ -3172,6 +3196,7 @@ router.get(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
+      void ensureCreatorSocket(id);
       const limit = Math.min(Number(req.query.limit) || 30, 100);
       const offset = Math.max(Number(req.query.offset) || 0, 0);
       const searchRaw =
@@ -3546,6 +3571,8 @@ router.get(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
+      void ensureCreatorSocket(id);
+
       const unread = await fourBasedClient.getUnread(loaded.creator);
       res.json({ unread });
     } catch (err) {
@@ -3575,10 +3602,14 @@ router.get(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      const [badges, saleTipActivities] = await Promise.all([
-        fourBasedClient.getBadges(loaded.creator),
-        fourBasedClient
-          .listActivities(loaded.creator, {
+      void ensureCreatorSocket(id);
+      const badges = await fourBasedClient.getBadges(loaded.creator);
+      res.json(badges);
+
+      const creator = loaded.creator;
+      scheduleBadgeSideEffects(id, async () => {
+        const saleTipActivities = await fourBasedClient
+          .listActivities(creator, {
             offset: 0,
             limit: 50,
             types: 'sale,tip',
@@ -3589,35 +3620,30 @@ router.get(
               err.message || err
             );
             return [];
-          }),
-      ]);
-
-      try {
-        await messagingDashboard.processFourBasedSaleAndTipNotifications(
-          id,
-          Array.isArray(saleTipActivities) ? saleTipActivities : []
-        );
-      } catch (err) {
-        console.warn('4based sale/tip sync failed:', err.message);
-      }
-
-      try {
-        await messagingDashboard.repairFourBasedPurchasedFlags(id, {
-          seedActivities: Array.isArray(saleTipActivities) ? saleTipActivities : [],
-          fetchSalePage: (pageOffset, pageLimit) =>
-            fourBasedClient.listActivities(loaded.creator, {
-              offset: pageOffset,
-              limit: pageLimit,
-              types: 'sale',
-            }),
-        });
-      } catch (err) {
-        console.warn('4based purchased repair failed:', err.message || err);
-      }
-
-      scheduleThrottledReconcile(id);
-
-      res.json(badges);
+          });
+        try {
+          await messagingDashboard.processFourBasedSaleAndTipNotifications(
+            id,
+            Array.isArray(saleTipActivities) ? saleTipActivities : []
+          );
+        } catch (err) {
+          console.warn('4based sale/tip sync failed:', err.message);
+        }
+        try {
+          await messagingDashboard.repairFourBasedPurchasedFlags(id, {
+            seedActivities: Array.isArray(saleTipActivities) ? saleTipActivities : [],
+            fetchSalePage: (pageOffset, pageLimit) =>
+              fourBasedClient.listActivities(creator, {
+                offset: pageOffset,
+                limit: pageLimit,
+                types: 'sale',
+              }),
+          });
+        } catch (err) {
+          console.warn('4based purchased repair failed:', err.message || err);
+        }
+        scheduleThrottledReconcile(id);
+      });
     } catch (err) {
       return handleFourBasedError(res, err, 'Get 4based badges error:');
     }
@@ -4988,19 +5014,10 @@ router.get(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      const [messagesUnread, notificationsUnread, notifications] = await Promise.all([
+      const [messagesUnread, notificationsUnread] = await Promise.all([
         maloumClient.getUnreadCount(loaded.creator),
         maloumClient.getNotificationsUnreadCount(loaded.creator),
-        maloumClient.listRecentNotifications(loaded.creator, { pages: 3, limit: 15 }),
       ]);
-
-      try {
-        await messagingDashboard.processMaloumSaleAndTipNotifications(id, notifications);
-      } catch (err) {
-        console.warn('Maloum sale/tip sync failed:', err.message);
-      }
-
-      scheduleThrottledReconcile(id);
 
       const toCount = (value) =>
         typeof value === 'number' ? value : Number(value) || 0;
@@ -5008,6 +5025,23 @@ router.get(
       res.json({
         messages: toCount(messagesUnread),
         notifications: toCount(notificationsUnread),
+      });
+
+      const creator = loaded.creator;
+      scheduleBadgeSideEffects(id, async () => {
+        const notifications = await maloumClient.listRecentNotifications(creator, {
+          pages: 1,
+          limit: 15,
+        });
+        try {
+          await messagingDashboard.processMaloumSaleAndTipNotifications(
+            id,
+            notifications
+          );
+        } catch (err) {
+          console.warn('Maloum sale/tip sync failed:', err.message);
+        }
+        scheduleThrottledReconcile(id);
       });
     } catch (err) {
       return handleMaloumError(res, err, 'Get Maloum badges error:');
@@ -6637,7 +6671,10 @@ router.get(
 
       if (canUseDiskCache && upstream.status === 200) {
         const chunks = [];
-        nodeStream.on('data', (chunk) => chunks.push(chunk));
+        nodeStream.on('data', (chunk) => {
+          chunks.push(chunk);
+          if (!res.writableEnded) res.write(chunk);
+        });
         nodeStream.on('error', (err) => {
           console.warn('Maloum media stream error:', err.message);
           if (!res.headersSent) {
@@ -6647,11 +6684,8 @@ router.get(
           }
         });
         nodeStream.on('end', () => {
+          if (!res.writableEnded) res.end();
           const buffer = Buffer.concat(chunks);
-          if (!res.headersSent) {
-            res.setHeader('Content-Length', String(buffer.length));
-          }
-          res.end(buffer);
           void maloumMediaCache.writeCache(id, uploadId, variant, {
             buffer,
             contentType,

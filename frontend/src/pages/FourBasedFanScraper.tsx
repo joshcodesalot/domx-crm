@@ -14,6 +14,7 @@ import CreatorAvatar from '@/components/CreatorAvatar';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import { useToast } from '@/context/ToastContext';
+import { useDocumentVisible } from '@/hooks/useDocumentVisible';
 import {
   fourBasedMediaUrl,
   fourBasedPreviewPath,
@@ -169,6 +170,7 @@ function mediaVideoSrc(
 }
 
 export default function FourBasedFanScraper() {
+  const documentVisible = useDocumentVisible();
   const { toast } = useToast();
   const [creators, setCreators] = useState<Creator[]>([]);
   const [creatorsLoading, setCreatorsLoading] = useState(true);
@@ -319,12 +321,12 @@ export default function FourBasedFanScraper() {
   }, [selectedCreatorId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!selectedCreatorId || !isRunning) return;
+    if (!selectedCreatorId || !isRunning || !documentVisible) return;
     const timer = window.setInterval(() => {
       void loadJob(selectedCreatorId, { quiet: true });
     }, POLL_MS);
     return () => window.clearInterval(timer);
-  }, [selectedCreatorId, isRunning, loadJob]);
+  }, [selectedCreatorId, isRunning, documentVisible, loadJob]);
 
   const toggleVaultItem = useCallback((item: FourBasedVaultItem) => {
     const id = vaultItemId(item);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import ForcedUpdateOverlay from '@/components/ForcedUpdateOverlay';
 import PermissionRoute from '@/components/PermissionRoute';
@@ -8,37 +8,47 @@ import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { ConfirmDialogProvider } from '@/context/ConfirmDialogContext';
 import { StaffSyncProvider } from '@/context/StaffSyncContext';
 import { CreatorBootProvider } from '@/context/CreatorBootContext';
+import { CreatorLiveProvider } from '@/context/CreatorLiveContext';
 import { ToastProvider } from '@/context/ToastContext';
 import ChangePassword from '@/pages/ChangePassword';
-import Dashboard from '@/pages/Dashboard';
 import Login from '@/pages/Login';
 import SetupOwner from '@/pages/SetupOwner';
-import ManageCreators from '@/pages/ManageCreators';
-import ManageStaff from '@/pages/ManageStaff';
-import ChatterMaloum from '@/pages/ChatterMaloum';
-import Chatter4Based from '@/pages/Chatter4Based';
-import MaloumMassMessage from '@/pages/MaloumMassMessage';
-import MaloumFeed from '@/pages/MaloumFeed';
-import MaloumFanScraper from '@/pages/MaloumFanScraper';
-import FourBasedFanScraper from '@/pages/FourBasedFanScraper';
-import FourBasedMassMessage from '@/pages/FourBasedMassMessage';
-import FourBasedFeed from '@/pages/FourBasedFeed';
-import ContentSchedule from '@/pages/ContentSchedule';
-import MaloumAiBulkReply from '@/pages/MaloumAiBulkReply';
-import FourBasedAiBulkReply from '@/pages/FourBasedAiBulkReply';
-import MaloumNotifications from '@/pages/MaloumNotifications';
-import FourBasedNotifications from '@/pages/FourBasedNotifications';
-import MessagePro from '@/pages/MessagePro';
-import MessagePro4Based from '@/pages/MessagePro4Based';
-import MessagingDashboard from '@/pages/MessagingDashboard';
-import SalesLogs from '@/pages/SalesLogs';
-import FalseSalesReview from '@/pages/FalseSalesReview';
-import AnalyticsCharts from '@/pages/AnalyticsCharts';
-import CreatorAnalytics from '@/pages/CreatorAnalytics';
-import AccountSettings from '@/pages/AccountSettings';
-import KeywordModeration from '@/pages/KeywordModeration';
 import ModerationAlertsListener from '@/components/ModerationAlertsListener';
 import ActivityHeartbeatListener from '@/components/ActivityHeartbeatListener';
+
+const Dashboard = lazy(() => import('@/pages/Dashboard'));
+const ManageCreators = lazy(() => import('@/pages/ManageCreators'));
+const ManageStaff = lazy(() => import('@/pages/ManageStaff'));
+const ChatterMaloum = lazy(() => import('@/pages/ChatterMaloum'));
+const Chatter4Based = lazy(() => import('@/pages/Chatter4Based'));
+const MaloumMassMessage = lazy(() => import('@/pages/MaloumMassMessage'));
+const MaloumFeed = lazy(() => import('@/pages/MaloumFeed'));
+const MaloumFanScraper = lazy(() => import('@/pages/MaloumFanScraper'));
+const FourBasedFanScraper = lazy(() => import('@/pages/FourBasedFanScraper'));
+const FourBasedMassMessage = lazy(() => import('@/pages/FourBasedMassMessage'));
+const FourBasedFeed = lazy(() => import('@/pages/FourBasedFeed'));
+const ContentSchedule = lazy(() => import('@/pages/ContentSchedule'));
+const MaloumAiBulkReply = lazy(() => import('@/pages/MaloumAiBulkReply'));
+const FourBasedAiBulkReply = lazy(() => import('@/pages/FourBasedAiBulkReply'));
+const MaloumNotifications = lazy(() => import('@/pages/MaloumNotifications'));
+const FourBasedNotifications = lazy(() => import('@/pages/FourBasedNotifications'));
+const MessagePro = lazy(() => import('@/pages/MessagePro'));
+const MessagePro4Based = lazy(() => import('@/pages/MessagePro4Based'));
+const MessagingDashboard = lazy(() => import('@/pages/MessagingDashboard'));
+const SalesLogs = lazy(() => import('@/pages/SalesLogs'));
+const FalseSalesReview = lazy(() => import('@/pages/FalseSalesReview'));
+const AnalyticsCharts = lazy(() => import('@/pages/AnalyticsCharts'));
+const CreatorAnalytics = lazy(() => import('@/pages/CreatorAnalytics'));
+const AccountSettings = lazy(() => import('@/pages/AccountSettings'));
+const KeywordModeration = lazy(() => import('@/pages/KeywordModeration'));
+
+function PageFallback() {
+  return (
+    <div className="h-screen flex items-center justify-center bg-white dark:bg-zinc-950 text-sm text-gray-500 dark:text-zinc-500">
+      Loading…
+    </div>
+  );
+}
 
 /**
  * Keeps the 4based chat panel mounted after first visit so loaded chats/media
@@ -197,96 +207,96 @@ function AppRoutes() {
   return (
     <HashRouter>
       <StaffSyncProvider>
-        <PersistentFourBasedPanel />
-        <PersistentMaloumPanel />
-        <PersistentMessageProPanel />
-        <PersistentMessagePro4BasedPanel />
-        <ModerationAlertsListener />
-        <ActivityHeartbeatListener />
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route path="/setup" element={<SetupOwner />} />
-          <Route path="/change-password" element={<ChangePassword />} />
-          <Route element={<ProtectedRoute />}>
-            <Route path="/account/settings" element={<AccountSettings />} />
-            <Route element={<CreatorBootProvider />}>
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route element={<RoleRoute roles={['owner', 'manager']} />}>
-                <Route path="/dashboard/charts" element={<AnalyticsCharts />} />
-                <Route
-                  path="/dashboard/creator-analytics"
-                  element={<CreatorAnalytics />}
-                />
-                <Route path="/dashboard/false-sales" element={<FalseSalesReview />} />
+        <CreatorLiveProvider>
+          <Suspense fallback={<PageFallback />}>
+            <PersistentFourBasedPanel />
+            <PersistentMaloumPanel />
+            <PersistentMessageProPanel />
+            <PersistentMessagePro4BasedPanel />
+            <ModerationAlertsListener />
+            <ActivityHeartbeatListener />
+            <Routes>
+              <Route path="/login" element={<Login />} />
+              <Route path="/setup" element={<SetupOwner />} />
+              <Route path="/change-password" element={<ChangePassword />} />
+              <Route element={<ProtectedRoute />}>
+                <Route path="/account/settings" element={<AccountSettings />} />
+                <Route element={<CreatorBootProvider />}>
+                  <Route path="/dashboard" element={<Dashboard />} />
+                  <Route element={<RoleRoute roles={['owner', 'manager']} />}>
+                    <Route path="/dashboard/charts" element={<AnalyticsCharts />} />
+                    <Route
+                      path="/dashboard/creator-analytics"
+                      element={<CreatorAnalytics />}
+                    />
+                    <Route path="/dashboard/false-sales" element={<FalseSalesReview />} />
+                  </Route>
+                  <Route element={<PermissionRoute permission="analytics.view" />}>
+                    <Route path="/dashboard/messaging" element={<MessagingDashboard />} />
+                    <Route path="/dashboard/sales-logs" element={<SalesLogs />} />
+                  </Route>
+                  <Route element={<PermissionRoute permission="staff.view" />}>
+                    <Route path="/staff/manage" element={<ManageStaff />} />
+                  </Route>
+                  <Route
+                    element={
+                      <PermissionRoute
+                        anyOf={['moderation.manage', 'moderation.review']}
+                      />
+                    }
+                  >
+                    <Route path="/staff/moderation" element={<KeywordModeration />} />
+                  </Route>
+                  <Route element={<PermissionRoute permission="creators.view" />}>
+                    <Route path="/chatter" element={null} />
+                    <Route path="/chatter/4based" element={null} />
+                    <Route path="/message-pro" element={null} />
+                    <Route path="/message-pro/4based" element={null} />
+                    <Route
+                      path="/chatter/maloum/notifications"
+                      element={<MaloumNotifications />}
+                    />
+                    <Route
+                      path="/chatter/4based/notifications"
+                      element={<FourBasedNotifications />}
+                    />
+                  </Route>
+                  <Route element={<PermissionRoute permission="mass_messages.send" />}>
+                    <Route path="/chatter/schedule" element={<ContentSchedule />} />
+                    <Route path="/chatter/maloum/mass-message" element={<MaloumMassMessage />} />
+                    <Route path="/chatter/maloum/feed" element={<MaloumFeed />} />
+                    <Route
+                      path="/chatter/maloum/fan-scraper"
+                      element={<MaloumFanScraper />}
+                    />
+                    <Route
+                      path="/chatter/4based/mass-message"
+                      element={<FourBasedMassMessage />}
+                    />
+                    <Route path="/chatter/4based/feed" element={<FourBasedFeed />} />
+                    <Route
+                      path="/chatter/4based/fan-scraper"
+                      element={<FourBasedFanScraper />}
+                    />
+                    <Route
+                      path="/chatter/maloum/ai-bulk-reply"
+                      element={<MaloumAiBulkReply />}
+                    />
+                    <Route
+                      path="/chatter/4based/ai-bulk-reply"
+                      element={<FourBasedAiBulkReply />}
+                    />
+                  </Route>
+                  <Route element={<PermissionRoute permission="creators.manage" />}>
+                    <Route path="/creators/manage" element={<ManageCreators />} />
+                  </Route>
+                </Route>
               </Route>
-              <Route element={<PermissionRoute permission="analytics.view" />}>
-                <Route path="/dashboard/messaging" element={<MessagingDashboard />} />
-                <Route path="/dashboard/sales-logs" element={<SalesLogs />} />
-              </Route>
-              <Route element={<PermissionRoute permission="staff.view" />}>
-                <Route path="/staff/manage" element={<ManageStaff />} />
-              </Route>
-              <Route
-                element={
-                  <PermissionRoute
-                    anyOf={['moderation.manage', 'moderation.review']}
-                  />
-                }
-              >
-                <Route path="/staff/moderation" element={<KeywordModeration />} />
-              </Route>
-              <Route element={<PermissionRoute permission="creators.view" />}>
-                {/* Placeholder — real panel is mounted by PersistentMaloumPanel */}
-                <Route path="/chatter" element={null} />
-                {/* Placeholder — real panel is mounted by PersistentFourBasedPanel */}
-                <Route path="/chatter/4based" element={null} />
-                {/* Placeholder — real panel is mounted by PersistentMessageProPanel */}
-                <Route path="/message-pro" element={null} />
-                {/* Placeholder — real panel is mounted by PersistentMessagePro4BasedPanel */}
-                <Route path="/message-pro/4based" element={null} />
-                <Route
-                  path="/chatter/maloum/notifications"
-                  element={<MaloumNotifications />}
-                />
-                <Route
-                  path="/chatter/4based/notifications"
-                  element={<FourBasedNotifications />}
-                />
-              </Route>
-              <Route element={<PermissionRoute permission="mass_messages.send" />}>
-                <Route path="/chatter/schedule" element={<ContentSchedule />} />
-                <Route path="/chatter/maloum/mass-message" element={<MaloumMassMessage />} />
-                <Route path="/chatter/maloum/feed" element={<MaloumFeed />} />
-                <Route
-                  path="/chatter/maloum/fan-scraper"
-                  element={<MaloumFanScraper />}
-                />
-                <Route
-                  path="/chatter/4based/mass-message"
-                  element={<FourBasedMassMessage />}
-                />
-                <Route path="/chatter/4based/feed" element={<FourBasedFeed />} />
-                <Route
-                  path="/chatter/4based/fan-scraper"
-                  element={<FourBasedFanScraper />}
-                />
-                <Route
-                  path="/chatter/maloum/ai-bulk-reply"
-                  element={<MaloumAiBulkReply />}
-                />
-                <Route
-                  path="/chatter/4based/ai-bulk-reply"
-                  element={<FourBasedAiBulkReply />}
-                />
-              </Route>
-              <Route element={<PermissionRoute permission="creators.manage" />}>
-                <Route path="/creators/manage" element={<ManageCreators />} />
-              </Route>
-            </Route>
-          </Route>
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
-        </Routes>
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+            </Routes>
+          </Suspense>
+        </CreatorLiveProvider>
       </StaffSyncProvider>
     </HashRouter>
   );

@@ -36,15 +36,22 @@ import maloumIcon from '@/assets/maloum_icon.png';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
+import { isCreatorRosterEvent } from '@/lib/creatorAccessEvents';
+import { useDocumentVisible } from '@/hooks/useDocumentVisible';
 import { useToast } from '@/context/ToastContext';
 import {
   formatRelativeTime,
   friendlyVaultFolderName,
   isVideoAsset,
-  vaultDirectUrl,
   vaultPreviewFromItem,
+  vaultThumbUrl,
   vaultUploadId,
 } from '@/components/maloum/MaloumChatPanels';
+import {
+  loadVaultListingCache,
+  setVaultListingCache,
+  vaultCacheKey,
+} from '@/lib/vaultListingCache';
 import {
   getCreators,
   getMassUnsendAll,
@@ -68,6 +75,11 @@ import {
   type MassUnsendAllProgress,
 } from '@/lib/api';
 import { berlinNowParts, berlinWallToIso, useStaffTimeZone } from '@/lib/berlinTime';
+import {
+  buildManagedListRanks,
+  friendlyListName,
+  listLabel,
+} from '@/lib/maloumLabels';
 
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const CURRENCY_SYMBOL = '€';
@@ -115,71 +127,6 @@ function broadcastThumbUrl(
   return null;
 }
 
-/** Maloum managed lists arrive as opaque codes like __0h7fd89v__; show native labels. */
-const MANAGED_LIST_LABELS_BY_NAME: Record<string, string> = {
-  __0h7fd89v__: 'All free followers and subscribers',
-  __9a5ju9d3__: 'All free followers',
-  __x0y89z7l__: 'All subscribers',
-};
-
-const MANAGED_LIST_LABELS_BY_ORDER = [
-  'All free followers and subscribers',
-  'All free followers',
-  'All subscribers',
-] as const;
-
-function isManagedListCode(name: string): boolean {
-  return /^__[\w]+__$/.test(name);
-}
-
-function isManagedChatList(list: MaloumChatListItem): boolean {
-  const name = (list.name || '').trim();
-  return Boolean(list.isManaged) || isManagedListCode(name);
-}
-
-/** Rank among managed lists in API order (0, 1, 2…) — works across creators whose codes differ. */
-function buildManagedListRanks(lists: MaloumChatListItem[]): Map<string, number> {
-  const ranks = new Map<string, number>();
-  let index = 0;
-  for (const list of lists) {
-    if (!isManagedChatList(list)) continue;
-    ranks.set(list._id, index);
-    index += 1;
-  }
-  return ranks;
-}
-
-function friendlyListName(
-  list: MaloumChatListItem,
-  managedRanks?: Map<string, number>
-): string {
-  const raw = (list.name || '').trim();
-  if (raw && MANAGED_LIST_LABELS_BY_NAME[raw]) {
-    return MANAGED_LIST_LABELS_BY_NAME[raw];
-  }
-  if (isManagedChatList(list)) {
-    const rank = managedRanks?.get(list._id);
-    if (rank != null && rank >= 0 && rank < MANAGED_LIST_LABELS_BY_ORDER.length) {
-      return MANAGED_LIST_LABELS_BY_ORDER[rank];
-    }
-    if (raw && isManagedListCode(raw)) {
-      // Single managed list shown without siblings (e.g. sent-broadcast summary)
-      return MANAGED_LIST_LABELS_BY_NAME[raw] || 'Managed list';
-    }
-  }
-  return raw || 'Untitled list';
-}
-
-function listLabel(
-  list: MaloumChatListItem,
-  managedRanks?: Map<string, number>
-): string {
-  const name = friendlyListName(list, managedRanks);
-  const count =
-    typeof list.totalMemberCount === 'number' ? ` (${list.totalMemberCount})` : '';
-  return `${name}${count}`;
-}
-
 function nearScrollEnd(
   target: HTMLElement,
   thresholdPx = 80,
@@ -213,6 +160,7 @@ function mergeVaultMediaItems(
 }
 
 export default function MaloumMassMessage() {
+  const documentVisible = useDocumentVisible();
   const { hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
   const confirm = useConfirm();
@@ -361,7 +309,8 @@ export default function MaloumMassMessage() {
   }, [loadCreators]);
 
   useEffect(() => {
-    return onSyncEvent(() => {
+    return onSyncEvent((event) => {
+      if (!isCreatorRosterEvent(event)) return;
       void loadCreators();
     });
   }, [onSyncEvent, loadCreators]);
@@ -395,7 +344,7 @@ export default function MaloumMassMessage() {
   }, [selectedCreatorId, loadBroadcasts, loadChatLists]);
 
   useEffect(() => {
-    if (!selectedCreatorId) return;
+    if (!selectedCreatorId || !documentVisible) return;
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
@@ -417,7 +366,7 @@ export default function MaloumMassMessage() {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [selectedCreatorId, unsendAll?.status]);
+  }, [selectedCreatorId, unsendAll?.status, documentVisible]);
 
   useEffect(() => {
     if (
@@ -433,8 +382,18 @@ export default function MaloumMassMessage() {
     setVaultFoldersLoading(true);
     setVaultError(null);
     try {
+      const folderKey = vaultCacheKey({
+        platform: 'maloum',
+        creatorId: selectedCreatorId,
+        kind: 'folders',
+      });
+      const cached = await loadVaultListingCache<{ folders: MaloumVaultFolder[] }>(
+        folderKey
+      );
+      if (cached?.folders) setVaultFolders(cached.folders);
       const result = await listAllMaloumVaultFolders(selectedCreatorId);
       setVaultFolders(result.folders || []);
+      setVaultListingCache(folderKey, { folders: result.folders || [] });
     } catch (err) {
       setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
     } finally {
@@ -467,6 +426,23 @@ export default function MaloumMassMessage() {
       }
       setVaultError(null);
       try {
+        const mediaKey = vaultCacheKey({
+          platform: 'maloum',
+          creatorId: selectedCreatorId,
+          kind: 'media',
+          folderId,
+        });
+        if (!append) {
+          const cached = await loadVaultListingCache<{
+            items: MaloumVaultMediaItem[];
+            next: number | null;
+          }>(mediaKey);
+          if (cached?.items) {
+            setVaultItems(cached.items);
+            vaultMediaNextRef.current = cached.next;
+            setVaultMediaNext(cached.next);
+          }
+        }
         const result = await listMaloumVaultMedia(selectedCreatorId, folderId, {
           limit: 50,
           next: append && opts?.next != null ? opts.next : undefined,
@@ -481,6 +457,9 @@ export default function MaloumMassMessage() {
         setVaultItems((prev) =>
           append ? mergeVaultMediaItems(prev, items) : items
         );
+        if (!append) {
+          setVaultListingCache(mediaKey, { items, next });
+        }
         const keys = items
           .map((item) => vaultUploadId(item))
           .filter((key): key is string => Boolean(key));
@@ -1210,7 +1189,9 @@ export default function MaloumMassMessage() {
                   <div className="flex gap-2 flex-wrap flex-1 min-w-0">
                     {selectedVaultItems.map((item) => {
                       const uploadId = vaultUploadId(item);
-                      const src = vaultDirectUrl(item);
+                      const src = selectedCreatorId
+                        ? vaultThumbUrl(selectedCreatorId, item)
+                        : null;
                       return (
                         <button
                           key={uploadId || src || 'chip'}
@@ -1492,7 +1473,9 @@ export default function MaloumMassMessage() {
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
                     {filteredVaultItems.map((item) => {
                       const uploadId = vaultUploadId(item);
-                      const src = vaultDirectUrl(item);
+                      const src = selectedCreatorId
+                        ? vaultThumbUrl(selectedCreatorId, item)
+                        : null;
                       const selected = selectedVaultItems.some(
                         (entry) => vaultUploadId(entry) === uploadId
                       );

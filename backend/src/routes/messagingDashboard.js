@@ -694,14 +694,16 @@ async function logMaloumSale({
 async function processMaloumSaleAndTipNotifications(creatorId, notifications) {
   const list = Array.isArray(notifications) ? notifications : [];
   const results = [];
+  const SALE_SYNC_CONCURRENCY = 5;
+  let nextIndex = 0;
 
-  for (const entry of list) {
+  async function processOne(entry) {
     const type = entry?.type;
     const messageId = entry?.messageId ? String(entry.messageId) : null;
     const notificationId = entry?._id || entry?.id ? String(entry._id || entry.id) : null;
 
     if (!messageId) {
-      continue;
+      return;
     }
 
     if (type === 'CHAT_PRODUCT_SOLD') {
@@ -736,10 +738,10 @@ async function processMaloumSaleAndTipNotifications(creatorId, notifications) {
           );
         }
         results.push({ type, ...stub, stubbed: true });
-        continue;
+        return;
       }
       results.push({ type, ...result });
-      continue;
+      return;
     }
 
     if (type === 'FAN_TIPPED') {
@@ -759,6 +761,21 @@ async function processMaloumSaleAndTipNotifications(creatorId, notifications) {
       results.push({ type, ...result });
     }
   }
+
+  async function worker() {
+    while (nextIndex < list.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      await processOne(list[index]);
+    }
+  }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(SALE_SYNC_CONCURRENCY, Math.max(list.length, 1)) },
+      () => worker()
+    )
+  );
 
   return results;
 }
@@ -1901,6 +1918,9 @@ function mergeCurrencyAmounts(...lists) {
     .sort((a, b) => a.currency.localeCompare(b.currency));
 }
 
+const overviewCache = new Map();
+const OVERVIEW_CACHE_TTL_MS = 2 * 60 * 1000;
+
 router.get(
   '/overview',
   authenticate,
@@ -1919,6 +1939,17 @@ router.get(
       const weekStart = weekStartDateString(new Date(), tz);
       const todayDate = calendarDateString(new Date(), tz);
       const chartDays = period.days;
+      const overviewKey = [
+        req.user.id,
+        scope.mode,
+        periodStart,
+        periodEnd,
+        tz,
+      ].join('|');
+      const cachedOverview = overviewCache.get(overviewKey);
+      if (cachedOverview && cachedOverview.expires > Date.now()) {
+        return res.json(cachedOverview.data);
+      }
 
       const chatterClause =
         scope.mode === 'self' ? ' AND "chatterId" = ANY($1::uuid[])' : '';
@@ -3284,7 +3315,7 @@ router.get(
       chatters.sort((a, b) => a.chatterName.localeCompare(b.chatterName));
 
       const avgRaw = avgResponseResult.rows[0]?.avg;
-      res.json({
+      const overviewPayload = {
         scope: scope.mode,
         chartDays,
         period: { startDate: periodStart, endDate: periodEnd },
@@ -3331,7 +3362,12 @@ router.get(
         chatters,
         responseWindow: { startDate: periodStart, endDate: periodEnd },
         lastUpdated: new Date().toISOString(),
+      };
+      overviewCache.set(overviewKey, {
+        expires: Date.now() + OVERVIEW_CACHE_TTL_MS,
+        data: overviewPayload,
       });
+      res.json(overviewPayload);
     } catch (err) {
       console.error('messaging dashboard overview failed:', err);
       res.status(500).json({ error: 'Internal server error' });

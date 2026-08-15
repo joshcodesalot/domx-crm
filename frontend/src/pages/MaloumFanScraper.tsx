@@ -12,6 +12,7 @@ import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import maloumIcon from '@/assets/maloum_icon.png';
 import { useToast } from '@/context/ToastContext';
+import { useDocumentVisible } from '@/hooks/useDocumentVisible';
 import {
   createMaloumChatList,
   getCreators,
@@ -97,6 +98,7 @@ function parseMaloumImportIds(text: string): string[] {
 }
 
 export default function MaloumFanScraper() {
+  const documentVisible = useDocumentVisible();
   const { toast } = useToast();
   const [creators, setCreators] = useState<Creator[]>([]);
   const [creatorsLoading, setCreatorsLoading] = useState(true);
@@ -299,12 +301,12 @@ export default function MaloumFanScraper() {
   ]);
 
   useEffect(() => {
-    if (!selectedCreatorId || !isRunning) return;
+    if (!selectedCreatorId || !isRunning || !documentVisible) return;
     const timer = window.setInterval(() => {
       void loadJob(selectedCreatorId, { quiet: true });
     }, POLL_MS);
     return () => window.clearInterval(timer);
-  }, [selectedCreatorId, isRunning, loadJob]);
+  }, [selectedCreatorId, isRunning, documentVisible, loadJob]);
 
   const persistConfig = useCallback(
     async (extra?: { resetCheckpoint?: boolean }) => {

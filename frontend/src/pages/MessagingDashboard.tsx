@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useDocumentVisible } from '@/hooks/useDocumentVisible';
 import { ImageIcon, RefreshCw, VideoIcon } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import CreatorAvatar from '@/components/CreatorAvatar';
@@ -162,6 +163,7 @@ function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
 }
 
 export default function MessagingDashboard() {
+  const documentVisible = useDocumentVisible();
   const defaultRange = useMemo(() => getDefaultMessagingDashboardDateRange(), []);
   const [startDate, setStartDate] = useState(defaultRange.startDate);
   const [endDate, setEndDate] = useState(defaultRange.endDate);
@@ -253,6 +255,7 @@ export default function MessagingDashboard() {
   }, [loadEntries]);
 
   useEffect(() => {
+    if (!documentVisible) return;
     const interval = window.setInterval(() => {
       void loadEntries({ silent: true });
     }, 20000);
@@ -260,7 +263,7 @@ export default function MessagingDashboard() {
     return () => {
       window.clearInterval(interval);
     };
-  }, [loadEntries]);
+  }, [documentVisible, loadEntries]);
 
   useEffect(() => {
     if (!creatorId) return;

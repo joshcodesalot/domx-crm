@@ -8,6 +8,8 @@ const { getUserIdsWithCreatorAccess } = require('./creatorAccess');
 
 const SOCKET_URL = 'https://socket.4based.com';
 const connections = new Map();
+const IDLE_MS = 30 * 60 * 1000;
+const CHAT_EVENT_RE = /message|chat|conversation|inbox|unread|tip|sale|ppv|purchase/i;
 
 function loadCreatorAuth(row) {
   let session = {};
@@ -101,6 +103,7 @@ function connectCreator(row) {
 
   const relay = async (eventName, payload) => {
     try {
+      touchCreatorSocket(creatorId);
       const userIds = await getUserIdsWithCreatorAccess(creatorId);
       emitToUsers(userIds, {
         type: '4based:event',
@@ -114,17 +117,28 @@ function connectCreator(row) {
     }
   };
 
-  // Catch-all for message-like events from 4based
   socket.onAny((eventName, ...args) => {
     if (eventName === 'connect' || eventName === 'disconnect') {
+      return;
+    }
+    if (!isChatRelevantEvent(eventName)) {
       return;
     }
     const payload = args.length <= 1 ? args[0] : args;
     void relay(eventName, payload);
   });
 
-  connections.set(creatorId, { socket, providerUserId });
+  connections.set(creatorId, { socket, providerUserId, lastUsed: Date.now() });
   return socket;
+}
+
+function touchCreatorSocket(creatorId) {
+  const existing = connections.get(creatorId);
+  if (existing) existing.lastUsed = Date.now();
+}
+
+function isChatRelevantEvent(eventName) {
+  return typeof eventName === 'string' && CHAT_EVENT_RE.test(eventName);
 }
 
 async function connectCreatorById(creatorId) {
@@ -143,34 +157,26 @@ async function connectCreatorById(creatorId) {
   return connectCreator(result.rows[0]);
 }
 
-async function startFourBasedSocketManager() {
-  try {
-    const result = await pool.query(
-      `SELECT id, platform, "providerUserId", "encryptedSession",
-              "encryptedAccessToken", "encryptedProxy", "connectionStatus"
-       FROM creators
-       WHERE platform = '4based'
-         AND "connectionStatus" = 'connected'
-         AND "encryptedAccessToken" IS NOT NULL`
-    );
+async function ensureCreatorSocket(creatorId) {
+  if (!creatorId) return null;
+  const existing = connections.get(creatorId);
+  if (existing) {
+    existing.lastUsed = Date.now();
+    return existing.socket;
+  }
+  return connectCreatorById(creatorId);
+}
 
-    for (const row of result.rows) {
-      try {
-        connectCreator(row);
-      } catch (err) {
-        console.warn(
-          `[4based-socket] Failed to connect creator ${row.id}:`,
-          err.message
-        );
+async function startFourBasedSocketManager() {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [creatorId, conn] of connections) {
+      if (now - (conn.lastUsed || 0) > IDLE_MS) {
+        disconnectCreator(creatorId);
       }
     }
-
-    console.log(
-      `[4based-socket] Started with ${result.rows.length} creator connection(s)`
-    );
-  } catch (err) {
-    console.error('[4based-socket] Failed to start:', err.message);
-  }
+  }, 60_000).unref?.();
+  console.log('[4based-socket] Started in lazy-connect mode');
 }
 
 function stopFourBasedSocketManager() {
@@ -183,6 +189,7 @@ module.exports = {
   startFourBasedSocketManager,
   stopFourBasedSocketManager,
   connectCreatorById,
+  ensureCreatorSocket,
   disconnectCreator,
   connectCreator,
 };

@@ -14,6 +14,7 @@ const {
   getUserPermissions,
 } = require('../services/rbac');
 const { emitToUser } = require('../services/userEventBus');
+const { invalidateCreatorAccessCache } = require('../services/creatorAccess');
 const { generateTempPassword } = require('../services/passwordUtils');
 const {
   SCHEDULE_TZ,
@@ -579,6 +580,7 @@ router.put(
              VALUES ($1, $2, $3)`,
             [creatorId, id, req.user.id]
           );
+          invalidateCreatorAccessCache(creatorId);
           await client.query(
             `UPDATE creators
              SET "staffCount" = "staffCount" + 1, "updatedAt" = NOW()
@@ -595,6 +597,7 @@ router.put(
             [creatorId, id]
           );
           if (deleted.rows.length > 0) {
+            invalidateCreatorAccessCache(creatorId);
             await client.query(
               `UPDATE creators
                SET "staffCount" = GREATEST("staffCount" - 1, 0), "updatedAt" = NOW()

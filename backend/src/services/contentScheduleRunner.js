@@ -1,4 +1,4 @@
-const fs = require('fs');
+const fsp = require('fs/promises');
 const pool = require('../db/pool');
 const { translateToGermanFemdom } = require('./germanTranslator');
 const { prepareFeedPhoto } = require('./imageOrient');
@@ -129,7 +129,7 @@ async function pickMaloumFolderId(creator, preferred) {
   return chosen?._id || chosen?.id || null;
 }
 
-function readJobFile(job) {
+async function readJobFile(job) {
   const storedPath = job.storedPath;
   if (!storedPath) {
     throw new Error('Scheduled image is missing');
@@ -137,10 +137,12 @@ function readJobFile(job) {
   if (!isInsideMediaDir(storedPath)) {
     throw new Error('Scheduled image path is invalid');
   }
-  if (!fs.existsSync(storedPath)) {
+  try {
+    await fsp.access(storedPath);
+  } catch {
     throw new Error('Scheduled image file was not found');
   }
-  return fs.readFileSync(storedPath);
+  return fsp.readFile(storedPath);
 }
 
 async function sendFourBasedMass(job, settings, text) {
@@ -209,7 +211,7 @@ async function postFourBasedFeed(job, text) {
     });
     return;
   }
-  const buffer = readJobFile(job);
+  const buffer = await readJobFile(job);
   const prepared = await prepareFeedPhoto(buffer, {
     mimeType: 'image/jpeg',
     maxEdge: 1440,
@@ -244,7 +246,7 @@ async function postMaloumFeed(job, settings, text) {
 
   let mediaId = payload.mediaId || payload.uploadId || null;
   if (!mediaId) {
-    const buffer = readJobFile(job);
+    const buffer = await readJobFile(job);
     const prepared = await prepareFeedPhoto(buffer, {
       mimeType: 'image/jpeg',
     });

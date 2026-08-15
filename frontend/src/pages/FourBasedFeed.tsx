@@ -32,6 +32,7 @@ import fourBasedIcon from '@/assets/4based_icon.ico';
 import { formatRelativeTime } from '@/components/fourbased/FourBasedChatPanels';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
+import { isCreatorRosterEvent } from '@/lib/creatorAccessEvents';
 import { useToast } from '@/context/ToastContext';
 import {
   createFourBasedFeedPost,
@@ -283,7 +284,8 @@ export default function FourBasedFeed() {
   }, [loadCreators]);
 
   useEffect(() => {
-    return onSyncEvent(() => {
+    return onSyncEvent((event) => {
+      if (!isCreatorRosterEvent(event)) return;
       void loadCreators();
     });
   }, [onSyncEvent, loadCreators]);

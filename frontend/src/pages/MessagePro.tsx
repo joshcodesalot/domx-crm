@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Bell, Home, MessageSquare, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -9,20 +10,14 @@ import {
   UnreadBadge,
   partnerName,
 } from '@/components/maloum/MaloumChatPanels';
-import { useStaffSync } from '@/context/StaffSyncContext';
-import {
-  getCreators,
-  getMaloumBadges,
-  type Creator,
-  type MaloumChat,
-} from '@/lib/api';
-import { runWithConcurrency } from '@/lib/runWithConcurrency';
+import { useCreatorLive } from '@/context/CreatorLiveContext';
+import { usePollEnabled } from '@/hooks/useDocumentVisible';
+import { type Creator, type MaloumChat } from '@/lib/api';
 
 const HOME_TAB_ID = 'home';
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const TRANSLATION_SETTINGS_EVENT = 'domx-translation-settings';
-const BADGE_POLL_MS = 15_000;
 
 interface FanTab {
   chatId: string;
@@ -53,25 +48,28 @@ function isOpenableCreator(creator: Creator): boolean {
 }
 
 export default function MessagePro() {
-  const { onSyncEvent } = useStaffSync();
-  const [creators, setCreators] = useState<Creator[]>([]);
+  const location = useLocation();
+  const pagePollEnabled = usePollEnabled(location.pathname === '/message-pro');
+  const {
+    creators,
+    creatorsLoading: loading,
+    creatorsError,
+    badgesByCreatorId,
+  } = useCreatorLive({
+    platform: 'maloum',
+    wantBadges: true,
+    pollEnabled: pagePollEnabled,
+  });
   const [workspaces, setWorkspaces] = useState<CreatorWorkspace[]>([]);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
     readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
   );
   const [autoTranslateHistory, setAutoTranslateHistory] = useState(() =>
     readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true)
   );
-  const [unreadByCreatorId, setUnreadByCreatorId] = useState<Record<string, number>>(
-    {}
-  );
-  const [notificationUnreadByCreatorId, setNotificationUnreadByCreatorId] = useState<
-    Record<string, number>
-  >({});
   const [mountedHomeIds, setMountedHomeIds] = useState<string[]>([]);
+  const error = creatorsError;
 
   const openableCreators = useMemo(
     () => creators.filter(isOpenableCreator),
@@ -82,62 +80,6 @@ export default function MessagePro() {
     () => workspaces.find((w) => w.creator.id === activeAccountId) || null,
     [workspaces, activeAccountId]
   );
-
-  const loadCreators = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const { creators: list } = await getCreators();
-      setCreators(list.filter((c) => c.platform === 'maloum'));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load creators');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const refreshBadges = useCallback(async (creatorIds: string[]) => {
-    if (creatorIds.length === 0) return;
-    const messageUpdates: Record<string, number> = {};
-    const notificationUpdates: Record<string, number> = {};
-    await runWithConcurrency(creatorIds, 3, async (id) => {
-      try {
-        const result = await getMaloumBadges(id);
-        messageUpdates[id] = Number(result.messages) || 0;
-        notificationUpdates[id] = Number(result.notifications) || 0;
-      } catch (err) {
-        console.warn(
-          'Maloum badge poll failed:',
-          id,
-          err instanceof Error ? err.message : err
-        );
-      }
-    });
-    if (Object.keys(messageUpdates).length > 0) {
-      setUnreadByCreatorId((prev) => ({ ...prev, ...messageUpdates }));
-    }
-    if (Object.keys(notificationUpdates).length > 0) {
-      setNotificationUnreadByCreatorId((prev) => ({
-        ...prev,
-        ...notificationUpdates,
-      }));
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadCreators();
-  }, [loadCreators]);
-
-  useEffect(() => {
-    return onSyncEvent((event) => {
-      if (
-        event.type === 'creator:access-granted' ||
-        event.type === 'creator:access-revoked'
-      ) {
-        void loadCreators();
-      }
-    });
-  }, [onSyncEvent, loadCreators]);
 
   useEffect(() => {
     function sync() {
@@ -170,31 +112,7 @@ export default function MessagePro() {
       }
       return openableCreators[0]?.id || null;
     });
-
-    setUnreadByCreatorId((prev) => {
-      const next: Record<string, number> = {};
-      for (const creator of openableCreators) {
-        if (prev[creator.id] != null) next[creator.id] = prev[creator.id];
-      }
-      return next;
-    });
-    setNotificationUnreadByCreatorId((prev) => {
-      const next: Record<string, number> = {};
-      for (const creator of openableCreators) {
-        if (prev[creator.id] != null) next[creator.id] = prev[creator.id];
-      }
-      return next;
-    });
   }, [openableCreators]);
-
-  useEffect(() => {
-    const ids = openableCreators.map((c) => c.id);
-    void refreshBadges(ids);
-    const timer = window.setInterval(() => {
-      void refreshBadges(ids);
-    }, BADGE_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [openableCreators, refreshBadges]);
 
   useEffect(() => {
     const openableIds = new Set(openableCreators.map((c) => c.id));
@@ -289,8 +207,8 @@ export default function MessagePro() {
           {workspaces.map((workspace) => {
             const creatorId = workspace.creator.id;
             const active = creatorId === activeAccountId;
-            const messagesUnread = unreadByCreatorId[creatorId] || 0;
-            const notificationsUnread = notificationUnreadByCreatorId[creatorId] || 0;
+            const messagesUnread = badgesByCreatorId[creatorId]?.messages || 0;
+            const notificationsUnread = badgesByCreatorId[creatorId]?.notifications || 0;
             return (
               <button
                 key={creatorId}
@@ -430,8 +348,8 @@ export default function MessagePro() {
                 >
                   <MaloumChatList
                     creatorId={creatorId}
-                    pollEnabled={isActiveHome}
-                    messagesUnread={unreadByCreatorId[creatorId] || 0}
+                    pollEnabled={pagePollEnabled && isActiveHome}
+                    messagesUnread={badgesByCreatorId[creatorId]?.messages || 0}
                     onSelectChat={(chat) => openFanTab(creatorId, chat)}
                     openActionLabel="Open tab"
                   />
@@ -444,6 +362,7 @@ export default function MessagePro() {
                   creator={activeWorkspace.creator}
                   chatId={activeFanTab.chatId}
                   initialChat={activeFanTab.chat || null}
+                  pollEnabled={pagePollEnabled}
                   onClose={() =>
                     closeFanTab(activeWorkspace.creator.id, activeFanTab.chatId)
                   }

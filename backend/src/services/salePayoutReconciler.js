@@ -1010,6 +1010,7 @@ async function mergeFourBasedStubs(creatorId) {
         AND stub."priceNet" IS NOT NULL
         AND ABS(send."priceNet"::float - stub."priceNet"::float) <= $2
         AND send."sentAt" <= COALESCE(stub."unlockedAt", stub."sentAt")
+          + ($3 * INTERVAL '1 second')
        WHERE stub."creatorId" = $1
          AND stub.platform = '4based'
          AND stub."contentType" = 'chat_product'
@@ -1050,7 +1051,7 @@ async function mergeFourBasedStubs(creatorId) {
      SELECT m.stub_id
      FROM matched m
      WHERE (SELECT COUNT(*) FROM updated) >= 0`,
-    [creatorId, FOURBASED_PRICE_EPSILON]
+    [creatorId, FOURBASED_PRICE_EPSILON, FOURBASED_GROUP_WINDOW_MS / 1000]
   );
   const stubIds = bulk.rows.map((row) => row.stub_id).filter(Boolean);
   if (stubIds.length > 0) {
@@ -1139,6 +1140,190 @@ function isFourBasedOrphanEntry(row) {
     row?.attributionSource === 'orphan_sale' ||
     row?.attributionSource === 'deleted_import'
   );
+}
+
+function fourBasedEntryMediaIds(mediaJson) {
+  const ids = [];
+  if (!Array.isArray(mediaJson)) return ids;
+  for (const item of mediaJson) {
+    if (!item || typeof item !== 'object') continue;
+    for (const key of [
+      'mediaId',
+      'vaultFileStackId',
+      'vault_file_stack_id',
+      'fileStackId',
+      'file_stack_id',
+      'collectionId',
+      'collection_id',
+      'id',
+      '_id',
+    ]) {
+      if (item[key] == null) continue;
+      const id = String(item[key]).trim();
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+function fourBasedEntriesShareMedia(a, b) {
+  return mediaJsonHasId(b?.mediaJson, fourBasedEntryMediaIds(a?.mediaJson));
+}
+
+function fourBasedVerifiedUnlockMs(row) {
+  const raw = row?.unlockedAt || row?.sentAt || null;
+  return raw ? Date.parse(raw) : NaN;
+}
+
+function fourBasedVerifiedShouldCluster(a, b) {
+  if (String(a?.fanId || '') !== String(b?.fanId || '')) return false;
+  const aPrice = a?.priceNet != null ? Math.abs(Number(a.priceNet)) : NaN;
+  const bPrice = b?.priceNet != null ? Math.abs(Number(b.priceNet)) : NaN;
+  if (
+    !Number.isFinite(aPrice) ||
+    !Number.isFinite(bPrice) ||
+    Math.abs(aPrice - bPrice) > FOURBASED_PRICE_EPSILON
+  ) {
+    return false;
+  }
+  const aMs = fourBasedVerifiedUnlockMs(a);
+  const bMs = fourBasedVerifiedUnlockMs(b);
+  if (Number.isFinite(aMs) && Number.isFinite(bMs)) {
+    if (Math.abs(aMs - bMs) > FOURBASED_GROUP_WINDOW_MS) return false;
+  } else if (Number.isFinite(aMs) || Number.isFinite(bMs)) {
+    return false;
+  }
+  if (isFourBasedOrphanEntry(a) || isFourBasedOrphanEntry(b)) return true;
+  if (a?.payoutTxnId && b?.payoutTxnId && String(a.payoutTxnId) === String(b.payoutTxnId)) {
+    return true;
+  }
+  if (fourBasedEntriesShareMedia(a, b)) return true;
+  const aIds = fourBasedEntryMediaIds(a?.mediaJson);
+  const bIds = fourBasedEntryMediaIds(b?.mediaJson);
+  if (aIds.length > 0 && bIds.length > 0) return false;
+  return (
+    Number.isFinite(aMs) &&
+    Number.isFinite(bMs) &&
+    Math.abs(aMs - bMs) <= 90 * 1000
+  );
+}
+
+function pickFourBasedVerifiedWinner(cluster) {
+  const list = Array.isArray(cluster) ? cluster.filter(Boolean) : [];
+  return list.slice().sort((a, b) => {
+    const aReal = isFourBasedOrphanEntry(a) ? 1 : 0;
+    const bReal = isFourBasedOrphanEntry(b) ? 1 : 0;
+    if (aReal !== bReal) return aReal - bReal;
+    const aMedia = Number(a.mediaCount) || fourBasedEntryMediaIds(a.mediaJson).length;
+    const bMedia = Number(b.mediaCount) || fourBasedEntryMediaIds(b.mediaJson).length;
+    if (aMedia !== bMedia) return bMedia - aMedia;
+    const aMs = fourBasedVerifiedUnlockMs(a);
+    const bMs = fourBasedVerifiedUnlockMs(b);
+    return (Number.isFinite(aMs) ? aMs : 0) - (Number.isFinite(bMs) ? bMs : 0);
+  })[0] || null;
+}
+
+/**
+ * One collection purchase can leave two payout-verified rows (parent + child).
+ * Keep the real send; drop stub extras and unverify the duplicate send.
+ */
+async function collapseFourBasedVerifiedDuplicates(creatorId) {
+  if (!creatorId || !isValidUuid(creatorId)) return 0;
+
+  const result = await pool.query(
+    `SELECT
+       id,
+       "fanId",
+       "priceNet",
+       "unlockedAt",
+       "sentAt",
+       "maloumMessageId",
+       "payoutTxnId",
+       "mediaJson",
+       "mediaCount",
+       "attributionSource"
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+       AND platform = '4based'
+       AND "contentType" = 'chat_product'
+       AND purchased = true
+       AND "payoutVerified" = true
+       AND "priceNet" IS NOT NULL
+       AND "fanId" IS NOT NULL
+     ORDER BY COALESCE("unlockedAt", "sentAt") ASC, "sentAt" ASC`,
+    [creatorId]
+  );
+
+  const rows = result.rows;
+  const used = new Set();
+  let collapsed = 0;
+
+  for (let i = 0; i < rows.length; i += 1) {
+    if (used.has(i)) continue;
+    const cluster = [rows[i]];
+    used.add(i);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (let j = 0; j < rows.length; j += 1) {
+        if (used.has(j)) continue;
+        const other = rows[j];
+        if (!cluster.some((member) => fourBasedVerifiedShouldCluster(member, other))) {
+          continue;
+        }
+        cluster.push(other);
+        used.add(j);
+        grew = true;
+      }
+    }
+    if (cluster.length < 2) continue;
+
+    const winner = pickFourBasedVerifiedWinner(cluster);
+    if (!winner) continue;
+
+    const loserPayout = cluster.find(
+      (row) => String(row.id) !== String(winner.id) && row.payoutTxnId
+    );
+    if (!winner.payoutTxnId && loserPayout?.payoutTxnId) {
+      await pool.query(
+        `UPDATE messaging_dashboard_entries
+         SET "payoutTxnId" = $2, "updatedAt" = NOW()
+         WHERE id = $1`,
+        [winner.id, loserPayout.payoutTxnId]
+      );
+    }
+
+    const stubIds = [];
+    const sendIds = [];
+    for (const row of cluster) {
+      if (String(row.id) === String(winner.id)) continue;
+      if (isFourBasedOrphanEntry(row)) stubIds.push(row.id);
+      else sendIds.push(row.id);
+    }
+
+    if (stubIds.length > 0) {
+      await pool.query(
+        `DELETE FROM messaging_dashboard_entries WHERE id = ANY($1::uuid[])`,
+        [stubIds]
+      );
+      collapsed += stubIds.length;
+    }
+    if (sendIds.length > 0) {
+      await pool.query(
+        `UPDATE messaging_dashboard_entries
+         SET purchased = false,
+             "payoutVerified" = false,
+             "payoutVerifiedAt" = NULL,
+             "payoutTxnId" = NULL,
+             "updatedAt" = NOW()
+         WHERE id = ANY($1::uuid[])`,
+        [sendIds]
+      );
+      collapsed += sendIds.length;
+    }
+  }
+
+  return collapsed;
 }
 
 function extractFourBasedChatId(payload) {
@@ -2160,17 +2345,18 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false, mo
 
   const restored = await restoreClearedFalseUnlocks(creatorId);
   const merged = await mergeFourBasedStubs(creatorId);
+  const collapsed = await collapseFourBasedVerifiedDuplicates(creatorId);
 
   if (!force) {
     const last = lastReconcileAtByCreator.get(creatorId) || 0;
     if (Date.now() - last < RECONCILE_THROTTLE_MS) {
-      return { skipped: true, reason: 'throttled', restored, merged };
+      return { skipped: true, reason: 'throttled', restored, merged, collapsed };
     }
   }
 
   const loaded = await loadAuthedCreator(creatorId);
   if (loaded.error) {
-    return { skipped: true, reason: loaded.error, restored, merged };
+    return { skipped: true, reason: loaded.error, restored, merged, collapsed };
   }
 
   const { meta, creator: authedCreator } = loaded;
@@ -2229,12 +2415,15 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false, mo
       platform,
       restored,
       merged,
+      collapsed,
     };
   }
 
   let mergedAfter = merged;
+  let collapsedAfter = collapsed;
   if (platform === '4based') {
     mergedAfter += await mergeFourBasedStubs(creatorId);
+    collapsedAfter += await collapseFourBasedVerifiedDuplicates(creatorId);
   }
 
   const pendingQueued = await queuePendingUnverifiedPurchases(creatorId, platform, {
@@ -2252,6 +2441,7 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false, mo
     ...summary,
     restored,
     merged: mergedAfter,
+    collapsed: collapsedAfter,
     pendingQueued,
   };
 }
@@ -2316,41 +2506,53 @@ async function runReconcileAll(job) {
       return;
     }
 
-    for (const creator of creators) {
-      const name = creator.displayName || creator.username || creator.id;
-      job.currentName = name;
-      try {
-        const summary = await reconcileCreatorPayouts(creator.id, {
-          yearMonth: job.yearMonth,
-          force: true,
-          monthOnly: true,
-        });
-        job.verified += Number(summary.verified) || 0;
-        job.recovered += Number(summary.recovered) || 0;
-        job.exceptions += Number(summary.exceptions) || 0;
-        if (summary.error) {
-          job.errors.push({
-            creatorId: creator.id,
-            name,
-            message: summary.error,
+    const RECONCILE_ALL_CONCURRENCY = 2;
+    let nextCreator = 0;
+    async function reconcileNext() {
+      while (nextCreator < creators.length) {
+        const creator = creators[nextCreator];
+        nextCreator += 1;
+        const name = creator.displayName || creator.username || creator.id;
+        job.currentName = name;
+        try {
+          const summary = await reconcileCreatorPayouts(creator.id, {
+            yearMonth: job.yearMonth,
+            force: true,
+            monthOnly: true,
           });
-        } else if (summary.skipped && summary.reason) {
+          job.verified += Number(summary.verified) || 0;
+          job.recovered += Number(summary.recovered) || 0;
+          job.exceptions += Number(summary.exceptions) || 0;
+          if (summary.error) {
+            job.errors.push({
+              creatorId: creator.id,
+              name,
+              message: summary.error,
+            });
+          } else if (summary.skipped && summary.reason) {
+            job.errors.push({
+              creatorId: creator.id,
+              name,
+              message: summary.reason,
+            });
+          }
+        } catch (err) {
           job.errors.push({
             creatorId: creator.id,
             name,
-            message: summary.reason,
+            message: err.message || String(err),
           });
         }
-      } catch (err) {
-        job.errors.push({
-          creatorId: creator.id,
-          name,
-          message: err.message || String(err),
-        });
+        job.done += 1;
+        updateReconcileAllEta(job, startedMs);
       }
-      job.done += 1;
-      updateReconcileAllEta(job, startedMs);
     }
+    await Promise.all(
+      Array.from(
+        { length: Math.min(RECONCILE_ALL_CONCURRENCY, creators.length) },
+        () => reconcileNext()
+      )
+    );
 
     job.currentName = null;
     job.status = 'done';

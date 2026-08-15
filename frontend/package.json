@@ -1,6 +1,6 @@
 {
   "name": "domx-frontend",
-  "version": "1.6.55",
+  "version": "1.6.56",
   "description": "DomX Electron Frontend",
   "author": "Low7 Labs",
   "main": "electron/main.js",
@@ -13,6 +13,7 @@
     "build:electron:manifest": "node scripts/generate-update-manifest.js"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.9",
     "electron-updater": "^6.8.9",
     "lucide-react": "^0.469.0",
     "react": "^18.3.1",

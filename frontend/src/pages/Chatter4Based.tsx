@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { Bell, MessageSquare } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
@@ -9,137 +9,104 @@ import {
   FourBasedTranslationToggles,
   UnreadBadge,
 } from '@/components/fourbased/FourBasedChatPanels';
+import { useCreatorLive } from '@/context/CreatorLiveContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
+import { usePollEnabled } from '@/hooks/useDocumentVisible';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import {
-  getCreators,
-  getFourBasedBadges,
   getFourBasedChat,
   getFourBasedChatByUser,
-  type Creator,
   type FourBasedChat,
 } from '@/lib/api';
-import { runWithConcurrency } from '@/lib/runWithConcurrency';
 
 function isRealFourBasedChatId(chatId: string | null | undefined): boolean {
   if (!chatId) return false;
   return /^[a-f0-9]{24}$/i.test(chatId);
 }
 
-const BADGE_POLL_INTERVAL_MS = 15_000;
-const CREATOR_POLL_INTERVAL_MS = 15_000;
-
-type CreatorUnreadCounts = { messages: number; notifications: number };
-
 export default function Chatter4Based() {
+  const location = useLocation();
+  const pollEnabled = usePollEnabled(location.pathname === '/chatter/4based');
+  const {
+    creators,
+    creatorsLoading,
+    creatorsError,
+    badgesByCreatorId,
+    refreshBadges,
+  } = useCreatorLive({
+    platform: '4based',
+    wantBadges: true,
+    pollEnabled,
+  });
   const { onSyncEvent } = useStaffSync();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkCreatorId = searchParams.get('creatorId') || '';
   const deepLinkFanId = searchParams.get('fanId') || '';
   const deepLinkChatId = searchParams.get('chatId') || '';
+  const appliedCreatorDeepLinkRef = useRef(false);
+  const consumedDeepLinkRef = useRef<string | null>(null);
+  const userPickedChatRef = useRef(false);
+  const selectedChatIdRef = useRef<string | null>(null);
+  const [pendingChatId, setPendingChatId] = useState(
+    () => searchParams.get('chatId') || ''
+  );
+  const [pendingFanId, setPendingFanId] = useState(
+    () => searchParams.get('fanId') || ''
+  );
 
-  const [creators, setCreators] = useState<Creator[]>([]);
-  const [creatorsLoading, setCreatorsLoading] = useState(true);
-  const [creatorsError, setCreatorsError] = useState<string | null>(null);
   const [openChatError, setOpenChatError] = useState<string | null>(null);
   const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
-  const [badgeCountsByCreatorId, setBadgeCountsByCreatorId] = useState<
-    Record<string, CreatorUnreadCounts>
-  >({});
 
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [selectedChat, setSelectedChat] = useState<FourBasedChat | null>(null);
+  selectedChatIdRef.current = selectedChatId;
 
   const selectedCreator = useMemo(
     () => creators.find((c) => c.id === selectedCreatorId) || null,
     [creators, selectedCreatorId]
   );
 
-  const loadCreators = useCallback(async (opts?: { silent?: boolean }) => {
-    const silent = opts?.silent === true;
-    if (!silent) setCreatorsLoading(true);
-    try {
-      const { creators: list } = await getCreators();
-      const fourBased = list.filter((c) => c.platform === '4based');
-      setCreators(fourBased);
-      setCreatorsError(null);
-      setSelectedCreatorId((prev) => {
-        if (prev && fourBased.some((c) => c.id === prev)) return prev;
-        return fourBased[0]?.id || null;
-      });
-      setBadgeCountsByCreatorId((prev) => {
-        const next: Record<string, CreatorUnreadCounts> = {};
-        for (const creator of fourBased) {
-          if (prev[creator.id]) next[creator.id] = prev[creator.id];
-        }
-        return next;
-      });
-    } catch (err) {
-      if (!silent) {
-        setCreatorsError(
-          err instanceof Error ? err.message : 'Failed to load creators'
-        );
-        setCreators([]);
-        setSelectedCreatorId(null);
-      }
-    } finally {
-      if (!silent) setCreatorsLoading(false);
-    }
-  }, []);
-
-  const refreshCreatorBadges = useCallback(async (creatorIds: string[]) => {
-    if (creatorIds.length === 0) return;
-    const updates: Record<string, CreatorUnreadCounts> = {};
-    await runWithConcurrency(creatorIds, 3, async (creatorId) => {
-      try {
-        const badges = await getFourBasedBadges(creatorId);
-        updates[creatorId] = {
-          messages: Number(badges.messages) || 0,
-          notifications: Number(badges.notifications) || 0,
-        };
-      } catch (err) {
-        console.warn(
-          '4based badge poll failed:',
-          creatorId,
-          err instanceof Error ? err.message : err
-        );
-      }
+  useEffect(() => {
+    setSelectedCreatorId((prev) => {
+      if (prev && creators.some((c) => c.id === prev)) return prev;
+      return creators[0]?.id || null;
     });
-    if (Object.keys(updates).length === 0) return;
-    setBadgeCountsByCreatorId((prev) => ({ ...prev, ...updates }));
-  }, []);
+  }, [creators]);
 
-  useEffect(() => {
-    void loadCreators();
-  }, [loadCreators]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void loadCreators({ silent: true });
-    }, CREATOR_POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [loadCreators]);
-
-  useEffect(() => {
-    if (creators.length === 0) return;
-    const creatorIds = creators.map((c) => c.id);
-    void refreshCreatorBadges(creatorIds);
-    const timer = window.setInterval(() => {
-      void refreshCreatorBadges(creatorIds);
-    }, BADGE_POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [creators, refreshCreatorBadges]);
+  const consumeChatDeepLink = useCallback(() => {
+    const key = `${pendingChatId}|${pendingFanId}`;
+    if (key !== '|') consumedDeepLinkRef.current = key;
+    setPendingChatId('');
+    setPendingFanId('');
+    if (!searchParams.get('chatId') && !searchParams.get('fanId')) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('chatId');
+    next.delete('fanId');
+    setSearchParams(next, { replace: true });
+  }, [pendingChatId, pendingFanId, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (
       deepLinkCreatorId &&
       creators.some((creator) => creator.id === deepLinkCreatorId)
     ) {
-      setSelectedCreatorId(deepLinkCreatorId);
+      if (deepLinkChatId || deepLinkFanId || !appliedCreatorDeepLinkRef.current) {
+        appliedCreatorDeepLinkRef.current = true;
+        setSelectedCreatorId(deepLinkCreatorId);
+      }
     }
-  }, [creators, deepLinkCreatorId]);
+    const incomingKey = `${deepLinkChatId}|${deepLinkFanId}`;
+    if (
+      (deepLinkChatId || deepLinkFanId) &&
+      consumedDeepLinkRef.current !== incomingKey
+    ) {
+      setPendingChatId(deepLinkChatId);
+      setPendingFanId(deepLinkFanId);
+    }
+  }, [creators, deepLinkCreatorId, deepLinkChatId, deepLinkFanId]);
 
   useEffect(() => {
+    userPickedChatRef.current = false;
     setSelectedChatId(null);
     setSelectedChat(null);
     setOpenChatError(null);
@@ -147,32 +114,36 @@ export default function Chatter4Based() {
 
   useEffect(() => {
     if (!selectedCreatorId) return;
-    if (deepLinkCreatorId && selectedCreatorId !== deepLinkCreatorId) return;
-    const realChatId = isRealFourBasedChatId(deepLinkChatId) ? deepLinkChatId : '';
-    if (!realChatId && !deepLinkFanId) return;
+    const realChatId = isRealFourBasedChatId(pendingChatId) ? pendingChatId : '';
+    if (!realChatId && !pendingFanId) return;
 
     let cancelled = false;
     setOpenChatError(null);
 
     const open = async () => {
       try {
-        if (realChatId) {
-          const result = await getFourBasedChat(selectedCreatorId, realChatId);
-          if (cancelled || !result.chat?._id) return;
-          setSelectedChatId(result.chat._id);
-          setSelectedChat(result.chat);
-          return;
-        }
-        const result = await getFourBasedChatByUser(selectedCreatorId, deepLinkFanId);
+        const result = realChatId
+          ? await getFourBasedChat(selectedCreatorId, realChatId)
+          : await getFourBasedChatByUser(selectedCreatorId, pendingFanId);
         if (cancelled) return;
         if (!result.chat?._id) {
-          setOpenChatError('Could not open this fan chat.');
+          if (!realChatId) setOpenChatError('Could not open this fan chat.');
+          consumeChatDeepLink();
+          return;
+        }
+        if (
+          userPickedChatRef.current &&
+          selectedChatIdRef.current !== result.chat._id
+        ) {
+          consumeChatDeepLink();
           return;
         }
         setSelectedChatId(result.chat._id);
         setSelectedChat(result.chat);
+        consumeChatDeepLink();
       } catch (err) {
         if (cancelled) return;
+        consumeChatDeepLink();
         setOpenChatError(
           err instanceof Error ? err.message : 'Could not open this fan chat.'
         );
@@ -183,22 +154,16 @@ export default function Chatter4Based() {
     return () => {
       cancelled = true;
     };
-  }, [selectedCreatorId, deepLinkCreatorId, deepLinkFanId, deepLinkChatId]);
+  }, [selectedCreatorId, pendingChatId, pendingFanId, consumeChatDeepLink]);
 
   useEffect(() => {
     return onSyncEvent((event) => {
-      if (
-        event.type === 'creator:access-granted' ||
-        event.type === 'creator:access-revoked'
-      ) {
-        void loadCreators({ silent: true });
-        return;
-      }
       if (event.type !== '4based:event') return;
+      if (!pollEnabled) return;
       if (!selectedCreatorId || event.creatorId !== selectedCreatorId) return;
-      void refreshCreatorBadges([selectedCreatorId]);
+      void refreshBadges([selectedCreatorId]);
     });
-  }, [onSyncEvent, selectedCreatorId, loadCreators, refreshCreatorBadges]);
+  }, [onSyncEvent, selectedCreatorId, pollEnabled, refreshBadges]);
 
   return (
     <div className="bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 h-screen flex antialiased overflow-hidden">
@@ -228,7 +193,7 @@ export default function Chatter4Based() {
               </p>
             )}
             {creators.map((creator) => {
-              const unread = badgeCountsByCreatorId[creator.id] || {
+              const unread = badgesByCreatorId[creator.id] || {
                 messages: 0,
                 notifications: 0,
               };
@@ -237,7 +202,10 @@ export default function Chatter4Based() {
                 <button
                   key={creator.id}
                   type="button"
-                  onClick={() => setSelectedCreatorId(creator.id)}
+                  onClick={() => {
+                    if (creator.id !== selectedCreatorId) consumeChatDeepLink();
+                    setSelectedCreatorId(creator.id);
+                  }}
                   className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all group ${
                     active
                       ? 'bg-gray-100 dark:bg-zinc-800/50 border border-gray-200 dark:border-zinc-700/50 hover:bg-gray-100 dark:hover:bg-zinc-800'
@@ -290,11 +258,14 @@ export default function Chatter4Based() {
               creatorName={selectedCreator?.displayName}
               selectedChatId={selectedChatId}
               onSelectChat={(chat) => {
+                userPickedChatRef.current = true;
                 setSelectedChatId(chat._id);
                 setSelectedChat(chat);
+                consumeChatDeepLink();
               }}
+              pollEnabled={pollEnabled}
               onRefreshExtra={() => {
-                void refreshCreatorBadges([selectedCreatorId]);
+                void refreshBadges([selectedCreatorId]);
               }}
             />
           ) : (
@@ -310,6 +281,7 @@ export default function Chatter4Based() {
             creator={selectedCreator}
             chatId={selectedChatId}
             initialChat={selectedChat}
+            pollEnabled={pollEnabled}
             onClose={() => {
               setSelectedChatId(null);
               setSelectedChat(null);

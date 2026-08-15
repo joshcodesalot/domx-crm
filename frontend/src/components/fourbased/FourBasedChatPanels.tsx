@@ -89,13 +89,20 @@ import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
 } from '@/lib/historyTranslateQueue';
+import {
+  getVaultListingCache,
+  loadVaultListingCache,
+  setVaultListingCache,
+  vaultCacheKey,
+} from '@/lib/vaultListingCache';
+import { VirtualizedRows } from '@/components/VirtualizedRows';
 
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const FAN_PANEL_OPEN_KEY = 'domx-4based-fan-panel';
 const MAX_TRANSLATION_HISTORY = 8;
-const CHAT_LIST_POLL_MS = 10_000;
-const MESSAGE_POLL_MS = 10_000;
+const CHAT_LIST_POLL_MS = 30_000;
+const MESSAGE_POLL_MS = 30_000;
 const INBOX_SEARCH_MIN_CHARS = 3;
 const INBOX_SEARCH_DEBOUNCE_MS = 300;
 const MESSAGE_PAGE_LIMIT = 30;
@@ -112,6 +119,39 @@ function mergeFourBasedChatPages(
   const incomingIds = new Set(incoming.map((c) => c._id));
   const rest = prev.filter((c) => c._id && !incomingIds.has(c._id));
   return [...incoming, ...rest];
+}
+
+function sameFourBasedChats(prev: FourBasedChat[], next: FourBasedChat[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    const a = prev[i];
+    const b = next[i];
+    if (a._id !== b._id) return false;
+    if ((a.unread_message_count || 0) !== (b.unread_message_count || 0)) return false;
+    if (Boolean(a.is_pinned) !== Boolean(b.is_pinned)) return false;
+    if (a.last_real_message_updated_at !== b.last_real_message_updated_at) return false;
+    if (a.last_message?._id !== b.last_message?._id) return false;
+    if (a.last_message?.message !== b.last_message?.message) return false;
+  }
+  return true;
+}
+
+function sameFourBasedMessages(
+  prev: FourBasedMessage[],
+  next: FourBasedMessage[]
+): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    const a = prev[i];
+    const b = next[i];
+    if (fourBasedMessageId(a) !== fourBasedMessageId(b)) return false;
+    if (a.created_at !== b.created_at) return false;
+    if ((a.message || '') !== (b.message || '')) return false;
+    if (isDeletedFourBasedMessage(a) !== isDeletedFourBasedMessage(b)) return false;
+  }
+  return true;
 }
 
 function appendFourBasedChats(
@@ -472,6 +512,21 @@ function vaultItemId(item: FourBasedVaultItem): string {
   return String(item._id || item.id || '');
 }
 
+function mergeFourBasedVaultItems(
+  prev: FourBasedVaultItem[],
+  incoming: FourBasedVaultItem[]
+): FourBasedVaultItem[] {
+  const seen = new Set(prev.map((item) => vaultItemId(item)).filter(Boolean));
+  const merged = [...prev];
+  for (const item of incoming) {
+    const id = vaultItemId(item);
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    merged.push(item);
+  }
+  return merged;
+}
+
 function vaultItemGuid(item: FourBasedVaultItem): string {
   return String(item.guid || crypto.randomUUID());
 }
@@ -759,6 +814,7 @@ export function FourBasedChatList({
   const [inboxSearchDraft, setInboxSearchDraft] = useState('');
   const [inboxSearch, setInboxSearch] = useState('');
   const [pinningChatId, setPinningChatId] = useState<string | null>(null);
+  const chatListRef = useRef<HTMLDivElement | null>(null);
   const creatorIdRef = useRef(creatorId);
   const chatCountRef = useRef(0);
   const chatsOffsetRef = useRef(0);
@@ -849,9 +905,10 @@ export function FourBasedChatList({
           setChatsHasMore(hasMore);
           chatsHasMoreRef.current = hasMore;
         } else if (silent) {
-          setChats((prev) =>
-            prev.length === 0 ? page : mergeFourBasedChatPages(prev, page)
-          );
+          setChats((prev) => {
+            const next = prev.length === 0 ? page : mergeFourBasedChatPages(prev, page);
+            return sameFourBasedChats(prev, next) ? prev : next;
+          });
           setProviderUserId(result.providerUserId || null);
         } else {
           setChats(page);
@@ -1153,17 +1210,20 @@ export function FourBasedChatList({
           </p>
         )}
       </div>
-      <div
-        className="flex-1 overflow-y-auto min-h-0 animate-fade-in"
+      {chatsError && <p className="text-xs text-red-400 px-3">{chatsError}</p>}
+      {!chatsLoading && !chatsError && chats.length === 0 && (
+        <p className="text-xs text-gray-500 dark:text-zinc-500 px-3">
+          {inboxSearch ? 'No chats match your search.' : 'No chats yet.'}
+        </p>
+      )}
+      <VirtualizedRows
+        parentRef={chatListRef}
+        items={sortedChats}
+        estimateSize={80}
+        getKey={(chat) => chat._id}
         onScroll={handleChatsScroll}
-      >
-        {chatsError && <p className="text-xs text-red-400 p-3">{chatsError}</p>}
-        {!chatsLoading && !chatsError && chats.length === 0 && (
-          <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">
-            {inboxSearch ? 'No chats match your search.' : 'No chats yet.'}
-          </p>
-        )}
-        {sortedChats.map((chat) => {
+        className="flex-1 overflow-y-auto min-h-0 animate-fade-in"
+        renderRow={(chat) => {
           const peer = fanFromChat(chat, providerUserId);
           const active = chat._id === selectedChatId;
           const spent = formatSpent(chat.sales_volume);
@@ -1282,13 +1342,13 @@ export function FourBasedChatList({
               )}
             </button>
           );
-        })}
-        {chatsLoadingMore && (
-          <div className="flex items-center justify-center py-3">
-            <Loader2 className="w-4 h-4 animate-spin text-gray-400 dark:text-zinc-500" />
-          </div>
-        )}
-      </div>
+        }}
+      />
+      {chatsLoadingMore && (
+        <div className="flex items-center justify-center py-3">
+          <Loader2 className="w-4 h-4 animate-spin text-gray-400 dark:text-zinc-500" />
+        </div>
+      )}
     </div>
   );
 }
@@ -1301,6 +1361,7 @@ type FourBasedChatThreadProps = {
   className?: string;
   /** Show assist toggles under the composer (e.g. Message Pro). */
   showTranslationToggles?: boolean;
+  pollEnabled?: boolean;
 };
 
 export function FourBasedChatThread({
@@ -1310,6 +1371,7 @@ export function FourBasedChatThread({
   onClose,
   className = '',
   showTranslationToggles = false,
+  pollEnabled = true,
 }: FourBasedChatThreadProps) {
   const { user, hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
@@ -1446,6 +1508,7 @@ export function FourBasedChatThread({
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
   const loadingOlderRef = useRef(false);
   const nearBottomRef = useRef(true);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
@@ -1678,11 +1741,13 @@ export function FourBasedChatThread({
           messagesHasMoreRef.current = hasMore;
           setMessagesHasMore(hasMore);
         } else {
-          setMessages((prev) =>
-            prev.length > 0 && manualTranslateOnlyIdsRef.current.size > 0
-              ? mergeFourBasedMessages(prev, chronological)
-              : chronological
-          );
+          setMessages((prev) => {
+            const next =
+              prev.length > 0 && manualTranslateOnlyIdsRef.current.size > 0
+                ? mergeFourBasedMessages(prev, chronological)
+                : chronological;
+            return sameFourBasedMessages(prev, next) ? prev : next;
+          });
           if (manualTranslateOnlyIdsRef.current.size === 0) {
             messagesOffsetRef.current = list.length;
             const hasMore = list.length >= MESSAGE_PAGE_LIMIT;
@@ -1749,8 +1814,11 @@ export function FourBasedChatThread({
     [creatorId, chatId]
   );
 
+  const initialChatRef = useRef(initialChat);
+  initialChatRef.current = initialChat;
+
   useEffect(() => {
-    setChat(initialChat);
+    setChat(initialChatRef.current);
     setMessages([]);
     messagesOffsetRef.current = 0;
     setMessagesHasMore(false);
@@ -1769,7 +1837,6 @@ export function FourBasedChatThread({
     setPreviewItem(null);
     setChatMediaPreview(null);
     setChatPreviewFullFailed(false);
-    setSelectedFolder(null);
     setHistoryTranslations({});
     historyTranslationsRef.current = {};
     historyTranslateQueueRef.current?.clear();
@@ -1793,15 +1860,34 @@ export function FourBasedChatThread({
       .catch(() => {
         // best-effort
       });
-  }, [creatorId, chatId, initialChat, loadMessages, loadSenders]);
+  }, [creatorId, chatId, loadMessages, loadSenders]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
+    setVaultFolders([]);
+    setVaultItems([]);
+    setSelectedFolder(null);
+    setVaultNotes({});
+    setVaultOffset(0);
+    setVaultHasMore(false);
+  }, [creatorId]);
+
+  const prevThreadPollRef = useRef(pollEnabled);
+  useEffect(() => {
+    if (!pollEnabled) {
+      prevThreadPollRef.current = false;
+      return;
+    }
+    const justEnabled = !prevThreadPollRef.current;
+    prevThreadPollRef.current = true;
+    if (justEnabled) {
       void loadMessages({ silent: true });
       void loadSenders();
+    }
+    const timer = window.setInterval(() => {
+      void loadMessages({ silent: true });
     }, MESSAGE_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [loadMessages, loadSenders]);
+  }, [pollEnabled, loadMessages, loadSenders]);
 
   useEffect(() => {
     return onSyncEvent((event) => {
@@ -1823,13 +1909,15 @@ export function FourBasedChatThread({
           return next;
         });
         void loadMessages({ silent: true });
+        void loadSenders();
         return;
       }
       if (event.type !== '4based:event') return;
+      if (!pollEnabled) return;
       if (event.creatorId !== creatorId) return;
       void loadMessages({ silent: true });
     });
-  }, [onSyncEvent, creatorId, chatId, loadMessages]);
+  }, [onSyncEvent, creatorId, chatId, loadMessages, loadSenders, pollEnabled]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1929,8 +2017,13 @@ export function FourBasedChatThread({
     [loadMessages, updateNearBottom]
   );
 
+  const scannedTranslateKeysRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!autoTranslateHistory) return;
+    scannedTranslateKeysRef.current = new Set();
+  }, [chatId, creatorId]);
+
+  useEffect(() => {
+    if (!autoTranslateHistory || !pollEnabled) return;
     const pending: Array<{ key: string; text: string }> = [];
     // Newest first so the bottom of the thread fills in first.
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -1942,12 +2035,14 @@ export function FourBasedChatThread({
       if (!msgKey) continue;
       if (manualTranslateOnlyIdsRef.current.has(msgKey)) continue;
       const cacheKey = `${msgKey}::${text}`;
+      if (scannedTranslateKeysRef.current.has(cacheKey)) continue;
+      scannedTranslateKeysRef.current.add(cacheKey);
       if (historyTranslationsRef.current[cacheKey]) continue;
       pending.push({ key: cacheKey, text });
     }
     if (pending.length === 0) return;
     historyTranslateQueueRef.current?.enqueue(pending);
-  }, [messages, autoTranslateHistory]);
+  }, [messages, autoTranslateHistory, pollEnabled]);
 
   function toggleVaultItem(item: FourBasedVaultItem) {
     const id = vaultItemId(item);
@@ -2089,12 +2184,39 @@ export function FourBasedChatThread({
     const text = draft.trim();
     if (!text && selectedVaultItems.length === 0) return;
 
+    const composerSnapshot = {
+      draft,
+      skipOutgoingTranslate,
+      suggestedEnglish,
+      selectedVaultItems,
+      ppvDollars,
+      priceModalOpen,
+      priceDraft,
+      teaserVaultId,
+    };
+    const restoreComposer = () => {
+      setDraft(composerSnapshot.draft);
+      setSkipOutgoingTranslate(composerSnapshot.skipOutgoingTranslate);
+      setSuggestedEnglish(composerSnapshot.suggestedEnglish);
+      setSelectedVaultItems(composerSnapshot.selectedVaultItems);
+      setPpvDollars(composerSnapshot.ppvDollars);
+      setPriceModalOpen(composerSnapshot.priceModalOpen);
+      setPriceDraft(composerSnapshot.priceDraft);
+      setTeaserVaultId(composerSnapshot.teaserVaultId);
+    };
+
     setSending(true);
     setSendError(null);
+    setDraft('');
+    setSkipOutgoingTranslate(false);
+    setSuggestedEnglish(null);
+    clearMediaAttachments();
+    draftInputRef.current?.blur();
+
     const localId = crypto.randomUUID();
     const englishDraft = text;
     const usedSuggestedGerman = skipOutgoingTranslate && Boolean(text);
-    const vaultForLog = selectedVaultItems;
+    const vaultForLog = composerSnapshot.selectedVaultItems;
     const dollarsForLog = hasPpvPrice ? ppvDollarsNum : 0;
     const coinsForLog = dollarsForLog > 0 ? priceCoins : 0;
     const vaultEntries = buildVaultSendEntries(vaultForLog);
@@ -2118,6 +2240,7 @@ export function FourBasedChatThread({
           setSendError(
             err instanceof Error ? err.message : 'Translation failed. Message was not sent.'
           );
+          restoreComposer();
           return;
         } finally {
           setTranslatingOutgoing(false);
@@ -2151,7 +2274,6 @@ export function FourBasedChatThread({
         sentCollection = Array.isArray(result.fileStack?.collection)
           ? result.fileStack.collection
           : [];
-        clearMediaAttachments();
       } else {
         const result = await sendFourBasedMessage(creatorId, chatId, {
           message: messageToSend,
@@ -2220,9 +2342,6 @@ export function FourBasedChatThread({
         });
       }
 
-      setDraft('');
-      setSkipOutgoingTranslate(false);
-      setSuggestedEnglish(null);
       if (appliedScriptId && fan.id) {
         void markScriptSent(creatorId, appliedScriptId, {
           fanId: fan.id,
@@ -2239,6 +2358,7 @@ export function FourBasedChatThread({
         scrollToBottom();
       });
     } catch (err) {
+      restoreComposer();
       if (isContentBlockedError(err)) {
         setSendError(err.message);
         void confirm({
@@ -2301,15 +2421,45 @@ export function FourBasedChatThread({
     const sent = options?.sent !== undefined ? options.sent : vaultSentFilter;
     const append = Boolean(options?.append);
     const offset = options?.offset ?? 0;
+    const cacheKey = vaultCacheKey({
+      platform: '4based',
+      creatorId,
+      kind: 'media',
+      folderId: folder,
+      fanId: fan.id,
+      filters: `${category}|${sent}`,
+    });
+    let hadCachedItems = false;
 
     if (append) {
       if (vaultLoadingMoreRef.current || !vaultHasMore) return;
       vaultLoadingMoreRef.current = true;
       setVaultLoadingMore(true);
     } else {
-      setVaultLoading(true);
+      const cached =
+        getVaultListingCache<{
+          items: FourBasedVaultItem[];
+          offset: number;
+          hasMore: boolean;
+          notes: Record<string, string>;
+        }>(cacheKey) ||
+        (await loadVaultListingCache<{
+          items: FourBasedVaultItem[];
+          offset: number;
+          hasMore: boolean;
+          notes: Record<string, string>;
+        }>(cacheKey));
+      if (cached?.items?.length) {
+        hadCachedItems = true;
+        setVaultItems(cached.items);
+        setVaultNotes(cached.notes || {});
+        setVaultOffset(cached.offset);
+        setVaultHasMore(cached.hasMore);
+      } else {
+        setVaultLoading(true);
+        setVaultNotes({});
+      }
       setVaultError(null);
-      setVaultNotes({});
     }
 
     try {
@@ -2319,39 +2469,56 @@ export function FourBasedChatThread({
         buildVaultListOptions({ folder, category, sent, offset })
       );
       const items = Array.isArray(result.items) ? result.items : [];
+      const nextOffset = offset + items.length;
+      const hasMore = items.length >= VAULT_PAGE_SIZE;
       if (append) {
-        setVaultItems((prev) => {
-          const seen = new Set(prev.map((item) => vaultItemId(item)).filter(Boolean));
-          const merged = [...prev];
-          for (const item of items) {
-            const id = vaultItemId(item);
-            if (!id || seen.has(id)) continue;
-            seen.add(id);
-            merged.push(item);
-          }
-          return merged;
-        });
+        setVaultItems((prev) => mergeFourBasedVaultItems(prev, items));
       } else {
         setVaultItems(items);
       }
-      setVaultOffset(offset + items.length);
-      setVaultHasMore(items.length >= VAULT_PAGE_SIZE);
+      setVaultOffset(nextOffset);
+      setVaultHasMore(hasMore);
       if (result.providerUserId) setProviderUserId(result.providerUserId);
 
+      let notes: Record<string, string> = {};
       const keys = items.map((item) => vaultItemId(item)).filter(Boolean);
       if (keys.length > 0) {
         try {
           const notesResult = await listVaultMediaNotes(creatorId, '4based', keys);
+          notes = notesResult.notes || {};
           setVaultNotes((prev) =>
-            append ? { ...prev, ...notesResult.notes } : { ...notesResult.notes }
+            append ? { ...prev, ...notes } : notes
           );
         } catch {
           // Notes are optional; vault grid still works without them.
         }
       }
+      if (append) {
+        const prev = getVaultListingCache<{
+          items: FourBasedVaultItem[];
+          offset: number;
+          hasMore: boolean;
+          notes: Record<string, string>;
+        }>(cacheKey);
+        setVaultListingCache(cacheKey, {
+          items: mergeFourBasedVaultItems(prev?.items || [], items),
+          offset: nextOffset,
+          hasMore,
+          notes: { ...(prev?.notes || {}), ...notes },
+        });
+      } else {
+        setVaultListingCache(cacheKey, {
+          items,
+          offset: nextOffset,
+          hasMore,
+          notes,
+        });
+      }
     } catch (err) {
-      setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
-      if (!append) {
+      if (append || !hadCachedItems) {
+        setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
+      }
+      if (!append && !hadCachedItems) {
         setVaultItems([]);
         setVaultNotes({});
         setVaultOffset(0);
@@ -2367,6 +2534,30 @@ export function FourBasedChatThread({
     }
   }
 
+  async function hydrateFourBasedFolders() {
+    const folderKey = vaultCacheKey({
+      platform: '4based',
+      creatorId,
+      kind: 'folders',
+    });
+    const cached =
+      getVaultListingCache<{ folders: string[] }>(folderKey) ||
+      (await loadVaultListingCache<{ folders: string[] }>(folderKey));
+    if (cached?.folders?.length) {
+      setVaultFolders(cached.folders);
+    }
+    try {
+      const r = await getFourBasedProfile(creatorId);
+      const folders = Array.isArray(r.profile?.folders)
+        ? r.profile.folders.filter((f): f is string => typeof f === 'string')
+        : [];
+      setVaultFolders(folders);
+      setVaultListingCache(folderKey, { folders });
+    } catch {
+      // keep empty / cached
+    }
+  }
+
   async function openVault() {
     setVaultPickMode('composer');
     if (!fan.id) {
@@ -2376,28 +2567,11 @@ export function FourBasedChatThread({
     }
     setVaultOpen(true);
     setPreviewItem(null);
-    setSelectedFolder(null);
-    setVaultCategoryFilter('all');
-    setVaultSentFilter('all');
-    setVaultOffset(0);
-    setVaultHasMore(false);
-
-    if (vaultFolders.length === 0) {
-      try {
-        const r = await getFourBasedProfile(creatorId);
-        const folders = Array.isArray(r.profile?.folders)
-          ? r.profile.folders.filter((f): f is string => typeof f === 'string')
-          : [];
-        setVaultFolders(folders);
-      } catch {
-        // keep empty
-      }
-    }
-
+    await hydrateFourBasedFolders();
     await loadVaultItems({
-      folder: null,
-      category: 'all',
-      sent: 'all',
+      folder: selectedFolder,
+      category: vaultCategoryFilter,
+      sent: vaultSentFilter,
       offset: 0,
     });
   }
@@ -2412,28 +2586,11 @@ export function FourBasedChatThread({
     }
     setVaultOpen(true);
     setPreviewItem(null);
-    setSelectedFolder(null);
-    setVaultCategoryFilter('all');
-    setVaultSentFilter('all');
-    setVaultOffset(0);
-    setVaultHasMore(false);
-
-    if (vaultFolders.length === 0) {
-      try {
-        const r = await getFourBasedProfile(creatorId);
-        const folders = Array.isArray(r.profile?.folders)
-          ? r.profile.folders.filter((f): f is string => typeof f === 'string')
-          : [];
-        setVaultFolders(folders);
-      } catch {
-        // keep empty
-      }
-    }
-
+    await hydrateFourBasedFolders();
     await loadVaultItems({
-      folder: null,
-      category: 'all',
-      sent: 'all',
+      folder: selectedFolder,
+      category: vaultCategoryFilter,
+      sent: vaultSentFilter,
       offset: 0,
     });
   }
@@ -3171,7 +3328,9 @@ export function FourBasedChatThread({
             <ImageIcon className="w-5 h-5" />
           </button>
           <textarea
+            ref={draftInputRef}
             value={draft}
+            disabled={sending || translatingOutgoing}
             onChange={(e) => {
               const next = e.target.value;
               setDraft(next);
@@ -3194,7 +3353,7 @@ export function FourBasedChatThread({
                   ? 'Type a message… (Auto-translates to German)'
                   : 'Type a message…'
             }
-            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed"
+            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-60"
           />
           <button
             type="button"

@@ -15,20 +15,16 @@ import {
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import fourBasedIcon from '@/assets/4based_icon.ico';
-import { useStaffSync } from '@/context/StaffSyncContext';
+import { useCreatorLive } from '@/context/CreatorLiveContext';
+import { usePollEnabled } from '@/hooks/useDocumentVisible';
 import { formatRelativeTime } from '@/components/fourbased/FourBasedChatPanels';
 import {
   fourBasedPublicPreviewUrl,
-  getCreators,
   getFourBasedActivities,
-  getFourBasedBadges,
   resetFourBasedActivities,
-  type Creator,
   type FourBasedActivity,
 } from '@/lib/api';
-import { runWithConcurrency } from '@/lib/runWithConcurrency';
 
-const BADGE_POLL_MS = 15_000;
 const PAGE_LIMIT = 20;
 
 const FILTER_OPTIONS: { key: string; label: string }[] = [
@@ -107,13 +103,14 @@ function activityAmountDollars(a: FourBasedActivity): number | null {
 }
 
 export default function FourBasedNotifications() {
-  const { onSyncEvent } = useStaffSync();
-  const [creators, setCreators] = useState<Creator[]>([]);
-  const [creatorsLoading, setCreatorsLoading] = useState(true);
+  const pollEnabled = usePollEnabled(true);
+  const { creators, creatorsLoading, badgesByCreatorId, refreshBadges } =
+    useCreatorLive({
+      platform: '4based',
+      wantBadges: true,
+      pollEnabled,
+    });
   const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
-  const [unreadByCreatorId, setUnreadByCreatorId] = useState<Record<string, number>>(
-    {}
-  );
 
   const [activities, setActivities] = useState<FourBasedActivity[]>([]);
   const [offset, setOffset] = useState(0);
@@ -134,39 +131,12 @@ export default function FourBasedNotifications() {
     [selectedTypes]
   );
 
-  const loadCreators = useCallback(async () => {
-    setCreatorsLoading(true);
-    try {
-      const { creators: list } = await getCreators();
-      const fourBased = list.filter((c) => c.platform === '4based');
-      setCreators(fourBased);
-      setSelectedCreatorId((prev) => prev || fourBased[0]?.id || null);
-    } catch {
-      setCreators([]);
-    } finally {
-      setCreatorsLoading(false);
-    }
-  }, []);
-
-  const refreshBadges = useCallback(async (creatorIds: string[]) => {
-    if (creatorIds.length === 0) return;
-    const updates: Record<string, number> = {};
-    await runWithConcurrency(creatorIds, 3, async (id) => {
-      try {
-        const result = await getFourBasedBadges(id);
-        updates[id] = Number(result.notifications) || 0;
-      } catch (err) {
-        console.warn(
-          '4based badge poll failed:',
-          id,
-          err instanceof Error ? err.message : err
-        );
-      }
+  useEffect(() => {
+    setSelectedCreatorId((prev) => {
+      if (prev && creators.some((c) => c.id === prev)) return prev;
+      return creators[0]?.id || null;
     });
-    if (Object.keys(updates).length > 0) {
-      setUnreadByCreatorId((prev) => ({ ...prev, ...updates }));
-    }
-  }, []);
+  }, [creators]);
 
   const loadActivities = useCallback(
     async (opts?: { append?: boolean; offset?: number; resetUnread?: boolean }) => {
@@ -208,25 +178,6 @@ export default function FourBasedNotifications() {
     },
     [selectedCreatorId, typesParam, refreshBadges]
   );
-
-  useEffect(() => {
-    void loadCreators();
-  }, [loadCreators]);
-
-  useEffect(() => {
-    return onSyncEvent(() => {
-      void loadCreators();
-    });
-  }, [onSyncEvent, loadCreators]);
-
-  useEffect(() => {
-    const ids = creators.map((c) => c.id);
-    void refreshBadges(ids);
-    const timer = window.setInterval(() => {
-      void refreshBadges(ids);
-    }, BADGE_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [creators, refreshBadges]);
 
   useEffect(() => {
     resetDoneForCreatorRef.current = null;
@@ -277,7 +228,7 @@ export default function FourBasedNotifications() {
           )}
           {creators.map((creator) => {
             const active = selectedCreatorId === creator.id;
-            const unread = unreadByCreatorId[creator.id] || 0;
+            const unread = badgesByCreatorId[creator.id]?.notifications || 0;
             return (
               <button
                 key={creator.id}

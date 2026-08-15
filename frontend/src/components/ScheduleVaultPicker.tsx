@@ -2,15 +2,19 @@ import { useCallback, useEffect, useRef, useState, type UIEvent } from 'react';
 import { Folder, Loader2, X } from 'lucide-react';
 import {
   friendlyVaultFolderName,
-  vaultDirectUrl,
+  vaultThumbUrl,
   vaultUploadId,
 } from '@/components/maloum/MaloumChatPanels';
+import {
+  loadVaultListingCache,
+  setVaultListingCache,
+  vaultCacheKey,
+} from '@/lib/vaultListingCache';
 import {
   getFourBasedProfile,
   listAllMaloumVaultFolders,
   listFourBasedVault,
   listMaloumVaultMedia,
-  maloumMediaUrl,
   pickFourBasedPreviewUrl,
   pickFourBasedSourceUrl,
   resolveFourBasedMediaSrc,
@@ -37,11 +41,7 @@ function fourBasedThumb(creatorId: string, item: FourBasedVaultItem): string | n
 }
 
 function maloumThumb(creatorId: string, item: MaloumVaultMediaItem): string | null {
-  const direct = vaultDirectUrl(item);
-  if (direct) return direct;
-  const uploadId = vaultUploadId(item);
-  if (!uploadId) return null;
-  return maloumMediaUrl(creatorId, { uploadId, variant: 'thumbnail' });
+  return vaultThumbUrl(creatorId, item);
 }
 
 export default function ScheduleVaultPicker({
@@ -75,13 +75,27 @@ export default function ScheduleVaultPicker({
     setFourBasedItems([]);
     setMaloumItems([]);
     try {
+      const folderKey = vaultCacheKey({
+        platform,
+        creatorId,
+        kind: 'folders',
+      });
+      const cached = await loadVaultListingCache<{
+        folders: Array<{ id: string; name: string }>;
+      }>(folderKey);
+      if (cached?.folders?.length) {
+        setFolders(cached.folders);
+        setFolderId(cached.folders[0]?.id || null);
+      }
       if (platform === '4based') {
         const result = await getFourBasedProfile(creatorId);
         const names = (result.profile.folders || []).filter(
           (name): name is string => typeof name === 'string' && Boolean(name.trim())
         );
-        setFolders(names.map((name) => ({ id: name, name })));
+        const nextFolders = names.map((name) => ({ id: name, name }));
+        setFolders(nextFolders);
         setFolderId(names[0] || null);
+        setVaultListingCache(folderKey, { folders: nextFolders });
       } else {
         const result = await listAllMaloumVaultFolders(creatorId);
         const list = (result.folders || []).map((folder: MaloumVaultFolder) => ({
@@ -90,6 +104,7 @@ export default function ScheduleVaultPicker({
         }));
         setFolders(list);
         setFolderId(list[0]?.id || null);
+        setVaultListingCache(folderKey, { folders: list });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load vault');
@@ -116,6 +131,20 @@ export default function ScheduleVaultPicker({
       }
       setError(null);
       try {
+        const mediaKey = vaultCacheKey({
+          platform,
+          creatorId,
+          kind: 'media',
+          folderId,
+        });
+        if (!append) {
+          const cached = await loadVaultListingCache<{
+            fourBasedItems?: FourBasedVaultItem[];
+            maloumItems?: MaloumVaultMediaItem[];
+          }>(mediaKey);
+          if (cached?.fourBasedItems) setFourBasedItems(cached.fourBasedItems);
+          if (cached?.maloumItems) setMaloumItems(cached.maloumItems);
+        }
         if (platform === '4based') {
           const nextOffset = append ? offsetRef.current : 0;
           const result = await listFourBasedVault(creatorId, null, {
@@ -128,6 +157,7 @@ export default function ScheduleVaultPicker({
           setFourBasedItems((prev) => (append ? [...prev, ...items] : items));
           offsetRef.current = nextOffset + items.length;
           hasMoreRef.current = items.length >= 60;
+          if (!append) setVaultListingCache(mediaKey, { fourBasedItems: items });
         } else {
           const result = await listMaloumVaultMedia(creatorId, folderId, {
             limit: 50,
@@ -141,6 +171,7 @@ export default function ScheduleVaultPicker({
             return !type.includes('video');
           });
           setMaloumItems((prev) => (append ? [...prev, ...items] : items));
+          if (!append) setVaultListingCache(mediaKey, { maloumItems: items });
           const next = result.next;
           maloumNextRef.current = next;
           hasMoreRef.current = next != null;

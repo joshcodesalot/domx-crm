@@ -9,6 +9,7 @@ import PeriodDaysToggle, {
   type ChartPeriodDays,
 } from '@/components/PeriodDaysToggle';
 import { useAuth } from '@/context/AuthContext';
+import { useDocumentVisible } from '@/hooks/useDocumentVisible';
 import {
   getActivityHistory,
   getActivityPresence,
@@ -307,6 +308,7 @@ type ChatterRow = OverviewChatterStats & {
 };
 
 export default function Dashboard() {
+  const documentVisible = useDocumentVisible();
   const { user, hasPermission } = useAuth();
   const canViewTeamAnalytics = hasPermission('analytics.view');
   const canViewSelfAnalytics = hasPermission('analytics.self');
@@ -431,12 +433,12 @@ export default function Dashboard() {
   }, [canViewAnalytics, loadData]);
 
   useEffect(() => {
-    if (!canViewAnalytics) return;
+    if (!canViewAnalytics || !documentVisible) return;
     const interval = window.setInterval(() => {
       void loadData({ silent: true });
     }, 20_000);
     return () => window.clearInterval(interval);
-  }, [canViewAnalytics, loadData]);
+  }, [canViewAnalytics, documentVisible, loadData]);
 
   const periodByUserId = useMemo(() => {
     const map: Record<

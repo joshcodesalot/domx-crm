@@ -3,19 +3,14 @@ import { Bell, Gift, Loader2, Lock, RefreshCw } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import maloumIcon from '@/assets/maloum_icon.png';
-import { useStaffSync } from '@/context/StaffSyncContext';
+import { useCreatorLive } from '@/context/CreatorLiveContext';
+import { usePollEnabled } from '@/hooks/useDocumentVisible';
 import { formatRelativeTime } from '@/components/maloum/MaloumChatPanels';
 import {
-  getCreators,
-  getMaloumBadges,
   getMaloumNotifications,
   markMaloumNotificationsReadAll,
-  type Creator,
   type MaloumNotification,
 } from '@/lib/api';
-import { runWithConcurrency } from '@/lib/runWithConcurrency';
-
-const BADGE_POLL_MS = 15_000;
 
 function fanDisplayName(n: MaloumNotification): string {
   return (
@@ -50,13 +45,14 @@ function NotificationIcon({ type }: { type?: string }) {
 }
 
 export default function MaloumNotifications() {
-  const { onSyncEvent } = useStaffSync();
-  const [creators, setCreators] = useState<Creator[]>([]);
-  const [creatorsLoading, setCreatorsLoading] = useState(true);
+  const pollEnabled = usePollEnabled(true);
+  const { creators, creatorsLoading, badgesByCreatorId, refreshBadges } =
+    useCreatorLive({
+      platform: 'maloum',
+      wantBadges: true,
+      pollEnabled,
+    });
   const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
-  const [unreadByCreatorId, setUnreadByCreatorId] = useState<Record<string, number>>(
-    {}
-  );
 
   const [notifications, setNotifications] = useState<MaloumNotification[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -68,39 +64,12 @@ export default function MaloumNotifications() {
     [creators, selectedCreatorId]
   );
 
-  const loadCreators = useCallback(async () => {
-    setCreatorsLoading(true);
-    try {
-      const { creators: list } = await getCreators();
-      const maloum = list.filter((c) => c.platform === 'maloum');
-      setCreators(maloum);
-      setSelectedCreatorId((prev) => prev || maloum[0]?.id || null);
-    } catch {
-      setCreators([]);
-    } finally {
-      setCreatorsLoading(false);
-    }
-  }, []);
-
-  const refreshBadges = useCallback(async (creatorIds: string[]) => {
-    if (creatorIds.length === 0) return;
-    const updates: Record<string, number> = {};
-    await runWithConcurrency(creatorIds, 3, async (id) => {
-      try {
-        const result = await getMaloumBadges(id);
-        updates[id] = Number(result.notifications) || 0;
-      } catch (err) {
-        console.warn(
-          'Maloum badge poll failed:',
-          id,
-          err instanceof Error ? err.message : err
-        );
-      }
+  useEffect(() => {
+    setSelectedCreatorId((prev) => {
+      if (prev && creators.some((c) => c.id === prev)) return prev;
+      return creators[0]?.id || null;
     });
-    if (Object.keys(updates).length > 0) {
-      setUnreadByCreatorId((prev) => ({ ...prev, ...updates }));
-    }
-  }, []);
+  }, [creators]);
 
   const loadNotifications = useCallback(
     async (opts?: { append?: boolean; next?: string | null }) => {
@@ -120,10 +89,7 @@ export default function MaloumNotifications() {
         if (!append) {
           try {
             await markMaloumNotificationsReadAll(selectedCreatorId);
-            setUnreadByCreatorId((prev) => ({
-              ...prev,
-              [selectedCreatorId]: 0,
-            }));
+            void refreshBadges([selectedCreatorId]);
             setNotifications((prev) =>
               prev.map((n) => (n.isRead === false ? { ...n, isRead: true } : n))
             );
@@ -142,25 +108,6 @@ export default function MaloumNotifications() {
     },
     [selectedCreatorId, refreshBadges]
   );
-
-  useEffect(() => {
-    void loadCreators();
-  }, [loadCreators]);
-
-  useEffect(() => {
-    return onSyncEvent(() => {
-      void loadCreators();
-    });
-  }, [onSyncEvent, loadCreators]);
-
-  useEffect(() => {
-    const ids = creators.map((c) => c.id);
-    void refreshBadges(ids);
-    const timer = window.setInterval(() => {
-      void refreshBadges(ids);
-    }, BADGE_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [creators, refreshBadges]);
 
   useEffect(() => {
     setNotifications([]);
@@ -192,7 +139,7 @@ export default function MaloumNotifications() {
           )}
           {creators.map((creator) => {
             const active = selectedCreatorId === creator.id;
-            const unread = unreadByCreatorId[creator.id] || 0;
+            const unread = badgesByCreatorId[creator.id]?.notifications || 0;
             return (
               <button
                 key={creator.id}

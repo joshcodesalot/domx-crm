@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -55,6 +56,7 @@ import {
   listMaloumVaultMedia,
   listMaloumVaultSent,
   listVaultMediaNotes,
+  maloumMediaUrl,
   markScriptSent,
   recordMaloumVaultSent,
   isContentBlockedError,
@@ -75,6 +77,14 @@ import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
 } from '@/lib/historyTranslateQueue';
+import {
+  addVaultSentIds,
+  getVaultListingCache,
+  loadVaultListingCache,
+  setVaultListingCache,
+  vaultCacheKey,
+} from '@/lib/vaultListingCache';
+import { VirtualizedRows } from '@/components/VirtualizedRows';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
@@ -122,6 +132,35 @@ function mergeMaloumChatPages(
   const incomingIds = new Set(incoming.map((c) => c._id));
   const rest = prev.filter((c) => c._id && !incomingIds.has(c._id));
   return [...incoming, ...rest];
+}
+
+function sameMaloumChats(prev: MaloumChat[], next: MaloumChat[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    const a = prev[i];
+    const b = next[i];
+    if (a._id !== b._id) return false;
+    if (Boolean(a.unreadMessages) !== Boolean(b.unreadMessages)) return false;
+    if (a.lastRelevantMessage?._id !== b.lastRelevantMessage?._id) return false;
+    if (a.lastRelevantMessage?.text !== b.lastRelevantMessage?.text) return false;
+    if (a.lastRelevantMessage?.sentAt !== b.lastRelevantMessage?.sentAt) return false;
+  }
+  return true;
+}
+
+function sameMaloumMessages(prev: MaloumMessage[], next: MaloumMessage[]): boolean {
+  if (prev === next) return true;
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i += 1) {
+    const a = prev[i];
+    const b = next[i];
+    if (maloumMessageId(a) !== maloumMessageId(b)) return false;
+    if (a.sentAt !== b.sentAt) return false;
+    if (a.isBought !== b.isBought) return false;
+    if ((a.content?.text || '') !== (b.content?.text || '')) return false;
+  }
+  return true;
 }
 
 function appendMaloumChats(
@@ -478,6 +517,22 @@ export function vaultDirectUrl(item: MaloumVaultMediaItem): string | null {
   return isHttpsMediaUrl(url) ? url : null;
 }
 
+export function vaultThumbUrl(
+  creatorId: string,
+  item: MaloumVaultMediaItem
+): string | null {
+  const uploadId = vaultUploadId(item);
+  const direct = vaultDirectUrl(item);
+  if (uploadId) {
+    return maloumMediaUrl(creatorId, {
+      uploadId,
+      variant: 'thumbnail',
+      url: direct,
+    });
+  }
+  return direct;
+}
+
 /** Full/playable URL for vault preview (prefer media over thumbnail). */
 export function vaultPreviewUrl(item: MaloumVaultMediaItem): string | null {
   const url = item.media?.url || item.thumbnail?.url;
@@ -642,6 +697,78 @@ export function messageMediaAssets(msg: MaloumMessage): Array<{
   }));
 }
 
+const MaloumChatRow = memo(function MaloumChatRow({
+  chat,
+  active,
+  openActionLabel,
+  onSelectChat,
+}: {
+  chat: MaloumChat;
+  active: boolean;
+  openActionLabel?: string;
+  onSelectChat: (chat: MaloumChat) => void;
+}) {
+  const name = partnerName(chat);
+  const spend = formatSpend(chat.chatPartner?.totalSpendForCreator, 'EUR');
+  const relative = formatRelativeTime(chat.lastRelevantMessage?.sentAt);
+  const preview =
+    chat.lastRelevantMessage?.text ||
+    (chat.lastRelevantMessage?.type === 'chat_product'
+      ? 'PPV'
+      : chat.lastRelevantMessage?.type === 'media'
+        ? 'Media'
+        : chat.lastRelevantMessage?.type === 'tip'
+          ? 'Tip'
+          : '—');
+  return (
+    <button
+      type="button"
+      onClick={() => onSelectChat(chat)}
+      className={`w-full text-left p-3 border-l-2 transition-colors relative ${
+        active
+          ? 'border-maloum-500 bg-gray-50/60 dark:bg-zinc-900/60 hover:bg-white/80 dark:hover:bg-zinc-900/80'
+          : 'border-transparent hover:bg-gray-100 dark:hover:bg-zinc-900/40 border-b border-b-gray-200 dark:border-b-zinc-800/30'
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <PartnerAvatar partner={chat.chatPartner} name={name} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between min-w-0 mb-0.5">
+            <span
+              className={`text-sm truncate ${
+                active
+                  ? 'font-semibold text-gray-900 dark:text-white'
+                  : 'font-medium text-gray-800 dark:text-zinc-200'
+              }`}
+            >
+              {name}
+            </span>
+            <span className="text-[10px] text-gray-500 dark:text-zinc-500 shrink-0 ml-2">
+              {relative || ''}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <p className="text-xs text-gray-500 dark:text-zinc-400 truncate flex-1">{preview}</p>
+            {spend && (
+              <span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                {spend}
+              </span>
+            )}
+            {openActionLabel && (
+              <span className="text-[10px] text-maloum-500 shrink-0">
+                {openActionLabel}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+      {chat.unreadMessages && (
+        <div className="absolute right-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-maloum-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]" />
+      )}
+    </button>
+  );
+});
+
 type MaloumChatListProps = {
   creatorId: string;
   creatorName?: string;
@@ -684,6 +811,7 @@ export function MaloumChatList({
     silent?: boolean;
   }) => Promise<void>) | null>(null);
   const prevMessagesUnreadRef = useRef(messagesUnread);
+  const chatListRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     chatCountRef.current = chats.length;
@@ -724,9 +852,10 @@ export function MaloumChatList({
           nextCursorRef.current = resultNext;
           paginatedBeyondFirstRef.current = true;
         } else if (silent) {
-          setChats((prev) =>
-            prev.length === 0 ? page : mergeMaloumChatPages(prev, page)
-          );
+          setChats((prev) => {
+            const next = prev.length === 0 ? page : mergeMaloumChatPages(prev, page);
+            return sameMaloumChats(prev, next) ? prev : next;
+          });
           // Keep the deeper cursor when the user already loaded past page 1.
           if (!paginatedBeyondFirstRef.current) {
             setNextCursor(resultNext);
@@ -837,90 +966,38 @@ export function MaloumChatList({
           })}
         </div>
       </div>
-      <div
-        className="flex-1 overflow-y-auto min-h-0 animate-fade-in"
+      <VirtualizedRows
+        parentRef={chatListRef}
+        items={chats}
+        estimateSize={76}
+        getKey={(chat) => chat._id}
         onScroll={handleChatsScroll}
-      >
-        {error && (
-          <p className="text-xs text-red-400 p-3">{error}</p>
+        className="flex-1 overflow-y-auto min-h-0 animate-fade-in"
+        renderRow={(chat) => (
+          <MaloumChatRow
+            chat={chat}
+            active={chat._id === selectedChatId}
+            openActionLabel={openActionLabel}
+            onSelectChat={onSelectChat}
+          />
         )}
-        {!loading && !error && chats.length === 0 && (
-          <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">No chats yet.</p>
-        )}
-        {chats.map((chat) => {
-          const active = chat._id === selectedChatId;
-          const name = partnerName(chat);
-          const spend = formatSpend(chat.chatPartner?.totalSpendForCreator, 'EUR');
-          const relative = formatRelativeTime(chat.lastRelevantMessage?.sentAt);
-          const preview =
-            chat.lastRelevantMessage?.text ||
-            (chat.lastRelevantMessage?.type === 'chat_product'
-              ? 'PPV'
-              : chat.lastRelevantMessage?.type === 'media'
-                ? 'Media'
-                : chat.lastRelevantMessage?.type === 'tip'
-                  ? 'Tip'
-                  : '—');
-          return (
-            <button
-              key={chat._id}
-              type="button"
-              onClick={() => onSelectChat(chat)}
-              className={`w-full text-left p-3 border-l-2 transition-colors relative ${
-                active
-                  ? 'border-maloum-500 bg-gray-50/60 dark:bg-zinc-900/60 hover:bg-white/80 dark:hover:bg-zinc-900/80'
-                  : 'border-transparent hover:bg-gray-100 dark:hover:bg-zinc-900/40 border-b border-b-gray-200 dark:border-b-zinc-800/30'
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                <PartnerAvatar partner={chat.chatPartner} name={name} />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between min-w-0 mb-0.5">
-                    <span
-                      className={`text-sm truncate ${
-                        active
-                          ? 'font-semibold text-gray-900 dark:text-white'
-                          : 'font-medium text-gray-800 dark:text-zinc-200'
-                      }`}
-                    >
-                      {name}
-                    </span>
-                    <span className="text-[10px] text-gray-500 dark:text-zinc-500 shrink-0 ml-2">
-                      {relative || ''}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <p className="text-xs text-gray-500 dark:text-zinc-400 truncate flex-1">{preview}</p>
-                    {spend && (
-                      <span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                        {spend}
-                      </span>
-                    )}
-                    {openActionLabel && (
-                      <span className="text-[10px] text-maloum-500 shrink-0">
-                        {openActionLabel}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              {chat.unreadMessages && (
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-maloum-500 shadow-[0_0_8px_rgba(59,130,246,0.6)]" />
-              )}
-            </button>
-          );
-        })}
-        {nextCursor && (
-          <button
-            type="button"
-            onClick={() => void loadChats({ append: true, next: nextCursor })}
-            disabled={loadingMore}
-            className="w-full py-2 text-xs text-maloum-500 hover:underline disabled:opacity-50"
-          >
-            {loadingMore ? 'Loading…' : 'Load more'}
-          </button>
-        )}
-      </div>
+      />
+      {error && (
+        <p className="text-xs text-red-400 px-3 pb-2">{error}</p>
+      )}
+      {!loading && !error && chats.length === 0 && (
+        <p className="text-xs text-gray-500 dark:text-zinc-500 px-3 pb-2">No chats yet.</p>
+      )}
+      {nextCursor && (
+        <button
+          type="button"
+          onClick={() => void loadChats({ append: true, next: nextCursor })}
+          disabled={loadingMore}
+          className="w-full py-2 text-xs text-maloum-500 hover:underline disabled:opacity-50"
+        >
+          {loadingMore ? 'Loading…' : 'Load more'}
+        </button>
+      )}
     </div>
   );
 }
@@ -933,6 +1010,7 @@ type MaloumChatThreadProps = {
   onClose?: () => void;
   /** Show translation toggles under the composer (e.g. Message Pro). */
   showTranslationToggles?: boolean;
+  pollEnabled?: boolean;
 };
 
 export function MaloumChatThread({
@@ -942,6 +1020,7 @@ export function MaloumChatThread({
   className = '',
   onClose,
   showTranslationToggles = false,
+  pollEnabled = true,
 }: MaloumChatThreadProps) {
   const { user, hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
@@ -1076,6 +1155,7 @@ export function MaloumChatThread({
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
   const loadingOlderRef = useRef(false);
   const nearBottomRef = useRef(true);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
@@ -1163,11 +1243,12 @@ export function MaloumChatThread({
               prev.length > 0 && manualTranslateOnlyIdsRef.current.size > 0
                 ? mergeMaloumMessages(prev, chronological)
                 : chronological;
-            return applyMaloumUnsends(
+            const next = applyMaloumUnsends(
               base,
               messageUnsendsRef.current,
               resolvedProviderUserId
             );
+            return sameMaloumMessages(prev, next) ? prev : next;
           });
         }
         const nextCursor = msgResult.next || null;
@@ -1241,16 +1322,34 @@ export function MaloumChatThread({
   const loadVaultSent = useCallback(async () => {
     const fanId = partnerId(chat);
     if (!fanId && !chatId) return;
+    const cacheKey = vaultCacheKey({
+      platform: 'maloum',
+      creatorId,
+      kind: 'sent',
+      fanId: fanId || chatId,
+    });
+    const cached =
+      getVaultListingCache<{ uploadIds: string[] }>(cacheKey) ||
+      (await loadVaultListingCache<{ uploadIds: string[] }>(cacheKey));
+    if (cached?.uploadIds?.length) {
+      const fromCache: Record<string, true> = {};
+      for (const id of cached.uploadIds) fromCache[id] = true;
+      setSentUploadIds((prev) => ({ ...prev, ...fromCache }));
+    }
     try {
       const result = await listMaloumVaultSent(creatorId, {
         fanId: fanId || undefined,
         chatId,
       });
       const fromApi: Record<string, true> = {};
+      const uploadIds: string[] = [];
       for (const id of result.uploadIds || []) {
-        if (id) fromApi[String(id)] = true;
+        if (!id) continue;
+        fromApi[String(id)] = true;
+        uploadIds.push(String(id));
       }
       setSentUploadIds((prev) => ({ ...prev, ...fromApi }));
+      setVaultListingCache(cacheKey, { uploadIds });
     } catch {
       // best-effort
     }
@@ -1265,8 +1364,11 @@ export function MaloumChatThread({
     void loadVaultSent();
   }, [vaultOpen, loadVaultSent]);
 
+  const initialChatRef = useRef(initialChat);
+  initialChatRef.current = initialChat;
+
   useEffect(() => {
-    setChat(initialChat);
+    setChat(initialChatRef.current);
     setMessages([]);
     setMessagesNext(null);
     messagesNextRef.current = null;
@@ -1296,12 +1398,34 @@ export function MaloumChatThread({
     void loadMessages();
     void loadSenders();
     void loadUnsends();
-    const timer = window.setInterval(() => {
+  }, [chatId, creatorId, loadMessages, loadSenders, loadUnsends]);
+
+  const prevThreadPollRef = useRef(pollEnabled);
+  useEffect(() => {
+    if (!pollEnabled) {
+      prevThreadPollRef.current = false;
+      return;
+    }
+    const justEnabled = !prevThreadPollRef.current;
+    prevThreadPollRef.current = true;
+    if (justEnabled) {
       void loadMessages({ silent: true });
       void loadSenders();
+    }
+    const timer = window.setInterval(() => {
+      void loadMessages({ silent: true });
     }, MESSAGE_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [chatId, creatorId, initialChat, loadMessages, loadSenders, loadUnsends]);
+  }, [pollEnabled, loadMessages, loadSenders]);
+
+  useEffect(() => {
+    setVaultFolders([]);
+    setVaultItems([]);
+    setSelectedFolderId(null);
+    setVaultNotes({});
+    vaultMediaNextRef.current = null;
+    setVaultMediaNext(null);
+  }, [creatorId]);
 
   useEffect(() => {
     return onSyncEvent((event) => {
@@ -1316,8 +1440,9 @@ export function MaloumChatThread({
         return next;
       });
       void loadMessages({ silent: true });
+      void loadSenders();
     });
-  }, [onSyncEvent, creatorId, chatId, loadMessages]);
+  }, [onSyncEvent, creatorId, chatId, loadMessages, loadSenders]);
 
   useEffect(() => {
     const el = threadRootRef.current;
@@ -1438,8 +1563,13 @@ export function MaloumChatThread({
     [loadMessages, updateNearBottom]
   );
 
+  const scannedTranslateKeysRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!autoTranslateHistory) return;
+    scannedTranslateKeysRef.current = new Set();
+  }, [chatId, creatorId]);
+
+  useEffect(() => {
+    if (!autoTranslateHistory || !pollEnabled) return;
     const pending: Array<{ key: string; text: string }> = [];
     // Newest first so the bottom of the thread fills in first.
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -1450,12 +1580,14 @@ export function MaloumChatThread({
       if (!msgKey) continue;
       if (manualTranslateOnlyIdsRef.current.has(msgKey)) continue;
       const cacheKey = `${msgKey}::${text}`;
+      if (scannedTranslateKeysRef.current.has(cacheKey)) continue;
+      scannedTranslateKeysRef.current.add(cacheKey);
       if (historyTranslationsRef.current[cacheKey]) continue;
       pending.push({ key: cacheKey, text });
     }
     if (pending.length === 0) return;
     historyTranslateQueueRef.current?.enqueue(pending);
-  }, [messages, autoTranslateHistory]);
+  }, [messages, autoTranslateHistory, pollEnabled]);
 
   const toggleVaultItem = useCallback(
     (item: MaloumVaultMediaItem) => {
@@ -1486,14 +1618,30 @@ export function MaloumChatThread({
     [vaultPickMode]
   );
 
-  const loadVaultFolders = useCallback(async () => {
-    setVaultFoldersLoading(true);
+  const loadVaultFolders = useCallback(async (opts?: { silent?: boolean }) => {
+    const cacheKey = vaultCacheKey({
+      platform: 'maloum',
+      creatorId,
+      kind: 'folders',
+    });
+    const cached = getVaultListingCache<{ folders: MaloumVaultFolder[] }>(cacheKey);
+    if (cached?.folders?.length) {
+      setVaultFolders(cached.folders);
+    } else if (!opts?.silent) {
+      setVaultFoldersLoading(true);
+    }
     setVaultError(null);
     try {
       const result = await listAllMaloumVaultFolders(creatorId);
-      setVaultFolders(result.folders || []);
+      const folders = result.folders || [];
+      setVaultFolders(folders);
+      setVaultListingCache(cacheKey, { folders });
+      return folders;
     } catch (err) {
-      setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
+      if (!cached?.folders?.length) {
+        setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
+      }
+      return cached?.folders || [];
     } finally {
       setVaultFoldersLoading(false);
     }
@@ -1506,6 +1654,13 @@ export function MaloumChatThread({
       const folderId = opts?.folderId || selectedFolderId;
       if (!folderId) return;
       const append = Boolean(opts?.append);
+      const cacheKey = vaultCacheKey({
+        platform: 'maloum',
+        creatorId,
+        kind: 'media',
+        folderId,
+        fanId: vaultFanId,
+      });
       if (append) {
         if (
           loadingMoreMediaRef.current ||
@@ -1517,12 +1672,31 @@ export function MaloumChatThread({
         loadingMoreMediaRef.current = true;
         setLoadingMoreMedia(true);
       } else {
-        setVaultLoading(true);
-        setVaultItems([]);
-        setVaultNotes({});
-        vaultMediaNextRef.current = null;
-        setVaultMediaNext(null);
+        const cached =
+          getVaultListingCache<{
+            items: MaloumVaultMediaItem[];
+            next: number | null;
+            notes: Record<string, string>;
+          }>(cacheKey) ||
+          (await loadVaultListingCache<{
+            items: MaloumVaultMediaItem[];
+            next: number | null;
+            notes: Record<string, string>;
+          }>(cacheKey));
+        if (cached?.items?.length) {
+          setVaultItems(cached.items);
+          setVaultNotes(cached.notes || {});
+          vaultMediaNextRef.current = cached.next;
+          setVaultMediaNext(cached.next);
+        } else {
+          setVaultLoading(true);
+          setVaultItems([]);
+          setVaultNotes({});
+          vaultMediaNextRef.current = null;
+          setVaultMediaNext(null);
+        }
       }
+      const hadCachedItems = !append && Boolean(getVaultListingCache(cacheKey));
       setVaultError(null);
       try {
         const result = await listMaloumVaultMedia(creatorId, folderId, {
@@ -1540,21 +1714,40 @@ export function MaloumChatThread({
         setVaultItems((prev) =>
           append ? mergeVaultMediaItems(prev, items) : items
         );
+        let notes: Record<string, string> = {};
         const keys = items
           .map((item) => vaultUploadId(item))
           .filter((key): key is string => Boolean(key));
         if (keys.length > 0) {
           try {
             const notesResult = await listVaultMediaNotes(creatorId, 'maloum', keys);
+            notes = notesResult.notes || {};
             setVaultNotes((prev) =>
-              append ? { ...prev, ...notesResult.notes } : { ...notesResult.notes }
+              append ? { ...prev, ...notes } : notes
             );
           } catch {
             // Notes are optional; vault grid still works without them.
           }
         }
+        if (append) {
+          const prev =
+            getVaultListingCache<{
+              items: MaloumVaultMediaItem[];
+              next: number | null;
+              notes: Record<string, string>;
+            }>(cacheKey);
+          setVaultListingCache(cacheKey, {
+            items: mergeVaultMediaItems(prev?.items || [], items),
+            next,
+            notes: { ...(prev?.notes || {}), ...notes },
+          });
+        } else {
+          setVaultListingCache(cacheKey, { items, next, notes });
+        }
       } catch (err) {
-        setVaultError(err instanceof Error ? err.message : 'Failed to load media');
+        if (append || !hadCachedItems) {
+          setVaultError(err instanceof Error ? err.message : 'Failed to load media');
+        }
       } finally {
         if (append) {
           loadingMoreMediaRef.current = false;
@@ -1573,20 +1766,31 @@ export function MaloumChatThread({
     void loadVaultMedia({ append: true, next });
   }, [loadVaultMedia]);
 
+  const hydrateMaloumVault = useCallback(async () => {
+    const folderKey = vaultCacheKey({
+      platform: 'maloum',
+      creatorId,
+      kind: 'folders',
+    });
+    const cached =
+      getVaultListingCache<{ folders: MaloumVaultFolder[] }>(folderKey) ||
+      (await loadVaultListingCache<{ folders: MaloumVaultFolder[] }>(folderKey));
+    if (cached?.folders?.length) {
+      setVaultFolders(cached.folders);
+      setSelectedFolderId((prev) => prev || cached.folders[0]?._id || null);
+    }
+    const folders = await loadVaultFolders({ silent: Boolean(cached?.folders?.length) });
+    setSelectedFolderId((prev) => prev || folders[0]?._id || null);
+  }, [creatorId, loadVaultFolders]);
+
   const openVault = useCallback(async () => {
     setVaultPickMode('composer');
     setVaultOpen(true);
     setVaultTypeFilter('all');
     setVaultSentFilter('all');
-    setSelectedFolderId(null);
-    setVaultItems([]);
-    setVaultNotes({});
     setVaultError(null);
-    vaultMediaNextRef.current = null;
-    setVaultMediaNext(null);
-    setVaultFolders([]);
-    await loadVaultFolders();
-  }, [loadVaultFolders]);
+    await hydrateMaloumVault();
+  }, [hydrateMaloumVault]);
 
   const openVaultForScript = useCallback(async () => {
     setVaultPickMode('script');
@@ -1594,15 +1798,9 @@ export function MaloumChatThread({
     setVaultOpen(true);
     setVaultTypeFilter('all');
     setVaultSentFilter('all');
-    setSelectedFolderId(null);
-    setVaultItems([]);
-    setVaultNotes({});
     setVaultError(null);
-    vaultMediaNextRef.current = null;
-    setVaultMediaNext(null);
-    setVaultFolders([]);
-    await loadVaultFolders();
-  }, [loadVaultFolders]);
+    await hydrateMaloumVault();
+  }, [hydrateMaloumVault]);
 
   const applyScriptToComposer = useCallback((script: CreatorScript) => {
     setDraft(script.messageText || '');
@@ -1675,8 +1873,36 @@ export function MaloumChatThread({
     if (!englishDraft && vaultItemsSelected.length === 0) return;
     if (sending || translatingOutgoing) return;
 
+    const composerSnapshot = {
+      draft,
+      skipOutgoingTranslate,
+      suggestedEnglish,
+      selectedVaultItems: vaultItemsSelected,
+      ppvPrice,
+      priceModalOpen,
+      priceDraft,
+    };
+    const restoreComposer = () => {
+      setDraft(composerSnapshot.draft);
+      setSkipOutgoingTranslate(composerSnapshot.skipOutgoingTranslate);
+      setSuggestedEnglish(composerSnapshot.suggestedEnglish);
+      setSelectedVaultItems(composerSnapshot.selectedVaultItems);
+      setPpvPrice(composerSnapshot.ppvPrice);
+      setPriceModalOpen(composerSnapshot.priceModalOpen);
+      setPriceDraft(composerSnapshot.priceDraft);
+    };
+
     setSending(true);
     setSendError(null);
+    setDraft('');
+    setSkipOutgoingTranslate(false);
+    setSuggestedEnglish(null);
+    setSelectedVaultItems([]);
+    setPpvPrice('');
+    setPriceModalOpen(false);
+    setPriceDraft('');
+    draftInputRef.current?.blur();
+
     try {
       let textToSend = englishDraft;
       const usedSuggestedGerman = skipOutgoingTranslate && Boolean(englishDraft);
@@ -1700,6 +1926,7 @@ export function MaloumChatThread({
               ? err.message
               : 'Translation failed. Message was not sent.'
           );
+          restoreComposer();
           return;
         } finally {
           setTranslatingOutgoing(false);
@@ -1766,6 +1993,15 @@ export function MaloumChatThread({
             });
             const fanId = partnerId(chat);
             if (fanId) {
+              addVaultSentIds(
+                vaultCacheKey({
+                  platform: 'maloum',
+                  creatorId,
+                  kind: 'sent',
+                  fanId,
+                }),
+                sentIds
+              );
               void recordMaloumVaultSent(creatorId, {
                 fanId,
                 chatId,
@@ -1821,13 +2057,6 @@ export function MaloumChatThread({
         });
       }
 
-      setDraft('');
-      setSkipOutgoingTranslate(false);
-      setSuggestedEnglish(null);
-      setSelectedVaultItems([]);
-      setPpvPrice('');
-      setPriceModalOpen(false);
-      setPriceDraft('');
       if (appliedScriptId) {
         const fanId = partnerId(chat);
         if (fanId) {
@@ -1847,6 +2076,7 @@ export function MaloumChatThread({
         scrollToBottom();
       });
     } catch (err) {
+      restoreComposer();
       if (isContentBlockedError(err)) {
         setSendError(err.message);
         void confirm({
@@ -1872,6 +2102,8 @@ export function MaloumChatThread({
     skipOutgoingTranslate,
     suggestedEnglish,
     ppvPrice,
+    priceModalOpen,
+    priceDraft,
     messages,
     providerUserId,
     creatorId,
@@ -2411,7 +2643,7 @@ export function MaloumChatThread({
             <div className="flex gap-2 max-w-[50%] overflow-x-auto">
               {selectedVaultItems.map((item) => {
                 const uploadId = vaultUploadId(item);
-                const src = vaultDirectUrl(item);
+                const src = vaultThumbUrl(creatorId, item);
                 return (
                   <button
                     key={uploadId || src || 'vault-chip'}
@@ -2542,7 +2774,9 @@ export function MaloumChatThread({
             <ImageIcon className="w-5 h-5" />
           </button>
           <textarea
+            ref={draftInputRef}
             value={draft}
+            disabled={sending || translatingOutgoing}
             onChange={(e) => {
               const next = e.target.value;
               setDraft(next);
@@ -2565,7 +2799,7 @@ export function MaloumChatThread({
                   ? 'Type a message… (Auto-translates to German)'
                   : 'Type a message…'
             }
-            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed"
+            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-60"
           />
           <button
             type="button"
@@ -2819,7 +3053,7 @@ export function MaloumChatThread({
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
                     {filteredVaultItems.map((item) => {
                       const uploadId = vaultUploadId(item);
-                      const src = vaultDirectUrl(item);
+                      const src = vaultThumbUrl(creatorId, item);
                       const selected = activeVaultSelection.some(
                         (entry) => vaultUploadId(entry) === uploadId
                       );
@@ -3059,6 +3293,8 @@ type MaloumSingleCreatorChatProps = {
   unreadByCreatorId?: Record<string, number>;
   notificationUnreadByCreatorId?: Record<string, number>;
   initialChatId?: string | null;
+  onDeepLinkConsumed?: () => void;
+  pollEnabled?: boolean;
 };
 
 export function MaloumSingleCreatorChat({
@@ -3069,10 +3305,15 @@ export function MaloumSingleCreatorChat({
   unreadByCreatorId = {},
   notificationUnreadByCreatorId = {},
   initialChatId = null,
+  onDeepLinkConsumed,
+  pollEnabled = true,
 }: MaloumSingleCreatorChatProps) {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [selectedChat, setSelectedChat] = useState<MaloumChat | null>(null);
   const [openChatError, setOpenChatError] = useState<string | null>(null);
+  const userPickedChatRef = useRef(false);
+  const selectedChatIdRef = useRef<string | null>(null);
+  selectedChatIdRef.current = selectedChatId;
   const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
     readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
   );
@@ -3086,6 +3327,7 @@ export function MaloumSingleCreatorChat({
   );
 
   useEffect(() => {
+    userPickedChatRef.current = false;
     setSelectedChatId(null);
     setSelectedChat(null);
     setOpenChatError(null);
@@ -3100,11 +3342,17 @@ export function MaloumSingleCreatorChat({
     void getMaloumChat(selectedCreatorId, initialChatId)
       .then((result) => {
         if (cancelled || !result.chat?._id) return;
+        if (userPickedChatRef.current && selectedChatIdRef.current !== result.chat._id) {
+          onDeepLinkConsumed?.();
+          return;
+        }
         setSelectedChatId(result.chat._id);
         setSelectedChat(result.chat);
+        onDeepLinkConsumed?.();
       })
       .catch((err) => {
         if (cancelled) return;
+        onDeepLinkConsumed?.();
         setOpenChatError(
           err instanceof Error ? err.message : 'Could not open this chat.'
         );
@@ -3112,7 +3360,7 @@ export function MaloumSingleCreatorChat({
     return () => {
       cancelled = true;
     };
-  }, [selectedCreatorId, initialChatId]);
+  }, [selectedCreatorId, initialChatId, onDeepLinkConsumed]);
 
   useEffect(() => {
     const sync = () => {
@@ -3225,9 +3473,13 @@ export function MaloumSingleCreatorChat({
             creatorId={selectedCreatorId}
             creatorName={selectedCreator?.displayName}
             selectedChatId={selectedChatId}
+            pollEnabled={pollEnabled}
+            messagesUnread={unreadByCreatorId[selectedCreatorId] || 0}
             onSelectChat={(chat) => {
+              userPickedChatRef.current = true;
               setSelectedChatId(chat._id);
               setSelectedChat(chat);
+              onDeepLinkConsumed?.();
             }}
           />
         ) : (
@@ -3241,6 +3493,7 @@ export function MaloumSingleCreatorChat({
             creator={selectedCreator}
             chatId={selectedChatId}
             initialChat={selectedChat}
+            pollEnabled={pollEnabled}
             onClose={() => {
               setSelectedChatId(null);
               setSelectedChat(null);

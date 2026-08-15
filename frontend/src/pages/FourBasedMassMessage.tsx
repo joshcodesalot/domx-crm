@@ -35,6 +35,8 @@ import { formatRelativeTime } from '@/components/fourbased/FourBasedChatPanels';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
+import { isCreatorRosterEvent } from '@/lib/creatorAccessEvents';
+import { useDocumentVisible } from '@/hooks/useDocumentVisible';
 import { useToast } from '@/context/ToastContext';
 import {
   countFourBasedMassMessageReceivers,
@@ -195,6 +197,7 @@ function mediaVideoSrc(
 }
 
 export default function FourBasedMassMessage() {
+  const documentVisible = useDocumentVisible();
   const { hasPermission } = useAuth();
   const { onSyncEvent } = useStaffSync();
   const confirm = useConfirm();
@@ -373,7 +376,8 @@ export default function FourBasedMassMessage() {
   }, [loadCreators]);
 
   useEffect(() => {
-    return onSyncEvent(() => {
+    return onSyncEvent((event) => {
+      if (!isCreatorRosterEvent(event)) return;
       void loadCreators();
     });
   }, [onSyncEvent, loadCreators]);
@@ -436,7 +440,7 @@ export default function FourBasedMassMessage() {
   }, [historyTab]);
 
   useEffect(() => {
-    if (!selectedCreatorId) return;
+    if (!selectedCreatorId || !documentVisible) return;
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
@@ -458,7 +462,7 @@ export default function FourBasedMassMessage() {
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [selectedCreatorId, unsendAll?.status]);
+  }, [selectedCreatorId, unsendAll?.status, documentVisible]);
 
   useEffect(() => {
     if (

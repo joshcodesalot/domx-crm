@@ -21,6 +21,7 @@ import { formatRelativeTime as formatMaloumRelativeTime } from '@/components/mal
 import { formatRelativeTime as formatFourBasedRelativeTime } from '@/components/fourbased/FourBasedChatPanels';
 import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
+import { isCreatorRosterEvent } from '@/lib/creatorAccessEvents';
 import { useToast } from '@/context/ToastContext';
 import {
   getCreators,
@@ -231,7 +232,8 @@ export default function AiBulkReplyPage({
   }, [loadCreators]);
 
   useEffect(() => {
-    return onSyncEvent(() => {
+    return onSyncEvent((event) => {
+      if (!isCreatorRosterEvent(event)) return;
       void loadCreators();
     });
   }, [onSyncEvent, loadCreators]);

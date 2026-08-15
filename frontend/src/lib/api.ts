@@ -420,10 +420,37 @@ export function isContentBlockedError(
   return err instanceof ApiError && err.code === 'CONTENT_BLOCKED';
 }
 
+const inflightGets = new Map<string, Promise<unknown>>();
+const GET_CACHE_TTL_MS = 5_000;
+const getCache = new Map<string, { expires: number; data: unknown }>();
+
+function shouldDedupeGet(options: RequestInit): boolean {
+  const method = String(options.method || 'GET').toUpperCase();
+  return method === 'GET' && !options.body;
+}
+
+function shouldCacheGet(path: string): boolean {
+  if (path === '/api/creators') return true;
+  return /\/api\/creators\/[^/]+\/(maloum|4based)\/badges(?:\?|$)/.test(path);
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const dedupe = shouldDedupeGet(options);
+  if (dedupe) {
+    if (shouldCacheGet(path)) {
+      const cached = getCache.get(path);
+      if (cached && cached.expires > Date.now()) {
+        return cached.data as T;
+      }
+    }
+    const inflight = inflightGets.get(path);
+    if (inflight) return inflight as Promise<T>;
+  }
+
+  const run = (async () => {
   const token = getToken();
   const headers: HeadersInit = {
     'Content-Type': 'application/json',
@@ -461,7 +488,20 @@ async function request<T>(
     });
   }
 
-  return data as T;
+    if (dedupe && shouldCacheGet(path)) {
+      getCache.set(path, { expires: Date.now() + GET_CACHE_TTL_MS, data });
+    }
+    return data as T;
+  })();
+
+  if (dedupe) {
+    inflightGets.set(path, run);
+    void run.finally(() => {
+      if (inflightGets.get(path) === run) inflightGets.delete(path);
+    });
+  }
+
+  return run as Promise<T>;
 }
 
 export async function login(
@@ -4207,6 +4247,21 @@ export async function cancelScheduledContent(
     method: 'POST',
     body: JSON.stringify({}),
   });
+}
+
+export async function fetchScheduledContentAsset(id: string): Promise<Blob> {
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+  }
+  const response = await fetch(`${API_URL}/api/scheduled-content/${id}/asset`, {
+    headers,
+  });
+  if (!response.ok) {
+    throw new Error('Image not found');
+  }
+  return response.blob();
 }
 
 export async function startMassUnsendAll(

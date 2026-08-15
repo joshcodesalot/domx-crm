@@ -31,15 +31,22 @@ import ScheduleDateTimePicker from '@/components/ScheduleDateTimePicker';
 import maloumIcon from '@/assets/maloum_icon.png';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
+import { isCreatorRosterEvent } from '@/lib/creatorAccessEvents';
 import { useToast } from '@/context/ToastContext';
 import {
   formatRelativeTime,
   friendlyVaultFolderName,
   isVideoAsset,
   vaultDirectUrl,
+  vaultThumbUrl,
   vaultPreviewFromItem,
   vaultUploadId,
 } from '@/components/maloum/MaloumChatPanels';
+import {
+  loadVaultListingCache,
+  setVaultListingCache,
+  vaultCacheKey,
+} from '@/lib/vaultListingCache';
 import {
   createMaloumPost,
   deleteMaloumPost,
@@ -59,6 +66,7 @@ import {
   type MaloumVaultMediaItem,
 } from '@/lib/api';
 import { berlinNowParts, berlinWallToIso, useStaffTimeZone } from '@/lib/berlinTime';
+import { friendlyCategoryName } from '@/lib/maloumLabels';
 
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const MAX_CATEGORIES = 3;
@@ -132,14 +140,6 @@ function mergeVaultMediaItems(
     next.push(item);
   }
   return next;
-}
-
-function friendlyCategoryName(name: string): string {
-  const raw = (name || '').trim();
-  if (!raw || raw === '__default__') return raw || 'Category';
-  return raw
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/^./, (c) => c.toUpperCase());
 }
 
 function postThumbUrl(creatorId: string, post: MaloumFeedPost): string | null {
@@ -315,7 +315,8 @@ export default function MaloumFeed() {
   }, [loadCreators]);
 
   useEffect(() => {
-    return onSyncEvent(() => {
+    return onSyncEvent((event) => {
+      if (!isCreatorRosterEvent(event)) return;
       void loadCreators();
     });
   }, [onSyncEvent, loadCreators]);
@@ -358,8 +359,18 @@ export default function MaloumFeed() {
     setVaultFoldersLoading(true);
     setVaultError(null);
     try {
+      const folderKey = vaultCacheKey({
+        platform: 'maloum',
+        creatorId: selectedCreatorId,
+        kind: 'folders',
+      });
+      const cached = await loadVaultListingCache<{ folders: MaloumVaultFolder[] }>(
+        folderKey
+      );
+      if (cached?.folders) setVaultFolders(cached.folders);
       const result = await listAllMaloumVaultFolders(selectedCreatorId);
       setVaultFolders(result.folders || []);
+      setVaultListingCache(folderKey, { folders: result.folders || [] });
     } catch (err) {
       setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
     } finally {
@@ -391,6 +402,24 @@ export default function MaloumFeed() {
       }
       setVaultError(null);
       try {
+        const mediaKey = vaultCacheKey({
+          platform: 'maloum',
+          creatorId: selectedCreatorId,
+          kind: 'media',
+          folderId,
+          filters: append ? undefined : 'feed-images',
+        });
+        if (!append) {
+          const cached = await loadVaultListingCache<{
+            items: MaloumVaultMediaItem[];
+            next: number | null;
+          }>(mediaKey);
+          if (cached?.items) {
+            setVaultItems(cached.items);
+            vaultMediaNextRef.current = cached.next;
+            setVaultMediaNext(cached.next);
+          }
+        }
         const result = await listMaloumVaultMedia(selectedCreatorId, folderId, {
           limit: 50,
           next: append && opts?.next != null ? opts.next : undefined,
@@ -407,6 +436,9 @@ export default function MaloumFeed() {
         setVaultItems((prev) =>
           append ? mergeVaultMediaItems(prev, items) : items
         );
+        if (!append) {
+          setVaultListingCache(mediaKey, { items, next });
+        }
       } catch (err) {
         setVaultError(err instanceof Error ? err.message : 'Failed to load media');
       } finally {
@@ -1233,7 +1265,9 @@ export default function MaloumFeed() {
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
                     {vaultItems.map((item) => {
                       const uploadId = vaultUploadId(item);
-                      const src = vaultDirectUrl(item);
+                      const src = selectedCreatorId
+                        ? vaultThumbUrl(selectedCreatorId, item)
+                        : null;
                       const selected =
                         Boolean(uploadId) &&
                         selectedVaultItem != null &&
