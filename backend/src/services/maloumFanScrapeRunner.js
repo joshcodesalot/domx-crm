@@ -48,8 +48,41 @@ function formatFanLabel(username, fanId) {
   return name || id || 'unknown';
 }
 
-function logFanResult(sign, label, outcome) {
-  console.log(`[fan-scrape] ${sign} ${label} - ${outcome}`);
+const MAX_RECENT_LOGS = 200;
+
+function normalizeRecentLogs(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    if (typeof item === 'string' && item.trim()) {
+      out.push({ at: 0, text: item.trim() });
+      continue;
+    }
+    if (!item || typeof item !== 'object') continue;
+    const text = typeof item.text === 'string' ? item.text.trim() : '';
+    if (!text) continue;
+    out.push({
+      at: Number(item.at) || 0,
+      text,
+    });
+  }
+  return out.slice(-MAX_RECENT_LOGS);
+}
+
+function appendActivityLog(cp, text) {
+  const line = String(text || '').trim();
+  if (!line) return cp;
+  console.log(`[fan-scrape] ${line}`);
+  const logs = Array.isArray(cp?.recentLogs) ? cp.recentLogs.slice() : [];
+  logs.push({ at: Date.now(), text: line });
+  return {
+    ...cp,
+    recentLogs: logs.length > MAX_RECENT_LOGS ? logs.slice(-MAX_RECENT_LOGS) : logs,
+  };
+}
+
+function logFanToCheckpoint(cp, sign, label, outcome) {
+  return appendActivityLog(cp, `${sign} ${label} - ${outcome}`);
 }
 
 function defaultCheckpoint() {
@@ -73,6 +106,7 @@ function defaultCheckpoint() {
     currentCreatorUsername: null,
     currentPostId: null,
     statusMessage: null,
+    recentLogs: [],
   };
 }
 
@@ -108,6 +142,7 @@ function normalizeCheckpoint(raw) {
         : String(raw.commentNext),
     statusMessage:
       typeof raw.statusMessage === 'string' ? raw.statusMessage : null,
+    recentLogs: normalizeRecentLogs(raw.recentLogs),
   };
 }
 
@@ -514,7 +549,7 @@ async function distributeFanToOthers(
     await assertStillRunning(motherCreatorId, generation);
     const label = formatFanLabel(fan.username, fanId);
     if (await fanExists(recipientId, fanId)) {
-      logFanResult('-', label, 'SKIPPED - ALREADY ADDED');
+      cp = logFanToCheckpoint(cp, '-', label, 'SKIPPED - ALREADY ADDED');
       continue;
     }
     try {
@@ -522,7 +557,7 @@ async function distributeFanToOthers(
       const listId = await resolveDistributeListId(recipient, listName, cache);
       if (!listId) {
         distributeFailed += 1;
-        logFanResult('-', label, 'FAILED - Missing distribute list');
+        cp = logFanToCheckpoint(cp, '-', label, 'FAILED - Missing distribute list');
         continue;
       }
       await addFanToCreatorList(
@@ -534,16 +569,17 @@ async function distributeFanToOthers(
         sourcePostId
       );
       distributedFans += 1;
-      logFanResult('+', label, 'ADDED TO THE LIST');
+      cp = logFanToCheckpoint(cp, '+', label, 'ADDED TO THE LIST');
     } catch (err) {
       if (err?.code === 'ABORTED') throw err;
       distributeFailed += 1;
       const reason = err?.message || 'Distribute failed';
-      logFanResult('-', label, `FAILED - ${reason}`);
-      cp = {
-        ...cp,
-        lastError: reason,
-      };
+      cp = logFanToCheckpoint(
+        { ...cp, lastError: reason },
+        '-',
+        label,
+        `FAILED - ${reason}`
+      );
     }
     await sleep(STEP_DELAY_MS);
   }
@@ -688,17 +724,29 @@ async function processFan(creator, motherCreatorId, listId, fan, sourceCreatorUs
   const fanId = fan?._id;
   const label = formatFanLabel(fan?.username, fanId);
   if (!fanId) {
-    logFanResult('-', label, 'SKIPPED - MISSING ID');
-    return { ...cp, skippedFans: cp.skippedFans + 1 };
+    return logFanToCheckpoint(
+      { ...cp, skippedFans: cp.skippedFans + 1 },
+      '-',
+      label,
+      'SKIPPED - MISSING ID'
+    );
   }
   if (fan.isCreator) {
-    logFanResult('-', label, 'SKIPPED - IS CREATOR');
-    return { ...cp, skippedFans: cp.skippedFans + 1 };
+    return logFanToCheckpoint(
+      { ...cp, skippedFans: cp.skippedFans + 1 },
+      '-',
+      label,
+      'SKIPPED - IS CREATOR'
+    );
   }
 
   if (await fanExists(motherCreatorId, fanId)) {
-    logFanResult('-', label, 'SKIPPED - ALREADY ADDED');
-    return { ...cp, skippedFans: cp.skippedFans + 1 };
+    return logFanToCheckpoint(
+      { ...cp, skippedFans: cp.skippedFans + 1 },
+      '-',
+      label,
+      'SKIPPED - ALREADY ADDED'
+    );
   }
 
   try {
@@ -710,21 +758,29 @@ async function processFan(creator, motherCreatorId, listId, fan, sourceCreatorUs
       sourceCreatorUsername,
       sourcePostId
     );
-    logFanResult('+', label, 'ADDED TO THE LIST');
-    return {
-      ...cp,
-      processedFans: cp.processedFans + 1,
-      lastError: null,
-    };
+    return logFanToCheckpoint(
+      {
+        ...cp,
+        processedFans: cp.processedFans + 1,
+        lastError: null,
+      },
+      '+',
+      label,
+      'ADDED TO THE LIST'
+    );
   } catch (err) {
     if (err?.code === 'ABORTED') throw err;
     const reason = err?.message || 'Failed to process fan';
-    logFanResult('-', label, `FAILED - ${reason}`);
-    return {
-      ...cp,
-      failedFans: cp.failedFans + 1,
-      lastError: reason,
-    };
+    return logFanToCheckpoint(
+      {
+        ...cp,
+        failedFans: cp.failedFans + 1,
+        lastError: reason,
+      },
+      '-',
+      label,
+      `FAILED - ${reason}`
+    );
   }
 }
 
@@ -814,8 +870,12 @@ async function runImportToLists(motherCreatorId, job, generation) {
 
       const label = formatFanLabel(null, fanId);
       if (await fanExists(recipientId, fanId)) {
-        logFanResult('-', label, 'SKIPPED - ALREADY ADDED');
-        cp = { ...cp, skippedFans: cp.skippedFans + 1 };
+        cp = logFanToCheckpoint(
+          { ...cp, skippedFans: cp.skippedFans + 1 },
+          '-',
+          label,
+          'SKIPPED - ALREADY ADDED'
+        );
       } else {
         try {
           const recipient = await loadMaloumCreator(recipientId);
@@ -840,13 +900,17 @@ async function runImportToLists(motherCreatorId, job, generation) {
             'import_ids',
             null
           );
-          logFanResult('+', label, 'ADDED TO THE LIST');
-          cp = {
-            ...cp,
-            processedFans: cp.processedFans + 1,
-            distributeListCache: cache,
-            lastError: null,
-          };
+          cp = logFanToCheckpoint(
+            {
+              ...cp,
+              processedFans: cp.processedFans + 1,
+              distributeListCache: cache,
+              lastError: null,
+            },
+            '+',
+            label,
+            'ADDED TO THE LIST'
+          );
           if (recipientId !== motherCreatorId) {
             cp = {
               ...cp,
@@ -856,13 +920,17 @@ async function runImportToLists(motherCreatorId, job, generation) {
         } catch (err) {
           if (err?.code === 'ABORTED') throw err;
           const reason = err?.message || 'Failed to add fan to list';
-          logFanResult('-', label, `FAILED - ${reason}`);
-          cp = {
-            ...cp,
-            failedFans: cp.failedFans + 1,
-            distributeListCache: cache,
-            lastError: reason,
-          };
+          cp = logFanToCheckpoint(
+            {
+              ...cp,
+              failedFans: cp.failedFans + 1,
+              distributeListCache: cache,
+              lastError: reason,
+            },
+            '-',
+            label,
+            `FAILED - ${reason}`
+          );
         }
       }
 
@@ -968,16 +1036,18 @@ async function runListScrape(motherCreatorId, job, generation) {
           });
         } catch (err) {
           if (isSkippablePostError(err)) {
-            console.log(`[fan-scrape] - POST ${postId} - SKIPPED - LOCKED/MISSING`);
-            cp = {
-              ...cp,
-              skippedPosts: (cp.skippedPosts || 0) + 1,
-              lastError: err?.message || 'Post skipped (locked/missing)',
-              commentNext: null,
-              currentPostId: null,
-              postIndex: cp.postIndex + 1,
-              statusMessage: `@${username} · skipped locked/missing post · fans ${cp.processedFans} · skipped posts ${(cp.skippedPosts || 0)}`,
-            };
+            cp = appendActivityLog(
+              {
+                ...cp,
+                skippedPosts: (cp.skippedPosts || 0) + 1,
+                lastError: err?.message || 'Post skipped (locked/missing)',
+                commentNext: null,
+                currentPostId: null,
+                postIndex: cp.postIndex + 1,
+                statusMessage: `@${username} · skipped locked/missing post · fans ${cp.processedFans} · skipped posts ${(cp.skippedPosts || 0)}`,
+              },
+              `- POST ${postId} - SKIPPED - LOCKED/MISSING`
+            );
             await saveCheckpoint(motherCreatorId, cp, 'running');
             postSkipped = true;
             break;

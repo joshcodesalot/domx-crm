@@ -47,8 +47,41 @@ function formatFanLabel(username, fanId) {
   return name || id || 'unknown';
 }
 
-function logFanResult(sign, label, outcome) {
-  console.log(`[4based-fan-scrape] ${sign} ${label} - ${outcome}`);
+const MAX_RECENT_LOGS = 200;
+
+function normalizeRecentLogs(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    if (typeof item === 'string' && item.trim()) {
+      out.push({ at: 0, text: item.trim() });
+      continue;
+    }
+    if (!item || typeof item !== 'object') continue;
+    const text = typeof item.text === 'string' ? item.text.trim() : '';
+    if (!text) continue;
+    out.push({
+      at: Number(item.at) || 0,
+      text,
+    });
+  }
+  return out.slice(-MAX_RECENT_LOGS);
+}
+
+function appendActivityLog(cp, text) {
+  const line = String(text || '').trim();
+  if (!line) return cp;
+  console.log(`[4based-fan-scrape] ${line}`);
+  const logs = Array.isArray(cp?.recentLogs) ? cp.recentLogs.slice() : [];
+  logs.push({ at: Date.now(), text: line });
+  return {
+    ...cp,
+    recentLogs: logs.length > MAX_RECENT_LOGS ? logs.slice(-MAX_RECENT_LOGS) : logs,
+  };
+}
+
+function logFanToCheckpoint(cp, sign, label, outcome) {
+  return appendActivityLog(cp, `${sign} ${label} - ${outcome}`);
 }
 
 async function sleepInterruptible(ms, motherCreatorId, generation) {
@@ -77,6 +110,7 @@ function defaultCheckpoint() {
     currentPostId: null,
     statusMessage: null,
     trendingExhausted: false,
+    recentLogs: [],
   };
 }
 
@@ -104,6 +138,7 @@ function normalizeCheckpoint(raw) {
     currentPostId:
       raw.currentPostId == null ? null : String(raw.currentPostId),
     lastError: raw.lastError == null ? null : String(raw.lastError),
+    recentLogs: normalizeRecentLogs(raw.recentLogs),
   };
 }
 
@@ -427,34 +462,54 @@ async function processFan(creator, job, fan, sourcePostId, cp, senderCreatorId) 
   const fanId = fan?._id;
   const label = formatFanLabel(fan?.name || fan?.username, fanId);
   if (!fanId) {
-    logFanResult('-', label, 'SKIPPED - MISSING ID');
-    return { ...cp, skippedFans: cp.skippedFans + 1 };
+    return logFanToCheckpoint(
+      { ...cp, skippedFans: cp.skippedFans + 1 },
+      '-',
+      label,
+      'SKIPPED - MISSING ID'
+    );
   }
   if (fan.own) {
-    logFanResult('-', label, 'SKIPPED - OWN ACCOUNT');
-    return { ...cp, skippedFans: cp.skippedFans + 1 };
+    return logFanToCheckpoint(
+      { ...cp, skippedFans: cp.skippedFans + 1 },
+      '-',
+      label,
+      'SKIPPED - OWN ACCOUNT'
+    );
   }
   if (isNotContactable(fan.cold_communication_status)) {
-    logFanResult('-', label, 'SKIPPED - NOT CONTACTABLE');
-    return { ...cp, skippedFans: cp.skippedFans + 1 };
+    return logFanToCheckpoint(
+      { ...cp, skippedFans: cp.skippedFans + 1 },
+      '-',
+      label,
+      'SKIPPED - NOT CONTACTABLE'
+    );
   }
 
   const ownerId = senderCreatorId || job.motherCreatorId;
   if (await fanExists(ownerId, fanId)) {
-    logFanResult('-', label, 'SKIPPED - ALREADY MESSAGED');
-    return { ...cp, skippedFans: cp.skippedFans + 1 };
+    return logFanToCheckpoint(
+      { ...cp, skippedFans: cp.skippedFans + 1 },
+      '-',
+      label,
+      'SKIPPED - ALREADY MESSAGED'
+    );
   }
 
   try {
     const chatId = await openOrCreateChat(creator, fanId);
     if (!chatId) {
       const reason = `No chat opened for fan ${fanId}`;
-      logFanResult('-', label, `FAILED - ${reason}`);
-      return {
-        ...cp,
-        failedFans: cp.failedFans + 1,
-        lastError: reason,
-      };
+      return logFanToCheckpoint(
+        {
+          ...cp,
+          failedFans: cp.failedFans + 1,
+          lastError: reason,
+        },
+        '-',
+        label,
+        `FAILED - ${reason}`
+      );
     }
 
     let messageId = null;
@@ -487,25 +542,37 @@ async function processFan(creator, job, fan, sourcePostId, cp, senderCreatorId) 
       messageId,
     });
 
-    logFanResult('+', label, 'MESSAGED');
-    return {
-      ...cp,
-      processedFans: cp.processedFans + 1,
-      lastError: null,
-    };
+    return logFanToCheckpoint(
+      {
+        ...cp,
+        processedFans: cp.processedFans + 1,
+        lastError: null,
+      },
+      '+',
+      label,
+      'MESSAGED'
+    );
   } catch (err) {
     if (err?.code === 'ABORTED') throw err;
     if (isInteractionRestricted(err)) {
-      logFanResult('-', label, 'SKIPPED - INTERACTION RESTRICTED');
-      return { ...cp, skippedFans: cp.skippedFans + 1 };
+      return logFanToCheckpoint(
+        { ...cp, skippedFans: cp.skippedFans + 1 },
+        '-',
+        label,
+        'SKIPPED - INTERACTION RESTRICTED'
+      );
     }
     const reason = err?.message || 'Failed to message fan';
-    logFanResult('-', label, `FAILED - ${reason}`);
-    return {
-      ...cp,
-      failedFans: cp.failedFans + 1,
-      lastError: reason,
-    };
+    return logFanToCheckpoint(
+      {
+        ...cp,
+        failedFans: cp.failedFans + 1,
+        lastError: reason,
+      },
+      '-',
+      label,
+      `FAILED - ${reason}`
+    );
   }
 }
 
@@ -645,12 +712,16 @@ async function runImportColdDm(motherCreatorId, job, generation) {
       } catch (err) {
         if (err?.code === 'ABORTED') throw err;
         const reason = err?.message || 'Failed to cold DM fan';
-        logFanResult('-', formatFanLabel(fan.username, fan.fanId), `FAILED - ${reason}`);
-        cp = {
-          ...cp,
-          failedFans: cp.failedFans + 1,
-          lastError: reason,
-        };
+        cp = logFanToCheckpoint(
+          {
+            ...cp,
+            failedFans: cp.failedFans + 1,
+            lastError: reason,
+          },
+          '-',
+          formatFanLabel(fan.username, fan.fanId),
+          `FAILED - ${reason}`
+        );
       }
 
       const cooldownMs = randomFanCooldownMs();
@@ -728,16 +799,18 @@ async function runTrendingScrape(motherCreatorId, job, generation) {
           });
         } catch (err) {
           if (isSkippableFileStackError(err)) {
-            console.log(`[4based-fan-scrape] - POST ${postId} - SKIPPED - MISSING FILESTACK`);
-            cp = {
-              ...cp,
-              skippedPosts: (cp.skippedPosts || 0) + 1,
-              lastError: err?.message || 'FileStack skipped (missing)',
-              commentOffset: 0,
-              currentPostId: null,
-              postIndex: cp.postIndex + 1,
-              statusMessage: `Skipped missing FileStack · fans ${cp.processedFans} · skipped posts ${(cp.skippedPosts || 0)}`,
-            };
+            cp = appendActivityLog(
+              {
+                ...cp,
+                skippedPosts: (cp.skippedPosts || 0) + 1,
+                lastError: err?.message || 'FileStack skipped (missing)',
+                commentOffset: 0,
+                currentPostId: null,
+                postIndex: cp.postIndex + 1,
+                statusMessage: `Skipped missing FileStack · fans ${cp.processedFans} · skipped posts ${(cp.skippedPosts || 0)}`,
+              },
+              `- POST ${postId} - SKIPPED - MISSING FILESTACK`
+            );
             await saveCheckpoint(motherCreatorId, cp, 'running');
             postSkipped = true;
             break;

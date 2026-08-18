@@ -10,6 +10,7 @@ import {
 import { Link } from 'react-router-dom';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import FanScrapeActivityLog from '@/components/FanScrapeActivityLog';
 import maloumIcon from '@/assets/maloum_icon.png';
 import { useToast } from '@/context/ToastContext';
 import { useDocumentVisible } from '@/hooks/useDocumentVisible';
@@ -73,6 +74,7 @@ function emptyCheckpoint(): MaloumFanScrapeCheckpoint {
     currentCreatorUsername: null,
     currentPostId: null,
     statusMessage: null,
+    recentLogs: [],
   };
 }
 
@@ -699,6 +701,7 @@ export default function MaloumFanScraper() {
               </Link>
               .
             </p>
+            <FanScrapeActivityLog logs={checkpoint.recentLogs} />
           </section>
 
           <section className="space-y-3">

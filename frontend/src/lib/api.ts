@@ -3435,6 +3435,11 @@ export type MaloumFanScrapeJobStatus =
   | 'completed'
   | 'failed';
 
+export interface FanScrapeLogEntry {
+  at?: number;
+  text: string;
+}
+
 export interface MaloumFanScrapeCheckpoint {
   sourceCreators: string[];
   creatorIndex: number;
@@ -3454,6 +3459,7 @@ export interface MaloumFanScrapeCheckpoint {
   currentCreatorUsername: string | null;
   currentPostId: string | null;
   statusMessage?: string | null;
+  recentLogs?: FanScrapeLogEntry[];
 }
 
 export interface MaloumFanScrapeJob {
@@ -3598,6 +3604,7 @@ export interface FourBasedFanScrapeCheckpoint {
   currentPostId: string | null;
   statusMessage?: string | null;
   trendingExhausted?: boolean;
+  recentLogs?: FanScrapeLogEntry[];
 }
 
 export interface FourBasedFanScrapeJob {

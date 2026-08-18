@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import FanScrapeActivityLog from '@/components/FanScrapeActivityLog';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import { useToast } from '@/context/ToastContext';
@@ -54,6 +55,7 @@ function emptyCheckpoint(): FourBasedFanScrapeCheckpoint {
     currentPostId: null,
     statusMessage: null,
     trendingExhausted: false,
+    recentLogs: [],
   };
 }
 
@@ -662,6 +664,7 @@ export default function FourBasedFanScraper() {
                 ? 'Source: Import IDs (cold DM). Runs on the DomX API — closing the CRM will not stop it.'
                 : 'Source: Trending (unlimited). Scraping runs on the DomX API — closing the CRM will not stop it.'}
             </p>
+            <FanScrapeActivityLog logs={checkpoint.recentLogs} />
           </section>
 
           <section className="space-y-3">
