@@ -29,6 +29,12 @@ const {
 const { emitToUser, emitToUsers } = require('../services/userEventBus');
 const fourBasedClient = require('../services/fourBasedClient');
 const maloumClient = require('../services/maloumClient');
+const {
+  InvalidProxyError,
+  buildProxyUrl,
+  parseProxyParts,
+  customProxyFromBody,
+} = require('../services/proxyUrl');
 const { applyModeration } = require('../services/contentModeration');
 const messagingDashboard = require('./messagingDashboard');
 const {
@@ -131,6 +137,7 @@ function toCreator(row) {
     partitionId: row.partitionId || null,
     loginEmail: row.loginEmail || null,
     hasSavedCredentials: Boolean(row.encryptedLoginPassword),
+    hasCustomProxy: Boolean(row.hasCustomProxy),
     lastValidatedAt: row.lastValidatedAt || null,
     authRefreshState: row.authRefreshState || 'active',
     accessTokenExpiresAt: row.accessTokenExpiresAt || null,
@@ -332,6 +339,50 @@ function isValidUuid(value) {
   );
 }
 
+function readCustomProxy(body) {
+  try {
+    return { ok: true, ...customProxyFromBody(body) };
+  } catch (err) {
+    if (err instanceof InvalidProxyError) {
+      return { ok: false, error: err.message };
+    }
+    throw err;
+  }
+}
+
+function encryptCustomProxy(provided, resolvedUrl) {
+  if (!provided || !resolvedUrl) {
+    return null;
+  }
+  return encryptSecret(resolvedUrl);
+}
+
+function decryptStoredProxy(encryptedProxy) {
+  if (!encryptedProxy) {
+    return null;
+  }
+  try {
+    return decryptSecret(encryptedProxy) || null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveSessionProxyUrl(encryptedProxy, platform) {
+  const stored = decryptStoredProxy(encryptedProxy);
+  if (stored) {
+    return stored;
+  }
+  try {
+    if (platform === '4based') {
+      return fourBasedClient.resolveFourBasedProxyUrl(null);
+    }
+    return maloumClient.resolveMaloumProxyUrl(null);
+  } catch {
+    return null;
+  }
+}
+
 function isClientMaloumSession(body) {
   return Array.isArray(body?.cookies) && body.cookies.length > 0;
 }
@@ -400,7 +451,8 @@ const CREATOR_SELECT_COLUMNS = `
   id, "displayName", username, platform, "connectionStatus",
   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
   "loginEmail", "encryptedLoginPassword", "lastValidatedAt", "authRefreshState",
-  "accessTokenExpiresAt", "createdAt", "updatedAt"
+  "accessTokenExpiresAt", "createdAt", "updatedAt",
+  ("encryptedProxy" IS NOT NULL) AS "hasCustomProxy"
 `;
 
 function encryptOptionalLoginPassword(password) {
@@ -439,7 +491,8 @@ router.get('/', authenticate, requirePermission('creators.view'), async (req, re
         `SELECT c.id, c."displayName", c.username, c.platform, c."connectionStatus",
                 c."postLoginUrl", c."avatarUrl", c."avatarSource", c."staffCount", c."accountId",
                 c."partitionId", c."loginEmail", c."encryptedLoginPassword", c."lastValidatedAt",
-                c."authRefreshState", c."accessTokenExpiresAt", c."createdAt", c."updatedAt"
+                c."authRefreshState", c."accessTokenExpiresAt", c."createdAt", c."updatedAt",
+                (c."encryptedProxy" IS NOT NULL) AS "hasCustomProxy"
          FROM creators c
          INNER JOIN creator_staff_assignments a
            ON a."creatorId" = c.id AND a."userId" = $1
@@ -472,7 +525,6 @@ router.post(
       postLoginUrl,
       avatarUrl,
       password,
-      proxyUrl,
     } = req.body;
 
     if (!accountId || !platform) {
@@ -498,9 +550,14 @@ router.post(
         return res.status(400).json({ error: 'Password is required' });
       }
 
+      const customProxy = readCustomProxy(req.body);
+      if (!customProxy.ok) {
+        return res.status(400).json({ error: customProxy.error });
+      }
+
       let resolvedProxy;
       try {
-        resolvedProxy = fourBasedClient.resolveFourBasedProxyUrl(proxyUrl);
+        resolvedProxy = fourBasedClient.resolveFourBasedProxyUrl(customProxy.proxyUrl);
       } catch (err) {
         if (err instanceof fourBasedClient.FourBasedApiError) {
           return res.status(err.status || 400).json({ error: err.message });
@@ -565,7 +622,7 @@ router.post(
         };
         const encryptedSession = encryptJson(sessionPayload);
         const encryptedAccessToken = encryptSecret(loginResult.token);
-        const encryptedProxy = encryptSecret(resolvedProxy);
+        const encryptedProxy = encryptCustomProxy(customProxy.provided, resolvedProxy);
         const encryptedLoginPassword = encryptOptionalLoginPassword(password);
         const expiresAt = new Date(Date.now() + PENDING_TTL_MINUTES * 60 * 1000);
         const resolvedDisplayName =
@@ -643,9 +700,14 @@ router.post(
       return res.status(400).json({ error: 'Password is required' });
     }
 
+    const customProxy = readCustomProxy(req.body);
+    if (!customProxy.ok) {
+      return res.status(400).json({ error: customProxy.error });
+    }
+
     let resolvedProxy;
     try {
-      resolvedProxy = maloumClient.resolveMaloumProxyUrl(proxyUrl);
+      resolvedProxy = maloumClient.resolveMaloumProxyUrl(customProxy.proxyUrl);
     } catch (err) {
       if (err instanceof maloumClient.MaloumApiError) {
         return res.status(err.status || 400).json({ error: err.message });
@@ -710,7 +772,7 @@ router.post(
         refreshToken: loginResult.refreshToken,
         expiresAt: loginResult.expiresAt,
       });
-      const encryptedProxy = encryptSecret(resolvedProxy);
+      const encryptedProxy = encryptCustomProxy(customProxy.provided, resolvedProxy);
       const encryptedLoginPassword = encryptOptionalLoginPassword(password);
       const expiresAt = new Date(Date.now() + PENDING_TTL_MINUTES * 60 * 1000);
       const resolvedDisplayName =
@@ -867,7 +929,8 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
        RETURNING id, "displayName", username, platform, "connectionStatus",
                  "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
                  "loginEmail", "lastValidatedAt", "authRefreshState", "accessTokenExpiresAt",
-                 "providerUserId", "createdAt", "updatedAt"`,
+                 "providerUserId", "createdAt", "updatedAt",
+                 ("encryptedProxy" IS NOT NULL) AS "hasCustomProxy"`,
       [
         displayName.trim(),
         username?.trim() || pending?.username || null,
@@ -1503,7 +1566,7 @@ router.get(
 
       const result = await pool.query(
         `SELECT id, "displayName", username, "avatarUrl", "accountId", "partitionId",
-                "encryptedSession", "encryptedProxy", "connectionStatus", "updatedAt"
+                "encryptedSession", "encryptedProxy", platform, "connectionStatus", "updatedAt"
          FROM creators
          WHERE id = $1`,
         [id]
@@ -1526,14 +1589,7 @@ router.get(
         typeof session.userAgent === 'string' && session.userAgent.trim()
           ? session.userAgent.trim()
           : null;
-      let proxyUrl = null;
-      if (creator.encryptedProxy) {
-        try {
-          proxyUrl = decryptSecret(creator.encryptedProxy) || null;
-        } catch {
-          proxyUrl = null;
-        }
-      }
+      const proxyUrl = resolveSessionProxyUrl(creator.encryptedProxy, creator.platform);
 
       res.json({
         accountId: creator.accountId,
@@ -1675,6 +1731,114 @@ router.patch(
     } catch (err) {
       console.error('Rename creator error:', err);
       res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/:id/proxy',
+  authenticate,
+  requirePermission('creators.manage'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const result = await pool.query(
+        `SELECT id, platform, "encryptedProxy"
+         FROM creators WHERE id = $1`,
+        [id]
+      );
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+
+      const row = result.rows[0];
+      const stored = decryptStoredProxy(row.encryptedProxy);
+      const parts = stored ? parseProxyParts(stored) : null;
+      const envLabel =
+        row.platform === '4based' ? 'FOURBASED_PROXY_URL' : 'MALOUM_PROXY_URL';
+
+      return res.json({
+        hasCustomProxy: Boolean(stored),
+        proxyHost: parts?.hostPort || null,
+        proxyUsername: parts?.username || null,
+        envLabel,
+      });
+    } catch (err) {
+      console.error('Get creator proxy error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.put(
+  '/:id/proxy',
+  authenticate,
+  requirePermission('creators.manage'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    const proxyHost =
+      typeof req.body?.proxyHost === 'string' ? req.body.proxyHost.trim() : '';
+    const proxyUsername =
+      typeof req.body?.proxyUsername === 'string' ? req.body.proxyUsername : '';
+    const proxyPassword =
+      typeof req.body?.proxyPassword === 'string' ? req.body.proxyPassword : '';
+
+    try {
+      const existing = await pool.query(
+        `SELECT id, platform, "encryptedProxy"
+         FROM creators WHERE id = $1`,
+        [id]
+      );
+      if (existing.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+
+      if (!proxyHost) {
+        const updated = await pool.query(
+          `UPDATE creators
+           SET "encryptedProxy" = NULL, "updatedAt" = NOW()
+           WHERE id = $1
+           RETURNING ${CREATOR_SELECT_COLUMNS}`,
+          [id]
+        );
+        return res.json({ creator: toCreator(updated.rows[0]) });
+      }
+
+      let passwordToStore = proxyPassword;
+      if (!proxyPassword) {
+        const stored = decryptStoredProxy(existing.rows[0].encryptedProxy);
+        const parts = stored ? parseProxyParts(stored) : null;
+        if (parts?.password) {
+          passwordToStore = parts.password;
+        }
+      }
+
+      const built = buildProxyUrl(proxyHost, proxyUsername, passwordToStore);
+      if (!built) {
+        return res.status(400).json({
+          error: 'Proxy address is invalid. Use host:port (for example 1.2.3.4:8080).',
+        });
+      }
+
+      const updated = await pool.query(
+        `UPDATE creators
+         SET "encryptedProxy" = $2, "updatedAt" = NOW()
+         WHERE id = $1
+         RETURNING ${CREATOR_SELECT_COLUMNS}`,
+        [id, encryptSecret(built)]
+      );
+      return res.json({ creator: toCreator(updated.rows[0]) });
+    } catch (err) {
+      console.error('Update creator proxy error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
     }
   }
 );
@@ -2002,27 +2166,24 @@ async function refreshFourBasedSessionFromSaved(creatorId) {
     };
     const encryptedSession = encryptJson(sessionPayload);
     const encryptedAccessToken = encryptSecret(loginResult.token);
-    const encryptedProxy = encryptSecret(resolvedProxy);
 
     await pool.query(
       `UPDATE creators SET
          "encryptedSession" = $1,
          "encryptedAccessToken" = $2,
-         "encryptedProxy" = $3,
-         "providerUserId" = $4,
-         "loginEmail" = $5,
-         username = COALESCE($6, username),
-         "avatarUrl" = COALESCE($7, "avatarUrl"),
-         "postLoginUrl" = $8,
+         "providerUserId" = $3,
+         "loginEmail" = $4,
+         username = COALESCE($5, username),
+         "avatarUrl" = COALESCE($6, "avatarUrl"),
+         "postLoginUrl" = $7,
          "connectionStatus" = 'connected',
          "lastValidatedAt" = NOW(),
          "authRefreshState" = 'active',
          "updatedAt" = NOW()
-       WHERE id = $9`,
+       WHERE id = $8`,
       [
         encryptedSession,
         encryptedAccessToken,
-        encryptedProxy,
         loginResult.providerUserId,
         loginEmail,
         loginResult.username,
@@ -2479,7 +2640,7 @@ router.post(
   connectLimiter,
   async (req, res) => {
     const { id } = req.params;
-    const { email, password, proxyUrl } = req.body || {};
+    const { email, password } = req.body || {};
 
     if (!isValidUuid(id)) {
       return res.status(400).json({ error: 'Invalid creator ID' });
@@ -2491,19 +2652,14 @@ router.post(
       return res.status(400).json({ error: 'Password is required' });
     }
 
-    let resolvedProxy;
-    try {
-      resolvedProxy = fourBasedClient.resolveFourBasedProxyUrl(proxyUrl);
-    } catch (err) {
-      if (err instanceof fourBasedClient.FourBasedApiError) {
-        return res.status(err.status || 400).json({ error: err.message });
-      }
-      throw err;
+    const customProxy = readCustomProxy(req.body);
+    if (!customProxy.ok) {
+      return res.status(400).json({ error: customProxy.error });
     }
 
     try {
       const result = await pool.query(
-        `SELECT id, platform, "accountId", "displayName"
+        `SELECT id, platform, "accountId", "displayName", "encryptedProxy"
          FROM creators WHERE id = $1`,
         [id]
       );
@@ -2512,6 +2668,19 @@ router.post(
       }
       if (result.rows[0].platform !== '4based') {
         return res.status(400).json({ error: 'Creator is not a 4based account' });
+      }
+
+      const storedProxy = decryptStoredProxy(result.rows[0].encryptedProxy);
+      let resolvedProxy;
+      try {
+        resolvedProxy = fourBasedClient.resolveFourBasedProxyUrl(
+          customProxy.provided ? customProxy.proxyUrl : storedProxy
+        );
+      } catch (err) {
+        if (err instanceof fourBasedClient.FourBasedApiError) {
+          return res.status(err.status || 400).json({ error: err.message });
+        }
+        throw err;
       }
 
       let loginResult;
@@ -2545,32 +2714,30 @@ router.post(
       };
       const encryptedSession = encryptJson(sessionPayload);
       const encryptedAccessToken = encryptSecret(loginResult.token);
-      const encryptedProxy = encryptSecret(resolvedProxy);
+      const encryptedProxy = encryptCustomProxy(customProxy.provided, resolvedProxy);
       const encryptedLoginPassword = encryptOptionalLoginPassword(password);
 
       const updated = await pool.query(
         `UPDATE creators SET
            "encryptedSession" = $1,
            "encryptedAccessToken" = $2,
-           "encryptedProxy" = $3,
-           "providerUserId" = $4,
-           "loginEmail" = $5,
-           "encryptedLoginPassword" = COALESCE($6, "encryptedLoginPassword"),
-           username = COALESCE($7, username),
-           "avatarUrl" = COALESCE($8, "avatarUrl"),
-           "postLoginUrl" = $9,
+           "encryptedProxy" = CASE WHEN $3::boolean THEN $4 ELSE "encryptedProxy" END,
+           "providerUserId" = $5,
+           "loginEmail" = $6,
+           "encryptedLoginPassword" = COALESCE($7, "encryptedLoginPassword"),
+           username = COALESCE($8, username),
+           "avatarUrl" = COALESCE($9, "avatarUrl"),
+           "postLoginUrl" = $10,
            "connectionStatus" = 'connected',
            "lastValidatedAt" = NOW(),
            "authRefreshState" = 'active',
            "updatedAt" = NOW()
-         WHERE id = $10
-         RETURNING id, "displayName", username, platform, "connectionStatus",
-                   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
-                   "loginEmail", "lastValidatedAt", "authRefreshState", "accessTokenExpiresAt",
-                   "createdAt", "updatedAt"`,
+         WHERE id = $11
+         RETURNING ${CREATOR_SELECT_COLUMNS}`,
         [
           encryptedSession,
           encryptedAccessToken,
+          customProxy.provided,
           encryptedProxy,
           loginResult.providerUserId,
           loginEmail,
@@ -2678,31 +2845,25 @@ router.post(
       };
       const encryptedSession = encryptJson(sessionPayload);
       const encryptedAccessToken = encryptSecret(loginResult.token);
-      const encryptedProxy = encryptSecret(resolvedProxy);
 
       const updated = await pool.query(
         `UPDATE creators SET
            "encryptedSession" = $1,
            "encryptedAccessToken" = $2,
-           "encryptedProxy" = $3,
-           "providerUserId" = $4,
-           "loginEmail" = $5,
-           username = COALESCE($6, username),
-           "avatarUrl" = COALESCE($7, "avatarUrl"),
-           "postLoginUrl" = $8,
+           "providerUserId" = $3,
+           "loginEmail" = $4,
+           username = COALESCE($5, username),
+           "avatarUrl" = COALESCE($6, "avatarUrl"),
+           "postLoginUrl" = $7,
            "connectionStatus" = 'connected',
            "lastValidatedAt" = NOW(),
            "authRefreshState" = 'active',
            "updatedAt" = NOW()
-         WHERE id = $9
-         RETURNING id, "displayName", username, platform, "connectionStatus",
-                   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
-                   "loginEmail", "encryptedLoginPassword", "lastValidatedAt", "authRefreshState",
-                   "accessTokenExpiresAt", "createdAt", "updatedAt"`,
+         WHERE id = $8
+         RETURNING ${CREATOR_SELECT_COLUMNS}`,
         [
           encryptedSession,
           encryptedAccessToken,
-          encryptedProxy,
           loginResult.providerUserId,
           loginEmail,
           loginResult.username,
@@ -2738,7 +2899,7 @@ router.post(
   connectLimiter,
   async (req, res) => {
     const { id } = req.params;
-    const { email, password, proxyUrl } = req.body || {};
+    const { email, password } = req.body || {};
 
     if (!isValidUuid(id)) {
       return res.status(400).json({ error: 'Invalid creator ID' });
@@ -2750,19 +2911,15 @@ router.post(
       return res.status(400).json({ error: 'Password is required' });
     }
 
-    let resolvedProxy;
-    try {
-      resolvedProxy = maloumClient.resolveMaloumProxyUrl(proxyUrl);
-    } catch (err) {
-      if (err instanceof maloumClient.MaloumApiError) {
-        return res.status(err.status || 400).json({ error: err.message });
-      }
-      throw err;
+    const customProxy = readCustomProxy(req.body);
+    if (!customProxy.ok) {
+      return res.status(400).json({ error: customProxy.error });
     }
 
     try {
       const result = await pool.query(
-        `SELECT id, platform, "accountId", "displayName", "avatarUrl", "avatarSource"
+        `SELECT id, platform, "accountId", "displayName", "avatarUrl", "avatarSource",
+                "encryptedProxy"
          FROM creators WHERE id = $1`,
         [id]
       );
@@ -2771,6 +2928,19 @@ router.post(
       }
       if (result.rows[0].platform !== 'maloum') {
         return res.status(400).json({ error: 'Creator is not a Maloum account' });
+      }
+
+      const storedProxy = decryptStoredProxy(result.rows[0].encryptedProxy);
+      let resolvedProxy;
+      try {
+        resolvedProxy = maloumClient.resolveMaloumProxyUrl(
+          customProxy.provided ? customProxy.proxyUrl : storedProxy
+        );
+      } catch (err) {
+        if (err instanceof maloumClient.MaloumApiError) {
+          return res.status(err.status || 400).json({ error: err.message });
+        }
+        throw err;
       }
 
       let loginResult;
@@ -2804,7 +2974,7 @@ router.post(
         refreshToken: loginResult.refreshToken,
         expiresAt: loginResult.expiresAt,
       });
-      const encryptedProxy = encryptSecret(resolvedProxy);
+      const encryptedProxy = encryptCustomProxy(customProxy.provided, resolvedProxy);
       const encryptedLoginPassword = encryptOptionalLoginPassword(password);
 
       const creator = result.rows[0];
@@ -2832,29 +3002,27 @@ router.post(
            "encryptedAccessToken" = $2,
            "encryptedRefreshToken" = $3,
            "accessTokenExpiresAt" = $4,
-           "encryptedProxy" = $5,
-           "providerUserId" = $6,
-           "loginEmail" = $7,
-           "encryptedLoginPassword" = COALESCE($8, "encryptedLoginPassword"),
-           username = COALESCE($9, username),
-           "avatarUrl" = COALESCE($10, "avatarUrl"),
-           "avatarSource" = COALESCE($11, "avatarSource"),
-           "postLoginUrl" = $12,
+           "encryptedProxy" = CASE WHEN $5::boolean THEN $6 ELSE "encryptedProxy" END,
+           "providerUserId" = $7,
+           "loginEmail" = $8,
+           "encryptedLoginPassword" = COALESCE($9, "encryptedLoginPassword"),
+           username = COALESCE($10, username),
+           "avatarUrl" = COALESCE($11, "avatarUrl"),
+           "avatarSource" = COALESCE($12, "avatarSource"),
+           "postLoginUrl" = $13,
            "connectionStatus" = 'connected',
            "lastValidatedAt" = NOW(),
            "authRefreshState" = 'active',
            "tokenRefreshFailureCount" = 0,
            "updatedAt" = NOW()
-         WHERE id = $13
-         RETURNING id, "displayName", username, platform, "connectionStatus",
-                   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
-                   "loginEmail", "lastValidatedAt", "authRefreshState", "accessTokenExpiresAt",
-                   "createdAt", "updatedAt"`,
+         WHERE id = $14
+         RETURNING ${CREATOR_SELECT_COLUMNS}`,
         [
           encryptedSession,
           tokenFields?.encryptedAccessToken ?? null,
           tokenFields?.encryptedRefreshToken ?? null,
           tokenFields?.accessTokenExpiresAt ?? null,
+          customProxy.provided,
           encryptedProxy,
           loginResult.providerUserId,
           loginEmail,
@@ -2966,7 +3134,6 @@ router.post(
         refreshToken: loginResult.refreshToken,
         expiresAt: loginResult.expiresAt,
       });
-      const encryptedProxy = encryptSecret(resolvedProxy);
 
       let nextAvatarUrl =
         creator.avatarSource === 'manual' || isBackendStoredAvatarUrl(creator.avatarUrl)
@@ -2992,29 +3159,24 @@ router.post(
            "encryptedAccessToken" = $2,
            "encryptedRefreshToken" = $3,
            "accessTokenExpiresAt" = $4,
-           "encryptedProxy" = $5,
-           "providerUserId" = $6,
-           "loginEmail" = $7,
-           username = COALESCE($8, username),
-           "avatarUrl" = COALESCE($9, "avatarUrl"),
-           "avatarSource" = COALESCE($10, "avatarSource"),
-           "postLoginUrl" = $11,
+           "providerUserId" = $5,
+           "loginEmail" = $6,
+           username = COALESCE($7, username),
+           "avatarUrl" = COALESCE($8, "avatarUrl"),
+           "avatarSource" = COALESCE($9, "avatarSource"),
+           "postLoginUrl" = $10,
            "connectionStatus" = 'connected',
            "lastValidatedAt" = NOW(),
            "authRefreshState" = 'active',
            "tokenRefreshFailureCount" = 0,
            "updatedAt" = NOW()
-         WHERE id = $12
-         RETURNING id, "displayName", username, platform, "connectionStatus",
-                   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
-                   "loginEmail", "encryptedLoginPassword", "lastValidatedAt", "authRefreshState",
-                   "accessTokenExpiresAt", "createdAt", "updatedAt"`,
+         WHERE id = $11
+         RETURNING ${CREATOR_SELECT_COLUMNS}`,
         [
           encryptedSession,
           tokenFields?.encryptedAccessToken ?? null,
           tokenFields?.encryptedRefreshToken ?? null,
           tokenFields?.accessTokenExpiresAt ?? null,
-          encryptedProxy,
           loginResult.providerUserId,
           loginEmail,
           loginResult.username,

@@ -6,12 +6,50 @@ const maloumClient = require('./maloumClient');
 
 const COMMENT_DELAY_MS = 1200;
 const STEP_DELAY_MS = 350;
+const POST_CHECK_COOLDOWN_MIN_MS = 10_000;
+const POST_CHECK_COOLDOWN_MAX_MS = 15_000;
+const COOLDOWN_POLL_MS = 500;
 
 /** @type {Map<string, { generation: number }>} */
 const activeRuns = new Map();
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomPostCheckCooldownMs() {
+  return (
+    POST_CHECK_COOLDOWN_MIN_MS +
+    Math.floor(
+      Math.random() * (POST_CHECK_COOLDOWN_MAX_MS - POST_CHECK_COOLDOWN_MIN_MS + 1)
+    )
+  );
+}
+
+function formatCooldownSeconds(ms) {
+  return (ms / 1000).toFixed(3);
+}
+
+async function sleepInterruptible(ms, motherCreatorId, generation) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    await assertStillRunning(motherCreatorId, generation);
+    const remaining = end - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(remaining, COOLDOWN_POLL_MS));
+  }
+}
+
+function formatFanLabel(username, fanId) {
+  const id = fanId != null && String(fanId).trim() ? String(fanId) : null;
+  const name =
+    username != null && String(username).trim() ? String(username).trim() : null;
+  if (name && id) return `${name}/${id}`;
+  return name || id || 'unknown';
+}
+
+function logFanResult(sign, label, outcome) {
+  console.log(`[fan-scrape] ${sign} ${label} - ${outcome}`);
 }
 
 function defaultCheckpoint() {
@@ -474,12 +512,17 @@ async function distributeFanToOthers(
 
   for (const recipientId of otherIds) {
     await assertStillRunning(motherCreatorId, generation);
-    if (await fanExists(recipientId, fanId)) continue;
+    const label = formatFanLabel(fan.username, fanId);
+    if (await fanExists(recipientId, fanId)) {
+      logFanResult('-', label, 'SKIPPED - ALREADY ADDED');
+      continue;
+    }
     try {
       const recipient = await loadMaloumCreator(recipientId);
       const listId = await resolveDistributeListId(recipient, listName, cache);
       if (!listId) {
         distributeFailed += 1;
+        logFanResult('-', label, 'FAILED - Missing distribute list');
         continue;
       }
       await addFanToCreatorList(
@@ -491,12 +534,15 @@ async function distributeFanToOthers(
         sourcePostId
       );
       distributedFans += 1;
+      logFanResult('+', label, 'ADDED TO THE LIST');
     } catch (err) {
       if (err?.code === 'ABORTED') throw err;
       distributeFailed += 1;
+      const reason = err?.message || 'Distribute failed';
+      logFanResult('-', label, `FAILED - ${reason}`);
       cp = {
         ...cp,
-        lastError: err?.message || 'Distribute failed',
+        lastError: reason,
       };
     }
     await sleep(STEP_DELAY_MS);
@@ -640,11 +686,18 @@ async function ensureCreatorPosts(creator, motherCreatorId, username, postsLimit
 
 async function processFan(creator, motherCreatorId, listId, fan, sourceCreatorUsername, sourcePostId, cp) {
   const fanId = fan?._id;
-  if (!fanId || fan.isCreator) {
+  const label = formatFanLabel(fan?.username, fanId);
+  if (!fanId) {
+    logFanResult('-', label, 'SKIPPED - MISSING ID');
+    return { ...cp, skippedFans: cp.skippedFans + 1 };
+  }
+  if (fan.isCreator) {
+    logFanResult('-', label, 'SKIPPED - IS CREATOR');
     return { ...cp, skippedFans: cp.skippedFans + 1 };
   }
 
   if (await fanExists(motherCreatorId, fanId)) {
+    logFanResult('-', label, 'SKIPPED - ALREADY ADDED');
     return { ...cp, skippedFans: cp.skippedFans + 1 };
   }
 
@@ -657,6 +710,7 @@ async function processFan(creator, motherCreatorId, listId, fan, sourceCreatorUs
       sourceCreatorUsername,
       sourcePostId
     );
+    logFanResult('+', label, 'ADDED TO THE LIST');
     return {
       ...cp,
       processedFans: cp.processedFans + 1,
@@ -664,10 +718,12 @@ async function processFan(creator, motherCreatorId, listId, fan, sourceCreatorUs
     };
   } catch (err) {
     if (err?.code === 'ABORTED') throw err;
+    const reason = err?.message || 'Failed to process fan';
+    logFanResult('-', label, `FAILED - ${reason}`);
     return {
       ...cp,
       failedFans: cp.failedFans + 1,
-      lastError: err?.message || 'Failed to process fan',
+      lastError: reason,
     };
   }
 }
@@ -756,7 +812,9 @@ async function runImportToLists(motherCreatorId, job, generation) {
       };
       await saveCheckpoint(motherCreatorId, cp, 'running');
 
+      const label = formatFanLabel(null, fanId);
       if (await fanExists(recipientId, fanId)) {
+        logFanResult('-', label, 'SKIPPED - ALREADY ADDED');
         cp = { ...cp, skippedFans: cp.skippedFans + 1 };
       } else {
         try {
@@ -782,6 +840,7 @@ async function runImportToLists(motherCreatorId, job, generation) {
             'import_ids',
             null
           );
+          logFanResult('+', label, 'ADDED TO THE LIST');
           cp = {
             ...cp,
             processedFans: cp.processedFans + 1,
@@ -796,11 +855,13 @@ async function runImportToLists(motherCreatorId, job, generation) {
           }
         } catch (err) {
           if (err?.code === 'ABORTED') throw err;
+          const reason = err?.message || 'Failed to add fan to list';
+          logFanResult('-', label, `FAILED - ${reason}`);
           cp = {
             ...cp,
             failedFans: cp.failedFans + 1,
             distributeListCache: cache,
-            lastError: err?.message || 'Failed to add fan to list',
+            lastError: reason,
           };
         }
       }
@@ -883,12 +944,14 @@ async function runListScrape(motherCreatorId, job, generation) {
     while (cp.postIndex < cp.posts.length) {
       await assertStillRunning(motherCreatorId, generation);
       const postId = cp.posts[cp.postIndex];
+      const cooldownMs = randomPostCheckCooldownMs();
       cp = {
         ...cp,
         currentPostId: postId,
-        statusMessage: `@${username} · post ${cp.postIndex + 1}/${cp.posts.length} · fans ${cp.processedFans}${cp.skippedPosts ? ` · skipped posts ${cp.skippedPosts}` : ''}`,
+        statusMessage: `@${username} · post ${cp.postIndex + 1}/${cp.posts.length} · fans ${cp.processedFans}${cp.skippedPosts ? ` · skipped posts ${cp.skippedPosts}` : ''} · cooldown ${formatCooldownSeconds(cooldownMs)}s`,
       };
       await saveCheckpoint(motherCreatorId, cp, 'running');
+      await sleepInterruptible(cooldownMs, motherCreatorId, generation);
 
       let commentNext = cp.commentNext || undefined;
       let pageDone = false;
@@ -905,6 +968,7 @@ async function runListScrape(motherCreatorId, job, generation) {
           });
         } catch (err) {
           if (isSkippablePostError(err)) {
+            console.log(`[fan-scrape] - POST ${postId} - SKIPPED - LOCKED/MISSING`);
             cp = {
               ...cp,
               skippedPosts: (cp.skippedPosts || 0) + 1,

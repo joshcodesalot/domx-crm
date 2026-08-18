@@ -876,9 +876,33 @@ function fourBasedActivityFileStackIds(entry) {
   pushUniqueId(ids, entry?.file_stack_id);
   pushUniqueId(ids, entry?.file_stack?._id);
   pushUniqueId(ids, entry?.file_stack?.collection_id);
-  pushUniqueId(ids, entry?.file_stack?.vault_file_stack_id);
-  pushUniqueId(ids, entry?.file_stack?.vaultFileStackId);
+  const children = entry?.file_stack?.collection || entry?.file_stack?.children;
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      if (!child || typeof child !== 'object') continue;
+      pushUniqueId(ids, child._id || child.id);
+      pushUniqueId(ids, child.collection_id || child.collectionId);
+    }
+  }
   return ids;
+}
+
+function pickClosestFourBasedSend(rows, soldAtIso) {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (list.length === 0) return null;
+  if (list.length === 1) return list[0];
+  const soldMs = Date.parse(soldAtIso);
+  const ranked = list.map((row) => {
+    const sentMs = row.sentAt ? new Date(row.sentAt).getTime() : NaN;
+    const delta =
+      Number.isFinite(sentMs) && Number.isFinite(soldMs)
+        ? Math.abs(sentMs - soldMs)
+        : Infinity;
+    return { row, delta };
+  });
+  ranked.sort((a, b) => a.delta - b.delta);
+  if (ranked[0].delta === ranked[1].delta) return null;
+  return ranked[0].row;
 }
 
 function fourBasedSendOrderSql(soldAtParam) {
@@ -905,8 +929,9 @@ function parseFourBasedSoldAt(soldAt) {
 
 /**
  * Match a 4based sale to the original DomX PPV send log row.
- * Prefer media / file-stack ids (including collection parent ids); optionally
- * fall back to fan + price + send time for unpurchased rows only.
+ * Unique file-stack / collection ids are per-send. Vault ids are reused
+ * whenever the same vault item is sent again, so vault-only hits also
+ * require a matching price.
  */
 async function findFourBasedSendRow({
   creatorId,
@@ -926,49 +951,29 @@ async function findFourBasedSendRow({
       ? Math.abs(Number(priceNet))
       : null;
 
+  const vaultId = vaultFileStackId ? String(vaultFileStackId).trim() : '';
   const stackIds = [];
   pushUniqueId(stackIds, fileStackId);
   if (Array.isArray(fileStackIds)) {
     for (const id of fileStackIds) pushUniqueId(stackIds, id);
   }
+  const uniqueStackIds = stackIds.filter((id) => id && id !== vaultId);
 
-  if (vaultFileStackId || stackIds.length > 0) {
+  if (uniqueStackIds.length > 0) {
     const values = [creatorId, fanId];
     const mediaConds = [];
     let paramIndex = 3;
-
-    if (vaultFileStackId) {
-      const vaultId = String(vaultFileStackId);
-      mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
-      values.push(JSON.stringify([{ mediaId: vaultId }]));
-      paramIndex += 1;
-      mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
-      values.push(JSON.stringify([{ vaultFileStackId: vaultId }]));
-      paramIndex += 1;
-      mediaConds.push(`"mediaJson"::text LIKE $${paramIndex}`);
-      values.push(`%${vaultId}%`);
-      paramIndex += 1;
-    }
-
-    for (const stackId of stackIds) {
+    for (const stackId of uniqueStackIds) {
       mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
       values.push(JSON.stringify([{ fileStackId: stackId }]));
       paramIndex += 1;
       mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
       values.push(JSON.stringify([{ collectionId: stackId }]));
       paramIndex += 1;
-      mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
-      values.push(JSON.stringify([{ mediaId: stackId }]));
-      paramIndex += 1;
-      mediaConds.push(`"mediaJson"::text LIKE $${paramIndex}`);
-      values.push(`%${stackId}%`);
-      paramIndex += 1;
     }
-
     values.push(soldAtIso);
     const soldAtParam = `$${paramIndex}`;
-
-    const byMedia = await pool.query(
+    const byStack = await pool.query(
       `SELECT *
        FROM messaging_dashboard_entries
        WHERE ${FOURBASED_SEND_ROW_BASE}
@@ -977,7 +982,36 @@ async function findFourBasedSendRow({
        LIMIT 1`,
       values
     );
-    if (byMedia.rows[0]) return byMedia.rows[0];
+    if (byStack.rows[0]) return byStack.rows[0];
+  }
+
+  if (vaultId && parsedPrice != null) {
+    const values = [creatorId, fanId];
+    const mediaConds = [];
+    let paramIndex = 3;
+    mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+    values.push(JSON.stringify([{ mediaId: vaultId }]));
+    paramIndex += 1;
+    mediaConds.push(`"mediaJson" @> $${paramIndex}::jsonb`);
+    values.push(JSON.stringify([{ vaultFileStackId: vaultId }]));
+    paramIndex += 1;
+    values.push(parsedPrice, FOURBASED_PRICE_EPSILON, soldAtIso);
+    const priceParam = `$${paramIndex}`;
+    const epsilonParam = `$${paramIndex + 1}`;
+    const soldAtParam = `$${paramIndex + 2}`;
+    const byVault = await pool.query(
+      `SELECT *
+       FROM messaging_dashboard_entries
+       WHERE ${FOURBASED_SEND_ROW_BASE}
+         AND (${mediaConds.join(' OR ')})
+         AND "priceNet" IS NOT NULL
+         AND ABS("priceNet"::float - ${priceParam}::float) <= ${epsilonParam}
+       ${fourBasedSendOrderSql(soldAtParam)}
+       LIMIT 8`,
+      values
+    );
+    const picked = pickClosestFourBasedSend(byVault.rows, soldAtIso);
+    if (picked) return picked;
   }
 
   if (!allowPriceFallback || parsedPrice == null) return null;
@@ -990,6 +1024,11 @@ async function findFourBasedSendRow({
        AND "priceNet" IS NOT NULL
        AND ABS("priceNet"::float - $3::float) <= $4
        AND "sentAt" <= $5::timestamptz
+       AND (
+         "mediaJson" IS NULL
+         OR jsonb_typeof("mediaJson") <> 'array'
+         OR jsonb_array_length("mediaJson") = 0
+       )
      ${fourBasedSendOrderSql('$5')}
      LIMIT 1`,
     [creatorId, fanId, parsedPrice, FOURBASED_PRICE_EPSILON, soldAtIso]

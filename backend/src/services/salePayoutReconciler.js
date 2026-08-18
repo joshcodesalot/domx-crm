@@ -22,6 +22,7 @@ const FOURBASED_COINS_PER_DOLLAR = 121;
 const ORPHAN_CHAT_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 const ORPHAN_CHAT_PAGE_LIMIT = 40;
 const ORPHAN_CHAT_MAX_PAGES = 3;
+const FALSE_UNLOCK_CHAT_MAX_PAGES = 10;
 
 /** @type {Map<string, number>} */
 const lastReconcileAtByCreator = new Map();
@@ -235,18 +236,18 @@ async function loadAuthedCreator(creatorId) {
   };
 }
 
-async function resolvePendingUnverifiedForEntry(entryId) {
+async function resolvePendingUnverifiedForEntry(entryId, resolution = 'auto_matched') {
   if (!entryId) return 0;
   const result = await pool.query(
     `UPDATE sale_reconciliation_events
      SET status = 'resolved',
-         resolution = 'auto_matched',
+         resolution = $2,
          "resolvedAt" = NOW()
      WHERE "messagingEntryId" = $1
        AND "eventType" = 'pending_unverified'
        AND status = 'needs_review'
      RETURNING id`,
-    [entryId]
+    [entryId, resolution || 'auto_matched']
   );
   return result.rows.length;
 }
@@ -548,26 +549,60 @@ function firstFourBasedCollectionId(fileStack) {
   return null;
 }
 
-function fourBasedSaleMediaIds(sale) {
+function pushUniqueFourBasedId(ids, value) {
+  if (value == null) return;
+  const id = String(value).trim();
+  if (id && !ids.includes(id)) ids.push(id);
+}
+
+function fourBasedSaleUniqueStackIds(sale) {
   const ids = [];
-  const push = (value) => {
-    if (value == null) return;
-    const id = String(value).trim();
-    if (id && !ids.includes(id)) ids.push(id);
-  };
   if (Array.isArray(sale?.fileStackIds)) {
-    for (const id of sale.fileStackIds) push(id);
-  }
-  if (Array.isArray(sale?.vaultFileStackIds)) {
-    for (const id of sale.vaultFileStackIds) push(id);
+    for (const id of sale.fileStackIds) pushUniqueFourBasedId(ids, id);
   }
   if (Array.isArray(sale?.collectionIds)) {
-    for (const id of sale.collectionIds) push(id);
+    for (const id of sale.collectionIds) pushUniqueFourBasedId(ids, id);
   }
-  push(sale?.fileStackId);
-  push(sale?.vaultFileStackId);
-  push(sale?.collectionId);
+  pushUniqueFourBasedId(ids, sale?.fileStackId);
+  pushUniqueFourBasedId(ids, sale?.collectionId);
   return ids;
+}
+
+function fourBasedSaleVaultIds(sale) {
+  const ids = [];
+  if (Array.isArray(sale?.vaultFileStackIds)) {
+    for (const id of sale.vaultFileStackIds) pushUniqueFourBasedId(ids, id);
+  }
+  pushUniqueFourBasedId(ids, sale?.vaultFileStackId);
+  return ids;
+}
+
+function fourBasedSaleMediaIds(sale) {
+  const ids = fourBasedSaleUniqueStackIds(sale);
+  for (const id of fourBasedSaleVaultIds(sale)) pushUniqueFourBasedId(ids, id);
+  return ids;
+}
+
+const FOURBASED_UNIQUE_STACK_KEYS = [
+  'fileStackId',
+  'file_stack_id',
+  'collectionId',
+  'collection_id',
+];
+const FOURBASED_VAULT_KEYS = [
+  'vaultFileStackId',
+  'vault_file_stack_id',
+  'mediaId',
+];
+
+function fourBasedPricesAgree(left, right) {
+  const a = left != null ? Math.abs(Number(left)) : NaN;
+  const b = right != null ? Math.abs(Number(right)) : NaN;
+  return (
+    Number.isFinite(a) &&
+    Number.isFinite(b) &&
+    Math.abs(a - b) <= FOURBASED_PRICE_EPSILON
+  );
 }
 
 function entryHasMediaIds(mediaJson) {
@@ -734,25 +769,23 @@ function scoreFourBasedMatch(entry, group) {
       ? Math.abs(soldMs - sentMs)
       : Infinity;
 
-  const mediaIds = fourBasedSaleMediaIds(group);
-  if (mediaJsonHasId(entry.mediaJson, mediaIds)) {
+  const uniqueIds = fourBasedSaleUniqueStackIds(group);
+  const vaultIds = fourBasedSaleVaultIds(group);
+  if (mediaJsonHasKeyId(entry.mediaJson, uniqueIds, FOURBASED_UNIQUE_STACK_KEYS)) {
     return { score: 0, delta, kind: 'media' };
+  }
+
+  const priceHit = fourBasedPricesAgree(entry.priceNet, group.amount);
+  if (
+    mediaJsonHasKeyId(entry.mediaJson, vaultIds, FOURBASED_VAULT_KEYS) &&
+    priceHit
+  ) {
+    return { score: 0.5, delta, kind: 'vault_price' };
   }
   if (entryHasMediaIds(entry.mediaJson)) {
     return null;
   }
-
-  const entryPrice =
-    entry.priceNet != null ? Math.abs(Number(entry.priceNet)) : NaN;
-  const saleAmount =
-    group.amount != null ? Math.abs(Number(group.amount)) : NaN;
-  if (
-    !Number.isFinite(entryPrice) ||
-    !Number.isFinite(saleAmount) ||
-    Math.abs(entryPrice - saleAmount) > FOURBASED_PRICE_EPSILON
-  ) {
-    return null;
-  }
+  if (!priceHit) return null;
   return { score: 1, delta, kind: 'price' };
 }
 
@@ -816,26 +849,32 @@ function assignFourBasedMatches(entries, groups) {
   return { assignments, ambiguous, usedGroups, usedEntries };
 }
 
-function mediaJsonHasId(mediaJson, ids) {
-  if (!mediaJson || !Array.isArray(mediaJson) || !ids?.length) return false;
+function mediaJsonHasKeyId(mediaJson, ids, keys) {
+  if (!mediaJson || !Array.isArray(mediaJson) || !ids?.length || !keys?.length) {
+    return false;
+  }
   const want = new Set(ids.filter(Boolean).map(String));
   for (const item of mediaJson) {
     if (!item || typeof item !== 'object') continue;
-    for (const key of [
-      'mediaId',
-      'vaultFileStackId',
-      'vault_file_stack_id',
-      'fileStackId',
-      'file_stack_id',
-      'collectionId',
-      'collection_id',
-      'id',
-      '_id',
-    ]) {
+    for (const key of keys) {
       if (item[key] != null && want.has(String(item[key]))) return true;
     }
   }
   return false;
+}
+
+function mediaJsonHasId(mediaJson, ids) {
+  return mediaJsonHasKeyId(mediaJson, ids, [
+    'mediaId',
+    'vaultFileStackId',
+    'vault_file_stack_id',
+    'fileStackId',
+    'file_stack_id',
+    'collectionId',
+    'collection_id',
+    'id',
+    '_id',
+  ]);
 }
 
 async function findFourBasedEntryForPayout(
@@ -866,10 +905,13 @@ async function findFourBasedEntryForPayout(
     [creatorId, sale.fanId, soldAtIso]
   );
 
-  const ids = fourBasedSaleMediaIds(sale);
-  if (ids.length > 0) {
+  const uniqueIds = fourBasedSaleUniqueStackIds(sale);
+  const vaultIds = fourBasedSaleVaultIds(sale);
+  if (uniqueIds.length > 0) {
     for (const row of result.rows) {
-      if (mediaJsonHasId(row.mediaJson, ids)) return row;
+      if (mediaJsonHasKeyId(row.mediaJson, uniqueIds, FOURBASED_UNIQUE_STACK_KEYS)) {
+        return row;
+      }
     }
   }
 
@@ -877,6 +919,15 @@ async function findFourBasedEntryForPayout(
     sale.amount != null && Number.isFinite(Number(sale.amount))
       ? Math.abs(Number(sale.amount))
       : null;
+  if (vaultIds.length > 0 && amount != null) {
+    for (const row of result.rows) {
+      if (row.purchased && !allowPurchased) continue;
+      if (!mediaJsonHasKeyId(row.mediaJson, vaultIds, FOURBASED_VAULT_KEYS)) continue;
+      if (!fourBasedPricesAgree(row.priceNet, amount)) continue;
+      return row;
+    }
+  }
+
   if (amount == null) return null;
 
   const soldMs = Date.parse(soldAtIso);
@@ -885,6 +936,7 @@ async function findFourBasedEntryForPayout(
   for (const row of result.rows) {
     if (row.priceNet == null) continue;
     if (row.purchased && !allowPurchased) continue;
+    if (entryHasMediaIds(row.mediaJson)) continue;
     const price = Math.abs(Number(row.priceNet));
     if (!Number.isFinite(price) || Math.abs(price - amount) > FOURBASED_PRICE_EPSILON) {
       continue;
@@ -1429,6 +1481,41 @@ function mediaJsonFromFileStack(fileStack) {
   return items.length > 0 ? items : null;
 }
 
+function fileStackPaidByFan(fileStack, fanId) {
+  if (!fileStack || typeof fileStack !== 'object') return false;
+  const fan = fanId ? String(fanId) : '';
+  const paid = fileStack.user_paid ?? fileStack.userPaid;
+  if (paid === true || paid === 'true') return true;
+  if (Array.isArray(paid) && fan) {
+    if (
+      paid.some((id) => {
+        if (id == null) return false;
+        if (typeof id === 'object') {
+          return String(id._id || id.id || '') === fan;
+        }
+        return String(id) === fan;
+      })
+    ) {
+      return true;
+    }
+  }
+  const children = fileStack.collection || fileStack.children || [];
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      if (fileStackPaidByFan(child, fanId)) return true;
+    }
+  }
+  return false;
+}
+
+function fourBasedMessagePaidByFan(message, fanId) {
+  if (!message || typeof message !== 'object') return false;
+  if (message.message_file_stack_process_id || message.messageFileStackProcessId) {
+    return true;
+  }
+  return fileStackPaidByFan(fileStackFromMessage(message), fanId);
+}
+
 function scoreChatPpvMessage(message, group) {
   const fileStack = fileStackFromMessage(message);
   if (!fileStack) return null;
@@ -1446,24 +1533,29 @@ function scoreChatPpvMessage(message, group) {
     if (soldMs - sentMs > ORPHAN_CHAT_LOOKBACK_MS) return null;
   }
 
+  const uniqueIds = fourBasedSaleUniqueStackIds(group);
+  const vaultIds = fourBasedSaleVaultIds(group);
   const messageIds = fileStackMediaIds(fileStack);
-  const groupIds = fourBasedSaleMediaIds(group);
-  const mediaHit = messageIds.some((id) => groupIds.includes(id));
+  const uniqueHit = uniqueIds.length > 0 && messageIds.some((id) => uniqueIds.includes(id));
+  const vaultHit = vaultIds.length > 0 && messageIds.some((id) => vaultIds.includes(id));
   const priceHit =
     usd != null &&
     group?.amount != null &&
     Math.abs(usd - Number(group.amount)) <= FOURBASED_PRICE_EPSILON;
 
-  if (!mediaHit && !priceHit) return null;
-  if (!mediaHit && messageIds.length > 0 && groupIds.length > 0) return null;
+  let score;
+  if (uniqueHit) score = 0;
+  else if (vaultHit && priceHit) score = 0.5;
+  else if (priceHit && uniqueIds.length === 0 && vaultIds.length === 0) score = 1;
+  else return null;
 
   const delta =
     Number.isFinite(sentMs) && Number.isFinite(soldMs)
       ? Math.abs(soldMs - sentMs)
       : Infinity;
-  const paid = fileStack.user_paid === true || fileStack.userPaid === true;
+  const paid = fourBasedMessagePaidByFan(message, fanId);
   return {
-    score: mediaHit ? 0 : 1,
+    score,
     paidRank: paid ? 0 : 1,
     delta,
     message,
@@ -1488,7 +1580,9 @@ function findUniqueChatPpv(messages, group) {
     return String(a.message?._id || '').localeCompare(String(b.message?._id || ''));
   });
   const best = scored[0];
-  const sameKind = scored.filter((row) => row.score === best.score);
+  const sameKind = scored.filter(
+    (row) => row.score === best.score && row.paidRank === best.paidRank
+  );
   const uniqueIds = new Set(
     sameKind.map((row) => String(row.message?._id || row.message?.id || ''))
   );
@@ -1497,7 +1591,26 @@ function findUniqueChatPpv(messages, group) {
   return { status: 'matched', ...best };
 }
 
-async function loadFanChatForRecovery(authedCreator, fanId, cache) {
+function chatHasAllMessageIds(messages, wantedIds) {
+  if (!wantedIds || wantedIds.size === 0) return false;
+  const have = new Set(
+    (Array.isArray(messages) ? messages : []).map((message) =>
+      String(message?._id || message?.id || '')
+    )
+  );
+  have.delete('');
+  for (const id of wantedIds) {
+    if (!have.has(String(id))) return false;
+  }
+  return true;
+}
+
+async function loadFanChatForRecovery(
+  authedCreator,
+  fanId,
+  cache,
+  { maxPages = ORPHAN_CHAT_MAX_PAGES, wantedIds = null } = {}
+) {
   const key = String(fanId);
   if (cache.has(key)) return cache.get(key);
   try {
@@ -1508,8 +1621,9 @@ async function loadFanChatForRecovery(authedCreator, fanId, cache) {
       cache.set(key, empty);
       return empty;
     }
+    const pages = Math.max(1, Number(maxPages) || ORPHAN_CHAT_MAX_PAGES);
     const messages = [];
-    for (let page = 0; page < ORPHAN_CHAT_MAX_PAGES; page += 1) {
+    for (let page = 0; page < pages; page += 1) {
       const raw = await fourBasedClient.getMessages(authedCreator, chatId, {
         limit: ORPHAN_CHAT_PAGE_LIMIT,
         offset: page * ORPHAN_CHAT_PAGE_LIMIT,
@@ -1517,6 +1631,7 @@ async function loadFanChatForRecovery(authedCreator, fanId, cache) {
       const list = asMessageList(raw);
       messages.push(...list);
       if (list.length < ORPHAN_CHAT_PAGE_LIMIT) break;
+      if (chatHasAllMessageIds(messages, wantedIds)) break;
     }
     const result = { chatId, messages };
     cache.set(key, result);
@@ -1530,6 +1645,101 @@ async function loadFanChatForRecovery(authedCreator, fanId, cache) {
     cache.set(key, failed);
     return failed;
   }
+}
+
+function fourBasedSendMessageId(maloumMessageId) {
+  const raw = String(maloumMessageId || '');
+  const match = raw.match(/^4based:([a-f0-9]{24})$/i);
+  return match ? match[1] : null;
+}
+
+function findChatMessageById(messages, messageId) {
+  const want = String(messageId || '');
+  if (!want) return null;
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (String(message?._id || message?.id || '') === want) return message;
+  }
+  return null;
+}
+
+async function clearFourBasedFalseUnlockEntry(entryId) {
+  const result = await pool.query(
+    `UPDATE messaging_dashboard_entries
+     SET purchased = false,
+         "unlockedAt" = NULL,
+         "payoutVerified" = false,
+         "payoutVerifiedAt" = NULL,
+         "payoutTxnId" = NULL,
+         "updatedAt" = NOW()
+     WHERE id = $1
+       AND purchased = true
+     RETURNING id`,
+    [entryId]
+  );
+  if (result.rows.length === 0) return false;
+  await resolvePendingUnverifiedForEntry(entryId, 'chat_unpaid');
+  await pool.query(
+    `DELETE FROM sale_reconciliation_events
+     WHERE "messagingEntryId" = $1
+       AND "eventType" = 'false_unlock_cleared'`,
+    [entryId]
+  );
+  return true;
+}
+
+/**
+ * Clear purchased flags when the live 4based message is unpaid.
+ * Missing/failed chat fetches are left alone so real sales are not hidden.
+ */
+async function clearFourBasedFalseUnlocks(
+  authedCreator,
+  meta,
+  { monthFrom, monthTo, fetchFrom }
+) {
+  const fromIso = fetchFrom || monthFrom;
+  const rows = await pool.query(
+    `SELECT id, "maloumMessageId", "fanId"
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+       AND platform = '4based'
+       AND "contentType" = 'chat_product'
+       AND purchased = true
+       AND "maloumMessageId" LIKE '4based:%'
+       AND "maloumMessageId" NOT LIKE '4based-sale:%'
+       AND "maloumMessageId" NOT LIKE '4based-tip:%'
+       AND "maloumMessageId" NOT LIKE '4based-payout:%'
+       AND "fanId" IS NOT NULL
+       AND "sentAt" <= $2::timestamptz
+       AND COALESCE("unlockedAt", "sentAt") >= $3::timestamptz`,
+    [meta.id, monthTo, fromIso]
+  );
+
+  const byFan = new Map();
+  for (const row of rows.rows) {
+    const messageId = fourBasedSendMessageId(row.maloumMessageId);
+    if (!messageId) continue;
+    const fanId = String(row.fanId);
+    if (!byFan.has(fanId)) byFan.set(fanId, []);
+    byFan.get(fanId).push({ ...row, messageId });
+  }
+
+  let cleared = 0;
+  const cache = new Map();
+  for (const [fanId, entries] of byFan) {
+    const wantedIds = new Set(entries.map((entry) => entry.messageId));
+    const chat = await loadFanChatForRecovery(authedCreator, fanId, cache, {
+      maxPages: FALSE_UNLOCK_CHAT_MAX_PAGES,
+      wantedIds,
+    });
+    if (chat.error || !chat.chatId) continue;
+    for (const entry of entries) {
+      const message = findChatMessageById(chat.messages, entry.messageId);
+      if (!message) continue;
+      if (fourBasedMessagePaidByFan(message, fanId)) continue;
+      if (await clearFourBasedFalseUnlockEntry(entry.id)) cleared += 1;
+    }
+  }
+  return { cleared, cache };
 }
 
 async function resolveInferredChatter(creatorId, fanId) {
@@ -2114,6 +2324,14 @@ async function reconcileFourBased(
     recovered: 0,
   };
 
+  const falseUnlocks = await clearFourBasedFalseUnlocks(authedCreator, meta, {
+    monthFrom,
+    monthTo,
+    fetchFrom,
+  });
+  summary.cleared = falseUnlocks.cleared;
+  const chatCache = falseUnlocks.cache;
+
   const payoutRows = await fetchFourBasedPayouts(authedCreator, {
     fromIso: fetchFrom,
     toIso: monthTo,
@@ -2248,7 +2466,6 @@ async function reconcileFourBased(
   }
 
   if (recoverOrphans && orphanRecoveries.length > 0) {
-    const chatCache = new Map();
     for (const item of orphanRecoveries) {
       if (usedGroups.has(item.group.groupId) && !item.stub) continue;
       try {

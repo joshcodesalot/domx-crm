@@ -6,6 +6,7 @@ import {
   X,
 } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import CreatorProxyFields from '@/components/CreatorProxyFields';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import maloumIcon from '@/assets/maloum_icon.png';
 import {
@@ -18,6 +19,7 @@ import {
   type CreateCreatorInput,
   type Creator,
 } from '@/lib/api';
+import { buildProxyUrl, isValidProxyHostPort } from '@/lib/proxyUrl';
 
 const inputClassName =
   'w-full px-3 py-2 text-sm border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-white/5 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500';
@@ -57,8 +59,11 @@ export default function AddCreatorModal({
   );
   const [loginEmail, setLoginEmail] = useState(reconnectCreator?.loginEmail || '');
   const [loginPassword, setLoginPassword] = useState('');
-  const [proxyUrl, setProxyUrl] = useState('');
+  const [proxyHost, setProxyHost] = useState('');
+  const [proxyUsername, setProxyUsername] = useState('');
+  const [proxyPassword, setProxyPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showProxyPassword, setShowProxyPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [session, setSession] = useState<SessionData | null>(null);
@@ -143,6 +148,18 @@ export default function AddCreatorModal({
     setLoginError(null);
   }
 
+  function optionalCustomProxyUrl(): string | undefined | false {
+    const host = proxyHost.trim();
+    if (!host) {
+      return undefined;
+    }
+    if (!isValidProxyHostPort(host)) {
+      setLoginError('Proxy address is invalid. Use host:port (for example 1.2.3.4:8080).');
+      return false;
+    }
+    return buildProxyUrl(host, proxyUsername, proxyPassword) || false;
+  }
+
   async function handleConnectFourBased() {
     if (!loginEmail.trim() || !loginPassword.trim()) {
       setLoginError('Email and password are required.');
@@ -157,7 +174,10 @@ export default function AddCreatorModal({
     setConnecting(true);
 
     try {
-      const optionalProxy = proxyUrl.trim() || undefined;
+      const optionalProxy = optionalCustomProxyUrl();
+      if (optionalProxy === false) {
+        return;
+      }
       if (isReconnect && reconnectCreator) {
         await reconnectFourBasedAccount(reconnectCreator.id, {
           email: loginEmail.trim(),
@@ -211,7 +231,10 @@ export default function AddCreatorModal({
     setConnecting(true);
 
     try {
-      const optionalProxy = proxyUrl.trim() || undefined;
+      const optionalProxy = optionalCustomProxyUrl();
+      if (optionalProxy === false) {
+        return;
+      }
 
       if (isReconnect && reconnectCreator) {
         await reconnectMaloumAccount(reconnectCreator.id, {
@@ -407,8 +430,8 @@ export default function AddCreatorModal({
           {step === 2 && (
             <div className="space-y-4">
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                Login uses {proxyEnvLabel} from the server (.env). Optional override below.
-                If the proxy fails, the account is not saved.
+                Login uses {proxyEnvLabel} from the server (.env) unless you set a
+                proxy below. If the proxy fails, the account is not saved.
               </p>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -460,26 +483,21 @@ export default function AddCreatorModal({
                 </div>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-1.5">
-                  Proxy override{' '}
-                  <span className="text-gray-400 font-normal">(optional)</span>
-                </label>
-                <input
-                  type="text"
-                  value={proxyUrl}
-                  onChange={(e) => setProxyUrl(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !connecting) void handleConnectAccount();
-                  }}
-                  placeholder={`Leave blank to use ${proxyEnvLabel}`}
-                  className={inputClassName}
-                  disabled={connecting}
-                />
-                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  Default is the dedicated proxy in backend .env. Override only if needed.
-                </p>
-              </div>
+              <CreatorProxyFields
+                proxyHost={proxyHost}
+                proxyUsername={proxyUsername}
+                proxyPassword={proxyPassword}
+                showPassword={showProxyPassword}
+                envLabel={proxyEnvLabel}
+                disabled={connecting}
+                onHostChange={setProxyHost}
+                onUsernameChange={setProxyUsername}
+                onPasswordChange={setProxyPassword}
+                onToggleShowPassword={() => setShowProxyPassword((v) => !v)}
+                onEnter={() => {
+                  if (!connecting) void handleConnectAccount();
+                }}
+              />
 
               {loginError && (
                 <p className="text-sm text-red-600 dark:text-red-400">{loginError}</p>

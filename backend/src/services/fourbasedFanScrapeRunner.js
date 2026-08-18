@@ -6,6 +6,8 @@ const fourBasedClient = require('./fourBasedClient');
 const COMMENT_DELAY_MS = 1200;
 const FAN_COOLDOWN_MIN_MS = 45_000;
 const FAN_COOLDOWN_MAX_MS = 60_000;
+const POST_CHECK_COOLDOWN_MIN_MS = 10_000;
+const POST_CHECK_COOLDOWN_MAX_MS = 15_000;
 const COOLDOWN_POLL_MS = 500;
 const TRENDING_PAGE_SIZE = 60;
 const COMMENT_PAGE_SIZE = 20;
@@ -24,8 +26,29 @@ function randomFanCooldownMs() {
   );
 }
 
+function randomPostCheckCooldownMs() {
+  return (
+    POST_CHECK_COOLDOWN_MIN_MS +
+    Math.floor(
+      Math.random() * (POST_CHECK_COOLDOWN_MAX_MS - POST_CHECK_COOLDOWN_MIN_MS + 1)
+    )
+  );
+}
+
 function formatCooldownSeconds(ms) {
   return (ms / 1000).toFixed(3);
+}
+
+function formatFanLabel(username, fanId) {
+  const id = fanId != null && String(fanId).trim() ? String(fanId) : null;
+  const name =
+    username != null && String(username).trim() ? String(username).trim() : null;
+  if (name && id) return `${name}/${id}`;
+  return name || id || 'unknown';
+}
+
+function logFanResult(sign, label, outcome) {
+  console.log(`[4based-fan-scrape] ${sign} ${label} - ${outcome}`);
 }
 
 async function sleepInterruptible(ms, motherCreatorId, generation) {
@@ -402,25 +425,35 @@ async function openOrCreateChat(creator, fanId) {
 
 async function processFan(creator, job, fan, sourcePostId, cp, senderCreatorId) {
   const fanId = fan?._id;
-  if (!fanId || fan.own) {
+  const label = formatFanLabel(fan?.name || fan?.username, fanId);
+  if (!fanId) {
+    logFanResult('-', label, 'SKIPPED - MISSING ID');
+    return { ...cp, skippedFans: cp.skippedFans + 1 };
+  }
+  if (fan.own) {
+    logFanResult('-', label, 'SKIPPED - OWN ACCOUNT');
     return { ...cp, skippedFans: cp.skippedFans + 1 };
   }
   if (isNotContactable(fan.cold_communication_status)) {
+    logFanResult('-', label, 'SKIPPED - NOT CONTACTABLE');
     return { ...cp, skippedFans: cp.skippedFans + 1 };
   }
 
   const ownerId = senderCreatorId || job.motherCreatorId;
   if (await fanExists(ownerId, fanId)) {
+    logFanResult('-', label, 'SKIPPED - ALREADY MESSAGED');
     return { ...cp, skippedFans: cp.skippedFans + 1 };
   }
 
   try {
     const chatId = await openOrCreateChat(creator, fanId);
     if (!chatId) {
+      const reason = `No chat opened for fan ${fanId}`;
+      logFanResult('-', label, `FAILED - ${reason}`);
       return {
         ...cp,
         failedFans: cp.failedFans + 1,
-        lastError: `No chat opened for fan ${fanId}`,
+        lastError: reason,
       };
     }
 
@@ -454,6 +487,7 @@ async function processFan(creator, job, fan, sourcePostId, cp, senderCreatorId) 
       messageId,
     });
 
+    logFanResult('+', label, 'MESSAGED');
     return {
       ...cp,
       processedFans: cp.processedFans + 1,
@@ -462,12 +496,15 @@ async function processFan(creator, job, fan, sourcePostId, cp, senderCreatorId) 
   } catch (err) {
     if (err?.code === 'ABORTED') throw err;
     if (isInteractionRestricted(err)) {
+      logFanResult('-', label, 'SKIPPED - INTERACTION RESTRICTED');
       return { ...cp, skippedFans: cp.skippedFans + 1 };
     }
+    const reason = err?.message || 'Failed to message fan';
+    logFanResult('-', label, `FAILED - ${reason}`);
     return {
       ...cp,
       failedFans: cp.failedFans + 1,
-      lastError: err?.message || 'Failed to message fan',
+      lastError: reason,
     };
   }
 }
@@ -607,10 +644,12 @@ async function runImportColdDm(motherCreatorId, job, generation) {
         );
       } catch (err) {
         if (err?.code === 'ABORTED') throw err;
+        const reason = err?.message || 'Failed to cold DM fan';
+        logFanResult('-', formatFanLabel(fan.username, fan.fanId), `FAILED - ${reason}`);
         cp = {
           ...cp,
           failedFans: cp.failedFans + 1,
-          lastError: err?.message || 'Failed to cold DM fan',
+          lastError: reason,
         };
       }
 
@@ -667,12 +706,14 @@ async function runTrendingScrape(motherCreatorId, job, generation) {
     while (cp.postIndex < cp.currentPagePostIds.length) {
       await assertStillRunning(motherCreatorId, generation);
       const postId = cp.currentPagePostIds[cp.postIndex];
+      const postCooldownMs = randomPostCheckCooldownMs();
       cp = {
         ...cp,
         currentPostId: postId,
-        statusMessage: `Post ${cp.postIndex + 1}/${cp.currentPagePostIds.length} @ offset ${cp.trendingOffset} · fans ${cp.processedFans}`,
+        statusMessage: `Post ${cp.postIndex + 1}/${cp.currentPagePostIds.length} @ offset ${cp.trendingOffset} · fans ${cp.processedFans} · cooldown ${formatCooldownSeconds(postCooldownMs)}s`,
       };
       await saveCheckpoint(motherCreatorId, cp, 'running');
+      await sleepInterruptible(postCooldownMs, motherCreatorId, generation);
 
       let commentsDone = false;
       let postSkipped = false;
@@ -687,6 +728,7 @@ async function runTrendingScrape(motherCreatorId, job, generation) {
           });
         } catch (err) {
           if (isSkippableFileStackError(err)) {
+            console.log(`[4based-fan-scrape] - POST ${postId} - SKIPPED - MISSING FILESTACK`);
             cp = {
               ...cp,
               skippedPosts: (cp.skippedPosts || 0) + 1,

@@ -7,11 +7,13 @@ import {
   ShieldCheck,
   Trash2,
   Users,
+  Globe,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import AddCreatorModal from '@/components/AddCreatorModal';
 import AssignCreatorStaffModal from '@/components/AssignCreatorStaffModal';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import EditCreatorProxyModal from '@/components/EditCreatorProxyModal';
 import RemoveCreatorModal from '@/components/RemoveCreatorModal';
 import RenameCreatorModal from '@/components/RenameCreatorModal';
 import { useAuth } from '@/context/AuthContext';
@@ -67,6 +69,7 @@ export default function ManageCreators() {
   const [removeTarget, setRemoveTarget] = useState<Creator | null>(null);
   const [staffTarget, setStaffTarget] = useState<Creator | null>(null);
   const [renameTarget, setRenameTarget] = useState<Creator | null>(null);
+  const [proxyTarget, setProxyTarget] = useState<Creator | null>(null);
   const [refreshingIconId, setRefreshingIconId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
@@ -296,11 +299,13 @@ export default function ManageCreators() {
                         />
                         <div className="min-w-0">
                           <p className="font-medium truncate">{creator.displayName}</p>
-                          {creator.username && (
-                            <p className="text-xs text-gray-400 truncate">
-                              @{creator.username}
-                            </p>
-                          )}
+                          <p className="text-xs text-gray-400 truncate">
+                            {creator.username ? `@${creator.username}` : ''}
+                            {creator.username ? ' · ' : ''}
+                            {creator.hasCustomProxy
+                              ? 'Custom proxy'
+                              : '.env proxy'}
+                          </p>
                         </div>
                       </div>
                     </td>
@@ -393,6 +398,18 @@ export default function ManageCreators() {
                           </button>
                           <button
                             type="button"
+                            className="p-1.5 text-gray-400 hover:text-sky-600 dark:hover:text-sky-400 rounded-md hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-colors"
+                            title={
+                              creator.hasCustomProxy
+                                ? 'Edit custom proxy'
+                                : 'Add proxy (currently using .env)'
+                            }
+                            onClick={() => setProxyTarget(creator)}
+                          >
+                            <Globe className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
                             className="p-1.5 text-gray-400 hover:text-emerald-500 dark:hover:text-emerald-400 rounded-md hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors"
                             title="Manage staff"
                             onClick={() => setStaffTarget(creator)}
@@ -442,6 +459,14 @@ export default function ManageCreators() {
           creatorId={renameTarget.id}
           currentDisplayName={renameTarget.displayName}
           onClose={() => setRenameTarget(null)}
+          onSaved={loadCreators}
+        />
+      )}
+
+      {proxyTarget && (
+        <EditCreatorProxyModal
+          creator={proxyTarget}
+          onClose={() => setProxyTarget(null)}
           onSaved={loadCreators}
         />
       )}

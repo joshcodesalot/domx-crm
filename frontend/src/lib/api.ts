@@ -88,6 +88,7 @@ export interface Creator {
   partitionId: string | null;
   loginEmail: string | null;
   hasSavedCredentials?: boolean;
+  hasCustomProxy?: boolean;
   lastValidatedAt: string | null;
   authRefreshState?: 'active' | 'needs_reauth' | 'disabled';
   accessTokenExpiresAt?: string | null;
@@ -787,6 +788,37 @@ export async function renameCreator(
   return request<{ creator: Creator }>(`/api/creators/${creatorId}`, {
     method: 'PATCH',
     body: JSON.stringify({ displayName }),
+  });
+}
+
+export interface CreatorProxyResponse {
+  hasCustomProxy: boolean;
+  proxyHost: string | null;
+  proxyUsername: string | null;
+  envLabel: string;
+}
+
+export async function getCreatorProxy(
+  creatorId: string
+): Promise<CreatorProxyResponse> {
+  return request<CreatorProxyResponse>(`/api/creators/${creatorId}/proxy`);
+}
+
+export async function updateCreatorProxy(
+  creatorId: string,
+  input: {
+    proxyHost: string;
+    proxyUsername?: string;
+    proxyPassword?: string;
+  }
+): Promise<{ creator: Creator }> {
+  return request<{ creator: Creator }>(`/api/creators/${creatorId}/proxy`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      proxyHost: input.proxyHost,
+      proxyUsername: input.proxyUsername || '',
+      proxyPassword: input.proxyPassword || '',
+    }),
   });
 }
 
