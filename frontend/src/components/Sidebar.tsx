@@ -530,14 +530,22 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
           <button
             type="button"
             onClick={() => navigate('/chatter/telegram')}
-            className={
+            className={`${
               isTelegramActive
-                ? 'text-sky-500'
+                ? 'text-gray-900 dark:text-white'
                 : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
-            }
+            } group`}
             title="Telegram"
           >
-            <img src={telegramIcon} alt="" className="w-5 h-5 rounded-full" />
+            <img
+              src={telegramIcon}
+              alt=""
+              className={`w-5 h-5 rounded-full transition-opacity ${
+                isTelegramActive
+                  ? 'opacity-100'
+                  : 'opacity-50 group-hover:opacity-100'
+              }`}
+            />
           </button>
         )}
         {hasPermission('creators.manage') && (

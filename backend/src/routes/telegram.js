@@ -15,6 +15,7 @@ const {
   listDialogs,
   listMessages,
   sendText,
+  deleteText,
   resolveUsername,
   unreadCount,
   disconnectCreator,
@@ -25,6 +26,7 @@ const {
   redactDialog,
   redactMessage,
 } = require('../services/telegramFanView');
+const { upsertMessageUnsend } = require('../services/messageUnsend');
 
 const router = express.Router();
 
@@ -323,6 +325,43 @@ router.post(
       return res.status(201).json({ message: redactMessage(message, req.user) });
     } catch (err) {
       return handleTelegramError(res, err, 'Send Telegram message error:');
+    }
+  }
+);
+
+router.delete(
+  '/:id/telegram/dialogs/:peerId/messages/:messageId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, peerId, messageId } = req.params;
+    const { originalText, messageSentAt } = req.body || {};
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+      await deleteText(id, peerId, messageId);
+      let unsend = null;
+      try {
+        unsend = await upsertMessageUnsend({
+          creatorId: id,
+          platform: 'telegram',
+          chatId: String(peerId),
+          platformMessageId: String(messageId),
+          originalText,
+          messageSentAt,
+          user: req.user,
+        });
+      } catch (auditErr) {
+        console.error('Persist Telegram message unsend error:', auditErr);
+      }
+      return res.json({ ok: true, unsend });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Delete Telegram message error:');
     }
   }
 );

@@ -1570,7 +1570,7 @@ export interface MessageUnsendRecord {
 export async function getMessageUnsends(filters: {
   creatorId: string;
   chatId: string;
-  platform: 'maloum' | '4based';
+  platform: 'maloum' | '4based' | 'telegram';
   limit?: number;
 }): Promise<{ unsends: Record<string, MessageUnsendRecord> }> {
   const params = new URLSearchParams();
@@ -2658,6 +2658,8 @@ export interface TelegramMessage {
   senderId?: string | null;
   senderName?: string | null;
   senderUsername?: string | null;
+  senderAvatarUrl?: string | null;
+  deleted?: boolean;
 }
 
 export interface TelegramDialog {
@@ -2766,6 +2768,27 @@ export async function sendTelegramMessage(
       body: JSON.stringify({
         text,
         ...(englishText ? { englishText } : {}),
+      }),
+    }
+  );
+}
+
+export async function deleteTelegramMessage(
+  creatorId: string,
+  peerId: string,
+  messageId: string,
+  options: { originalText?: string; messageSentAt?: string | null } = {}
+): Promise<{
+  ok: boolean;
+  unsend?: MessageUnsendRecord & { platformMessageId: string };
+}> {
+  return request(
+    `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages/${encodeURIComponent(messageId)}`,
+    {
+      method: 'DELETE',
+      body: JSON.stringify({
+        originalText: options.originalText || '',
+        messageSentAt: options.messageSentAt || null,
       }),
     }
   );

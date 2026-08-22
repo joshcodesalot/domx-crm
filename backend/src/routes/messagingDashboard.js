@@ -1897,9 +1897,13 @@ router.get(
     }
 
     const resolvedPlatform =
-      platform === '4based' || platform === 'maloum' ? platform : null;
+      platform === '4based' || platform === 'maloum' || platform === 'telegram'
+        ? platform
+        : null;
     if (!resolvedPlatform) {
-      return res.status(400).json({ error: 'platform must be maloum or 4based' });
+      return res.status(400).json({
+        error: 'platform must be maloum, 4based, or telegram',
+      });
     }
 
     const allowed = await userCanAccessCreator(req.user, String(creatorId));

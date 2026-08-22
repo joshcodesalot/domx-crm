@@ -162,6 +162,10 @@ export default function ChatterTelegram() {
             peerId={selectedPeerId}
             initialFan={selectedDialog?.fan || null}
             pollEnabled={pollEnabled}
+            onClose={() => {
+              setSelectedPeerId(null);
+              setSelectedDialog(null);
+            }}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center text-sm text-gray-500 dark:text-zinc-500 chatter-thread-bg relative">

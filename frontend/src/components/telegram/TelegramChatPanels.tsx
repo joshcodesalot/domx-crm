@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Languages, Loader2, Search, Send } from 'lucide-react';
+import { Languages, Loader2, Search, Send, Trash2, X } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
+import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import { useStaffTimeZone } from '@/lib/berlinTime';
 import {
@@ -12,6 +13,8 @@ import {
 } from '@/lib/historyTranslateQueue';
 import {
   createMessagingDashboardEntry,
+  deleteTelegramMessage,
+  getMessageUnsends,
   getMessagingDashboardSenders,
   getTelegramDialogs,
   getTelegramMessages,
@@ -21,6 +24,7 @@ import {
   sendTelegramMessage,
   translateToGerman,
   type Creator,
+  type MessageUnsendRecord,
   type TelegramDialog,
   type TelegramFan,
   type TelegramMessage,
@@ -63,6 +67,38 @@ function formatTime(iso: string | null, timeZone: string): string {
   });
 }
 
+function mergeUnsendTombstones(
+  messages: TelegramMessage[],
+  unsends: Record<string, MessageUnsendRecord>,
+  peerId: string
+): TelegramMessage[] {
+  const byId = new Map(messages.map((msg) => [msg.id, { ...msg }]));
+  for (const [id, rec] of Object.entries(unsends)) {
+    const existing = byId.get(id);
+    if (existing) {
+      byId.set(id, {
+        ...existing,
+        deleted: true,
+        text: rec.originalText || existing.text,
+      });
+      continue;
+    }
+    byId.set(id, {
+      id,
+      peerId,
+      isOutgoing: true,
+      date: rec.messageSentAt || rec.unsentAt,
+      text: rec.originalText || '',
+      kind: 'text',
+      placeholder: null,
+      deleted: true,
+    });
+  }
+  return [...byId.values()].sort((a, b) =>
+    String(a.date || '').localeCompare(String(b.date || ''))
+  );
+}
+
 function TelegramFanAvatar({
   name,
   avatarUrl,
@@ -70,12 +106,13 @@ function TelegramFanAvatar({
 }: {
   name: string;
   avatarUrl?: string | null;
-  size?: 'sm' | 'md';
+  size?: 'xs' | 'sm' | 'md';
 }) {
   const [failed, setFailed] = useState(false);
-  const dim = size === 'sm' ? 'w-9 h-9' : 'w-10 h-10';
+  const dim = size === 'xs' ? 'w-5 h-5' : size === 'sm' ? 'w-9 h-9' : 'w-10 h-10';
   const src = resolveCreatorAvatarUrl(avatarUrl);
   const initial = (name || '?').slice(0, 1).toUpperCase();
+  const initialClass = size === 'xs' ? 'text-[10px]' : 'text-sm';
   if (src && !failed) {
     return (
       <img
@@ -90,7 +127,7 @@ function TelegramFanAvatar({
   }
   return (
     <div
-      className={`${dim} rounded-full bg-gray-100 dark:bg-zinc-800 border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 flex items-center justify-center text-sm font-medium shrink-0`}
+      className={`${dim} rounded-full bg-gray-100 dark:bg-zinc-800 border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 flex items-center justify-center ${initialClass} font-medium shrink-0`}
     >
       {initial}
     </div>
@@ -295,14 +332,17 @@ export function TelegramChatThread({
   peerId,
   initialFan,
   pollEnabled,
+  onClose,
 }: {
   creatorId: string;
   creator?: Creator | null;
   peerId: string;
   initialFan?: TelegramFan | null;
   pollEnabled: boolean;
+  onClose?: () => void;
 }) {
   const { user } = useAuth();
+  const confirm = useConfirm();
   const { onSyncEvent } = useStaffSync();
   const staffTimeZone = useStaffTimeZone();
   const [fan, setFan] = useState<TelegramFan | null>(initialFan || null);
@@ -322,6 +362,10 @@ export function TelegramChatThread({
   const [historyTranslations, setHistoryTranslations] = useState<Record<string, string>>({});
   const [translatingKeys, setTranslatingKeys] = useState<Record<string, boolean>>({});
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>({});
+  const [messageUnsends, setMessageUnsends] = useState<
+    Record<string, MessageUnsendRecord>
+  >({});
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const threadKeyRef = useRef(`${creatorId}:${peerId}`);
   threadKeyRef.current = `${creatorId}:${peerId}`;
@@ -369,13 +413,24 @@ export function TelegramChatThread({
     setHistoryTranslations({});
     historyTranslateQueueRef.current?.clear();
     setMessageSenders({});
+    setMessageUnsends({});
   }, [creatorId, peerId]);
 
   const loadMessages = useCallback(async () => {
-    const result = await getTelegramMessages(creatorId, peerId);
+    const [result, unsendResult] = await Promise.all([
+      getTelegramMessages(creatorId, peerId),
+      getMessageUnsends({
+        creatorId,
+        chatId: peerId,
+        platform: 'telegram',
+        limit: 200,
+      }).catch(() => ({ unsends: {} as Record<string, MessageUnsendRecord> })),
+    ]);
+    const unsends = unsendResult.unsends || {};
     setFan({ ...result.fan, kind: result.kind || result.fan.kind || 'dm' });
     setNicknameDraft(result.fan.nickname || '');
-    setMessages(result.messages || []);
+    setMessageUnsends(unsends);
+    setMessages(mergeUnsendTombstones(result.messages || [], unsends, peerId));
   }, [creatorId, peerId]);
 
   const loadSenders = useCallback(async () => {
@@ -433,7 +488,7 @@ export function TelegramChatThread({
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const msg = messages[i];
       const text = typeof msg.text === 'string' ? msg.text.trim() : '';
-      if (!text || msg.placeholder) continue;
+      if (!text || msg.placeholder || msg.deleted) continue;
       const cacheKey = `${msg.id}::${text}`;
       if (historyTranslationsRef.current[cacheKey]) continue;
       pending.push({ key: cacheKey, text });
@@ -531,6 +586,52 @@ export function TelegramChatThread({
     }
   }
 
+  async function handleDeleteMessage(messageId: string) {
+    if (!messageId || deletingMessageId) return;
+    const existing = messages.find((m) => m.id === messageId);
+    if (!existing || !existing.isOutgoing || existing.deleted) return;
+    const ok = await confirm({
+      title: 'Unsend message',
+      message: 'Unsend this message? It will remain visible in DomX for audit.',
+      confirmLabel: 'Unsend',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    setDeletingMessageId(messageId);
+    setError(null);
+    try {
+      const result = await deleteTelegramMessage(creatorId, peerId, messageId, {
+        originalText: existing.text || '',
+        messageSentAt: existing.date,
+      });
+      const unsend = result.unsend || {
+        originalText: existing.text || '',
+        unsentByUserName: user?.name || 'Unknown',
+        unsentAt: new Date().toISOString(),
+        messageSentAt: existing.date,
+      };
+      setMessageUnsends((prev) => ({
+        ...prev,
+        [messageId]: unsend,
+      }));
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId
+            ? {
+                ...msg,
+                deleted: true,
+                text: unsend.originalText || msg.text,
+              }
+            : msg
+        )
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to unsend');
+    } finally {
+      setDeletingMessageId(null);
+    }
+  }
+
   async function handleSaveNickname() {
     setSavingNick(true);
     try {
@@ -547,7 +648,8 @@ export function TelegramChatThread({
 
   return (
     <div className="flex-1 flex flex-col min-w-0 min-h-0 chatter-thread-bg relative">
-      <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 bg-white/90 dark:bg-zinc-950/90">
+      <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95 z-0 pointer-events-none" />
+      <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 bg-white/80 dark:bg-zinc-950/80 relative z-10">
         <div className="flex items-center gap-3 min-w-0">
           <TelegramFanAvatar
             name={fanLabel(fan, isGroup ? 'Group' : 'Fan')}
@@ -579,10 +681,21 @@ export function TelegramChatThread({
           >
             Save
           </button>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1.5 rounded-md text-gray-500 dark:text-zinc-400 hover:bg-gray-100 dark:hover:bg-zinc-800"
+              title="Close conversation"
+              aria-label="Close conversation"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2 relative z-10">
         {messages.map((msg) => {
           const msgText = msg.text || '';
           const cacheKey = `${msg.id}::${msgText.trim()}`;
@@ -592,27 +705,60 @@ export function TelegramChatThread({
             !autoTranslateHistory &&
             Boolean(msgText.trim()) &&
             !msg.placeholder &&
+            !msg.deleted &&
             !historyEn;
           const sentBy = msg.isOutgoing
             ? messageSenders[`telegram:${msg.id}`]
             : undefined;
+          const unsentBy = messageUnsends[msg.id]?.unsentByUserName;
+          const canUnsend = msg.isOutgoing && !msg.deleted;
+          const deleting = deletingMessageId === msg.id;
           return (
             <div
               key={msg.id}
-              className={`flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'}`}
+              className={`group/msg flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'}`}
             >
               <div className={`max-w-[75%] flex flex-col ${msg.isOutgoing ? 'items-end' : 'items-start'}`}>
-                {isGroup && !msg.isOutgoing && msg.senderName && (
-                  <p className="text-[11px] text-gray-500 dark:text-zinc-500 mb-0.5 px-1">
-                    {msg.senderName}
-                    {showUsername && msg.senderUsername ? ` @${msg.senderUsername}` : ''}
-                  </p>
+                {canUnsend && (
+                  <div className={`mb-1 flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'}`}>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteMessage(msg.id)}
+                      disabled={deleting}
+                      className="opacity-0 group-hover/msg:opacity-100 focus:opacity-100 p-1 rounded-md text-gray-500 dark:text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
+                      title="Unsend message"
+                      aria-label="Unsend message"
+                    >
+                      {deleting ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </div>
+                )}
+                {isGroup && !msg.isOutgoing && (
+                  <div className="flex items-center gap-1.5 mb-0.5 px-1">
+                    <TelegramFanAvatar
+                      name={msg.senderName || 'Fan'}
+                      avatarUrl={msg.senderAvatarUrl}
+                      size="xs"
+                    />
+                    {msg.senderName && (
+                      <p className="text-[11px] text-gray-500 dark:text-zinc-500 truncate">
+                        {msg.senderName}
+                        {showUsername && msg.senderUsername ? ` @${msg.senderUsername}` : ''}
+                      </p>
+                    )}
+                  </div>
                 )}
                 <div
                   className={`rounded-2xl px-3 py-2 text-sm ${
-                    msg.isOutgoing
-                      ? 'bg-sky-600 text-white'
-                      : 'bg-white dark:bg-zinc-800 text-gray-900 dark:text-zinc-100 border border-gray-100 dark:border-white/5'
+                    msg.deleted
+                      ? 'bg-gray-100 dark:bg-zinc-800/80 text-gray-500 dark:text-zinc-400 border border-dashed border-gray-300 dark:border-zinc-700'
+                      : msg.isOutgoing
+                        ? 'bg-sky-600 text-white'
+                        : 'bg-white dark:bg-zinc-800 text-gray-900 dark:text-zinc-100 border border-gray-100 dark:border-white/5'
                   }`}
                 >
                   <p className="whitespace-pre-wrap break-words">
@@ -620,15 +766,24 @@ export function TelegramChatThread({
                   </p>
                   <p
                     className={`text-[10px] mt-1 ${
-                      msg.isOutgoing ? 'text-white/70' : 'text-gray-400'
+                      msg.deleted
+                        ? 'text-gray-400'
+                        : msg.isOutgoing
+                          ? 'text-white/70'
+                          : 'text-gray-400'
                     }`}
                   >
                     {formatTime(msg.date, staffTimeZone)}
                   </p>
                 </div>
-                {sentBy && (
+                {sentBy && !msg.deleted && (
                   <div className="mt-1 px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-zinc-900/90 border border-gray-200 dark:border-zinc-800 text-[9px] font-medium text-gray-500 dark:text-zinc-400 shadow-sm">
                     Sent by {sentBy}
+                  </div>
+                )}
+                {msg.deleted && unsentBy && (
+                  <div className="mt-1 px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-zinc-900/90 border border-gray-200 dark:border-zinc-800 text-[9px] font-medium text-gray-500 dark:text-zinc-400 shadow-sm">
+                    Unsent by {unsentBy}
                   </div>
                 )}
                 {historyEn && (
@@ -668,7 +823,7 @@ export function TelegramChatThread({
         <div ref={bottomRef} />
       </div>
 
-      <div className="p-3 border-t border-gray-200 dark:border-zinc-800/60 bg-white/90 dark:bg-zinc-950/90">
+      <div className="p-3 border-t border-gray-200 dark:border-zinc-800/60 bg-white/90 dark:bg-zinc-950/90 relative z-10">
         {error && <p className="text-xs text-red-400 mb-2">{error}</p>}
         <div className="flex items-end gap-2">
           <textarea

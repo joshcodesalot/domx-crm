@@ -206,6 +206,7 @@ function serializeMessage(msg) {
       ? sender.displayName || sender.title || sender.firstName || null
       : null,
     senderUsername: sender?.username || null,
+    senderAvatarUrl: null,
   };
 }
 
@@ -980,6 +981,10 @@ async function listMessages(creatorId, peerId, { limit = 50 } = {}) {
   const profiles = await loadProfiles(creatorId, [String(numericId)]);
   const profile = profiles.get(String(numericId));
   const kind = peerKind(peer);
+  const withSenders =
+    kind === 'group'
+      ? await attachSenderAvatars(creatorId, client, messages)
+      : messages;
   return {
     peerId: String(numericId),
     kind,
@@ -995,8 +1000,49 @@ async function listMessages(creatorId, peerId, { limit = 50 } = {}) {
       username: profile?.username || peer?.username || null,
       avatarUrl: profile?.avatarUrl || null,
     },
-    messages,
+    messages: withSenders,
   };
+}
+
+async function attachSenderAvatars(creatorId, client, messages) {
+  const senderIds = [
+    ...new Set(
+      messages
+        .filter((msg) => !msg.isOutgoing && msg.senderId)
+        .map((msg) => msg.senderId)
+    ),
+  ];
+  if (!senderIds.length) return messages;
+
+  const numericIds = senderIds
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id));
+  let users = [];
+  try {
+    users = numericIds.length ? await client.getUsers(numericIds) : [];
+  } catch {
+    users = [];
+  }
+  const userList = Array.isArray(users) ? users : users ? [users] : [];
+  await Promise.all(
+    userList.map(async (user) => {
+      if (!user) return;
+      try {
+        await upsertFanProfile(creatorId, user);
+        await cachePeerAvatar(creatorId, client, user);
+      } catch {
+        // best-effort
+      }
+    })
+  );
+  const senderProfiles = await loadProfiles(creatorId, senderIds);
+  return messages.map((msg) => {
+    if (msg.isOutgoing || !msg.senderId) return msg;
+    return {
+      ...msg,
+      senderAvatarUrl: senderProfiles.get(msg.senderId)?.avatarUrl || null,
+    };
+  });
 }
 
 async function sendText(creatorId, peerId, text) {
@@ -1011,6 +1057,51 @@ async function sendText(creatorId, peerId, text) {
   }
   const sent = await client.sendText(numericId, trimmed);
   return serializeMessage(sent);
+}
+
+async function deleteText(creatorId, peerId, messageId) {
+  const client = await getClient(creatorId);
+  const numericId = Number(peerId);
+  const msgId = Number(messageId);
+  if (!Number.isFinite(numericId) || !Number.isFinite(msgId)) {
+    throw new TelegramWorkerError('Invalid chat or message id');
+  }
+
+  let found = null;
+  try {
+    const fetched = await client.getMessages(numericId, [msgId]);
+    found = Array.isArray(fetched) ? fetched[0] : fetched;
+  } catch {
+    found = null;
+  }
+  if (!found) {
+    try {
+      const history = await client.getHistory(numericId, { limit: 100 });
+      found = [...history].find((msg) => Number(msg.id) === msgId) || null;
+    } catch {
+      found = null;
+    }
+  }
+  if (!found) {
+    throw new TelegramWorkerError('Message not found', 404);
+  }
+  if (!found.isOutgoing) {
+    throw new TelegramWorkerError('Only outgoing messages can be unsent', 400);
+  }
+
+  try {
+    if (typeof client.deleteMessages === 'function') {
+      await client.deleteMessages(numericId, [msgId], { revoke: true });
+    } else if (typeof client.deleteMessagesById === 'function') {
+      await client.deleteMessagesById(numericId, [msgId]);
+    } else {
+      throw new TelegramWorkerError('Telegram delete is not available', 500);
+    }
+  } catch (err) {
+    if (err instanceof TelegramWorkerError) throw err;
+    throw new TelegramWorkerError(describeError(err), 400);
+  }
+  return serializeMessage(found);
 }
 
 async function resolveUsername(creatorId, username) {
@@ -1104,6 +1195,7 @@ module.exports = {
   listDialogs,
   listMessages,
   sendText,
+  deleteText,
   resolveUsername,
   unreadCount,
   startTelegramManager,
