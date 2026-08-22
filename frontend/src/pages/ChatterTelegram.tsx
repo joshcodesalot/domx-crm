@@ -7,10 +7,12 @@ import {
   TelegramChatList,
   TelegramChatThread,
 } from '@/components/telegram/TelegramChatPanels';
+import { FourBasedTranslationToggles } from '@/components/fourbased/FourBasedChatPanels';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import { usePollEnabled } from '@/hooks/useDocumentVisible';
 import type { TelegramDialog } from '@/lib/api';
+import telegramIcon from '@/assets/telegram_icon.svg';
 
 export default function ChatterTelegram() {
   const location = useLocation();
@@ -68,11 +70,7 @@ export default function ChatterTelegram() {
       <main className="flex-1 flex min-w-0 overflow-hidden">
         <aside className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50 glass-panel">
           <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center gap-2">
-            <span className="w-5 h-5 rounded bg-sky-500 inline-flex items-center justify-center text-white">
-              <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="currentColor">
-                <path d="M21.5 3.6 18.4 20c-.2 1-.8 1.2-1.6.8l-4.5-3.3-2.2 2.1c-.2.2-.4.4-.9.4l.3-4.6 8.4-7.6c.4-.3 0-.5-.5-.2l-10.4 6.5-4.5-1.4c-1-.3-1-.9.2-1.4L20.3 3c.8-.3 1.5.2 1.2.6Z" />
-              </svg>
-            </span>
+            <img src={telegramIcon} alt="" className="w-5 h-5 rounded-full" />
             <span className="text-sm font-semibold text-gray-900 dark:text-white">
               Telegram
             </span>
@@ -134,6 +132,9 @@ export default function ChatterTelegram() {
               );
             })}
           </div>
+          <div className="shrink-0 border-t border-gray-200 dark:border-zinc-800/60 p-4 bg-white/80 dark:bg-zinc-950/80">
+            <FourBasedTranslationToggles />
+          </div>
         </aside>
 
         <aside className="w-80 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-[#F7F8FA] dark:bg-[#0a0a0c] glass-panel">
@@ -157,6 +158,7 @@ export default function ChatterTelegram() {
         {selectedCreator && selectedPeerId ? (
           <TelegramChatThread
             creatorId={selectedCreator.id}
+            creator={selectedCreator}
             peerId={selectedPeerId}
             initialFan={selectedDialog?.fan || null}
             pollEnabled={pollEnabled}

@@ -23,6 +23,7 @@ import { useAuth } from '@/context/AuthContext';
 import ThemeToggle from '@/components/ThemeToggle';
 import maloumIcon from '@/assets/maloum_icon.png';
 import fourBasedIcon from '@/assets/4based_icon.ico';
+import telegramIcon from '@/assets/telegram_icon.svg';
 
 interface SidebarProps {
   activePage?:
@@ -536,9 +537,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             }
             title="Telegram"
           >
-            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor" aria-hidden>
-              <path d="M21.5 3.6 18.4 20c-.2 1-.8 1.2-1.6.8l-4.5-3.3-2.2 2.1c-.2.2-.4.4-.9.4l.3-4.6 8.4-7.6c.4-.3 0-.5-.5-.2l-10.4 6.5-4.5-1.4c-1-.3-1-.9.2-1.4L20.3 3c.8-.3 1.5.2 1.2.6Z" />
-            </svg>
+            <img src={telegramIcon} alt="" className="w-5 h-5 rounded-full" />
           </button>
         )}
         {hasPermission('creators.manage') && (

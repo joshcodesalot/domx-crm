@@ -183,7 +183,12 @@ async function enrichCreatorFields(creatorId) {
     creatorName: row.displayName,
     creatorUsername: row.username,
     creatorAvatarUrl: row.avatarUrl,
-    platform: row.platform === '4based' ? '4based' : 'maloum',
+    platform:
+      row.platform === '4based'
+        ? '4based'
+        : row.platform === 'telegram'
+          ? 'telegram'
+          : 'maloum',
   };
 }
 
@@ -2880,7 +2885,12 @@ router.get(
 
       const salesByPlatformMap = new Map();
       for (const row of salesByPlatformResult.rows) {
-        const platform = row.platform === '4based' ? '4based' : 'maloum';
+        const platform =
+          row.platform === '4based'
+            ? '4based'
+            : row.platform === 'telegram'
+              ? 'telegram'
+              : 'maloum';
         if (!salesByPlatformMap.has(platform)) {
           salesByPlatformMap.set(platform, []);
         }
@@ -4297,7 +4307,12 @@ router.get(
           platformByCreator.set(creatorKey, new Map());
         }
         const byPlatform = platformByCreator.get(creatorKey);
-        const platform = row.platform === '4based' ? '4based' : 'maloum';
+        const platform =
+          row.platform === '4based'
+            ? '4based'
+            : row.platform === 'telegram'
+              ? 'telegram'
+              : 'maloum';
         if (!byPlatform.has(platform)) byPlatform.set(platform, []);
         const amount = Number(row.amount) || 0;
         if (amount > 0) {

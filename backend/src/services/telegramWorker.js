@@ -1,13 +1,21 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { TelegramClient } = require('@mtcute/node');
 const pool = require('../db/pool');
 const { encryptJson, decryptJson } = require('./crypto');
 const { emitToUsers } = require('./userEventBus');
 const { getUserIdsWithCreatorAccess } = require('./creatorAccess');
+const { saveCreatorAvatarFromBuffer } = require('./creatorAvatar');
 
 const DATA_DIR = path.join(__dirname, '../../data/telegram');
+const FAN_AVATARS_DIR = path.join(__dirname, '../../data/telegram-fans');
+const FAN_AVATARS_PUBLIC = '/uploads/telegram-fans';
 const LOGIN_TIMEOUT_MS = 90_000;
+const FAN_AVATAR_PREFETCH_CONCURRENCY = 3;
+
+/** @type {Map<string, Promise<string | null>>} */
+const fanAvatarInFlight = new Map();
 
 /** @type {Map<string, { client: import('@mtcute/node').TelegramClient, self: object | null }>} */
 const hotClients = new Map();
@@ -144,11 +152,29 @@ async function relayUpdate(creatorId, event, payload) {
   }
 }
 
-function isPrivateFanPeer(peer) {
-  if (!peer || peer.type !== 'user') return false;
-  if (peer.isSelf) return false;
-  if (peer.isBot) return false;
-  return true;
+function isInboxPeer(peer) {
+  if (!peer) return false;
+  if (peer.type === 'user') {
+    return !peer.isSelf && !peer.isBot;
+  }
+  if (peer.type === 'chat') {
+    if (peer.chatType === 'channel' || peer.chatType === 'community') return false;
+    return Boolean(peer.isGroup);
+  }
+  return false;
+}
+
+function peerKind(peer) {
+  if (peer && peer.type === 'chat' && peer.isGroup) return 'group';
+  return 'dm';
+}
+
+function peerTitle(peer) {
+  if (!peer) return 'Fan';
+  if (peer.type === 'chat') {
+    return peer.title || peer.displayName || 'Group';
+  }
+  return peer.displayName || peer.firstName || 'Fan';
 }
 
 function mediaPlaceholder(media) {
@@ -166,6 +192,7 @@ function serializeMessage(msg) {
   if (!msg) return null;
   const text = typeof msg.text === 'string' ? msg.text : '';
   const placeholder = text ? null : mediaPlaceholder(msg.media);
+  const sender = msg.sender;
   return {
     id: String(msg.id),
     peerId: String(msg.chat?.id || ''),
@@ -174,6 +201,11 @@ function serializeMessage(msg) {
     text,
     kind: placeholder?.kind || (text ? 'text' : 'empty'),
     placeholder: placeholder?.text || null,
+    senderId: sender?.id != null ? String(sender.id) : null,
+    senderName: sender
+      ? sender.displayName || sender.title || sender.firstName || null
+      : null,
+    senderUsername: sender?.username || null,
   };
 }
 
@@ -186,11 +218,11 @@ function serializeUserPreview(user) {
   };
 }
 
-async function upsertFanProfile(creatorId, user) {
-  if (!creatorId || !user) return;
-  const telegramUserId = String(user.id);
-  const displayName = user.displayName || user.firstName || 'Fan';
-  const username = user.username || null;
+async function upsertFanProfile(creatorId, peer) {
+  if (!creatorId || !peer) return;
+  const telegramUserId = String(peer.id);
+  const displayName = peerTitle(peer);
+  const username = peer.username || null;
   await pool.query(
     `INSERT INTO telegram_fan_profiles (
        "creatorId", "telegramUserId", username, "displayName"
@@ -208,12 +240,193 @@ async function upsertFanProfile(creatorId, user) {
 async function loadProfiles(creatorId, userIds) {
   if (!userIds.length) return new Map();
   const result = await pool.query(
-    `SELECT "telegramUserId", username, "displayName", nickname, notes
+    `SELECT "telegramUserId", username, "displayName", nickname, notes, "avatarUrl"
      FROM telegram_fan_profiles
      WHERE "creatorId" = $1 AND "telegramUserId" = ANY($2::text[])`,
     [creatorId, userIds]
   );
   return new Map(result.rows.map((row) => [row.telegramUserId, row]));
+}
+
+function safePeerFileId(peerId) {
+  return String(peerId || '').replace(/[^0-9A-Za-z_-]/g, '_') || 'unknown';
+}
+
+function fanAvatarRelPath(creatorId, peerId) {
+  return `${creatorId}/${safePeerFileId(peerId)}.jpg`;
+}
+
+function fanAvatarAbsPath(creatorId, peerId) {
+  return path.join(FAN_AVATARS_DIR, fanAvatarRelPath(creatorId, peerId));
+}
+
+function fanAvatarPublicUrl(creatorId, peerId) {
+  return `${FAN_AVATARS_PUBLIC}/${fanAvatarRelPath(creatorId, peerId)}`;
+}
+
+function fanAvatarFileExists(avatarUrl) {
+  if (!avatarUrl || typeof avatarUrl !== 'string') return false;
+  if (!avatarUrl.startsWith(`${FAN_AVATARS_PUBLIC}/`)) return false;
+  const rel = avatarUrl.slice(FAN_AVATARS_PUBLIC.length + 1);
+  if (!rel || rel.includes('..') || path.isAbsolute(rel)) return false;
+  return fs.existsSync(path.join(FAN_AVATARS_DIR, rel));
+}
+
+async function downloadPhotoToFile(client, photo, destPath) {
+  if (!client || !photo || !destPath) return false;
+  const locations = [photo.big, photo.small, photo].filter(Boolean);
+  const tmp = path.join(
+    os.tmpdir(),
+    `tg-fan-${Date.now()}-${Math.random().toString(16).slice(2)}.jpg`
+  );
+  try {
+    let downloaded = false;
+    for (const location of locations) {
+      try {
+        await client.downloadToFile(tmp, location);
+        downloaded = true;
+        break;
+      } catch {
+        // ChatPhoto.big/small or the photo itself may be the valid location
+      }
+    }
+    if (!downloaded) return false;
+    const buffer = fs.readFileSync(tmp);
+    if (!buffer.length) return false;
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    fs.writeFileSync(destPath, buffer);
+    return true;
+  } catch (err) {
+    console.warn('[telegram] Fan photo download failed:', err.message || err);
+    return false;
+  } finally {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function cachePeerAvatar(creatorId, client, peer) {
+  if (!creatorId || !client || !peer) return null;
+  const telegramUserId = String(peer.id);
+  const key = `${creatorId}:${telegramUserId}`;
+  const pending = fanAvatarInFlight.get(key);
+  if (pending) return pending;
+
+  const work = (async () => {
+    try {
+      const existing = await pool.query(
+        `SELECT "avatarUrl" FROM telegram_fan_profiles
+         WHERE "creatorId" = $1 AND "telegramUserId" = $2`,
+        [creatorId, telegramUserId]
+      );
+      const current = existing.rows[0]?.avatarUrl || null;
+      if (current && fanAvatarFileExists(current)) return current;
+
+      if (!peer.photo) return current;
+
+      const destPath = fanAvatarAbsPath(creatorId, telegramUserId);
+      const saved = await downloadPhotoToFile(client, peer.photo, destPath);
+      if (!saved) return current;
+
+      const avatarUrl = fanAvatarPublicUrl(creatorId, telegramUserId);
+      await pool.query(
+        `UPDATE telegram_fan_profiles
+         SET "avatarUrl" = $3, "updatedAt" = NOW()
+         WHERE "creatorId" = $1 AND "telegramUserId" = $2`,
+        [creatorId, telegramUserId, avatarUrl]
+      );
+      return avatarUrl;
+    } catch (err) {
+      console.warn('[telegram] Fan avatar cache failed:', err.message || err);
+      return null;
+    } finally {
+      fanAvatarInFlight.delete(key);
+    }
+  })();
+
+  fanAvatarInFlight.set(key, work);
+  return work;
+}
+
+function scheduleFanAvatarPrefetch(creatorId, client, peers, profiles) {
+  const missing = peers.filter((peer) => {
+    const url = profiles.get(String(peer.id))?.avatarUrl;
+    return !url || !fanAvatarFileExists(url);
+  });
+  if (!missing.length) return;
+
+  void (async () => {
+    const queue = [...missing];
+    const workerCount = Math.min(FAN_AVATAR_PREFETCH_CONCURRENCY, queue.length);
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (queue.length) {
+          const peer = queue.shift();
+          if (!peer) break;
+          try {
+            await cachePeerAvatar(creatorId, client, peer);
+          } catch {
+            // best-effort
+          }
+        }
+      })
+    );
+  })();
+}
+
+async function downloadProfilePhoto(client, user, destId) {
+  const photo = user?.photo;
+  if (!client || !photo || !destId) return null;
+  const locations = [photo.big, photo.small, photo].filter(Boolean);
+  const tmp = path.join(os.tmpdir(), `tg-avatar-${destId}-${Date.now()}.jpg`);
+  try {
+    let downloaded = false;
+    for (const location of locations) {
+      try {
+        await client.downloadToFile(tmp, location);
+        downloaded = true;
+        break;
+      } catch {
+        // ChatPhoto.big/small or the photo itself may be the valid location
+      }
+    }
+    if (!downloaded) return null;
+    const buffer = fs.readFileSync(tmp);
+    if (!buffer.length) return null;
+    return saveCreatorAvatarFromBuffer(destId, buffer, 'image/jpeg');
+  } catch (err) {
+    console.warn('[telegram] Profile photo download failed:', err.message || err);
+    return null;
+  } finally {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function cacheTelegramSelfAvatar(creatorId, client, self) {
+  const user = self || client;
+  let me = self;
+  if (!me && client?.getMe) {
+    try {
+      me = await client.getMe();
+    } catch {
+      me = null;
+    }
+  }
+  const avatarUrl = await downloadProfilePhoto(client, me || user, creatorId);
+  if (!avatarUrl) return null;
+  await pool.query(
+    `UPDATE creators SET "avatarUrl" = $2, "avatarSource" = 'telegram', "updatedAt" = NOW()
+     WHERE id = $1`,
+    [creatorId, avatarUrl]
+  );
+  return avatarUrl;
 }
 
 function sessionPayload(user, storageKey, phone) {
@@ -448,6 +661,16 @@ async function completePhoneLogin({ accountId, code, password }) {
 }
 
 async function finishPendingReady(pending, user) {
+  let avatarUrl = null;
+  try {
+    avatarUrl = await downloadProfilePhoto(
+      pending.client,
+      user,
+      pending.accountId
+    );
+  } catch (err) {
+    console.warn('[telegram] Avatar download failed:', err.message || err);
+  }
   pendingLogins.delete(pending.accountId);
   await destroyClient(pending.client);
   return {
@@ -458,6 +681,7 @@ async function finishPendingReady(pending, user) {
     encryptedSession: encryptJson(
       sessionPayload(user, pending.storageKey, pending.phone)
     ),
+    avatarUrl,
   };
 }
 
@@ -468,6 +692,7 @@ async function persistPendingConnect({
   phone,
   storageKey,
   encryptedSession,
+  avatarUrl,
 }) {
   const accountToken = require('./crypto').generateAccountToken();
   const accountTokenHash = require('./crypto').hashToken(accountToken);
@@ -487,11 +712,11 @@ async function persistPendingConnect({
   await pool.query(
     `INSERT INTO creator_connect_pending (
        "accountId", "accountTokenHash", "partitionId", platform,
-       "displayName", username, "postLoginUrl", "encryptedSession",
+       "displayName", username, "postLoginUrl", "avatarUrl", "encryptedSession",
        "loginEmail", "providerUserId",
        "createdBy", "expiresAt"
      )
-     VALUES ($1, $2, $3, 'telegram', $4, $5, $6, $7, $8, $9, $10, $11)`,
+     VALUES ($1, $2, $3, 'telegram', $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
     [
       accountId,
       accountTokenHash,
@@ -499,6 +724,7 @@ async function persistPendingConnect({
       displayName,
       username,
       postLoginUrl,
+      avatarUrl || null,
       encryptedSession,
       phone,
       providerUserId,
@@ -514,7 +740,7 @@ async function persistPendingConnect({
     displayName,
     username,
     postLoginUrl,
-    avatarUrl: null,
+    avatarUrl: avatarUrl || null,
     providerUserId,
   };
 }
@@ -609,7 +835,9 @@ async function onCreatorSaved(creatorId, accountId) {
       );
       void encryptedSession;
     }
-    await attachCreatorClient(creatorId);
+    const client = await attachCreatorClient(creatorId);
+    const self = hotClients.get(creatorId)?.self || null;
+    await cacheTelegramSelfAvatar(creatorId, client, self);
   } catch (err) {
     console.warn('[telegram] Failed to start client after save:', err.message || err);
   }
@@ -659,7 +887,13 @@ async function applyReconnectReady(creatorId, loginResult) {
         : null,
     ]
   );
-  await attachCreatorClient(creatorId);
+  const client = await attachCreatorClient(creatorId);
+  const self = hotClients.get(creatorId)?.self || null;
+  const avatarUrl = await cacheTelegramSelfAvatar(creatorId, client, self);
+  if (avatarUrl && updated.rows[0]) {
+    updated.rows[0].avatarUrl = avatarUrl;
+    updated.rows[0].avatarSource = 'telegram';
+  }
   return updated.rows[0];
 }
 
@@ -672,24 +906,28 @@ async function getClient(creatorId) {
 async function listDialogs(creatorId, { limit = 80 } = {}) {
   const client = await getClient(creatorId);
   const dialogs = [];
-  const users = [];
+  const peers = [];
   const cap = Math.min(Math.max(Number(limit) || 80, 1), 200);
   for await (const dialog of client.iterDialogs({ limit: cap })) {
     const peer = dialog.peer;
-    if (!isPrivateFanPeer(peer)) continue;
-    users.push(peer);
+    if (!isInboxPeer(peer)) continue;
+    peers.push(peer);
+    const kind = peerKind(peer);
     dialogs.push({
       peerId: String(peer.id),
+      kind,
+      title: peerTitle(peer),
       unreadCount: Number(dialog.unreadCount) || 0,
       lastMessage: serializeMessage(dialog.lastMessage),
-      user: serializeUserPreview(peer),
+      user: kind === 'dm' ? serializeUserPreview(peer) : null,
     });
   }
-  await Promise.all(users.map((user) => upsertFanProfile(creatorId, user)));
+  await Promise.all(peers.map((peer) => upsertFanProfile(creatorId, peer)));
   const profiles = await loadProfiles(
     creatorId,
     dialogs.map((d) => d.peerId)
   );
+  scheduleFanAvatarPrefetch(creatorId, client, peers, profiles);
   return dialogs.map((dialog) => {
     const profile = profiles.get(dialog.peerId);
     return {
@@ -699,9 +937,11 @@ async function listDialogs(creatorId, { limit = 80 } = {}) {
       displayName:
         (profile?.nickname && profile.nickname.trim()) ||
         profile?.displayName ||
+        dialog.title ||
         dialog.user?.displayName ||
         'Fan',
       username: profile?.username || dialog.user?.username || null,
+      avatarUrl: profile?.avatarUrl || null,
     };
   });
 }
@@ -719,22 +959,41 @@ async function listMessages(creatorId, peerId, { limit = 50 } = {}) {
     .map(serializeMessage)
     .filter(Boolean)
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
-  const [user] = await client.getUsers(numericId);
-  if (user) await upsertFanProfile(creatorId, user);
+  let peer = null;
+  try {
+    const users = await client.getUsers(numericId);
+    if (users[0] && users[0].type === 'user') peer = users[0];
+  } catch {
+    peer = null;
+  }
+  if (!peer) {
+    try {
+      peer = await client.getChat(numericId);
+    } catch {
+      peer = null;
+    }
+  }
+  if (peer) {
+    await upsertFanProfile(creatorId, peer);
+    await cachePeerAvatar(creatorId, client, peer);
+  }
   const profiles = await loadProfiles(creatorId, [String(numericId)]);
   const profile = profiles.get(String(numericId));
+  const kind = peerKind(peer);
   return {
     peerId: String(numericId),
+    kind,
     fan: {
       telegramUserId: String(numericId),
+      kind,
       displayName:
         (profile?.nickname && profile.nickname.trim()) ||
         profile?.displayName ||
-        user?.displayName ||
-        'Fan',
+        peerTitle(peer),
       nickname: profile?.nickname || '',
       notes: profile?.notes || '',
-      username: profile?.username || user?.username || null,
+      username: profile?.username || peer?.username || null,
+      avatarUrl: profile?.avatarUrl || null,
     },
     messages,
   };
@@ -767,12 +1026,14 @@ async function resolveUsername(creatorId, username) {
     throw new TelegramWorkerError('Telegram user not found');
   }
   await upsertFanProfile(creatorId, user);
+  await cachePeerAvatar(creatorId, client, user);
   const profiles = await loadProfiles(creatorId, [String(user.id)]);
   const profile = profiles.get(String(user.id));
   return {
     peerId: String(user.id),
     fan: {
       telegramUserId: String(user.id),
+      kind: 'dm',
       displayName:
         (profile?.nickname && profile.nickname.trim()) ||
         user.displayName ||
@@ -780,6 +1041,7 @@ async function resolveUsername(creatorId, username) {
       nickname: profile?.nickname || '',
       notes: profile?.notes || '',
       username: user.username || null,
+      avatarUrl: profile?.avatarUrl || null,
     },
   };
 }
@@ -788,7 +1050,7 @@ async function unreadCount(creatorId) {
   const client = await getClient(creatorId);
   let messages = 0;
   for await (const dialog of client.iterDialogs({ limit: 80 })) {
-    if (!isPrivateFanPeer(dialog.peer)) continue;
+    if (!isInboxPeer(dialog.peer)) continue;
     messages += Number(dialog.unreadCount) || 0;
   }
   return { messages, notifications: 0 };
@@ -796,6 +1058,7 @@ async function unreadCount(creatorId) {
 
 async function startTelegramManager() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(FAN_AVATARS_DIR, { recursive: true });
   try {
     getApiCreds();
   } catch (err) {

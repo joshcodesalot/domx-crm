@@ -2638,11 +2638,13 @@ export async function getFourBasedBadges(
 
 export interface TelegramFan {
   telegramUserId: string;
+  kind?: 'dm' | 'group';
   displayName: string;
   nickname?: string;
   notes?: string;
   username?: string | null;
   hasUsername?: boolean;
+  avatarUrl?: string | null;
 }
 
 export interface TelegramMessage {
@@ -2653,10 +2655,15 @@ export interface TelegramMessage {
   text: string;
   kind: string;
   placeholder: string | null;
+  senderId?: string | null;
+  senderName?: string | null;
+  senderUsername?: string | null;
 }
 
 export interface TelegramDialog {
   peerId: string;
+  kind?: 'dm' | 'group';
+  title?: string;
   unreadCount: number;
   lastMessage: TelegramMessage | null;
   nickname?: string;
@@ -2735,7 +2742,12 @@ export async function getTelegramDialogs(
 export async function getTelegramMessages(
   creatorId: string,
   peerId: string
-): Promise<{ peerId: string; fan: TelegramFan; messages: TelegramMessage[] }> {
+): Promise<{
+  peerId: string;
+  kind?: 'dm' | 'group';
+  fan: TelegramFan;
+  messages: TelegramMessage[];
+}> {
   return request(
     `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages`
   );
@@ -2744,13 +2756,17 @@ export async function getTelegramMessages(
 export async function sendTelegramMessage(
   creatorId: string,
   peerId: string,
-  text: string
+  text: string,
+  englishText?: string | null
 ): Promise<{ message: TelegramMessage }> {
   return request(
     `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages`,
     {
       method: 'POST',
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({
+        text,
+        ...(englishText ? { englishText } : {}),
+      }),
     }
   );
 }

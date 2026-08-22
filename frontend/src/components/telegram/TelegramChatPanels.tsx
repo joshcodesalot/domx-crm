@@ -1,17 +1,42 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Search, Send } from 'lucide-react';
+import { Languages, Loader2, Search, Send } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
+import { useStaffTimeZone } from '@/lib/berlinTime';
 import {
+  TRANSLATION_SETTINGS_EVENT,
+} from '@/components/fourbased/FourBasedChatPanels';
+import {
+  createHistoryTranslateQueue,
+  type HistoryTranslateQueue,
+} from '@/lib/historyTranslateQueue';
+import {
+  createMessagingDashboardEntry,
+  getMessagingDashboardSenders,
   getTelegramDialogs,
   getTelegramMessages,
   patchTelegramFan,
+  resolveCreatorAvatarUrl,
   resolveTelegramUsername,
   sendTelegramMessage,
+  translateToGerman,
+  type Creator,
   type TelegramDialog,
   type TelegramFan,
   type TelegramMessage,
+  type TranslateHistoryItem,
 } from '@/lib/api';
+
+const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
+const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
+const MAX_TRANSLATION_HISTORY = 8;
+
+function readStoredBoolean(key: string, defaultValue: boolean): boolean {
+  const stored = localStorage.getItem(key);
+  if (stored === 'true') return true;
+  if (stored === 'false') return false;
+  return defaultValue;
+}
 
 function fanLabel(fan: TelegramFan | null | undefined, fallback = 'Fan'): string {
   const nick = fan?.nickname?.trim();
@@ -27,11 +52,49 @@ function canOpenByUsername(role: string | undefined): boolean {
   return role === 'owner' || role === 'manager';
 }
 
-function formatTime(iso: string | null): string {
+function formatTime(iso: string | null, timeZone: string): string {
   if (!iso) return '';
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return date.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone,
+  });
+}
+
+function TelegramFanAvatar({
+  name,
+  avatarUrl,
+  size = 'md',
+}: {
+  name: string;
+  avatarUrl?: string | null;
+  size?: 'sm' | 'md';
+}) {
+  const [failed, setFailed] = useState(false);
+  const dim = size === 'sm' ? 'w-9 h-9' : 'w-10 h-10';
+  const src = resolveCreatorAvatarUrl(avatarUrl);
+  const initial = (name || '?').slice(0, 1).toUpperCase();
+  if (src && !failed) {
+    return (
+      <img
+        src={src}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        className={`${dim} rounded-full object-cover bg-gray-100 dark:bg-zinc-800 border border-gray-300 dark:border-zinc-700 shrink-0`}
+        onError={() => setFailed(true)}
+      />
+    );
+  }
+  return (
+    <div
+      className={`${dim} rounded-full bg-gray-100 dark:bg-zinc-800 border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 flex items-center justify-center text-sm font-medium shrink-0`}
+    >
+      {initial}
+    </div>
+  );
 }
 
 export function TelegramChatList({
@@ -111,12 +174,13 @@ export function TelegramChatList({
       const result = await resolveTelegramUsername(creatorId, handle);
       onSelectDialog({
         peerId: result.peerId,
+        kind: 'dm',
         unreadCount: 0,
         lastMessage: null,
         displayName: result.fan.displayName,
         nickname: result.fan.nickname,
         notes: result.fan.notes,
-        fan: result.fan,
+        fan: { ...result.fan, kind: 'dm' },
       });
       setUsernameDraft('');
       void loadDialogs();
@@ -173,11 +237,12 @@ export function TelegramChatList({
         )}
         {error && <p className="text-xs text-red-400 p-4">{error}</p>}
         {!loading && !error && filtered.length === 0 && (
-          <p className="text-xs text-gray-500 dark:text-zinc-500 p-4">No private chats yet.</p>
+          <p className="text-xs text-gray-500 dark:text-zinc-500 p-4">No chats yet.</p>
         )}
         {filtered.map((dialog) => {
           const active = selectedPeerId === dialog.peerId;
           const preview = dialog.lastMessage?.text || dialog.lastMessage?.placeholder || '';
+          const isGroup = (dialog.kind || dialog.fan?.kind) === 'group';
           return (
             <button
               key={dialog.peerId}
@@ -189,19 +254,33 @@ export function TelegramChatList({
                   : 'hover:bg-gray-50 dark:hover:bg-white/[0.03]'
               }`}
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-medium text-gray-900 dark:text-zinc-100 truncate">
-                  {fanLabel(dialog.fan, dialog.displayName)}
-                </span>
-                {dialog.unreadCount > 0 && (
-                  <span className="text-[10px] font-semibold bg-sky-600 text-white rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center">
-                    {dialog.unreadCount}
-                  </span>
-                )}
+              <div className="flex items-start gap-3">
+                <TelegramFanAvatar
+                  name={fanLabel(dialog.fan, dialog.displayName)}
+                  avatarUrl={dialog.fan?.avatarUrl}
+                  size="sm"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-gray-900 dark:text-zinc-100 truncate">
+                      {fanLabel(dialog.fan, dialog.displayName)}
+                    </span>
+                    {dialog.unreadCount > 0 && (
+                      <span className="text-[10px] font-semibold bg-sky-600 text-white rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center">
+                        {dialog.unreadCount}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-zinc-500 truncate mt-0.5">
+                    {isGroup ? (
+                      <span className="mr-1.5 text-[10px] uppercase tracking-wide text-sky-600">
+                        Group
+                      </span>
+                    ) : null}
+                    {preview || '—'}
+                  </p>
+                </div>
               </div>
-              <p className="text-xs text-gray-500 dark:text-zinc-500 truncate mt-0.5">
-                {preview || '—'}
-              </p>
             </button>
           );
         })}
@@ -212,32 +291,105 @@ export function TelegramChatList({
 
 export function TelegramChatThread({
   creatorId,
+  creator,
   peerId,
   initialFan,
   pollEnabled,
 }: {
   creatorId: string;
+  creator?: Creator | null;
   peerId: string;
   initialFan?: TelegramFan | null;
   pollEnabled: boolean;
 }) {
   const { user } = useAuth();
   const { onSyncEvent } = useStaffSync();
+  const staffTimeZone = useStaffTimeZone();
   const [fan, setFan] = useState<TelegramFan | null>(initialFan || null);
   const [messages, setMessages] = useState<TelegramMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [translatingOutgoing, setTranslatingOutgoing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nicknameDraft, setNicknameDraft] = useState(initialFan?.nickname || '');
   const [savingNick, setSavingNick] = useState(false);
+  const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
+    readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
+  );
+  const [autoTranslateHistory, setAutoTranslateHistory] = useState(() =>
+    readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true)
+  );
+  const [historyTranslations, setHistoryTranslations] = useState<Record<string, string>>({});
+  const [translatingKeys, setTranslatingKeys] = useState<Record<string, boolean>>({});
+  const [messageSenders, setMessageSenders] = useState<Record<string, string>>({});
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const threadKeyRef = useRef(`${creatorId}:${peerId}`);
+  threadKeyRef.current = `${creatorId}:${peerId}`;
+  const historyTranslateQueueRef = useRef<HistoryTranslateQueue | null>(null);
+  const historyTranslationsRef = useRef(historyTranslations);
+  historyTranslationsRef.current = historyTranslations;
   const showUsername = canSeeFanUsername(user?.role);
+  const isGroup = fan?.kind === 'group';
+
+  useEffect(() => {
+    const sync = () => {
+      setAutoTranslateOutgoing(readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true));
+      setAutoTranslateHistory(readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true));
+    };
+    window.addEventListener(TRANSLATION_SETTINGS_EVENT, sync);
+    return () => window.removeEventListener(TRANSLATION_SETTINGS_EVENT, sync);
+  }, []);
+
+  useEffect(() => {
+    const queue = createHistoryTranslateQueue({
+      onStart: (key) => {
+        setTranslatingKeys((prev) => ({ ...prev, [key]: true }));
+      },
+      onSettle: (key) => {
+        setTranslatingKeys((prev) => {
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      },
+      onResult: (key, translated) => {
+        setHistoryTranslations((prev) => ({ ...prev, [key]: translated }));
+      },
+    });
+    historyTranslateQueueRef.current = queue;
+    return () => {
+      queue.dispose();
+      if (historyTranslateQueueRef.current === queue) {
+        historyTranslateQueueRef.current = null;
+      }
+    };
+  }, [creatorId, peerId]);
+
+  useEffect(() => {
+    setHistoryTranslations({});
+    historyTranslateQueueRef.current?.clear();
+    setMessageSenders({});
+  }, [creatorId, peerId]);
 
   const loadMessages = useCallback(async () => {
     const result = await getTelegramMessages(creatorId, peerId);
-    setFan(result.fan);
+    setFan({ ...result.fan, kind: result.kind || result.fan.kind || 'dm' });
     setNicknameDraft(result.fan.nickname || '');
     setMessages(result.messages || []);
+  }, [creatorId, peerId]);
+
+  const loadSenders = useCallback(async () => {
+    try {
+      const result = await getMessagingDashboardSenders({
+        creatorId,
+        chatId: peerId,
+        limit: 200,
+      });
+      if (threadKeyRef.current !== `${creatorId}:${peerId}`) return;
+      setMessageSenders(result.senders || {});
+    } catch {
+      // best-effort
+    }
   }, [creatorId, peerId]);
 
   useEffect(() => {
@@ -245,15 +397,17 @@ export function TelegramChatThread({
     void loadMessages().catch((err) => {
       setError(err instanceof Error ? err.message : 'Failed to load messages');
     });
-  }, [loadMessages]);
+    void loadSenders();
+  }, [loadMessages, loadSenders]);
 
   useEffect(() => {
     if (!pollEnabled) return;
     const timer = window.setInterval(() => {
       void loadMessages().catch(() => undefined);
+      void loadSenders();
     }, 12_000);
     return () => window.clearInterval(timer);
-  }, [loadMessages, pollEnabled]);
+  }, [loadMessages, loadSenders, pollEnabled]);
 
   useEffect(() => {
     return onSyncEvent((event) => {
@@ -265,30 +419,115 @@ export function TelegramChatThread({
         : '';
       if (eventPeer && eventPeer !== peerId) return;
       void loadMessages().catch(() => undefined);
+      void loadSenders();
     });
-  }, [onSyncEvent, creatorId, peerId, loadMessages, pollEnabled]);
+  }, [onSyncEvent, creatorId, peerId, loadMessages, loadSenders, pollEnabled]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length]);
+  }, [messages.length, historyTranslations]);
+
+  useEffect(() => {
+    if (!autoTranslateHistory || !pollEnabled) return;
+    const pending: Array<{ key: string; text: string }> = [];
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const msg = messages[i];
+      const text = typeof msg.text === 'string' ? msg.text.trim() : '';
+      if (!text || msg.placeholder) continue;
+      const cacheKey = `${msg.id}::${text}`;
+      if (historyTranslationsRef.current[cacheKey]) continue;
+      pending.push({ key: cacheKey, text });
+    }
+    if (pending.length) {
+      historyTranslateQueueRef.current?.enqueue(pending);
+    }
+  }, [messages, autoTranslateHistory, pollEnabled]);
+
+  const translateMessage = useCallback((msgKey: string, text: string) => {
+    const trimmed = text.trim();
+    if (!msgKey || !trimmed) return;
+    const cacheKey = `${msgKey}::${trimmed}`;
+    if (historyTranslationsRef.current[cacheKey]) return;
+    historyTranslateQueueRef.current?.enqueue([{ key: cacheKey, text: trimmed }]);
+  }, []);
 
   async function handleSend() {
     const text = draft.trim();
-    if (!text || sending) return;
+    if (!text || sending || translatingOutgoing) return;
     setSending(true);
     setError(null);
+    const englishDraft = text;
     try {
-      const result = await sendTelegramMessage(creatorId, peerId, text);
+      let messageToSend = text;
+      if (autoTranslateOutgoing) {
+        setTranslatingOutgoing(true);
+        try {
+          const history: TranslateHistoryItem[] = messages
+            .filter((m) => typeof m.text === 'string' && m.text.trim())
+            .slice(-MAX_TRANSLATION_HISTORY)
+            .map((m) => ({
+              role: m.isOutgoing ? 'assistant' : 'user',
+              content: m.text.trim(),
+            }));
+          messageToSend = await translateToGerman(text, history);
+        } catch (err) {
+          setError(
+            err instanceof Error ? err.message : 'Translation failed. Message was not sent.'
+          );
+          return;
+        } finally {
+          setTranslatingOutgoing(false);
+        }
+      }
+
+      const result = await sendTelegramMessage(
+        creatorId,
+        peerId,
+        messageToSend,
+        englishDraft
+      );
       setDraft('');
       if (result.message) {
         setMessages((prev) => [...prev, result.message]);
       } else {
         await loadMessages();
       }
+
+      if (user?.id && result.message) {
+        const dashboardMessageId = `telegram:${result.message.id}`;
+        const chatterName = user.name;
+        setMessageSenders((prev) => ({
+          ...prev,
+          [dashboardMessageId]: chatterName,
+        }));
+        void createMessagingDashboardEntry({
+          id: crypto.randomUUID(),
+          creatorId,
+          creatorName: creator?.displayName,
+          creatorUsername: creator?.username,
+          creatorAvatarUrl: creator?.avatarUrl,
+          chatterId: user.id,
+          chatterName,
+          chatterEmail: user.email,
+          chatId: peerId,
+          fanId: peerId,
+          fanUsername:
+            fan?.nickname?.trim() || fan?.displayName?.trim() || null,
+          maloumMessageId: dashboardMessageId,
+          contentType: 'text',
+          englishMessage: englishDraft,
+          germanTranslatedMessage: messageToSend,
+          actualSentText: messageToSend,
+          sentAt: result.message.date || new Date().toISOString(),
+        }).catch(() => {
+          // Persistence failures are non-blocking for the chatter UI.
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send');
     } finally {
       setSending(false);
+      setTranslatingOutgoing(false);
     }
   }
 
@@ -298,7 +537,7 @@ export function TelegramChatThread({
       const result = await patchTelegramFan(creatorId, peerId, {
         nickname: nicknameDraft.trim(),
       });
-      setFan(result.fan);
+      setFan((prev) => ({ ...result.fan, kind: prev?.kind || result.fan.kind }));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save nickname');
     } finally {
@@ -309,13 +548,21 @@ export function TelegramChatThread({
   return (
     <div className="flex-1 flex flex-col min-w-0 min-h-0 chatter-thread-bg relative">
       <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 bg-white/90 dark:bg-zinc-950/90">
-        <div className="min-w-0">
-          <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">
-            {fanLabel(fan)}
-          </p>
-          {showUsername && fan?.username && (
-            <p className="text-xs text-gray-500 dark:text-zinc-500 truncate">@{fan.username}</p>
-          )}
+        <div className="flex items-center gap-3 min-w-0">
+          <TelegramFanAvatar
+            name={fanLabel(fan, isGroup ? 'Group' : 'Fan')}
+            avatarUrl={fan?.avatarUrl}
+          />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">
+              {fanLabel(fan, isGroup ? 'Group' : 'Fan')}
+            </p>
+            {isGroup ? (
+              <p className="text-xs text-sky-600 truncate">Group</p>
+            ) : showUsername && fan?.username ? (
+              <p className="text-xs text-gray-500 dark:text-zinc-500 truncate">@{fan.username}</p>
+            ) : null}
+          </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <input
@@ -336,31 +583,88 @@ export function TelegramChatThread({
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'}`}
-          >
+        {messages.map((msg) => {
+          const msgText = msg.text || '';
+          const cacheKey = `${msg.id}::${msgText.trim()}`;
+          const historyEn = historyTranslations[cacheKey];
+          const translatingThis = Boolean(translatingKeys[cacheKey]);
+          const showManualTranslate =
+            !autoTranslateHistory &&
+            Boolean(msgText.trim()) &&
+            !msg.placeholder &&
+            !historyEn;
+          const sentBy = msg.isOutgoing
+            ? messageSenders[`telegram:${msg.id}`]
+            : undefined;
+          return (
             <div
-              className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm ${
-                msg.isOutgoing
-                  ? 'bg-sky-600 text-white'
-                  : 'bg-white dark:bg-zinc-800 text-gray-900 dark:text-zinc-100 border border-gray-100 dark:border-white/5'
-              }`}
+              key={msg.id}
+              className={`flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'}`}
             >
-              <p className="whitespace-pre-wrap break-words">
-                {msg.text || msg.placeholder || '—'}
-              </p>
-              <p
-                className={`text-[10px] mt-1 ${
-                  msg.isOutgoing ? 'text-white/70' : 'text-gray-400'
-                }`}
-              >
-                {formatTime(msg.date)}
-              </p>
+              <div className={`max-w-[75%] flex flex-col ${msg.isOutgoing ? 'items-end' : 'items-start'}`}>
+                {isGroup && !msg.isOutgoing && msg.senderName && (
+                  <p className="text-[11px] text-gray-500 dark:text-zinc-500 mb-0.5 px-1">
+                    {msg.senderName}
+                    {showUsername && msg.senderUsername ? ` @${msg.senderUsername}` : ''}
+                  </p>
+                )}
+                <div
+                  className={`rounded-2xl px-3 py-2 text-sm ${
+                    msg.isOutgoing
+                      ? 'bg-sky-600 text-white'
+                      : 'bg-white dark:bg-zinc-800 text-gray-900 dark:text-zinc-100 border border-gray-100 dark:border-white/5'
+                  }`}
+                >
+                  <p className="whitespace-pre-wrap break-words">
+                    {msgText || msg.placeholder || '—'}
+                  </p>
+                  <p
+                    className={`text-[10px] mt-1 ${
+                      msg.isOutgoing ? 'text-white/70' : 'text-gray-400'
+                    }`}
+                  >
+                    {formatTime(msg.date, staffTimeZone)}
+                  </p>
+                </div>
+                {sentBy && (
+                  <div className="mt-1 px-2.5 py-0.5 rounded-full bg-white/90 dark:bg-zinc-900/90 border border-gray-200 dark:border-zinc-800 text-[9px] font-medium text-gray-500 dark:text-zinc-400 shadow-sm">
+                    Sent by {sentBy}
+                  </div>
+                )}
+                {historyEn && (
+                  <div
+                    className={`mt-1.5 rounded-xl px-3 py-2 text-[11px] italic shadow-sm w-fit max-w-full flex items-center gap-1.5 ${
+                      msg.isOutgoing
+                        ? 'bg-gray-100/60 dark:bg-zinc-800/60 border border-gray-200 dark:border-zinc-700/50 text-gray-700 dark:text-zinc-300'
+                        : 'bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 text-gray-500 dark:text-zinc-400'
+                    }`}
+                  >
+                    {!msg.isOutgoing && (
+                      <Languages className="w-3 h-3 text-gray-500 dark:text-zinc-500 shrink-0" />
+                    )}
+                    <span className="whitespace-pre-wrap break-words">{historyEn}</span>
+                  </div>
+                )}
+                {showManualTranslate && (
+                  <button
+                    type="button"
+                    onClick={() => void translateMessage(msg.id, msgText)}
+                    disabled={translatingThis}
+                    className="mt-1.5 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-medium text-gray-500 dark:text-zinc-400 hover:bg-gray-100 dark:hover:bg-zinc-800 disabled:opacity-50"
+                    title="Translate to English"
+                  >
+                    {translatingThis ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Languages className="w-3 h-3" />
+                    )}
+                    Translate
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         <div ref={bottomRef} />
       </div>
 
@@ -377,16 +681,26 @@ export function TelegramChatThread({
               }
             }}
             rows={2}
-            placeholder="Write a message…"
+            placeholder={
+              translatingOutgoing
+                ? 'Translating…'
+                : autoTranslateOutgoing
+                  ? 'Type a message… (Auto-translates to German)'
+                  : 'Write a message…'
+            }
             className="flex-1 px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] resize-none"
           />
           <button
             type="button"
             onClick={() => void handleSend()}
-            disabled={sending || !draft.trim()}
+            disabled={sending || translatingOutgoing || !draft.trim()}
             className="h-10 w-10 rounded-xl bg-sky-600 text-white flex items-center justify-center disabled:opacity-40"
           >
-            <Send className="w-4 h-4" />
+            {translatingOutgoing ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Send className="w-4 h-4" />
+            )}
           </button>
         </div>
       </div>

@@ -28,6 +28,7 @@ import {
 } from '@/lib/api';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import maloumIcon from '@/assets/maloum_icon.png';
+import telegramIcon from '@/assets/telegram_icon.svg';
 
 function platformLabel(platform: Creator['platform']): string {
   if (platform === 'maloum') return 'Maloum';
@@ -323,11 +324,7 @@ export default function ManageCreators() {
                         {creator.platform === '4based' ? (
                           <img src={fourBasedIcon} alt="" className="w-3.5 h-3.5" />
                         ) : creator.platform === 'telegram' ? (
-                          <span className="w-3.5 h-3.5 rounded-sm bg-sky-500 inline-flex items-center justify-center text-white">
-                            <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="currentColor">
-                              <path d="M21.5 3.6 18.4 20c-.2 1-.8 1.2-1.6.8l-4.5-3.3-2.2 2.1c-.2.2-.4.4-.9.4l.3-4.6 8.4-7.6c.4-.3 0-.5-.5-.2l-10.4 6.5-4.5-1.4c-1-.3-1-.9.2-1.4L20.3 3c.8-.3 1.5.2 1.2.6Z" />
-                            </svg>
-                          </span>
+                          <img src={telegramIcon} alt="" className="w-3.5 h-3.5 rounded-full" />
                         ) : (
                           <img
                             src={maloumIcon}

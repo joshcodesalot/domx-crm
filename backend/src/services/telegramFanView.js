@@ -17,39 +17,56 @@ function canOpenChatByUsername(user) {
 
 function redactFan(fan, user) {
   if (!fan || typeof fan !== 'object') return fan;
+  const kind = fan.kind === 'group' ? 'group' : 'dm';
+  const avatarUrl = fan.avatarUrl || null;
   if (canViewFanUsername(user)) {
     return {
       telegramUserId: fan.telegramUserId,
-      displayName: fan.displayName || 'Fan',
+      kind,
+      displayName: fan.displayName || (kind === 'group' ? 'Group' : 'Fan'),
       nickname: fan.nickname || '',
       notes: fan.notes || '',
       username: fan.username || null,
       hasUsername: Boolean(fan.username),
+      avatarUrl,
     };
   }
   return {
     telegramUserId: fan.telegramUserId,
-    displayName: fan.displayName || 'Fan',
+    kind,
+    displayName: fan.displayName || (kind === 'group' ? 'Group' : 'Fan'),
     nickname: fan.nickname || '',
     notes: fan.notes || '',
     hasUsername: Boolean(fan.username),
+    avatarUrl,
   };
+}
+
+function redactMessage(msg, user) {
+  if (!msg || typeof msg !== 'object') return msg;
+  if (canViewFanUsername(user)) return msg;
+  const { senderUsername, ...rest } = msg;
+  void senderUsername;
+  return rest;
 }
 
 function redactDialog(dialog, user) {
   if (!dialog) return dialog;
-  const { username, user: nestedUser, ...rest } = dialog;
+  const { username, user: nestedUser, lastMessage, ...rest } = dialog;
   void username;
   void nestedUser;
   return {
     ...rest,
+    lastMessage: lastMessage ? redactMessage(lastMessage, user) : lastMessage,
     fan: redactFan(
       {
         telegramUserId: dialog.peerId,
+        kind: dialog.kind,
         displayName: dialog.displayName,
         nickname: dialog.nickname,
         notes: dialog.notes,
         username: dialog.username,
+        avatarUrl: dialog.avatarUrl,
       },
       user
     ),
@@ -61,4 +78,5 @@ module.exports = {
   canOpenChatByUsername,
   redactFan,
   redactDialog,
+  redactMessage,
 };

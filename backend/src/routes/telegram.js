@@ -23,6 +23,7 @@ const {
   canOpenChatByUsername,
   redactFan,
   redactDialog,
+  redactMessage,
 } = require('../services/telegramFanView');
 
 const router = express.Router();
@@ -91,6 +92,7 @@ router.post(
         phone: result.phone,
         storageKey: result.storageKey,
         encryptedSession: result.encryptedSession,
+        avatarUrl: result.avatarUrl || null,
       });
       return res.status(201).json({
         status: 'ready',
@@ -256,8 +258,9 @@ router.get(
       });
       return res.json({
         peerId: result.peerId,
+        kind: result.kind || 'dm',
         fan: redactFan(result.fan, req.user),
-        messages: result.messages,
+        messages: result.messages.map((msg) => redactMessage(msg, req.user)),
       });
     } catch (err) {
       return handleTelegramError(res, err, 'List Telegram messages error:');
@@ -317,7 +320,7 @@ router.post(
       }
 
       const message = await sendText(id, peerId, trimmed);
-      return res.status(201).json({ message });
+      return res.status(201).json({ message: redactMessage(message, req.user) });
     } catch (err) {
       return handleTelegramError(res, err, 'Send Telegram message error:');
     }
@@ -351,7 +354,7 @@ router.patch(
       }
 
       const existing = await pool.query(
-        `SELECT "telegramUserId", username, "displayName", nickname, notes
+        `SELECT "telegramUserId", username, "displayName", nickname, notes, "avatarUrl"
          FROM telegram_fan_profiles
          WHERE "creatorId" = $1 AND "telegramUserId" = $2`,
         [id, fanId]
@@ -390,7 +393,7 @@ router.patch(
       }
 
       const row = await pool.query(
-        `SELECT "telegramUserId", username, "displayName", nickname, notes
+        `SELECT "telegramUserId", username, "displayName", nickname, notes, "avatarUrl"
          FROM telegram_fan_profiles
          WHERE "creatorId" = $1 AND "telegramUserId" = $2`,
         [id, fanId]

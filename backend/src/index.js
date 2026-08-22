@@ -49,6 +49,14 @@ app.use(
   },
   express.static(path.join(__dirname, '../data/avatars'))
 );
+app.use(
+  '/uploads/telegram-fans',
+  (_req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+  },
+  express.static(path.join(__dirname, '../data/telegram-fans'))
+);
 
 app.get('/api/health', async (_req, res) => {
   try {

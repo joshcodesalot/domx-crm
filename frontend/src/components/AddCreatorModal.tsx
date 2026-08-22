@@ -9,6 +9,7 @@ import CreatorAvatar from '@/components/CreatorAvatar';
 import CreatorProxyFields from '@/components/CreatorProxyFields';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import maloumIcon from '@/assets/maloum_icon.png';
+import telegramIcon from '@/assets/telegram_icon.svg';
 import {
   connectFourBasedAccount,
   connectMaloumAccount,
@@ -565,10 +566,8 @@ export default function AddCreatorModal({
                 onClick={handleSelectTelegram}
                 className="w-full flex items-center gap-4 p-4 border-2 border-gray-200 dark:border-white/10 rounded-lg hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/10 transition-colors text-left"
               >
-                <div className="w-10 h-10 rounded-lg bg-sky-500 flex items-center justify-center shrink-0 overflow-hidden text-white">
-                  <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor" aria-hidden>
-                    <path d="M21.5 3.6 18.4 20c-.2 1-.8 1.2-1.6.8l-4.5-3.3-2.2 2.1c-.2.2-.4.4-.9.4l.3-4.6 8.4-7.6c.4-.3 0-.5-.5-.2l-10.4 6.5-4.5-1.4c-1-.3-1-.9.2-1.4L20.3 3c.8-.3 1.5.2 1.2.6Z" />
-                  </svg>
+                <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 overflow-hidden">
+                  <img src={telegramIcon} alt="Telegram" className="w-10 h-10 object-contain" />
                 </div>
                 <div>
                   <p className="font-medium text-sm">Telegram</p>
