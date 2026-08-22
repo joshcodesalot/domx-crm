@@ -158,7 +158,48 @@ async function loadMaloumCreator(creatorId) {
   };
 }
 
+async function loadTelegramCreator(creatorId) {
+  const result = await pool.query(
+    `SELECT id, platform, "displayName", "providerUserId", "encryptedSession",
+            "connectionStatus", "accountId", username
+     FROM creators
+     WHERE id = $1`,
+    [creatorId]
+  );
+
+  if (result.rows.length === 0) {
+    return { error: { status: 404, message: 'Creator not found' } };
+  }
+
+  const row = result.rows[0];
+  if (row.platform !== 'telegram') {
+    return { error: { status: 400, message: 'Creator is not a Telegram account' } };
+  }
+
+  let session = {};
+  try {
+    if (row.encryptedSession) {
+      session = decryptJson(row.encryptedSession) || {};
+    }
+  } catch {
+    return { error: { status: 500, message: 'Failed to decrypt Telegram session' } };
+  }
+
+  return {
+    creator: {
+      id: row.id,
+      displayName: row.displayName,
+      username: row.username,
+      accountId: row.accountId,
+      providerUserId: row.providerUserId || session.providerUserId || null,
+      storageKey: session.storageKey || row.id,
+      session,
+    },
+  };
+}
+
 module.exports = {
   loadFourBasedCreator,
   loadMaloumCreator,
+  loadTelegramCreator,
 };

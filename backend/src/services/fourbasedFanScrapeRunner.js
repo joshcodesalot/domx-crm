@@ -9,6 +9,7 @@ const FAN_COOLDOWN_MAX_MS = 60_000;
 const POST_CHECK_COOLDOWN_MIN_MS = 10_000;
 const POST_CHECK_COOLDOWN_MAX_MS = 15_000;
 const COOLDOWN_POLL_MS = 500;
+const CHECKPOINT_SAVE_MIN_MS = 2000;
 const TRENDING_PAGE_SIZE = 60;
 const COMMENT_PAGE_SIZE = 20;
 
@@ -71,7 +72,6 @@ function normalizeRecentLogs(raw) {
 function appendActivityLog(cp, text) {
   const line = String(text || '').trim();
   if (!line) return cp;
-  console.log(`[4based-fan-scrape] ${line}`);
   const logs = Array.isArray(cp?.recentLogs) ? cp.recentLogs.slice() : [];
   logs.push({ at: Date.now(), text: line });
   return {
@@ -145,7 +145,9 @@ function normalizeCheckpoint(raw) {
 function isSkippableFileStackError(err) {
   const status = err?.status;
   const message = String(err?.message || '');
-  if (status === 404) return true;
+  if (status === 401 || status === 403 || status === 404) return true;
+  if (/unauthorized/i.test(message)) return true;
+  if (/forbidden/i.test(message)) return true;
   if (/file\s*stack/i.test(message) && /does not exist/i.test(message)) {
     return true;
   }
@@ -334,7 +336,10 @@ function abortError() {
   return err;
 }
 
-async function saveCheckpoint(motherCreatorId, checkpoint, status) {
+/** @type {Map<string, { lastAt: number, latest: object|null }>} */
+const checkpointSaveState = new Map();
+
+async function writeCheckpoint(motherCreatorId, checkpoint, status) {
   const payload = JSON.stringify(normalizeCheckpoint(checkpoint));
   if (status === 'running') {
     const result = await pool.query(
@@ -370,6 +375,28 @@ async function saveCheckpoint(motherCreatorId, checkpoint, status) {
     [motherCreatorId, payload, status || null]
   );
   return rowToJob(result.rows[0]);
+}
+
+function peekLatestCheckpoint(motherCreatorId) {
+  return checkpointSaveState.get(motherCreatorId)?.latest || null;
+}
+
+async function saveCheckpoint(motherCreatorId, checkpoint, status) {
+  const latest = normalizeCheckpoint(checkpoint);
+  const prev = checkpointSaveState.get(motherCreatorId) || { lastAt: 0, latest: null };
+  checkpointSaveState.set(motherCreatorId, { lastAt: prev.lastAt, latest });
+
+  if (status === 'running') {
+    const now = Date.now();
+    if (prev.lastAt && now - prev.lastAt < CHECKPOINT_SAVE_MIN_MS) {
+      return null;
+    }
+    checkpointSaveState.set(motherCreatorId, { lastAt: now, latest });
+    return writeCheckpoint(motherCreatorId, latest, status);
+  }
+
+  checkpointSaveState.delete(motherCreatorId);
+  return writeCheckpoint(motherCreatorId, latest, status);
 }
 
 async function getJobStatus(motherCreatorId) {
@@ -913,7 +940,9 @@ async function runJob(motherCreatorId, generation) {
     if (err?.code === 'ABORTED') {
       const row = await loadJobRow(motherCreatorId);
       if (row && row.status === 'paused') {
-        const cp = normalizeCheckpoint(row.checkpoint);
+        const cp =
+          peekLatestCheckpoint(motherCreatorId) ||
+          normalizeCheckpoint(row.checkpoint);
         await saveCheckpoint(
           motherCreatorId,
           {
@@ -930,7 +959,9 @@ async function runJob(motherCreatorId, generation) {
     console.error(`[4based-fan-scrape] failed mother=${motherCreatorId}`, err);
     try {
       const row = await loadJobRow(motherCreatorId);
-      const cp = normalizeCheckpoint(row?.checkpoint);
+      const cp =
+        peekLatestCheckpoint(motherCreatorId) ||
+        normalizeCheckpoint(row?.checkpoint);
       await saveCheckpoint(
         motherCreatorId,
         {
@@ -944,6 +975,7 @@ async function runJob(motherCreatorId, generation) {
       console.error('[4based-fan-scrape] failed to persist error state', saveErr);
     }
   } finally {
+    checkpointSaveState.delete(motherCreatorId);
     const active = activeRuns.get(motherCreatorId);
     if (active && active.generation === generation) {
       activeRuns.delete(motherCreatorId);

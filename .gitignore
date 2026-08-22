@@ -13,3 +13,5 @@ Thumbs.db
 backend/data/jwt-secret
 backend/data/scheduled-media/*
 !backend/data/scheduled-media/.gitkeep
+backend/data/telegram/*
+!backend/data/telegram/.gitkeep

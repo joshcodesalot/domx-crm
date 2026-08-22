@@ -9,6 +9,7 @@ const STEP_DELAY_MS = 350;
 const POST_CHECK_COOLDOWN_MIN_MS = 10_000;
 const POST_CHECK_COOLDOWN_MAX_MS = 15_000;
 const COOLDOWN_POLL_MS = 500;
+const CHECKPOINT_SAVE_MIN_MS = 2000;
 
 /** @type {Map<string, { generation: number }>} */
 const activeRuns = new Map();
@@ -72,7 +73,6 @@ function normalizeRecentLogs(raw) {
 function appendActivityLog(cp, text) {
   const line = String(text || '').trim();
   if (!line) return cp;
-  console.log(`[fan-scrape] ${line}`);
   const logs = Array.isArray(cp?.recentLogs) ? cp.recentLogs.slice() : [];
   logs.push({ at: Date.now(), text: line });
   return {
@@ -143,6 +143,7 @@ function normalizeCheckpoint(raw) {
     statusMessage:
       typeof raw.statusMessage === 'string' ? raw.statusMessage : null,
     recentLogs: normalizeRecentLogs(raw.recentLogs),
+    creatorSkipReason: undefined,
   };
 }
 
@@ -237,13 +238,148 @@ function normalizeTargetCreatorListIds(input) {
   return out;
 }
 
+function skipPostReason(err) {
+  const status = err?.status;
+  const message = String(err?.message || '');
+  if (
+    status === 401 ||
+    /unauthorized/i.test(message)
+  ) {
+    return 'UNAUTHORIZED';
+  }
+  if (status === 403 || /forbidden/i.test(message)) {
+    return 'FORBIDDEN';
+  }
+  return 'LOCKED/MISSING';
+}
+
+function isAuthError(err) {
+  const status = err?.status;
+  const message = String(err?.message || '');
+  return status === 401 || /unauthorized/i.test(message);
+}
+
 function isSkippablePostError(err) {
   const status = err?.status;
   const message = String(err?.message || '');
-  if (status === 404) return true;
+  if (status === 401 || status === 403 || status === 404) return true;
+  if (/unauthorized/i.test(message)) return true;
+  if (/forbidden/i.test(message)) return true;
   if (/could not be found/i.test(message)) return true;
   if (/post/i.test(message) && /not found/i.test(message)) return true;
   return false;
+}
+
+function checkpointCursor(cp) {
+  return [
+    Number(cp?.creatorIndex) || 0,
+    Number(cp?.postIndex) || 0,
+    cp?.currentPostId || '',
+    Number(cp?.importFanIndex) || 0,
+    Number(cp?.importCreatorIndex) || 0,
+  ].join(':');
+}
+
+function skipCurrentTarget(cp, reason, sourceMode) {
+  const normalized = normalizeCheckpoint(cp);
+  if (sourceMode === 'import_ids') {
+    const fanIndex = Number(normalized.importFanIndex) || 0;
+    return appendActivityLog(
+      {
+        ...normalized,
+        lastError: null,
+        importFanIndex: fanIndex + 1,
+        importCreatorIndex: 0,
+        statusMessage: `Import · skipped ${reason.toLowerCase()} fan · added ${normalized.processedFans}`,
+      },
+      `- FAN index ${fanIndex + 1} - SKIPPED - ${reason}`
+    );
+  }
+
+  const posts = normalized.posts;
+  const postIndex = normalized.postIndex;
+  const postId =
+    normalized.currentPostId ||
+    (posts.length > 0 && postIndex < posts.length ? posts[postIndex] : null);
+  const username = normalized.currentCreatorUsername;
+  const sources = normalized.sourceCreators;
+  const creatorIndex = Number(normalized.creatorIndex) || 0;
+
+  if (postId) {
+    const skippedPosts = (normalized.skippedPosts || 0) + 1;
+    const label = username ? `@${username}` : 'creator';
+    return appendActivityLog(
+      {
+        ...normalized,
+        skippedPosts,
+        lastError: null,
+        commentNext: null,
+        currentPostId: null,
+        postIndex: postIndex + 1,
+        statusMessage: `${label} · skipped ${reason.toLowerCase()} post · fans ${normalized.processedFans} · skipped posts ${skippedPosts}`,
+      },
+      `- POST ${postId} - SKIPPED - ${reason}`
+    );
+  }
+
+  if (username || (sources.length > 0 && creatorIndex < sources.length)) {
+    const skippedName = username || sources[creatorIndex] || 'unknown';
+    return appendActivityLog(
+      {
+        ...normalized,
+        lastError: null,
+        creatorSkipReason: undefined,
+        creatorIndex: creatorIndex + 1,
+        postIndex: 0,
+        posts: [],
+        commentNext: null,
+        currentPostId: null,
+        statusMessage: `@${skippedName} · skipped ${reason.toLowerCase()} creator · fans ${normalized.processedFans}`,
+      },
+      `- CREATOR @${skippedName} - SKIPPED - ${reason}`
+    );
+  }
+
+  return {
+    ...normalized,
+    lastError: null,
+  };
+}
+
+async function recoverFromAuthError(creator) {
+  const previousToken = creator?.accessToken || null;
+  try {
+    const { refreshCreatorTokens } = require('./maloumTokenRefresh');
+    await refreshCreatorTokens(creator.id);
+  } catch (err) {
+    console.warn(
+      `[fan-scrape] token refresh failed creator=${creator?.id}`,
+      err?.message || err
+    );
+  }
+  try {
+    const fresh = await loadMaloumCreator(creator.id);
+    Object.assign(creator, fresh);
+    return Boolean(fresh.accessToken && fresh.accessToken !== previousToken);
+  } catch (err) {
+    console.warn(
+      `[fan-scrape] reload after auth error failed creator=${creator?.id}`,
+      err?.message || err
+    );
+    return false;
+  }
+}
+
+async function withAuthRetry(creator, fn) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err?.code === 'ABORTED') throw err;
+    if (!isAuthError(err)) throw err;
+    const recovered = await recoverFromAuthError(creator);
+    if (!recovered) throw err;
+    return fn();
+  }
 }
 
 function asListArray(raw) {
@@ -359,7 +495,10 @@ function abortError() {
   return err;
 }
 
-async function saveCheckpoint(motherCreatorId, checkpoint, status) {
+/** @type {Map<string, { lastAt: number, latest: object|null }>} */
+const checkpointSaveState = new Map();
+
+async function writeCheckpoint(motherCreatorId, checkpoint, status) {
   const payload = JSON.stringify(normalizeCheckpoint(checkpoint));
   if (status === 'running') {
     const result = await pool.query(
@@ -395,6 +534,28 @@ async function saveCheckpoint(motherCreatorId, checkpoint, status) {
     [motherCreatorId, payload, status || null]
   );
   return rowToJob(result.rows[0]);
+}
+
+function peekLatestCheckpoint(motherCreatorId) {
+  return checkpointSaveState.get(motherCreatorId)?.latest || null;
+}
+
+async function saveCheckpoint(motherCreatorId, checkpoint, status) {
+  const latest = normalizeCheckpoint(checkpoint);
+  const prev = checkpointSaveState.get(motherCreatorId) || { lastAt: 0, latest: null };
+  checkpointSaveState.set(motherCreatorId, { lastAt: prev.lastAt, latest });
+
+  if (status === 'running') {
+    const now = Date.now();
+    if (prev.lastAt && now - prev.lastAt < CHECKPOINT_SAVE_MIN_MS) {
+      return null;
+    }
+    checkpointSaveState.set(motherCreatorId, { lastAt: now, latest });
+    return writeCheckpoint(motherCreatorId, latest, status);
+  }
+
+  checkpointSaveState.delete(motherCreatorId);
+  return writeCheckpoint(motherCreatorId, latest, status);
 }
 
 async function getJobStatus(motherCreatorId) {
@@ -609,10 +770,12 @@ async function resolveSourceCreators(creator, job, generation) {
     while (usernames.length < limit) {
       await assertStillRunning(job.motherCreatorId, generation);
       const pageLimit = Math.min(15, limit - usernames.length);
-      const page = await maloumClient.listTopCreators(creator, {
-        limit: pageLimit,
-        next,
-      });
+      const page = await withAuthRetry(creator, () =>
+        maloumClient.listTopCreators(creator, {
+          limit: pageLimit,
+          next,
+        })
+      );
       const data = Array.isArray(page?.data)
         ? page.data
         : Array.isArray(page)
@@ -653,7 +816,9 @@ async function resolveSourceCreators(creator, job, generation) {
   for (const username of usernames) {
     await assertStillRunning(job.motherCreatorId, generation);
     try {
-      const profile = await maloumClient.getUserProfile(creator, username);
+      const profile = await withAuthRetry(creator, () =>
+        maloumClient.getUserProfile(creator, username)
+      );
       const resolved = profile?.username?.trim().toLowerCase() || username;
       if (!valid.includes(resolved)) valid.push(resolved);
     } catch {
@@ -688,12 +853,25 @@ async function ensureCreatorPosts(creator, motherCreatorId, username, postsLimit
 
   const postIds = [];
   let next;
+  let skipReason = null;
   while (postIds.length < postsLimit) {
     await assertStillRunning(motherCreatorId, generation);
-    const page = await maloumClient.listUserPosts(creator, username, {
-      limit: Math.min(15, postsLimit - postIds.length),
-      next,
-    });
+    let page;
+    try {
+      page = await withAuthRetry(creator, () =>
+        maloumClient.listUserPosts(creator, username, {
+          limit: Math.min(15, postsLimit - postIds.length),
+          next,
+        })
+      );
+    } catch (err) {
+      if (err?.code === 'ABORTED') throw err;
+      if (isSkippablePostError(err)) {
+        if (postIds.length === 0) skipReason = skipPostReason(err);
+        break;
+      }
+      throw err;
+    }
     const data = Array.isArray(page?.data)
       ? page.data
       : Array.isArray(page)
@@ -706,6 +884,18 @@ async function ensureCreatorPosts(creator, motherCreatorId, username, postsLimit
     if (!page?.next || data.length === 0) break;
     next = page.next;
     await sleep(STEP_DELAY_MS);
+  }
+
+  if (skipReason) {
+    return {
+      ...cp,
+      posts: [],
+      postIndex: 0,
+      commentNext: null,
+      currentPostId: null,
+      currentCreatorUsername: username,
+      creatorSkipReason: skipReason,
+    };
   }
 
   cp = {
@@ -750,13 +940,15 @@ async function processFan(creator, motherCreatorId, listId, fan, sourceCreatorUs
   }
 
   try {
-    await addFanToCreatorList(
-      creator,
-      fanId,
-      fan.username || null,
-      listId,
-      sourceCreatorUsername,
-      sourcePostId
+    await withAuthRetry(creator, () =>
+      addFanToCreatorList(
+        creator,
+        fanId,
+        fan.username || null,
+        listId,
+        sourceCreatorUsername,
+        sourcePostId
+      )
     );
     return logFanToCheckpoint(
       {
@@ -1009,6 +1201,26 @@ async function runListScrape(motherCreatorId, job, generation) {
       generation
     );
 
+    if (cp.creatorSkipReason) {
+      const reason = cp.creatorSkipReason;
+      cp = appendActivityLog(
+        {
+          ...cp,
+          creatorSkipReason: undefined,
+          creatorIndex: cp.creatorIndex + 1,
+          postIndex: 0,
+          posts: [],
+          commentNext: null,
+          currentPostId: null,
+          lastError: null,
+          statusMessage: `@${username} · skipped ${reason.toLowerCase()} creator · fans ${cp.processedFans}`,
+        },
+        `- CREATOR @${username} - SKIPPED - ${reason}`
+      );
+      await saveCheckpoint(motherCreatorId, cp, 'running');
+      continue;
+    }
+
     while (cp.postIndex < cp.posts.length) {
       await assertStillRunning(motherCreatorId, generation);
       const postId = cp.posts[cp.postIndex];
@@ -1030,23 +1242,27 @@ async function runListScrape(motherCreatorId, job, generation) {
         await sleep(COMMENT_DELAY_MS);
         let page;
         try {
-          page = await maloumClient.listPostComments(creator, postId, {
-            limit: 15,
-            next: commentNext,
-          });
+          page = await withAuthRetry(creator, () =>
+            maloumClient.listPostComments(creator, postId, {
+              limit: 15,
+              next: commentNext,
+            })
+          );
         } catch (err) {
           if (isSkippablePostError(err)) {
+            const reason = skipPostReason(err);
+            const skippedPosts = (cp.skippedPosts || 0) + 1;
             cp = appendActivityLog(
               {
                 ...cp,
-                skippedPosts: (cp.skippedPosts || 0) + 1,
-                lastError: err?.message || 'Post skipped (locked/missing)',
+                skippedPosts,
+                lastError: null,
                 commentNext: null,
                 currentPostId: null,
                 postIndex: cp.postIndex + 1,
-                statusMessage: `@${username} · skipped locked/missing post · fans ${cp.processedFans} · skipped posts ${(cp.skippedPosts || 0)}`,
+                statusMessage: `@${username} · skipped ${reason.toLowerCase()} post · fans ${cp.processedFans} · skipped posts ${skippedPosts}`,
               },
-              `- POST ${postId} - SKIPPED - LOCKED/MISSING`
+              `- POST ${postId} - SKIPPED - ${reason}`
             );
             await saveCheckpoint(motherCreatorId, cp, 'running');
             postSkipped = true;
@@ -1135,22 +1351,54 @@ async function runListScrape(motherCreatorId, job, generation) {
 
 async function runJob(motherCreatorId, generation) {
   try {
-    const row = await loadJobRow(motherCreatorId);
-    if (!row) return;
-    const job = rowToJob(row);
-    if (job.status !== 'running') return;
+    while (true) {
+      await assertStillRunning(motherCreatorId, generation);
+      const row = await loadJobRow(motherCreatorId);
+      if (!row) return;
+      const job = rowToJob(row);
+      if (job.status !== 'running') return;
 
-    if (job.sourceMode === 'import_ids') {
-      await runImportToLists(motherCreatorId, job, generation);
-      return;
+      try {
+        if (job.sourceMode === 'import_ids') {
+          await runImportToLists(motherCreatorId, job, generation);
+        } else {
+          await runListScrape(motherCreatorId, job, generation);
+        }
+        return;
+      } catch (err) {
+        if (err?.code === 'ABORTED') throw err;
+        if (!isSkippablePostError(err)) throw err;
+
+        const latest =
+          peekLatestCheckpoint(motherCreatorId) ||
+          normalizeCheckpoint(job.checkpoint);
+        const before = checkpointCursor(latest);
+        const skipped = skipCurrentTarget(
+          latest,
+          skipPostReason(err),
+          job.sourceMode
+        );
+        const persisted = normalizeCheckpoint(skipped);
+        checkpointSaveState.set(motherCreatorId, {
+          lastAt: Date.now(),
+          latest: persisted,
+        });
+        await writeCheckpoint(motherCreatorId, persisted, 'running');
+        console.log(
+          `[fan-scrape] skipped ${skipPostReason(err)} mother=${motherCreatorId}; continuing`
+        );
+        if (checkpointCursor(persisted) === before) {
+          await sleepInterruptible(1500, motherCreatorId, generation);
+        }
+      }
     }
-
-    await runListScrape(motherCreatorId, job, generation);
   } catch (err) {
     if (err?.code === 'ABORTED') {
       const row = await loadJobRow(motherCreatorId);
       if (row && row.status === 'paused') {
-        const cp = normalizeCheckpoint(row.checkpoint);
+        const cp =
+          peekLatestCheckpoint(motherCreatorId) ||
+          normalizeCheckpoint(row.checkpoint);
         await saveCheckpoint(
           motherCreatorId,
           {
@@ -1167,7 +1415,9 @@ async function runJob(motherCreatorId, generation) {
     console.error(`[fan-scrape] failed mother=${motherCreatorId}`, err);
     try {
       const row = await loadJobRow(motherCreatorId);
-      const cp = normalizeCheckpoint(row?.checkpoint);
+      const cp =
+        peekLatestCheckpoint(motherCreatorId) ||
+        normalizeCheckpoint(row?.checkpoint);
       await saveCheckpoint(
         motherCreatorId,
         {
@@ -1181,6 +1431,7 @@ async function runJob(motherCreatorId, generation) {
       console.error('[fan-scrape] failed to persist error state', saveErr);
     }
   } finally {
+    checkpointSaveState.delete(motherCreatorId);
     const active = activeRuns.get(motherCreatorId);
     if (active && active.generation === generation) {
       activeRuns.delete(motherCreatorId);

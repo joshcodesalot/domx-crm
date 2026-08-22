@@ -21,6 +21,7 @@ const ManageCreators = lazy(() => import('@/pages/ManageCreators'));
 const ManageStaff = lazy(() => import('@/pages/ManageStaff'));
 const ChatterMaloum = lazy(() => import('@/pages/ChatterMaloum'));
 const Chatter4Based = lazy(() => import('@/pages/Chatter4Based'));
+const ChatterTelegram = lazy(() => import('@/pages/ChatterTelegram'));
 const MaloumMassMessage = lazy(() => import('@/pages/MaloumMassMessage'));
 const MaloumFeed = lazy(() => import('@/pages/MaloumFeed'));
 const MaloumFanScraper = lazy(() => import('@/pages/MaloumFanScraper'));
@@ -85,6 +86,41 @@ function PersistentFourBasedPanel() {
       style={isActive ? undefined : { display: 'none' }}
     >
       <Chatter4Based />
+    </div>
+  );
+}
+
+function PersistentTelegramPanel() {
+  const location = useLocation();
+  const { isAuthenticated, hasPermission } = useAuth();
+  const [everOpened, setEverOpened] = useState(false);
+
+  const isActive = location.pathname === '/chatter/telegram';
+  const canView = isAuthenticated && hasPermission('creators.view');
+
+  useEffect(() => {
+    if (isActive && canView) {
+      setEverOpened(true);
+    }
+  }, [isActive, canView]);
+
+  useEffect(() => {
+    if (!canView) {
+      setEverOpened(false);
+    }
+  }, [canView]);
+
+  if (!everOpened || !canView) {
+    return null;
+  }
+
+  return (
+    <div
+      className={isActive ? 'contents' : 'hidden'}
+      aria-hidden={!isActive}
+      style={isActive ? undefined : { display: 'none' }}
+    >
+      <ChatterTelegram />
     </div>
   );
 }
@@ -210,6 +246,7 @@ function AppRoutes() {
         <CreatorLiveProvider>
           <Suspense fallback={<PageFallback />}>
             <PersistentFourBasedPanel />
+            <PersistentTelegramPanel />
             <PersistentMaloumPanel />
             <PersistentMessageProPanel />
             <PersistentMessagePro4BasedPanel />
@@ -250,6 +287,7 @@ function AppRoutes() {
                   <Route element={<PermissionRoute permission="creators.view" />}>
                     <Route path="/chatter" element={null} />
                     <Route path="/chatter/4based" element={null} />
+                    <Route path="/chatter/telegram" element={null} />
                     <Route path="/message-pro" element={null} />
                     <Route path="/message-pro/4based" element={null} />
                     <Route

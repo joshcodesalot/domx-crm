@@ -78,7 +78,7 @@ export interface Creator {
   id: string;
   displayName: string;
   username: string | null;
-  platform: 'maloum' | '4based';
+  platform: 'maloum' | '4based' | 'telegram';
   connectionStatus: 'connected' | 'error' | 'pending';
   postLoginUrl: string | null;
   avatarUrl: string | null;
@@ -116,7 +116,7 @@ export interface CreatorsResponse {
 export interface CreateCreatorInput {
   displayName: string;
   username?: string;
-  platform: 'maloum' | '4based';
+  platform: 'maloum' | '4based' | 'telegram';
   postLoginUrl?: string;
   connectionStatus?: 'connected' | 'error' | 'pending';
   accountId?: string;
@@ -432,7 +432,7 @@ function shouldDedupeGet(options: RequestInit): boolean {
 
 function shouldCacheGet(path: string): boolean {
   if (path === '/api/creators') return true;
-  return /\/api\/creators\/[^/]+\/(maloum|4based)\/badges(?:\?|$)/.test(path);
+  return /\/api\/creators\/[^/]+\/(maloum|4based|telegram)\/badges(?:\?|$)/.test(path);
 }
 
 async function request<T>(
@@ -2634,6 +2634,155 @@ export async function getFourBasedBadges(
   creatorId: string
 ): Promise<{ messages: number; notifications: number }> {
   return request(`/api/creators/${creatorId}/4based/badges`);
+}
+
+export interface TelegramFan {
+  telegramUserId: string;
+  displayName: string;
+  nickname?: string;
+  notes?: string;
+  username?: string | null;
+  hasUsername?: boolean;
+}
+
+export interface TelegramMessage {
+  id: string;
+  peerId: string;
+  isOutgoing: boolean;
+  date: string | null;
+  text: string;
+  kind: string;
+  placeholder: string | null;
+}
+
+export interface TelegramDialog {
+  peerId: string;
+  unreadCount: number;
+  lastMessage: TelegramMessage | null;
+  nickname?: string;
+  notes?: string;
+  displayName: string;
+  fan: TelegramFan;
+}
+
+export async function startTelegramConnect(input: {
+  accountId: string;
+  phone: string;
+}): Promise<{ status: 'waiting_code' | 'waiting_2fa' }> {
+  return request('/api/creators/connect/telegram/start', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function completeTelegramConnect(input: {
+  accountId: string;
+  code?: string;
+  password?: string;
+}): Promise<{
+  status: 'waiting_code' | 'waiting_2fa' | 'ready';
+  accountToken?: string;
+  accountId?: string;
+  partitionId?: string;
+  displayName?: string;
+  username?: string | null;
+  postLoginUrl?: string;
+  avatarUrl?: string | null;
+  providerUserId?: string | null;
+}> {
+  return request('/api/creators/connect/telegram/complete', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function abortTelegramConnect(accountId: string): Promise<{ ok: boolean }> {
+  return request('/api/creators/connect/telegram/abort', {
+    method: 'POST',
+    body: JSON.stringify({ accountId }),
+  });
+}
+
+export async function startTelegramReconnect(
+  creatorId: string,
+  phone: string
+): Promise<{ status: 'waiting_code' | 'waiting_2fa' }> {
+  return request(`/api/creators/${creatorId}/telegram/reconnect/start`, {
+    method: 'POST',
+    body: JSON.stringify({ phone }),
+  });
+}
+
+export async function completeTelegramReconnect(
+  creatorId: string,
+  input: { code?: string; password?: string }
+): Promise<{
+  status: 'waiting_code' | 'waiting_2fa' | 'ready';
+  creator?: Creator;
+}> {
+  return request(`/api/creators/${creatorId}/telegram/reconnect/complete`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getTelegramDialogs(
+  creatorId: string
+): Promise<{ dialogs: TelegramDialog[] }> {
+  return request(`/api/creators/${creatorId}/telegram/dialogs`);
+}
+
+export async function getTelegramMessages(
+  creatorId: string,
+  peerId: string
+): Promise<{ peerId: string; fan: TelegramFan; messages: TelegramMessage[] }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages`
+  );
+}
+
+export async function sendTelegramMessage(
+  creatorId: string,
+  peerId: string,
+  text: string
+): Promise<{ message: TelegramMessage }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }
+  );
+}
+
+export async function patchTelegramFan(
+  creatorId: string,
+  telegramUserId: string,
+  input: { nickname?: string; notes?: string }
+): Promise<{ fan: TelegramFan }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/fans/${encodeURIComponent(telegramUserId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }
+  );
+}
+
+export async function resolveTelegramUsername(
+  creatorId: string,
+  username: string
+): Promise<{ peerId: string; fan: TelegramFan }> {
+  return request(`/api/creators/${creatorId}/telegram/resolve-username`, {
+    method: 'POST',
+    body: JSON.stringify({ username }),
+  });
+}
+
+export async function getTelegramBadges(
+  creatorId: string
+): Promise<{ messages: number; notifications: number }> {
+  return request(`/api/creators/${creatorId}/telegram/badges`);
 }
 
 export interface FourBasedActivityUser {

@@ -21,6 +21,7 @@ const eventsRoutes = require('./routes/events');
 const moderationRoutes = require('./routes/moderation');
 const activityRoutes = require('./routes/activity');
 const contentScheduleRoutes = require('./routes/contentSchedule');
+const telegramRoutes = require('./routes/telegram');
 const {
   startMaloumTokenRefreshScheduler,
 } = require('./services/maloumTokenRefresh');
@@ -61,6 +62,7 @@ app.get('/api/health', async (_req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/staff', staffRoutes);
 app.use('/api/roles', rolesRoutes);
+app.use('/api/creators', telegramRoutes);
 app.use('/api/creators', creatorsRoutes);
 app.use('/api/creators', maloumFanScrapeRoutes);
 app.use('/api/creators', fourbasedFanScrapeRoutes);
@@ -90,6 +92,8 @@ app.listen(PORT, () => {
     startFourBasedSocketManager,
   } = require('./services/fourBasedSocket');
   startFourBasedSocketManager();
+  const { startTelegramManager } = require('./services/telegramWorker');
+  void startTelegramManager();
   const {
     resumeRunningJobs: resumeMaloumFanScrapeJobs,
   } = require('./services/maloumFanScrapeRunner');

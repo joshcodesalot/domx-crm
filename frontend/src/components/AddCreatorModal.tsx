@@ -16,6 +16,11 @@ import {
   reconnectMaloumAccount,
   createCreator,
   discardCreatorConnect,
+  startTelegramConnect,
+  completeTelegramConnect,
+  abortTelegramConnect,
+  startTelegramReconnect,
+  completeTelegramReconnect,
   type CreateCreatorInput,
   type Creator,
 } from '@/lib/api';
@@ -54,11 +59,21 @@ export default function AddCreatorModal({
 }: AddCreatorModalProps) {
   const isReconnect = Boolean(reconnectCreator?.accountId);
   const [step, setStep] = useState(isReconnect ? 2 : 1);
-  const [platform, setPlatform] = useState<'maloum' | '4based'>(
-    reconnectCreator?.platform === '4based' ? '4based' : 'maloum'
+  const [platform, setPlatform] = useState<'maloum' | '4based' | 'telegram'>(
+    reconnectCreator?.platform === '4based'
+      ? '4based'
+      : reconnectCreator?.platform === 'telegram'
+        ? 'telegram'
+        : 'maloum'
   );
   const [loginEmail, setLoginEmail] = useState(reconnectCreator?.loginEmail || '');
   const [loginPassword, setLoginPassword] = useState('');
+  const [telegramPhone, setTelegramPhone] = useState(
+    reconnectCreator?.platform === 'telegram' ? reconnectCreator.loginEmail || '' : ''
+  );
+  const [telegramCode, setTelegramCode] = useState('');
+  const [telegramPassword, setTelegramPassword] = useState('');
+  const [telegramPhase, setTelegramPhase] = useState<'phone' | 'code' | '2fa'>('phone');
   const [proxyHost, setProxyHost] = useState('');
   const [proxyUsername, setProxyUsername] = useState('');
   const [proxyPassword, setProxyPassword] = useState('');
@@ -82,30 +97,51 @@ export default function AddCreatorModal({
   const connectSucceededRef = useRef(false);
 
   const proxyEnvLabel =
-    platform === '4based' ? 'FOURBASED_PROXY_URL' : 'MALOUM_PROXY_URL';
+    platform === '4based'
+      ? 'FOURBASED_PROXY_URL'
+      : platform === 'telegram'
+        ? ''
+        : 'MALOUM_PROXY_URL';
 
   const [title, subtitle] =
     isReconnect && step === 2
       ? ([
-          platform === '4based' ? 'Reconnect 4based account' : 'Reconnect Maloum account',
-          `Sign in again to refresh the session for ${reconnectCreator?.displayName || 'this creator'}.`,
+          platform === '4based'
+            ? 'Reconnect 4based account'
+            : platform === 'telegram'
+              ? 'Reconnect Telegram account'
+              : 'Reconnect Maloum account',
+          platform === 'telegram'
+            ? `Sign in with the phone number for ${reconnectCreator?.displayName || 'this creator'}.`
+            : `Sign in again to refresh the session for ${reconnectCreator?.displayName || 'this creator'}.`,
         ] as [string, string])
       : step === 2
         ? ([
-            platform === '4based' ? 'Connect 4based account' : 'Connect Maloum account',
-            `Enter credentials. Login uses the dedicated ${proxyEnvLabel} proxy from the server (.env).`,
+            platform === '4based'
+              ? 'Connect 4based account'
+              : platform === 'telegram'
+                ? 'Connect Telegram account'
+                : 'Connect Maloum account',
+            platform === 'telegram'
+              ? 'Enter the account phone number. Telegram will send a login code.'
+              : `Enter credentials. Login uses the dedicated ${proxyEnvLabel} proxy from the server (.env).`,
           ] as [string, string])
         : STEP_TITLES[step];
 
   const discardPendingConnect = useCallback(async () => {
     const id = accountIdRef.current;
-    if (!id || !connectSucceededRef.current || isReconnect) return;
     try {
-      await discardCreatorConnect(id);
+      if (platform === 'telegram') {
+        const telegramKey = reconnectCreator?.id || id;
+        if (telegramKey) await abortTelegramConnect(telegramKey);
+      }
+      if (!isReconnect && connectSucceededRef.current && id) {
+        await discardCreatorConnect(id);
+      }
     } catch {
       // Best-effort cleanup when discarding pending connect session
     }
-  }, [isReconnect]);
+  }, [isReconnect, platform, reconnectCreator?.id]);
 
   const cleanup = useCallback(
     async (options?: { discardPending?: boolean }) => {
@@ -132,7 +168,10 @@ export default function AddCreatorModal({
   }, [step, isReconnect]);
 
   async function handleClose() {
-    await cleanup({ discardPending: connectSucceeded && step < 3 && !isReconnect });
+    const shouldDiscard =
+      (platform === 'telegram' && step === 2) ||
+      (connectSucceeded && step < 3 && !isReconnect);
+    await cleanup({ discardPending: shouldDiscard });
     onClose();
   }
 
@@ -146,6 +185,94 @@ export default function AddCreatorModal({
     setPlatform('4based');
     setStep(2);
     setLoginError(null);
+  }
+
+  function handleSelectTelegram() {
+    setPlatform('telegram');
+    setTelegramPhase('phone');
+    setTelegramCode('');
+    setTelegramPassword('');
+    setStep(2);
+    setLoginError(null);
+  }
+
+  async function handleTelegramSendCode() {
+    if (!telegramPhone.trim()) {
+      setLoginError('Phone number is required');
+      return;
+    }
+    setConnecting(true);
+    setLoginError(null);
+    try {
+      const result = reconnectCreator
+        ? await startTelegramReconnect(reconnectCreator.id, telegramPhone.trim())
+        : await startTelegramConnect({
+            accountId: accountId!,
+            phone: telegramPhone.trim(),
+          });
+      setTelegramPhase(result.status === 'waiting_2fa' ? '2fa' : 'code');
+    } catch (err) {
+      setLoginError(
+        err instanceof Error ? err.message : 'Failed to send Telegram code'
+      );
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function handleTelegramComplete() {
+    setConnecting(true);
+    setLoginError(null);
+    try {
+      const result = reconnectCreator
+        ? await completeTelegramReconnect(reconnectCreator.id, {
+            code: telegramCode.trim() || undefined,
+            password: telegramPassword || undefined,
+          })
+        : await completeTelegramConnect({
+            accountId: accountId!,
+            code: telegramCode.trim() || undefined,
+            password: telegramPassword || undefined,
+          });
+
+      if (result.status === 'waiting_2fa') {
+        setTelegramPhase('2fa');
+        return;
+      }
+      if (result.status === 'waiting_code') {
+        setTelegramPhase('code');
+        setLoginError('Invalid code. Try again.');
+        return;
+      }
+
+      if (reconnectCreator) {
+        setConnectSucceeded(false);
+        connectSucceededRef.current = false;
+        onSaved();
+        onClose();
+        return;
+      }
+
+      const connected = result as Awaited<ReturnType<typeof completeTelegramConnect>>;
+      setAccountToken(connected.accountToken || 'telegram');
+      setSession({
+        displayName: connected.displayName || 'Telegram',
+        username: connected.username || '',
+        postLoginUrl: connected.postLoginUrl || 'https://t.me/',
+        avatarUrl: connected.avatarUrl || null,
+        profileImageUrl: connected.avatarUrl || null,
+      });
+      setDisplayNameOverride(connected.displayName || 'Telegram');
+      setConnectSucceeded(true);
+      connectSucceededRef.current = true;
+      setStep(3);
+    } catch (err) {
+      setLoginError(
+        err instanceof Error ? err.message : 'Failed to complete Telegram login'
+      );
+    } finally {
+      setConnecting(false);
+    }
   }
 
   function optionalCustomProxyUrl(): string | undefined | false {
@@ -277,6 +404,14 @@ export default function AddCreatorModal({
   }
 
   async function handleConnectAccount() {
+    if (platform === 'telegram') {
+      if (telegramPhase === 'phone') {
+        await handleTelegramSendCode();
+        return;
+      }
+      await handleTelegramComplete();
+      return;
+    }
     if (platform === '4based') {
       await handleConnectFourBased();
       return;
@@ -424,10 +559,88 @@ export default function AddCreatorModal({
                   </p>
                 </div>
               </button>
+
+              <button
+                type="button"
+                onClick={handleSelectTelegram}
+                className="w-full flex items-center gap-4 p-4 border-2 border-gray-200 dark:border-white/10 rounded-lg hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/10 transition-colors text-left"
+              >
+                <div className="w-10 h-10 rounded-lg bg-sky-500 flex items-center justify-center shrink-0 overflow-hidden text-white">
+                  <svg viewBox="0 0 24 24" className="w-6 h-6" fill="currentColor" aria-hidden>
+                    <path d="M21.5 3.6 18.4 20c-.2 1-.8 1.2-1.6.8l-4.5-3.3-2.2 2.1c-.2.2-.4.4-.9.4l.3-4.6 8.4-7.6c.4-.3 0-.5-.5-.2l-10.4 6.5-4.5-1.4c-1-.3-1-.9.2-1.4L20.3 3c.8-.3 1.5.2 1.2.6Z" />
+                  </svg>
+                </div>
+                <div>
+                  <p className="font-medium text-sm">Telegram</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Phone login with code — no proxy
+                  </p>
+                </div>
+              </button>
             </div>
           )}
 
-          {step === 2 && (
+          {step === 2 && platform === 'telegram' && (
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1.5">
+                  Phone number <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="tel"
+                  value={telegramPhone}
+                  onChange={(e) => setTelegramPhone(e.target.value)}
+                  placeholder="+15551234567"
+                  disabled={telegramPhase !== 'phone'}
+                  className={inputClassName}
+                />
+              </div>
+              {telegramPhase !== 'phone' && (
+                <div>
+                  <label className="block text-sm font-medium mb-1.5">
+                    Login code <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={telegramCode}
+                    onChange={(e) => setTelegramCode(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !connecting && telegramPhase === 'code') {
+                        void handleTelegramComplete();
+                      }
+                    }}
+                    placeholder="Code from Telegram"
+                    className={inputClassName}
+                    autoFocus
+                  />
+                </div>
+              )}
+              {telegramPhase === '2fa' && (
+                <div>
+                  <label className="block text-sm font-medium mb-1.5">
+                    Two-factor password <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="password"
+                    value={telegramPassword}
+                    onChange={(e) => setTelegramPassword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !connecting) void handleTelegramComplete();
+                    }}
+                    placeholder="Cloud password"
+                    className={inputClassName}
+                    autoFocus
+                  />
+                </div>
+              )}
+              {loginError && (
+                <p className="text-sm text-red-600 dark:text-red-400">{loginError}</p>
+              )}
+            </div>
+          )}
+
+          {step === 2 && platform !== 'telegram' && (
             <div className="space-y-4">
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 Login uses {proxyEnvLabel} from the server (.env) unless you set a
@@ -596,12 +809,22 @@ export default function AddCreatorModal({
                 className="px-4 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-500 rounded-lg transition-colors disabled:opacity-50"
               >
                 {connecting
-                  ? isReconnect
-                    ? 'Reconnecting...'
-                    : 'Connecting...'
-                  : isReconnect
-                    ? 'Reconnect Account'
-                    : 'Connect Account'}
+                  ? platform === 'telegram'
+                    ? telegramPhase === 'phone'
+                      ? 'Sending code...'
+                      : 'Verifying...'
+                    : isReconnect
+                      ? 'Reconnecting...'
+                      : 'Connecting...'
+                  : platform === 'telegram'
+                    ? telegramPhase === 'phone'
+                      ? 'Send code'
+                      : telegramPhase === '2fa'
+                        ? 'Verify password'
+                        : 'Verify code'
+                    : isReconnect
+                      ? 'Reconnect Account'
+                      : 'Connect Account'}
               </button>
             )}
 

@@ -51,8 +51,12 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     typeof window !== 'undefined' ? window.location.hash : '';
   const isFourBasedActive =
     hash.includes('/chatter/4based') || hash.includes('/message-pro/4based');
+  const isTelegramActive = hash.includes('/chatter/telegram');
   const isMaloumActive =
-    activePage === 'chatter' && !isFourBasedActive && !hash.includes('/chatter/schedule');
+    activePage === 'chatter' &&
+    !isFourBasedActive &&
+    !isTelegramActive &&
+    !hash.includes('/chatter/schedule');
 
   async function handleLogout() {
     await logout();
@@ -520,6 +524,22 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
               </div>
             )}
           </div>
+        )}
+        {hasPermission('creators.view') && (
+          <button
+            type="button"
+            onClick={() => navigate('/chatter/telegram')}
+            className={
+              isTelegramActive
+                ? 'text-sky-500'
+                : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
+            }
+            title="Telegram"
+          >
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor" aria-hidden>
+              <path d="M21.5 3.6 18.4 20c-.2 1-.8 1.2-1.6.8l-4.5-3.3-2.2 2.1c-.2.2-.4.4-.9.4l.3-4.6 8.4-7.6c.4-.3 0-.5-.5-.2l-10.4 6.5-4.5-1.4c-1-.3-1-.9.2-1.4L20.3 3c.8-.3 1.5.2 1.2.6Z" />
+            </svg>
+          </button>
         )}
         {hasPermission('creators.manage') && (
           <button

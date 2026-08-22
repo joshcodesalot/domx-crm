@@ -30,7 +30,9 @@ import fourBasedIcon from '@/assets/4based_icon.ico';
 import maloumIcon from '@/assets/maloum_icon.png';
 
 function platformLabel(platform: Creator['platform']): string {
-  return platform === 'maloum' ? 'Maloum' : '4based';
+  if (platform === 'maloum') return 'Maloum';
+  if (platform === 'telegram') return 'Telegram';
+  return '4based';
 }
 
 function connectionBadgeClass(status: Creator['connectionStatus']): string {
@@ -152,6 +154,11 @@ export default function ManageCreators() {
     setReconnectingId(creator.id);
     setError(null);
     try {
+      if (creator.platform === 'telegram') {
+        setReconnectCreator(creator);
+        setShowAddModal(true);
+        return;
+      }
       if (creator.platform === '4based') {
         await reconnectFourBasedAccountSaved(creator.id);
       } else {
@@ -302,9 +309,11 @@ export default function ManageCreators() {
                           <p className="text-xs text-gray-400 truncate">
                             {creator.username ? `@${creator.username}` : ''}
                             {creator.username ? ' · ' : ''}
-                            {creator.hasCustomProxy
-                              ? 'Custom proxy'
-                              : '.env proxy'}
+                            {creator.platform === 'telegram'
+                              ? 'No proxy'
+                              : creator.hasCustomProxy
+                                ? 'Custom proxy'
+                                : '.env proxy'}
                           </p>
                         </div>
                       </div>
@@ -313,6 +322,12 @@ export default function ManageCreators() {
                       <span className="inline-flex items-center gap-1.5">
                         {creator.platform === '4based' ? (
                           <img src={fourBasedIcon} alt="" className="w-3.5 h-3.5" />
+                        ) : creator.platform === 'telegram' ? (
+                          <span className="w-3.5 h-3.5 rounded-sm bg-sky-500 inline-flex items-center justify-center text-white">
+                            <svg viewBox="0 0 24 24" className="w-2.5 h-2.5" fill="currentColor">
+                              <path d="M21.5 3.6 18.4 20c-.2 1-.8 1.2-1.6.8l-4.5-3.3-2.2 2.1c-.2.2-.4.4-.9.4l.3-4.6 8.4-7.6c.4-.3 0-.5-.5-.2l-10.4 6.5-4.5-1.4c-1-.3-1-.9.2-1.4L20.3 3c.8-.3 1.5.2 1.2.6Z" />
+                            </svg>
+                          </span>
                         ) : (
                           <img
                             src={maloumIcon}
@@ -343,7 +358,9 @@ export default function ManageCreators() {
                               type="button"
                               className="p-1.5 text-gray-400 hover:text-amber-500 dark:hover:text-amber-400 rounded-md hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                               title={
-                                creator.hasSavedCredentials
+                                creator.platform === 'telegram'
+                                  ? 'Reconnect Telegram account'
+                                  : creator.hasSavedCredentials
                                   ? creator.platform === '4based'
                                     ? 'Reconnect 4based with saved password'
                                     : 'Reconnect Maloum with saved password'
@@ -396,6 +413,7 @@ export default function ManageCreators() {
                           >
                             <Pencil className="w-4 h-4" />
                           </button>
+                          {creator.platform !== 'telegram' && (
                           <button
                             type="button"
                             className="p-1.5 text-gray-400 hover:text-sky-600 dark:hover:text-sky-400 rounded-md hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-colors"
@@ -408,6 +426,7 @@ export default function ManageCreators() {
                           >
                             <Globe className="w-4 h-4" />
                           </button>
+                          )}
                           <button
                             type="button"
                             className="p-1.5 text-gray-400 hover:text-emerald-500 dark:hover:text-emerald-400 rounded-md hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors"

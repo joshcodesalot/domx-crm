@@ -15,6 +15,7 @@ import {
   getCreators,
   getFourBasedBadges,
   getMaloumBadges,
+  getTelegramBadges,
   type Creator,
 } from '@/lib/api';
 import { isCreatorRosterEvent } from '@/lib/creatorAccessEvents';
@@ -151,7 +152,9 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
             ? await getFourBasedBadges(id)
             : creator.platform === 'maloum'
               ? await getMaloumBadges(id)
-              : null;
+              : creator.platform === 'telegram'
+                ? await getTelegramBadges(id)
+                : null;
         if (!result) return;
         updates[id] = {
           messages: Number(result.messages) || 0,
@@ -248,7 +251,7 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
 }
 
 export function useCreatorLive(opts?: {
-  platform?: 'maloum' | '4based';
+  platform?: 'maloum' | '4based' | 'telegram';
   wantBadges?: boolean;
   pollEnabled?: boolean;
 }) {

@@ -362,7 +362,14 @@ export default function CreatorAnalytics() {
               </label>
             </div>
             <div className="flex items-center gap-2">
-              <PlatformIcon platform={selectedPlatform} className="w-4 h-4" />
+              <PlatformIcon
+                platform={
+                  selectedPlatform === 'maloum' || selectedPlatform === '4based'
+                    ? selectedPlatform
+                    : null
+                }
+                className="w-4 h-4"
+              />
               <select
                 value={creatorId}
                 onChange={(e) => handleCreatorChange(e.target.value)}

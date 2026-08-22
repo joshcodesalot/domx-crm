@@ -70,7 +70,6 @@ function SalesLogRow({ entry }: { entry: MessagingDashboardEntry }) {
   const listed = entry.priceNet;
   const net = netTakeAmount(entry.priceNet, entry.platform);
   const isTip = entry.contentType === 'tip';
-  const partyLabel = isTip ? entry.creatorName : entry.chatterName;
 
   return (
     <tr className="border-b border-gray-100 dark:border-white/5 hover:bg-gray-50/60 dark:hover:bg-white/[0.02]">
@@ -114,12 +113,7 @@ function SalesLogRow({ entry }: { entry: MessagingDashboardEntry }) {
           </div>
         </div>
       </td>
-      <td className="px-4 py-3 align-top">
-        <div className="text-xs text-gray-500 dark:text-gray-400">
-          {isTip ? 'Tip recipient' : 'PPV sender'}
-        </div>
-        <div>{partyLabel || '--'}</div>
-      </td>
+      <td className="px-4 py-3 align-top">{entry.chatterName || '--'}</td>
       <td className="px-4 py-3 align-top whitespace-nowrap">{entry.fanUsername || '--'}</td>
     </tr>
   );
@@ -340,7 +334,7 @@ export default function SalesLogs() {
 
             <label className="space-y-1">
               <span className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                Model / tip recipient
+                Model
               </span>
               <select
                 value={creatorId}
@@ -362,7 +356,7 @@ export default function SalesLogs() {
 
             <label className="space-y-1">
               <span className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                PPV sender
+                Chatter
               </span>
               <select
                 value={chatterId}
@@ -470,7 +464,7 @@ export default function SalesLogs() {
                 <th className="px-4 py-3 text-left font-medium">Net amount</th>
                 <th className="px-4 py-3 text-left font-medium">Platform</th>
                 <th className="px-4 py-3 text-left font-medium">Model</th>
-                <th className="px-4 py-3 text-left font-medium">PPV sender / tip recipient</th>
+                <th className="px-4 py-3 text-left font-medium">Chatter</th>
                 <th className="px-4 py-3 text-left font-medium">Fan</th>
               </tr>
             </thead>

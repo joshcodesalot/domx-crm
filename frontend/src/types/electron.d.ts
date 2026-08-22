@@ -27,6 +27,12 @@ export type StaffSyncEvent =
       payload: unknown;
     }
   | {
+      type: 'telegram:event';
+      event: string;
+      creatorId: string;
+      payload: unknown;
+    }
+  | {
       type: 'messaging:sent';
       creatorId: string;
       chatId: string;

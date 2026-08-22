@@ -347,7 +347,11 @@ export default function ContentSchedule() {
           {
             ...result.settings,
             displayName: selectedCreator?.displayName,
-            platform: selectedCreator?.platform,
+            platform:
+              selectedCreator?.platform === 'maloum' ||
+              selectedCreator?.platform === '4based'
+                ? selectedCreator.platform
+                : undefined,
           },
         ];
       });

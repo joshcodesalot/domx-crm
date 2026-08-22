@@ -82,7 +82,7 @@ const fourBasedPhotoUpload = multer({
   },
 });
 
-const VALID_PLATFORMS = ['maloum', '4based'];
+const VALID_PLATFORMS = ['maloum', '4based', 'telegram'];
 const VALID_STATUSES = ['connected', 'error', 'pending'];
 const PENDING_TTL_MINUTES = 15;
 const BADGE_SIDE_EFFECT_MIN_MS = 60_000;
@@ -850,6 +850,9 @@ router.delete(
     }
 
     try {
+      const { abortPendingLogin } = require('../services/telegramWorker');
+      void abortPendingLogin(accountId);
+
       const result = await pool.query(
         `DELETE FROM creator_connect_pending
          WHERE "accountId" = $1 AND "createdBy" = $2
@@ -1009,6 +1012,13 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
     if (saved.platform === '4based') {
       void connectCreatorById(saved.id).catch((err) => {
         console.warn('[4based] Failed to open socket after create:', err.message);
+      });
+    }
+
+    if (saved.platform === 'telegram' && pending?.accountId) {
+      const { onCreatorSaved } = require('../services/telegramWorker');
+      void onCreatorSaved(saved.id, pending.accountId).catch((err) => {
+        console.warn('[telegram] Failed to start client after create:', err.message);
       });
     }
 
@@ -1934,6 +1944,10 @@ router.delete('/:id', authenticate, requirePermission('creators.manage'), async 
 
     if (platform === '4based') {
       disconnectCreator(id);
+    }
+    if (platform === 'telegram') {
+      const { disconnectCreator: disconnectTelegram } = require('../services/telegramWorker');
+      void disconnectTelegram(id);
     }
 
     if (accountId) {
