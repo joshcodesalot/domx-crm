@@ -4399,6 +4399,11 @@ export interface ScheduledContentJob {
   updatedAt: string;
 }
 
+export interface ScheduleNamedRef {
+  id: string;
+  name: string;
+}
+
 export interface CreatorScheduleSettings {
   creatorId: string;
   displayName?: string;
@@ -4407,6 +4412,9 @@ export interface CreatorScheduleSettings {
   includeListIds: string[];
   excludeListIds: string[];
   categoryIds: string[];
+  includeLists?: ScheduleNamedRef[];
+  excludeLists?: ScheduleNamedRef[];
+  categoryLists?: ScheduleNamedRef[];
 }
 
 export interface MassUnsendAllProgress {
@@ -4447,6 +4455,9 @@ export async function updateScheduleSettings(
     includeListIds?: string[];
     excludeListIds?: string[];
     categoryIds?: string[];
+    includeLists?: ScheduleNamedRef[];
+    excludeLists?: ScheduleNamedRef[];
+    categoryLists?: ScheduleNamedRef[];
   }
 ): Promise<{ settings: CreatorScheduleSettings }> {
   return request(`/api/scheduled-content/settings/${creatorId}`, {

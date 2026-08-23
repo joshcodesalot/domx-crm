@@ -159,6 +159,13 @@ function mergeVaultMediaItems(
   return next;
 }
 
+function namedListRefs(ids: string[], lists: MaloumChatListItem[]) {
+  return ids.map((id) => {
+    const list = lists.find((item) => item._id === id);
+    return { id, name: String(list?.name || '').trim() };
+  });
+}
+
 export default function MaloumMassMessage() {
   const documentVisible = useDocumentVisible();
   const { hasPermission } = useAuth();
@@ -745,8 +752,8 @@ export default function MaloumMassMessage() {
           runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
           bodyText: englishDraft,
           payload: {
-            includeFromLists: includeIds,
-            excludeFromLists: excludeIds,
+            includeFromLists: namedListRefs(includeIds, chatLists),
+            excludeFromLists: namedListRefs(excludeIds, chatLists),
             media: mediaPayload,
             price: mediaPayload.length > 0 && priceNet > 0 ? priceNet : 0,
           },
@@ -804,6 +811,7 @@ export default function MaloumMassMessage() {
     selectedVaultItems,
     includeIds,
     excludeIds,
+    chatLists,
     autoTranslateOutgoing,
     ppvPrice,
     loadBroadcasts,

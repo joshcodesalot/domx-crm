@@ -36,6 +36,7 @@ import {
   type FourBasedUserList,
   type MaloumCategory,
   type MaloumChatListItem,
+  type ScheduleNamedRef,
   type ScheduledContentJob,
   type ScheduledContentKind,
   type ScheduledImportAsset,
@@ -62,6 +63,38 @@ const AUDIENCE_FILTERS = [
 ] as const;
 
 const ALL_AUDIENCE = AUDIENCE_FILTERS.map((f) => f.id);
+
+function sameIds(a: string[], b: string[]) {
+  return a.length === b.length && a.every((id) => b.includes(id));
+}
+
+function rematchNamedRefs(
+  saved: ScheduleNamedRef[],
+  live: Array<{ _id?: string; name?: string }>
+): ScheduleNamedRef[] {
+  const byId = new Map<string, ScheduleNamedRef>();
+  const byName = new Map<string, ScheduleNamedRef>();
+  for (const item of live) {
+    const id = String(item._id || '').trim();
+    if (!id) continue;
+    const name = String(item.name || '').trim();
+    const ref = { id, name };
+    byId.set(id, ref);
+    const key = name.toLowerCase();
+    if (key && !byName.has(key)) byName.set(key, ref);
+  }
+  const out: ScheduleNamedRef[] = [];
+  const seen = new Set<string>();
+  for (const savedRef of saved) {
+    const liveRef =
+      byId.get(savedRef.id) ||
+      (savedRef.name ? byName.get(savedRef.name.trim().toLowerCase()) : undefined);
+    if (!liveRef || seen.has(liveRef.id)) continue;
+    seen.add(liveRef.id);
+    out.push(liveRef);
+  }
+  return out;
+}
 
 type ReviewRow = {
   key: string;
@@ -237,6 +270,7 @@ export default function ContentSchedule() {
   const [lists, setLists] = useState<Array<FourBasedUserList | MaloumChatListItem>>(
     []
   );
+  const [listsCreatorId, setListsCreatorId] = useState<string | null>(null);
   const [categories, setCategories] = useState<MaloumCategory[]>([]);
   const [pickerDate, setPickerDate] = useState(now.date);
   const [pickerTime, setPickerTime] = useState(now.time);
@@ -290,34 +324,39 @@ export default function ContentSchedule() {
   }, [loadAll]);
 
   useEffect(() => {
-    if (!selectedCreator) {
-      setLists([]);
-      setCategories([]);
-      return;
-    }
+    setLists([]);
+    setCategories([]);
+    setListsCreatorId(null);
+    if (!selectedCreator) return;
     let cancelled = false;
+    const creatorId = selectedCreator.id;
     const load = async () => {
       try {
         if (selectedCreator.platform === '4based') {
-          const result = await listFourBasedUserLists(selectedCreator.id, {
+          const result = await listFourBasedUserLists(creatorId, {
             limit: 80,
           });
-          if (!cancelled) setLists(result.lists || []);
-          setCategories([]);
+          if (!cancelled) {
+            setLists(result.lists || []);
+            setCategories([]);
+            setListsCreatorId(creatorId);
+          }
         } else {
           const [listRes, catRes] = await Promise.all([
-            listMaloumChatLists(selectedCreator.id, { limit: 80 }),
-            listMaloumCategories(selectedCreator.id),
+            listMaloumChatLists(creatorId, { limit: 80 }),
+            listMaloumCategories(creatorId),
           ]);
           if (!cancelled) {
             setLists(listRes.lists || []);
             setCategories(catRes.categories || []);
+            setListsCreatorId(creatorId);
           }
         }
       } catch {
         if (!cancelled) {
           setLists([]);
           setCategories([]);
+          setListsCreatorId(null);
         }
       }
     };
@@ -333,13 +372,33 @@ export default function ContentSchedule() {
     includeListIds: [],
     excludeListIds: [],
     categoryIds: [],
+    includeLists: [],
+    excludeLists: [],
+    categoryLists: [],
   };
+
+  const namedFromIds = (
+    ids: string[],
+    items: Array<{ _id?: string; name?: string }>
+  ): ScheduleNamedRef[] =>
+    ids.map((id) => {
+      const item = items.find((entry) => String(entry._id || '') === id);
+      return { id, name: String(item?.name || '').trim() };
+    });
 
   const saveSettings = async (next: CreatorScheduleSettings) => {
     if (!selectedCreatorId) return;
     setSavingSettings(true);
     try {
-      const result = await updateScheduleSettings(selectedCreatorId, next);
+      const includeLists = namedFromIds(next.includeListIds, lists);
+      const excludeLists = namedFromIds(next.excludeListIds, lists);
+      const categoryLists = namedFromIds(next.categoryIds, categories);
+      const result = await updateScheduleSettings(selectedCreatorId, {
+        ...next,
+        includeLists,
+        excludeLists,
+        categoryLists,
+      });
       setSettings((prev) => {
         const rest = prev.filter((s) => s.creatorId !== selectedCreatorId);
         return [
@@ -369,24 +428,68 @@ export default function ContentSchedule() {
 
   useEffect(() => {
     if (!selectedCreator || selectedCreator.platform !== 'maloum') return;
+    if (listsCreatorId !== selectedCreator.id) return;
     if (lists.length === 0) return;
-    if (defaultedIncludeRef.current.has(selectedCreator.id)) return;
-    const existing = selectedSettings?.includeListIds ?? [];
-    if (existing.length > 0) {
-      defaultedIncludeRef.current.add(selectedCreator.id);
+    if (
+      defaultedIncludeRef.current.has(selectedCreator.id) &&
+      (selectedSettings?.includeListIds?.length ?? 0) > 0
+    ) {
       return;
     }
-    const defaultList = findDefaultIncludeList(lists as MaloumChatListItem[]);
-    if (!defaultList?._id) return;
+
+    const existingInclude = selectedSettings?.includeLists?.length
+      ? selectedSettings.includeLists
+      : (selectedSettings?.includeListIds ?? []).map((id) => ({ id, name: '' }));
+    const existingExclude = selectedSettings?.excludeLists?.length
+      ? selectedSettings.excludeLists
+      : (selectedSettings?.excludeListIds ?? []).map((id) => ({ id, name: '' }));
+    const existingCategories = selectedSettings?.categoryLists?.length
+      ? selectedSettings.categoryLists
+      : (selectedSettings?.categoryIds ?? []).map((id) => ({ id, name: '' }));
+
+    let includeLists = rematchNamedRefs(
+      existingInclude,
+      lists as MaloumChatListItem[]
+    );
+    const excludeLists = rematchNamedRefs(
+      existingExclude,
+      lists as MaloumChatListItem[]
+    );
+    const categoryLists = rematchNamedRefs(existingCategories, categories);
+    if (includeLists.length === 0) {
+      const defaultList = findDefaultIncludeList(lists as MaloumChatListItem[]);
+      if (defaultList?._id) {
+        includeLists = [
+          {
+            id: String(defaultList._id),
+            name: String(defaultList.name || '').trim(),
+          },
+        ];
+      }
+    }
+
+    const includeListIds = includeLists.map((ref) => ref.id);
+    const excludeListIds = excludeLists.map((ref) => ref.id);
+    const categoryIds = categoryLists.map((ref) => ref.id);
     defaultedIncludeRef.current.add(selectedCreator.id);
+    if (
+      sameIds(includeListIds, selectedSettings?.includeListIds ?? []) &&
+      sameIds(excludeListIds, selectedSettings?.excludeListIds ?? []) &&
+      sameIds(categoryIds, selectedSettings?.categoryIds ?? [])
+    ) {
+      return;
+    }
     void saveSettings({
       creatorId: selectedCreator.id,
       audienceFilters: selectedSettings?.audienceFilters ?? ALL_AUDIENCE,
-      includeListIds: [String(defaultList._id)],
-      excludeListIds: selectedSettings?.excludeListIds ?? [],
-      categoryIds: selectedSettings?.categoryIds ?? [],
+      includeListIds,
+      excludeListIds,
+      categoryIds,
+      includeLists,
+      excludeLists,
+      categoryLists,
     });
-  }, [selectedCreator, lists, selectedSettings]);
+  }, [selectedCreator, lists, listsCreatorId, categories, selectedSettings]);
 
   const maloumLists = useMemo(
     () =>

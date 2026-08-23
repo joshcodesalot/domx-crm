@@ -19,6 +19,7 @@ const {
   isInsideMediaDir,
 } = require('../services/scheduledMedia');
 const { DEFAULT_AUDIENCE } = require('../services/contentScheduleRunner');
+const { asIdList, asNamedRefs } = require('../services/scheduleNamedRefs');
 
 const router = express.Router();
 
@@ -54,11 +55,6 @@ const imageUpload = multer({
     return cb(null, true);
   },
 });
-
-function asIdList(value) {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))];
-}
 
 function normalizeMassPayload(platform, payload) {
   const next = payload && typeof payload === 'object' ? { ...payload } : {};
@@ -105,14 +101,20 @@ function mapJob(row) {
 }
 
 function mapSettings(row, creatorId) {
+  const includeLists = asNamedRefs(row?.includeListIds);
+  const excludeLists = asNamedRefs(row?.excludeListIds);
+  const categoryLists = asNamedRefs(row?.categoryIds).slice(0, 3);
   return {
     creatorId,
     audienceFilters: asIdList(row?.audienceFilters).length
       ? asIdList(row.audienceFilters)
       : DEFAULT_AUDIENCE,
-    includeListIds: asIdList(row?.includeListIds),
-    excludeListIds: asIdList(row?.excludeListIds),
-    categoryIds: asIdList(row?.categoryIds).slice(0, 3),
+    includeListIds: includeLists.map((ref) => ref.id),
+    excludeListIds: excludeLists.map((ref) => ref.id),
+    categoryIds: categoryLists.map((ref) => ref.id),
+    includeLists,
+    excludeLists,
+    categoryLists,
   };
 }
 
@@ -372,9 +374,12 @@ router.put('/settings/:creatorId', async (req, res) => {
     }
     const body = req.body || {};
     const audienceFilters = asIdList(body.audienceFilters);
-    const includeListIds = asIdList(body.includeListIds);
-    const excludeListIds = asIdList(body.excludeListIds);
-    const categoryIds = asIdList(body.categoryIds).slice(0, 3);
+    const includeLists = asNamedRefs(body.includeLists || body.includeListIds);
+    const excludeLists = asNamedRefs(body.excludeLists || body.excludeListIds);
+    const categoryLists = asNamedRefs(body.categoryLists || body.categoryIds).slice(
+      0,
+      3
+    );
     const result = await pool.query(
       `INSERT INTO creator_schedule_settings (
          "creatorId", "audienceFilters", "includeListIds", "excludeListIds", "categoryIds"
@@ -389,9 +394,9 @@ router.put('/settings/:creatorId', async (req, res) => {
       [
         creatorId,
         JSON.stringify(audienceFilters.length ? audienceFilters : DEFAULT_AUDIENCE),
-        JSON.stringify(includeListIds),
-        JSON.stringify(excludeListIds),
-        JSON.stringify(categoryIds),
+        JSON.stringify(includeLists),
+        JSON.stringify(excludeLists),
+        JSON.stringify(categoryLists),
       ]
     );
     res.json({ settings: mapSettings(result.rows[0], creatorId) });

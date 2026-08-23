@@ -997,6 +997,19 @@ async function listChatLists(creator, { limit = 25, next } = {}) {
   return result.data;
 }
 
+async function listAllChatLists(creator, { limit = 80, maxPages = 20 } = {}) {
+  const collected = [];
+  let next;
+  for (let i = 0; i < maxPages; i += 1) {
+    const page = await listChatLists(creator, { limit, next });
+    const data = normalizeListData(page);
+    collected.push(...data);
+    next = page?.next;
+    if (!next || data.length === 0) break;
+  }
+  return collected;
+}
+
 async function updateFanNickname(creator, chatId, nickname) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!chatId) {
@@ -1614,6 +1627,7 @@ module.exports = {
   listSentBroadcasts,
   revokeBroadcast,
   listChatLists,
+  listAllChatLists,
   createChatList,
   updateFanNickname,
   updateFanNotes,

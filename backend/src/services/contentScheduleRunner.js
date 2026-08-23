@@ -6,6 +6,13 @@ const fourBasedClient = require('./fourBasedClient');
 const maloumClient = require('./maloumClient');
 const { loadFourBasedCreator, loadMaloumCreator } = require('./platformCreatorSession');
 const { isInsideMediaDir } = require('./scheduledMedia');
+const {
+  asIdList,
+  asNamedRefs,
+  pickRequested,
+  refsEqual,
+  resolveNamedRefs,
+} = require('./scheduleNamedRefs');
 
 const POLL_MS = 15_000;
 const DEFAULT_AUDIENCE = [
@@ -66,9 +73,10 @@ async function translateCaption(english) {
   return reattachHashtags(translated, tags);
 }
 
-function asIdList(value) {
-  if (!Array.isArray(value)) return [];
-  return value.map((item) => String(item || '').trim()).filter(Boolean);
+function asLiveArray(raw) {
+  if (Array.isArray(raw?.data)) return raw.data;
+  if (Array.isArray(raw)) return raw;
+  return [];
 }
 
 async function loadSettings(creatorId) {
@@ -79,14 +87,50 @@ async function loadSettings(creatorId) {
     [creatorId]
   );
   const row = result.rows[0];
+  const includeLists = asNamedRefs(row?.includeListIds);
+  const excludeLists = asNamedRefs(row?.excludeListIds);
+  const categoryLists = asNamedRefs(row?.categoryIds).slice(0, 3);
   return {
     audienceFilters: asIdList(row?.audienceFilters).length
       ? asIdList(row.audienceFilters)
       : DEFAULT_AUDIENCE,
-    includeListIds: asIdList(row?.includeListIds),
-    excludeListIds: asIdList(row?.excludeListIds),
-    categoryIds: asIdList(row?.categoryIds).slice(0, 3),
+    includeListIds: includeLists.map((ref) => ref.id),
+    excludeListIds: excludeLists.map((ref) => ref.id),
+    categoryIds: categoryLists.map((ref) => ref.id),
+    includeLists,
+    excludeLists,
+    categoryLists,
   };
+}
+
+async function persistTargetingIfChanged(creatorId, settings, next) {
+  const includeLists = next.includeLists ?? settings.includeLists;
+  const excludeLists = next.excludeLists ?? settings.excludeLists;
+  const categoryLists = next.categoryLists ?? settings.categoryLists;
+  if (
+    refsEqual(includeLists, settings.includeLists) &&
+    refsEqual(excludeLists, settings.excludeLists) &&
+    refsEqual(categoryLists, settings.categoryLists)
+  ) {
+    return;
+  }
+  await pool.query(
+    `INSERT INTO creator_schedule_settings (
+       "creatorId", "audienceFilters", "includeListIds", "excludeListIds", "categoryIds"
+     ) VALUES ($1,$2::jsonb,$3::jsonb,$4::jsonb,$5::jsonb)
+     ON CONFLICT ("creatorId") DO UPDATE SET
+       "includeListIds" = EXCLUDED."includeListIds",
+       "excludeListIds" = EXCLUDED."excludeListIds",
+       "categoryIds" = EXCLUDED."categoryIds",
+       "updatedAt" = NOW()`,
+    [
+      creatorId,
+      JSON.stringify(settings.audienceFilters || DEFAULT_AUDIENCE),
+      JSON.stringify(includeLists),
+      JSON.stringify(excludeLists),
+      JSON.stringify(categoryLists),
+    ]
+  );
 }
 
 function pickNamedFolder(folders, nameRe) {
@@ -182,17 +226,28 @@ async function sendMaloumMass(job, settings, text) {
   const loaded = await loadMaloumCreator(job.creatorId);
   if (loaded.error) throw new Error(loaded.error.message);
   const payload = job.payload && typeof job.payload === 'object' ? job.payload : {};
-  const include = asIdList(payload.includeFromLists).length
-    ? asIdList(payload.includeFromLists)
-    : settings.includeListIds;
-  if (include.length === 0) {
+  const liveLists = await maloumClient.listAllChatLists(loaded.creator);
+  const includeRefs = resolveNamedRefs(
+    pickRequested(payload.includeFromLists, settings.includeLists),
+    liveLists,
+    { fallbackDefault: true }
+  );
+  if (includeRefs.length === 0) {
     throw new Error('Set include lists for this Maloum creator before the job can send');
   }
+  const excludeRefs = resolveNamedRefs(
+    pickRequested(payload.excludeFromLists, settings.excludeLists),
+    liveLists
+  );
+  await persistTargetingIfChanged(job.creatorId, settings, {
+    includeLists: resolveNamedRefs(settings.includeLists, liveLists, {
+      fallbackDefault: true,
+    }),
+    excludeLists: resolveNamedRefs(settings.excludeLists, liveLists),
+  });
   await maloumClient.sendBroadcast(loaded.creator, {
-    includeFromLists: include,
-    excludeFromLists: asIdList(payload.excludeFromLists).length
-      ? asIdList(payload.excludeFromLists)
-      : settings.excludeListIds,
+    includeFromLists: includeRefs.map((ref) => ref.id),
+    excludeFromLists: excludeRefs.map((ref) => ref.id),
     text,
     media: Array.isArray(payload.media) ? payload.media : [],
     price: Number(payload.price) || 0,
@@ -237,12 +292,21 @@ async function postMaloumFeed(job, settings, text) {
   const loaded = await loadMaloumCreator(job.creatorId);
   if (loaded.error) throw new Error(loaded.error.message);
   const payload = job.payload && typeof job.payload === 'object' ? job.payload : {};
-  const categories = asIdList(payload.categories).length
-    ? asIdList(payload.categories).slice(0, 3)
-    : settings.categoryIds;
-  if (categories.length === 0) {
+  const liveCategories = asLiveArray(await maloumClient.listCategories(loaded.creator));
+  const categoryRefs = resolveNamedRefs(
+    pickRequested(payload.categories, settings.categoryLists),
+    liveCategories
+  ).slice(0, 3);
+  if (categoryRefs.length === 0) {
     throw new Error('Set 1–3 Maloum categories for this creator before the post can go out');
   }
+  await persistTargetingIfChanged(job.creatorId, settings, {
+    categoryLists: resolveNamedRefs(settings.categoryLists, liveCategories).slice(
+      0,
+      3
+    ),
+  });
+  const categories = categoryRefs.map((ref) => ref.id);
 
   let mediaId = payload.mediaId || payload.uploadId || null;
   if (!mediaId) {

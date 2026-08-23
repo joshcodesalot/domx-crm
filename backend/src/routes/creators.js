@@ -2828,6 +2828,25 @@ router.post(
   }
 );
 
+async function clearScheduleTargetingIfAccountChanged(
+  creatorId,
+  previousProviderUserId,
+  nextProviderUserId
+) {
+  const prev = String(previousProviderUserId || '').trim();
+  const next = String(nextProviderUserId || '').trim();
+  if (!next || prev === next) return;
+  await pool.query(
+    `UPDATE creator_schedule_settings
+     SET "includeListIds" = '[]'::jsonb,
+         "excludeListIds" = '[]'::jsonb,
+         "categoryIds" = '[]'::jsonb,
+         "updatedAt" = NOW()
+     WHERE "creatorId" = $1`,
+    [creatorId]
+  );
+}
+
 router.post(
   '/:id/maloum/reconnect',
   authenticate,
@@ -2855,7 +2874,7 @@ router.post(
     try {
       const result = await pool.query(
         `SELECT id, platform, "accountId", "displayName", "avatarUrl", "avatarSource",
-                "encryptedProxy"
+                "encryptedProxy", "providerUserId"
          FROM creators WHERE id = $1`,
         [id]
       );
@@ -2971,6 +2990,12 @@ router.post(
         ]
       );
 
+      await clearScheduleTargetingIfAccountChanged(
+        id,
+        creator.providerUserId,
+        loginResult.providerUserId
+      );
+
       const accessUserIds = await getUserIdsWithCreatorAccess(id);
       emitCreatorSessionUpdated(accessUserIds, {
         creatorId: id,
@@ -3006,7 +3031,7 @@ router.post(
     try {
       const result = await pool.query(
         `SELECT id, platform, "accountId", "displayName", "avatarUrl", "avatarSource",
-                "loginEmail", "encryptedLoginPassword", "encryptedProxy"
+                "loginEmail", "encryptedLoginPassword", "encryptedProxy", "providerUserId"
          FROM creators WHERE id = $1`,
         [id]
       );
@@ -3121,6 +3146,12 @@ router.post(
           loginResult.postLoginUrl,
           id,
         ]
+      );
+
+      await clearScheduleTargetingIfAccountChanged(
+        id,
+        creator.providerUserId,
+        loginResult.providerUserId
       );
 
       const accessUserIds = await getUserIdsWithCreatorAccess(id);
