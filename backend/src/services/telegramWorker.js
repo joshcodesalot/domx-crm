@@ -1202,7 +1202,8 @@ async function uploadVaultMedia(creatorId, { filePath, mimeType, fileName }) {
   try {
     const sent = await client.sendMedia('me', {
       type: isVideo ? 'video' : 'photo',
-      file: abs,
+      // mtcute treats a bare string as a File ID; local paths need the file: prefix.
+      file: `file:${abs}`,
       fileName: fileName || path.basename(abs),
       fileMime: mime || undefined,
     });

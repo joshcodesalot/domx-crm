@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Box,
+  Image as ImageIcon,
   Languages,
   Loader2,
   PanelRight,
@@ -18,6 +18,7 @@ import {
   TRANSLATION_SETTINGS_EVENT,
 } from '@/components/fourbased/FourBasedChatPanels';
 import { DEFAULT_FAN_NOTES_TEMPLATE } from '@/components/maloum/MaloumFanPanel';
+import QuickEmojiBar from '@/components/QuickEmojiBar';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
@@ -1140,69 +1141,96 @@ export function TelegramChatThread({
         <div ref={bottomRef} />
       </div>
 
-      <div className="p-3 border-t border-gray-200 dark:border-zinc-800/60 bg-white/90 dark:bg-zinc-950/90 relative z-10">
-        {error && <p className="text-xs text-red-400 mb-2">{error}</p>}
-        {skipOutgoingTranslate && !translatingOutgoing && (
-          <p className="text-xs text-sky-600 dark:text-sky-400 mb-2">
-            AI German — won’t re-translate
-          </p>
-        )}
+      <div className="border-t border-gray-200 dark:border-zinc-800/80 bg-white dark:bg-zinc-950 p-4 shrink-0 relative z-10 shadow-[0_-10px_40px_rgba(0,0,0,0.3)]">
         {vaultItems.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto pb-2">
-            {vaultItems.map((item) => (
-              <div key={item.id} className="relative w-14 h-14 shrink-0">
-                <img
-                  src={telegramVaultMediaUrl(creatorId, item.id, 'thumb')}
-                  alt=""
-                  className="w-14 h-14 rounded-lg object-cover border border-gray-200 dark:border-zinc-700"
-                />
+          <div className="flex items-center gap-3 mb-3 px-1 animate-fade-in">
+            <div className="flex gap-2 max-w-[50%] overflow-x-auto">
+              {vaultItems.map((item) => (
                 <button
+                  key={item.id}
                   type="button"
                   onClick={() =>
                     setVaultItems((prev) => prev.filter((entry) => entry.id !== item.id))
                   }
-                  className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-black/70 text-white flex items-center justify-center"
-                  aria-label="Remove media"
+                  className="w-12 h-12 rounded-lg relative group overflow-hidden border border-gray-300 dark:border-zinc-700 shrink-0"
+                  title="Remove"
                 >
-                  <X className="w-3 h-3" />
+                  <img
+                    src={telegramVaultMediaUrl(creatorId, item.id, 'thumb')}
+                    alt=""
+                    className="w-full h-full object-cover"
+                  />
+                  <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/35 dark:bg-black/60 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <X className="w-3 h-3" />
+                  </span>
                 </button>
-              </div>
-            ))}
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setVaultItems([])}
+              className="p-1 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white"
+              aria-label="Clear attachment"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
         )}
-        <div className="flex items-end gap-2">
+        {error && <p className="text-xs text-red-400 mb-2">{error}</p>}
+        {translatingOutgoing && (
+          <p className="text-xs text-gray-500 dark:text-zinc-500 mb-2">
+            Translating to German…
+          </p>
+        )}
+        {skipOutgoingTranslate && !translatingOutgoing && (
+          <p className="text-xs text-domx-600 dark:text-domx-400 mb-2">
+            AI German — won’t re-translate
+          </p>
+        )}
+
+        <QuickEmojiBar
+          disabled={sending || translatingOutgoing}
+          onInsert={(emoji) => setDraft((d) => d + emoji)}
+          trailing={
+            <div className="flex items-center gap-0.5">
+              {canUseSuggestReply && (
+                <SuggestReplyToolbarButton
+                  disabled={sending || translatingOutgoing || messages.length === 0}
+                  getMessages={getSuggestMessages}
+                  getFanNotes={getSuggestFanNotes}
+                  fanNickname={fan?.nickname || null}
+                  onApply={applySuggestedReply}
+                />
+              )}
+              <ScriptToolbarButton
+                creatorId={creatorId}
+                platform="telegram"
+                fanId={fan?.telegramUserId || peerId}
+                canManage={canManageScripts}
+                disabled={sending || translatingOutgoing}
+                onApply={applyScriptToComposer}
+                onRequestVaultPick={openVaultForScript}
+                pendingVaultMedia={pendingScriptVaultMedia}
+                onPendingVaultMediaConsumed={() => setPendingScriptVaultMedia(null)}
+                refreshKey={scriptsRefreshKey}
+              />
+            </div>
+          }
+        />
+
+        <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50 focus-within:bg-white dark:focus-within:bg-zinc-900 transition-all shadow-inner">
           <button
             type="button"
             onClick={openVault}
-            className="h-10 w-10 rounded-xl border border-gray-200 dark:border-white/10 flex items-center justify-center text-gray-500 dark:text-zinc-400 hover:bg-gray-100 dark:hover:bg-zinc-800"
-            title="Open vault"
+            className="p-2 rounded-xl text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors shrink-0"
+            title="Open Media Vault"
             aria-label="Open vault"
           >
-            <Box className="w-4 h-4" />
+            <ImageIcon className="w-5 h-5" />
           </button>
-          {canUseSuggestReply && (
-            <SuggestReplyToolbarButton
-              disabled={sending || translatingOutgoing || messages.length === 0}
-              getMessages={getSuggestMessages}
-              getFanNotes={getSuggestFanNotes}
-              fanNickname={fan?.nickname || null}
-              onApply={applySuggestedReply}
-            />
-          )}
-          <ScriptToolbarButton
-            creatorId={creatorId}
-            platform="telegram"
-            fanId={fan?.telegramUserId || peerId}
-            canManage={canManageScripts}
-            disabled={sending || translatingOutgoing}
-            onApply={applyScriptToComposer}
-            onRequestVaultPick={openVaultForScript}
-            pendingVaultMedia={pendingScriptVaultMedia}
-            onPendingVaultMediaConsumed={() => setPendingScriptVaultMedia(null)}
-            refreshKey={scriptsRefreshKey}
-          />
           <textarea
             value={draft}
+            disabled={sending || translatingOutgoing}
             onChange={(e) => {
               const next = e.target.value;
               setDraft(next);
@@ -1217,17 +1245,15 @@ export function TelegramChatThread({
                 void handleSend();
               }
             }}
-            rows={2}
+            rows={1}
             placeholder={
-              translatingOutgoing
-                ? 'Translating…'
-                : skipOutgoingTranslate
-                  ? 'Edit German reply… (won’t re-translate)'
-                  : autoTranslateOutgoing
-                    ? 'Type a message… (Auto-translates to German)'
-                    : 'Write a message…'
+              skipOutgoingTranslate
+                ? 'Edit German reply… (won’t re-translate)'
+                : autoTranslateOutgoing
+                  ? 'Type a message… (Auto-translates to German)'
+                  : 'Type a message…'
             }
-            className="flex-1 px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] resize-none"
+            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-60"
           />
           <button
             type="button"
@@ -1237,12 +1263,13 @@ export function TelegramChatThread({
               translatingOutgoing ||
               (!draft.trim() && vaultItems.length === 0)
             }
-            className="h-10 w-10 rounded-xl bg-sky-600 text-white flex items-center justify-center disabled:opacity-40"
+            className="p-3 mb-0.5 rounded-xl bg-domx-600 text-white hover:bg-domx-500 transition-all shadow-lg shadow-domx-600/20 shrink-0 transform hover:scale-105 active:scale-95 disabled:opacity-40 disabled:hover:scale-100"
+            title="Send"
           >
-            {translatingOutgoing ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
+            {sending || translatingOutgoing ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
             ) : (
-              <Send className="w-4 h-4" />
+              <Send className="w-5 h-5" />
             )}
           </button>
         </div>

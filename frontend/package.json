@@ -1,6 +1,6 @@
 {
   "name": "domx-frontend",
-  "version": "1.6.62",
+  "version": "1.6.63",
   "description": "DomX Electron Frontend",
   "author": "Low7 Labs",
   "main": "electron/main.js",
