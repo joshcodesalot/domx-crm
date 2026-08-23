@@ -17,3 +17,5 @@ backend/data/telegram/*
 !backend/data/telegram/.gitkeep
 backend/data/telegram-fans/*
 !backend/data/telegram-fans/.gitkeep
+backend/data/telegram-vault/*
+!backend/data/telegram-vault/.gitkeep

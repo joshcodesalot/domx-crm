@@ -3,7 +3,7 @@ const DB_NAME = 'domx-vault-listing';
 const DB_VERSION = 1;
 const STORE = 'listings';
 
-export type VaultCachePlatform = 'maloum' | '4based';
+export type VaultCachePlatform = 'maloum' | '4based' | 'telegram';
 
 export type VaultListingRecord<T = unknown> = {
   key: string;

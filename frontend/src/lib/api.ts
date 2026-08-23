@@ -2218,7 +2218,7 @@ export async function listFourBasedVault(
   );
 }
 
-export type VaultNotePlatform = 'maloum' | '4based';
+export type VaultNotePlatform = 'maloum' | '4based' | 'telegram';
 
 export interface VaultMediaNote {
   mediaKey: string;
@@ -2264,7 +2264,7 @@ export async function upsertVaultMediaNote(
   );
 }
 
-export type ScriptPlatform = 'maloum' | '4based';
+export type ScriptPlatform = 'maloum' | '4based' | 'telegram';
 
 export interface CreatorScriptMediaItem {
   mediaKey: string;
@@ -2655,11 +2655,35 @@ export interface TelegramMessage {
   text: string;
   kind: string;
   placeholder: string | null;
+  hasMedia?: boolean;
   senderId?: string | null;
   senderName?: string | null;
   senderUsername?: string | null;
   senderAvatarUrl?: string | null;
   deleted?: boolean;
+}
+
+export interface TelegramVaultFolder {
+  id: string;
+  name: string;
+  sortOrder: number;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface TelegramVaultItem {
+  id: string;
+  folderId: string | null;
+  savedMessageId: string;
+  fileUniqueId?: string | null;
+  kind: 'photo' | 'video';
+  fileName?: string | null;
+  duration?: number | null;
+  width?: number | null;
+  height?: number | null;
+  uploadedBy?: string | null;
+  createdAt?: string | null;
+  sent?: boolean;
 }
 
 export interface TelegramDialog {
@@ -2759,8 +2783,13 @@ export async function sendTelegramMessage(
   creatorId: string,
   peerId: string,
   text: string,
-  englishText?: string | null
-): Promise<{ message: TelegramMessage }> {
+  englishText?: string | null,
+  options: { vaultIds?: string[] } = {}
+): Promise<{
+  message: TelegramMessage | null;
+  messages?: TelegramMessage[];
+  vaultIds?: string[];
+}> {
   return request(
     `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages`,
     {
@@ -2768,9 +2797,144 @@ export async function sendTelegramMessage(
       body: JSON.stringify({
         text,
         ...(englishText ? { englishText } : {}),
+        ...(options.vaultIds?.length ? { vaultIds: options.vaultIds } : {}),
       }),
     }
   );
+}
+
+export function telegramChatMediaUrl(
+  creatorId: string,
+  peerId: string,
+  messageId: string,
+  variant: 'thumb' | 'full' = 'thumb'
+): string {
+  const token = getToken() || '';
+  const params = new URLSearchParams({
+    access_token: token,
+    variant,
+  });
+  return `${API_URL}/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages/${encodeURIComponent(messageId)}/media?${params.toString()}`;
+}
+
+export function telegramVaultMediaUrl(
+  creatorId: string,
+  itemId: string,
+  variant: 'thumb' | 'full' = 'thumb'
+): string {
+  const token = getToken() || '';
+  const params = new URLSearchParams({
+    access_token: token,
+    variant,
+  });
+  return `${API_URL}/api/creators/${creatorId}/telegram/vault/${encodeURIComponent(itemId)}/media?${params.toString()}`;
+}
+
+export async function listTelegramVaultFolders(
+  creatorId: string
+): Promise<{ folders: TelegramVaultFolder[] }> {
+  return request(`/api/creators/${creatorId}/telegram/vault/folders`);
+}
+
+export async function createTelegramVaultFolder(
+  creatorId: string,
+  name: string
+): Promise<{ folder: TelegramVaultFolder }> {
+  return request(`/api/creators/${creatorId}/telegram/vault/folders`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function renameTelegramVaultFolder(
+  creatorId: string,
+  folderId: string,
+  name: string
+): Promise<{ folder: TelegramVaultFolder }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/vault/folders/${encodeURIComponent(folderId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }
+  );
+}
+
+export async function deleteTelegramVaultFolder(
+  creatorId: string,
+  folderId: string
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/vault/folders/${encodeURIComponent(folderId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export async function listTelegramVault(
+  creatorId: string,
+  options: {
+    folderId?: string | null;
+    kind?: 'photo' | 'video';
+    fanId?: string | null;
+    limit?: number;
+    offset?: number;
+  } = {}
+): Promise<{ items: TelegramVaultItem[]; hasMore: boolean }> {
+  const params = new URLSearchParams();
+  if (options.folderId) params.set('folderId', options.folderId);
+  if (options.kind) params.set('kind', options.kind);
+  if (options.fanId) params.set('fanId', options.fanId);
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.offset != null) params.set('offset', String(options.offset));
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/telegram/vault${query ? `?${query}` : ''}`
+  );
+}
+
+export async function uploadTelegramVaultItem(
+  creatorId: string,
+  formData: FormData
+): Promise<{ item: TelegramVaultItem }> {
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const response = await fetch(`${API_URL}/api/creators/${creatorId}/telegram/vault`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (isDomxAuthFailure(response.status, (data as { error?: string }).error) && token) {
+    clearToken();
+    window.dispatchEvent(new CustomEvent('domx:session-expired'));
+  }
+  if (!response.ok) {
+    throw new ApiError((data as { error?: string }).error || 'Upload failed', {
+      status: response.status,
+    });
+  }
+  return data as { item: TelegramVaultItem };
+}
+
+export async function deleteTelegramVaultItem(
+  creatorId: string,
+  itemId: string
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/vault/${encodeURIComponent(itemId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export async function listTelegramVaultSent(
+  creatorId: string,
+  fanId: string
+): Promise<{ itemIds: string[] }> {
+  const params = new URLSearchParams({ fanId });
+  return request(`/api/creators/${creatorId}/telegram/vault-sent?${params.toString()}`);
 }
 
 export async function deleteTelegramMessage(

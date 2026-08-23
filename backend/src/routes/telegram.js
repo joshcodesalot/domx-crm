@@ -1,4 +1,8 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const express = require('express');
+const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
@@ -15,13 +19,21 @@ const {
   listDialogs,
   listMessages,
   sendText,
+  sendVaultToPeer,
+  uploadVaultMedia,
+  deleteSavedVaultMessage,
+  getCachedMessageMedia,
+  getCachedVaultMedia,
+  prewarmVaultThumb,
   deleteText,
   resolveUsername,
   unreadCount,
   disconnectCreator,
+  isTelegramServiceDialog,
 } = require('../services/telegramWorker');
 const {
   canOpenChatByUsername,
+  canSeeTelegramServiceChats,
   redactFan,
   redactDialog,
   redactMessage,
@@ -51,6 +63,131 @@ function handleTelegramError(res, err, logLabel) {
   console.error(logLabel, err);
   const message = err?.message ? String(err.message).slice(0, 240) : 'Telegram request failed';
   return res.status(400).json({ error: message });
+}
+
+const FOLDER_NAME_MAX = 120;
+const VAULT_UPLOAD_MAX_BYTES = 512 * 1024 * 1024;
+
+const vaultUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      const dir = path.join(os.tmpdir(), 'domx-telegram-vault');
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || '') || '';
+      cb(null, `vault-${Date.now()}-${Math.random().toString(16).slice(2)}${ext}`);
+    },
+  }),
+  limits: { fileSize: VAULT_UPLOAD_MAX_BYTES },
+  fileFilter: (_req, file, cb) => {
+    const mime = String(file.mimetype || '');
+    if (mime.startsWith('image/') || mime.startsWith('video/')) {
+      cb(null, true);
+      return;
+    }
+    cb(new Error('Only photos and videos can be added to the vault'));
+  },
+});
+
+function authenticateMedia(req, res, next) {
+  if (!req.headers.authorization && typeof req.query.access_token === 'string') {
+    req.headers.authorization = `Bearer ${req.query.access_token}`;
+  }
+  return authenticate(req, res, next);
+}
+
+function sendLocalFile(res, filePath, mimeType) {
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('Content-Type', mimeType || 'application/octet-stream');
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  return res.sendFile(path.resolve(filePath));
+}
+
+function cleanupUpload(file) {
+  const dest = file?.path;
+  if (!dest) return;
+  try {
+    fs.unlinkSync(dest);
+  } catch {
+    // ignore
+  }
+}
+
+async function loadTelegramCreator(id) {
+  const result = await pool.query(
+    `SELECT id, "displayName", platform FROM creators WHERE id = $1`,
+    [id]
+  );
+  if (result.rows.length === 0) {
+    return { error: { status: 404, message: 'Creator not found' } };
+  }
+  if (result.rows[0].platform !== 'telegram') {
+    return { error: { status: 400, message: 'Creator is not a Telegram account' } };
+  }
+  return { creator: result.rows[0] };
+}
+
+async function requireTelegramCreator(req, res) {
+  const { id } = req.params;
+  if (!isValidUuid(id)) {
+    res.status(400).json({ error: 'Invalid creator ID' });
+    return null;
+  }
+  const allowed = await userCanAccessCreator(req.user, id);
+  if (!allowed) {
+    res.status(403).json({ error: 'You do not have access to this creator' });
+    return null;
+  }
+  const loaded = await loadTelegramCreator(id);
+  if (loaded.error) {
+    res.status(loaded.error.status).json({ error: loaded.error.message });
+    return null;
+  }
+  return loaded.creator;
+}
+
+function serializeVaultFolder(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    sortOrder: row.sortOrder,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function serializeVaultItem(row) {
+  return {
+    id: row.id,
+    folderId: row.folderId || null,
+    savedMessageId: row.savedMessageId,
+    fileUniqueId: row.fileUniqueId || null,
+    kind: row.kind,
+    fileName: row.fileName || null,
+    duration: row.duration,
+    width: row.width,
+    height: row.height,
+    uploadedBy: row.uploadedBy || null,
+    createdAt: row.createdAt,
+    sent: Boolean(row.sent),
+  };
+}
+
+async function recordVaultSent({ creatorId, fanId, itemIds, userId }) {
+  const ids = (itemIds || []).filter((id) => isValidUuid(id));
+  if (!ids.length) return;
+  await pool.query(
+    `INSERT INTO telegram_vault_sent ("creatorId", "fanId", "itemId", "sentByUserId")
+     SELECT $1, $2, x.item_id, $3
+     FROM unnest($4::uuid[]) AS x(item_id)
+     ON CONFLICT ("creatorId", "fanId", "itemId")
+     DO UPDATE SET
+       "sentByUserId" = COALESCE(EXCLUDED."sentByUserId", telegram_vault_sent."sentByUserId"),
+       "sentAt" = NOW()`,
+    [creatorId, String(fanId), userId || null, ids]
+  );
 }
 
 router.post(
@@ -232,8 +369,11 @@ router.get(
       const dialogs = await listDialogs(id, {
         limit: Number(req.query.limit) || 80,
       });
+      const visible = canSeeTelegramServiceChats(req.user)
+        ? dialogs
+        : dialogs.filter((dialog) => !isTelegramServiceDialog(dialog));
       return res.json({
-        dialogs: dialogs.map((dialog) => redactDialog(dialog, req.user)),
+        dialogs: visible.map((dialog) => redactDialog(dialog, req.user)),
       });
     } catch (err) {
       return handleTelegramError(res, err, 'List Telegram dialogs error:');
@@ -255,9 +395,26 @@ router.get(
       if (!allowed) {
         return res.status(403).json({ error: 'You do not have access to this creator' });
       }
+      if (
+        !canSeeTelegramServiceChats(req.user) &&
+        isTelegramServiceDialog({ peerId, kind: 'dm' })
+      ) {
+        return res.status(403).json({ error: 'You do not have access to this chat' });
+      }
       const result = await listMessages(id, peerId, {
         limit: Number(req.query.limit) || 50,
       });
+      if (
+        !canSeeTelegramServiceChats(req.user) &&
+        isTelegramServiceDialog({
+          peerId: result.peerId,
+          kind: result.kind,
+          displayName: result.fan?.displayName,
+          username: result.fan?.username,
+        })
+      ) {
+        return res.status(403).json({ error: 'You do not have access to this chat' });
+      }
       return res.json({
         peerId: result.peerId,
         kind: result.kind || 'dm',
@@ -270,59 +427,100 @@ router.get(
   }
 );
 
+router.get(
+  '/:id/telegram/dialogs/:peerId/messages/:messageId/media',
+  authenticateMedia,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, peerId, messageId } = req.params;
+    const variant = req.query.variant === 'full' ? 'full' : 'thumb';
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const media = await getCachedMessageMedia(id, peerId, messageId, variant);
+      return sendLocalFile(res, media.filePath, media.mimeType);
+    } catch (err) {
+      return handleTelegramError(res, err, 'Get Telegram chat media error:');
+    }
+  }
+);
+
 router.post(
   '/:id/telegram/dialogs/:peerId/messages',
   authenticate,
   requirePermission('creators.view'),
   async (req, res) => {
     const { id, peerId } = req.params;
-    const { text, englishText } = req.body || {};
-    if (!isValidUuid(id)) {
-      return res.status(400).json({ error: 'Invalid creator ID' });
-    }
+    const { text, englishText, vaultIds } = req.body || {};
     const trimmed = typeof text === 'string' ? text.trim() : '';
-    if (!trimmed) {
-      return res.status(400).json({ error: 'Message text is required' });
+    const vaultIdList = Array.isArray(vaultIds)
+      ? [...new Set(vaultIds.map((value) => String(value || '').trim()).filter(isValidUuid))]
+      : [];
+    if (!trimmed && vaultIdList.length === 0) {
+      return res.status(400).json({ error: 'Message text or vault media is required' });
     }
     try {
-      const allowed = await userCanAccessCreator(req.user, id);
-      if (!allowed) {
-        return res.status(403).json({ error: 'You do not have access to this creator' });
-      }
-      const creatorRow = await pool.query(
-        `SELECT id, "displayName", platform FROM creators WHERE id = $1`,
-        [id]
-      );
-      if (creatorRow.rows.length === 0) {
-        return res.status(404).json({ error: 'Creator not found' });
-      }
-      if (creatorRow.rows[0].platform !== 'telegram') {
-        return res.status(400).json({ error: 'Creator is not a Telegram account' });
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+
+      if (trimmed) {
+        const moderation = await applyModeration({
+          germanText: trimmed,
+          englishText: typeof englishText === 'string' ? englishText : '',
+          userId: req.user.id,
+          creatorId: id,
+          platform: 'telegram',
+          chatId: String(peerId),
+          fanId: String(peerId),
+          fanUsername: null,
+          creatorName: creator.displayName,
+          chatterName: req.user.name || null,
+        });
+        if (moderation.blocked) {
+          return res.status(403).json({
+            error: moderation.message,
+            code: 'CONTENT_BLOCKED',
+            matchedKeyword: moderation.matchedKeyword,
+            matchedStage: moderation.matchedStage,
+          });
+        }
       }
 
-      const moderation = await applyModeration({
-        germanText: trimmed,
-        englishText: typeof englishText === 'string' ? englishText : '',
-        userId: req.user.id,
-        creatorId: id,
-        platform: 'telegram',
-        chatId: String(peerId),
-        fanId: String(peerId),
-        fanUsername: null,
-        creatorName: creatorRow.rows[0].displayName,
-        chatterName: req.user.name || null,
-      });
-      if (moderation.blocked) {
-        return res.status(403).json({
-          error: moderation.message,
-          code: 'CONTENT_BLOCKED',
-          matchedKeyword: moderation.matchedKeyword,
-          matchedStage: moderation.matchedStage,
+      if (vaultIdList.length === 0) {
+        const message = await sendText(id, peerId, trimmed);
+        return res.status(201).json({
+          message: redactMessage(message, req.user),
+          messages: [redactMessage(message, req.user)],
         });
       }
 
-      const message = await sendText(id, peerId, trimmed);
-      return res.status(201).json({ message: redactMessage(message, req.user) });
+      const items = await pool.query(
+        `SELECT id, "savedMessageId"
+         FROM telegram_vault_items
+         WHERE "creatorId" = $1 AND id = ANY($2::uuid[])`,
+        [id, vaultIdList]
+      );
+      if (items.rows.length !== vaultIdList.length) {
+        return res.status(400).json({ error: 'One or more vault items were not found' });
+      }
+      const byId = new Map(items.rows.map((row) => [row.id, row]));
+      const ordered = vaultIdList.map((itemId) => byId.get(itemId)).filter(Boolean);
+      const sent = await sendVaultToPeer(id, peerId, {
+        itemMessageIds: ordered.map((row) => row.savedMessageId),
+        caption: trimmed,
+      });
+      await recordVaultSent({
+        creatorId: id,
+        fanId: peerId,
+        itemIds: ordered.map((row) => row.id),
+        userId: req.user.id,
+      });
+      const messages = sent.map((msg) => redactMessage(msg, req.user));
+      return res.status(201).json({
+        message: messages[0] || null,
+        messages,
+        vaultIds: ordered.map((row) => row.id),
+      });
     } catch (err) {
       return handleTelegramError(res, err, 'Send Telegram message error:');
     }
@@ -486,7 +684,9 @@ router.get(
       if (!allowed) {
         return res.status(403).json({ error: 'You do not have access to this creator' });
       }
-      const counts = await unreadCount(id);
+      const counts = await unreadCount(id, {
+        hideService: !canSeeTelegramServiceChats(req.user),
+      });
       return res.json(counts);
     } catch (err) {
       return handleTelegramError(res, err, 'Telegram unread error:');
@@ -508,10 +708,433 @@ router.get(
       if (!allowed) {
         return res.status(403).json({ error: 'You do not have access to this creator' });
       }
-      const counts = await unreadCount(id);
+      const counts = await unreadCount(id, {
+        hideService: !canSeeTelegramServiceChats(req.user),
+      });
       return res.json(counts);
     } catch (err) {
       return handleTelegramError(res, err, 'Telegram badges error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/telegram/vault/folders',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      let result = await pool.query(
+        `SELECT id, name, "sortOrder", "createdAt", "updatedAt"
+         FROM telegram_vault_folders
+         WHERE "creatorId" = $1
+         ORDER BY "sortOrder" ASC, "createdAt" ASC`,
+        [creator.id]
+      );
+      if (result.rows.length === 0) {
+        const created = await pool.query(
+          `INSERT INTO telegram_vault_folders ("creatorId", name, "sortOrder", "createdBy", "updatedBy")
+           VALUES ($1, 'Vault', 0, $2, $2)
+           RETURNING id, name, "sortOrder", "createdAt", "updatedAt"`,
+          [creator.id, req.user.id]
+        );
+        result = created;
+      }
+      return res.json({ folders: result.rows.map(serializeVaultFolder) });
+    } catch (err) {
+      return handleTelegramError(res, err, 'List Telegram vault folders error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/telegram/vault/folders',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name) {
+      return res.status(400).json({ error: 'Folder name is required' });
+    }
+    if (name.length > FOLDER_NAME_MAX) {
+      return res.status(400).json({ error: `Folder name must be ${FOLDER_NAME_MAX} characters or fewer` });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const sort = await pool.query(
+        `SELECT COALESCE(MAX("sortOrder"), -1) + 1 AS next
+         FROM telegram_vault_folders WHERE "creatorId" = $1`,
+        [creator.id]
+      );
+      const created = await pool.query(
+        `INSERT INTO telegram_vault_folders ("creatorId", name, "sortOrder", "createdBy", "updatedBy")
+         VALUES ($1, $2, $3, $4, $4)
+         RETURNING id, name, "sortOrder", "createdAt", "updatedAt"`,
+        [creator.id, name, Number(sort.rows[0]?.next) || 0, req.user.id]
+      );
+      return res.status(201).json({ folder: serializeVaultFolder(created.rows[0]) });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Create Telegram vault folder error:');
+    }
+  }
+);
+
+router.patch(
+  '/:id/telegram/vault/folders/:folderId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { folderId } = req.params;
+    if (!isValidUuid(folderId)) {
+      return res.status(400).json({ error: 'Invalid folder ID' });
+    }
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name) {
+      return res.status(400).json({ error: 'Folder name is required' });
+    }
+    if (name.length > FOLDER_NAME_MAX) {
+      return res.status(400).json({ error: `Folder name must be ${FOLDER_NAME_MAX} characters or fewer` });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const updated = await pool.query(
+        `UPDATE telegram_vault_folders
+         SET name = $3, "updatedBy" = $4, "updatedAt" = NOW()
+         WHERE id = $1 AND "creatorId" = $2
+         RETURNING id, name, "sortOrder", "createdAt", "updatedAt"`,
+        [folderId, creator.id, name, req.user.id]
+      );
+      if (updated.rows.length === 0) {
+        return res.status(404).json({ error: 'Folder not found' });
+      }
+      return res.json({ folder: serializeVaultFolder(updated.rows[0]) });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Update Telegram vault folder error:');
+    }
+  }
+);
+
+router.delete(
+  '/:id/telegram/vault/folders/:folderId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { folderId } = req.params;
+    if (!isValidUuid(folderId)) {
+      return res.status(400).json({ error: 'Invalid folder ID' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const deleted = await pool.query(
+        `DELETE FROM telegram_vault_folders
+         WHERE id = $1 AND "creatorId" = $2
+         RETURNING id`,
+        [folderId, creator.id]
+      );
+      if (deleted.rows.length === 0) {
+        return res.status(404).json({ error: 'Folder not found' });
+      }
+      return res.json({ ok: true });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Delete Telegram vault folder error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/telegram/vault',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const folderId =
+      typeof req.query.folderId === 'string' && isValidUuid(req.query.folderId)
+        ? req.query.folderId
+        : null;
+    const kind = req.query.kind === 'photo' || req.query.kind === 'video' ? req.query.kind : null;
+    const fanId =
+      typeof req.query.fanId === 'string' && req.query.fanId.trim()
+        ? req.query.fanId.trim()
+        : null;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 60, 1), 120);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const vals = [creator.id];
+      const where = ['i."creatorId" = $1'];
+      if (folderId) {
+        vals.push(folderId);
+        where.push(`i."folderId" = $${vals.length}`);
+      }
+      if (kind) {
+        vals.push(kind);
+        where.push(`i.kind = $${vals.length}`);
+      }
+      vals.push(limit);
+      const limitIdx = vals.length;
+      vals.push(offset);
+      const offsetIdx = vals.length;
+      let sentJoin = '';
+      let sentSelect = 'FALSE AS sent';
+      if (fanId) {
+        vals.push(fanId);
+        sentJoin = `LEFT JOIN telegram_vault_sent s
+          ON s."itemId" = i.id AND s."creatorId" = i."creatorId" AND s."fanId" = $${vals.length}`;
+        sentSelect = 's.id IS NOT NULL AS sent';
+      }
+      const result = await pool.query(
+        `SELECT i.id, i."folderId", i."savedMessageId", i."fileUniqueId", i.kind,
+                i."fileName", i.duration, i.width, i.height, i."uploadedBy", i."createdAt",
+                ${sentSelect}
+         FROM telegram_vault_items i
+         ${sentJoin}
+         WHERE ${where.join(' AND ')}
+         ORDER BY i."createdAt" DESC
+         LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+        vals
+      );
+      return res.json({
+        items: result.rows.map(serializeVaultItem),
+        hasMore: result.rows.length === limit,
+      });
+    } catch (err) {
+      return handleTelegramError(res, err, 'List Telegram vault error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/telegram/vault',
+  authenticate,
+  requirePermission('creators.view'),
+  (req, res, next) => {
+    vaultUpload.single('file')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message || 'Upload failed' });
+      }
+      return next();
+    });
+  },
+  async (req, res) => {
+    const folderId =
+      typeof req.body?.folderId === 'string' && isValidUuid(req.body.folderId)
+        ? req.body.folderId
+        : null;
+    if (!folderId) {
+      cleanupUpload(req.file);
+      return res.status(400).json({ error: 'folderId is required' });
+    }
+    if (!req.file?.path) {
+      return res.status(400).json({ error: 'file is required' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) {
+        cleanupUpload(req.file);
+        return undefined;
+      }
+      const folder = await pool.query(
+        `SELECT id FROM telegram_vault_folders WHERE id = $1 AND "creatorId" = $2`,
+        [folderId, creator.id]
+      );
+      if (folder.rows.length === 0) {
+        cleanupUpload(req.file);
+        return res.status(404).json({ error: 'Folder not found' });
+      }
+      const uploaded = await uploadVaultMedia(creator.id, {
+        filePath: req.file.path,
+        mimeType: req.file.mimetype,
+        fileName: req.file.originalname,
+      });
+      const inserted = await pool.query(
+        `INSERT INTO telegram_vault_items (
+           "creatorId", "folderId", "savedMessageId", "fileUniqueId", kind,
+           "fileName", duration, width, height, "uploadedBy"
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT ("creatorId", "savedMessageId")
+         DO UPDATE SET
+           "folderId" = EXCLUDED."folderId",
+           "fileUniqueId" = COALESCE(EXCLUDED."fileUniqueId", telegram_vault_items."fileUniqueId"),
+           kind = EXCLUDED.kind,
+           "fileName" = COALESCE(EXCLUDED."fileName", telegram_vault_items."fileName"),
+           duration = COALESCE(EXCLUDED.duration, telegram_vault_items.duration),
+           width = COALESCE(EXCLUDED.width, telegram_vault_items.width),
+           height = COALESCE(EXCLUDED.height, telegram_vault_items.height),
+           "updatedAt" = NOW()
+         RETURNING id, "folderId", "savedMessageId", "fileUniqueId", kind,
+                   "fileName", duration, width, height, "uploadedBy", "createdAt"`,
+        [
+          creator.id,
+          folderId,
+          uploaded.savedMessageId,
+          uploaded.fileUniqueId,
+          uploaded.kind,
+          uploaded.fileName || req.file.originalname || null,
+          uploaded.duration,
+          uploaded.width,
+          uploaded.height,
+          req.user.id,
+        ]
+      );
+      void prewarmVaultThumb(creator.id, uploaded.savedMessageId);
+      return res.status(201).json({ item: serializeVaultItem(inserted.rows[0]) });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Upload Telegram vault error:');
+    } finally {
+      cleanupUpload(req.file);
+    }
+  }
+);
+
+router.patch(
+  '/:id/telegram/vault/:itemId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { itemId } = req.params;
+    if (!isValidUuid(itemId)) {
+      return res.status(400).json({ error: 'Invalid vault item ID' });
+    }
+    const folderId =
+      req.body?.folderId == null
+        ? undefined
+        : isValidUuid(req.body.folderId)
+          ? req.body.folderId
+          : null;
+    if (folderId === undefined) {
+      return res.status(400).json({ error: 'folderId is required' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      if (folderId) {
+        const folder = await pool.query(
+          `SELECT id FROM telegram_vault_folders WHERE id = $1 AND "creatorId" = $2`,
+          [folderId, creator.id]
+        );
+        if (folder.rows.length === 0) {
+          return res.status(404).json({ error: 'Folder not found' });
+        }
+      }
+      const updated = await pool.query(
+        `UPDATE telegram_vault_items
+         SET "folderId" = $3, "updatedAt" = NOW()
+         WHERE id = $1 AND "creatorId" = $2
+         RETURNING id, "folderId", "savedMessageId", "fileUniqueId", kind,
+                   "fileName", duration, width, height, "uploadedBy", "createdAt"`,
+        [itemId, creator.id, folderId]
+      );
+      if (updated.rows.length === 0) {
+        return res.status(404).json({ error: 'Vault item not found' });
+      }
+      return res.json({ item: serializeVaultItem(updated.rows[0]) });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Update Telegram vault item error:');
+    }
+  }
+);
+
+router.delete(
+  '/:id/telegram/vault/:itemId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { itemId } = req.params;
+    if (!isValidUuid(itemId)) {
+      return res.status(400).json({ error: 'Invalid vault item ID' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const existing = await pool.query(
+        `SELECT id, "savedMessageId"
+         FROM telegram_vault_items
+         WHERE id = $1 AND "creatorId" = $2`,
+        [itemId, creator.id]
+      );
+      if (existing.rows.length === 0) {
+        return res.status(404).json({ error: 'Vault item not found' });
+      }
+      try {
+        await deleteSavedVaultMessage(creator.id, existing.rows[0].savedMessageId);
+      } catch (err) {
+        console.warn('[telegram] Vault Saved Messages delete failed:', err.message || err);
+      }
+      await pool.query(
+        `DELETE FROM telegram_vault_items WHERE id = $1 AND "creatorId" = $2`,
+        [itemId, creator.id]
+      );
+      return res.json({ ok: true });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Delete Telegram vault item error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/telegram/vault/:itemId/media',
+  authenticateMedia,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { itemId } = req.params;
+    const variant = req.query.variant === 'full' ? 'full' : 'thumb';
+    if (!isValidUuid(itemId)) {
+      return res.status(400).json({ error: 'Invalid vault item ID' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const item = await pool.query(
+        `SELECT "savedMessageId"
+         FROM telegram_vault_items
+         WHERE id = $1 AND "creatorId" = $2`,
+        [itemId, creator.id]
+      );
+      if (item.rows.length === 0) {
+        return res.status(404).json({ error: 'Vault item not found' });
+      }
+      const media = await getCachedVaultMedia(
+        creator.id,
+        item.rows[0].savedMessageId,
+        variant
+      );
+      return sendLocalFile(res, media.filePath, media.mimeType);
+    } catch (err) {
+      return handleTelegramError(res, err, 'Get Telegram vault media error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/telegram/vault-sent',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const fanId =
+      typeof req.query.fanId === 'string' && req.query.fanId.trim()
+        ? req.query.fanId.trim()
+        : '';
+    if (!fanId) {
+      return res.status(400).json({ error: 'fanId is required' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const result = await pool.query(
+        `SELECT "itemId"
+         FROM telegram_vault_sent
+         WHERE "creatorId" = $1 AND "fanId" = $2`,
+        [creator.id, fanId]
+      );
+      return res.json({ itemIds: result.rows.map((row) => row.itemId) });
+    } catch (err) {
+      return handleTelegramError(res, err, 'List Telegram vault sent error:');
     }
   }
 );

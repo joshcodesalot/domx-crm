@@ -273,10 +273,18 @@ export default function ScriptToolbarButton({
                               /{script.shortcutCode}
                             </span>
                           ) : null}
-                          {script.shortcutCode ? ' · ' : ''}
-                          {script.price > 0 ? `€${script.price}` : 'Free'}
+                          {platform !== 'telegram' && (
+                            <>
+                              {script.shortcutCode ? ' · ' : ''}
+                              {script.price > 0 ? `€${script.price}` : 'Free'}
+                            </>
+                          )}
                           {script.media.length > 0
-                            ? ` · ${script.media.length} media`
+                            ? `${
+                                script.shortcutCode || platform !== 'telegram'
+                                  ? ' · '
+                                  : ''
+                              }${script.media.length} media`
                             : ''}
                         </p>
                         {script.messageText.trim() ? (

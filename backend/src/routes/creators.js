@@ -6809,7 +6809,7 @@ router.get(
   }
 );
 
-const VAULT_NOTE_PLATFORMS = new Set(['maloum', '4based']);
+const VAULT_NOTE_PLATFORMS = new Set(['maloum', '4based', 'telegram']);
 const VAULT_NOTE_MAX_LENGTH = 2000;
 const VAULT_NOTE_BATCH_MAX = 200;
 
@@ -6835,7 +6835,7 @@ router.get(
 
     const platform = normalizeVaultNotePlatform(req.query.platform);
     if (!platform) {
-      return res.status(400).json({ error: 'platform must be maloum or 4based' });
+      return res.status(400).json({ error: 'platform must be maloum, 4based, or telegram' });
     }
 
     const rawKeys =
@@ -6896,7 +6896,7 @@ router.get(
       typeof mediaKeyParam === 'string' ? decodeURIComponent(mediaKeyParam) : ''
     );
     if (!platform) {
-      return res.status(400).json({ error: 'platform must be maloum or 4based' });
+      return res.status(400).json({ error: 'platform must be maloum, 4based, or telegram' });
     }
     if (!mediaKey) {
       return res.status(400).json({ error: 'Invalid media key' });
@@ -6947,7 +6947,7 @@ router.put(
       typeof mediaKeyParam === 'string' ? decodeURIComponent(mediaKeyParam) : ''
     );
     if (!platform) {
-      return res.status(400).json({ error: 'platform must be maloum or 4based' });
+      return res.status(400).json({ error: 'platform must be maloum, 4based, or telegram' });
     }
     if (!mediaKey) {
       return res.status(400).json({ error: 'Invalid media key' });
@@ -7003,8 +7003,10 @@ const SCRIPT_MESSAGE_MAX = 10000;
 const SCRIPT_MEDIA_MAX = 50;
 const SCRIPT_FOLDER_NAME_MAX = 120;
 
+const SCRIPT_PLATFORMS = new Set(['maloum', '4based', 'telegram']);
+
 function normalizeScriptPlatform(value) {
-  return normalizeVaultNotePlatform(value);
+  return typeof value === 'string' && SCRIPT_PLATFORMS.has(value) ? value : null;
 }
 
 function normalizeShortcutCode(value) {

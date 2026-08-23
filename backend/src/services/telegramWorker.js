@@ -11,7 +11,9 @@ const { saveCreatorAvatarFromBuffer } = require('./creatorAvatar');
 const DATA_DIR = path.join(__dirname, '../../data/telegram');
 const FAN_AVATARS_DIR = path.join(__dirname, '../../data/telegram-fans');
 const FAN_AVATARS_PUBLIC = '/uploads/telegram-fans';
+const VAULT_CACHE_DIR = path.join(__dirname, '../../data/telegram-vault');
 const LOGIN_TIMEOUT_MS = 90_000;
+const VAULT_ALBUM_MAX = 10;
 const FAN_AVATAR_PREFETCH_CONCURRENCY = 3;
 
 /** @type {Map<string, Promise<string | null>>} */
@@ -164,6 +166,36 @@ function isInboxPeer(peer) {
   return false;
 }
 
+const TELEGRAM_SERVICE_IDS = new Set(['777000', '42777']);
+
+function isTelegramServicePeer(peer) {
+  if (!peer) return false;
+  if (peer.type === 'chat' || peerKind(peer) === 'group') return false;
+  const id = String(peer.id || '');
+  if (TELEGRAM_SERVICE_IDS.has(id)) return true;
+  const phone = String(peer.phone || peer.phoneNumber || peer.username || '').replace(
+    /\D/g,
+    ''
+  );
+  if (TELEGRAM_SERVICE_IDS.has(phone)) return true;
+  const name = String(peer.displayName || peer.firstName || '')
+    .trim()
+    .toLowerCase();
+  return name === 'telegram';
+}
+
+function isTelegramServiceDialog(dialog) {
+  if (!dialog || dialog.kind === 'group') return false;
+  return isTelegramServicePeer({
+    type: 'user',
+    id: dialog.peerId,
+    displayName: dialog.displayName,
+    username: dialog.username,
+    phone: dialog.phone,
+    phoneNumber: dialog.phoneNumber,
+  });
+}
+
 function peerKind(peer) {
   if (peer && peer.type === 'chat' && peer.isGroup) return 'group';
   return 'dm';
@@ -191,7 +223,7 @@ function mediaPlaceholder(media) {
 function serializeMessage(msg) {
   if (!msg) return null;
   const text = typeof msg.text === 'string' ? msg.text : '';
-  const placeholder = text ? null : mediaPlaceholder(msg.media);
+  const mediaInfo = mediaPlaceholder(msg.media);
   const sender = msg.sender;
   return {
     id: String(msg.id),
@@ -199,8 +231,9 @@ function serializeMessage(msg) {
     isOutgoing: Boolean(msg.isOutgoing),
     date: msg.date instanceof Date ? msg.date.toISOString() : null,
     text,
-    kind: placeholder?.kind || (text ? 'text' : 'empty'),
-    placeholder: placeholder?.text || null,
+    kind: mediaInfo?.kind || (text ? 'text' : 'empty'),
+    placeholder: text ? null : mediaInfo?.text || null,
+    hasMedia: Boolean(mediaInfo),
     senderId: sender?.id != null ? String(sender.id) : null,
     senderName: sender
       ? sender.displayName || sender.title || sender.firstName || null
@@ -208,6 +241,90 @@ function serializeMessage(msg) {
     senderUsername: sender?.username || null,
     senderAvatarUrl: null,
   };
+}
+
+function vaultKindFromMedia(media) {
+  const type = media && typeof media === 'object' ? media.type : null;
+  if (type === 'photo') return 'photo';
+  if (type === 'video') return 'video';
+  return null;
+}
+
+function extractVaultFields(msg) {
+  if (!msg) return null;
+  const media = msg.media;
+  const kind = vaultKindFromMedia(media);
+  if (!kind) return null;
+  const duration = Number(media.duration);
+  const width = Number(media.width);
+  const height = Number(media.height);
+  return {
+    savedMessageId: String(msg.id),
+    fileUniqueId: media.uniqueFileId ? String(media.uniqueFileId) : null,
+    kind,
+    fileName: typeof media.fileName === 'string' ? media.fileName : null,
+    duration: Number.isFinite(duration) && duration > 0 ? Math.round(duration) : null,
+    width: Number.isFinite(width) && width > 0 ? Math.round(width) : null,
+    height: Number.isFinite(height) && height > 0 ? Math.round(height) : null,
+  };
+}
+
+function asMessageList(fetched) {
+  if (Array.isArray(fetched)) return fetched.filter(Boolean);
+  return fetched ? [fetched] : [];
+}
+
+function inputMediaFromMessage(msg, caption) {
+  const media = msg?.media;
+  if (!media) return null;
+  const kind = vaultKindFromMedia(media);
+  if (!kind) return null;
+  const file = media.inputMedia || media;
+  if (caption) {
+    return { type: kind, file, caption };
+  }
+  return media.inputMedia || { type: kind, file };
+}
+
+function vaultCacheRel(creatorId, ...parts) {
+  const safeCreator = String(creatorId || '').replace(/[^a-zA-Z0-9-]/g, '');
+  const safeParts = parts.map((part) =>
+    String(part || '').replace(/[^a-zA-Z0-9._-]/g, '_')
+  );
+  return path.join(safeCreator, ...safeParts);
+}
+
+function vaultCacheAbs(rel) {
+  return path.join(VAULT_CACHE_DIR, rel);
+}
+
+function pickMediaThumb(media) {
+  if (!media || typeof media !== 'object') return null;
+  if (typeof media.getThumbnail === 'function') {
+    return (
+      media.getThumbnail('m') ||
+      media.getThumbnail('x') ||
+      media.getThumbnail('s') ||
+      (Array.isArray(media.thumbnails) ? media.thumbnails[0] : null) ||
+      media
+    );
+  }
+  if (media.videoCover) return media.videoCover;
+  if (Array.isArray(media.thumbnails) && media.thumbnails[0]) {
+    return media.thumbnails[0];
+  }
+  return media.type === 'photo' ? media : null;
+}
+
+function pickMediaFull(media) {
+  if (!media || typeof media !== 'object') return null;
+  return media;
+}
+
+function guessMediaMime(kind, variant) {
+  if (variant === 'thumb' || kind === 'photo') return 'image/jpeg';
+  if (kind === 'video') return 'video/mp4';
+  return 'application/octet-stream';
 }
 
 function serializeUserPreview(user) {
@@ -1059,6 +1176,211 @@ async function sendText(creatorId, peerId, text) {
   return serializeMessage(sent);
 }
 
+async function fetchSavedMessages(client, messageIds) {
+  const numericIds = messageIds
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id));
+  if (!numericIds.length) return [];
+  const fetched = await client.getMessages('me', numericIds);
+  const list = asMessageList(fetched);
+  const byId = new Map(list.map((msg) => [Number(msg.id), msg]));
+  return numericIds.map((id) => byId.get(id) || null);
+}
+
+async function uploadVaultMedia(creatorId, { filePath, mimeType, fileName }) {
+  const client = await getClient(creatorId);
+  const abs = path.resolve(String(filePath || ''));
+  if (!abs || !fs.existsSync(abs)) {
+    throw new TelegramWorkerError('Upload file is missing', 400);
+  }
+  const mime = String(mimeType || '').toLowerCase();
+  const isVideo = mime.startsWith('video/');
+  const isPhoto = mime.startsWith('image/');
+  if (!isVideo && !isPhoto) {
+    throw new TelegramWorkerError('Only photos and videos can be added to the vault');
+  }
+  try {
+    const sent = await client.sendMedia('me', {
+      type: isVideo ? 'video' : 'photo',
+      file: abs,
+      fileName: fileName || path.basename(abs),
+      fileMime: mime || undefined,
+    });
+    const fields = extractVaultFields(sent);
+    if (!fields) {
+      throw new TelegramWorkerError('Telegram did not return vault media', 502);
+    }
+    return fields;
+  } catch (err) {
+    if (err instanceof TelegramWorkerError) throw err;
+    throw new TelegramWorkerError(describeError(err), 400);
+  }
+}
+
+async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
+  const client = await getClient(creatorId);
+  const numericPeer = Number(peerId);
+  if (!Number.isFinite(numericPeer)) {
+    throw new TelegramWorkerError('Invalid chat id');
+  }
+  const ids = (Array.isArray(itemMessageIds) ? itemMessageIds : [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id));
+  if (!ids.length) {
+    throw new TelegramWorkerError('vaultIds are required');
+  }
+  const captionText = typeof caption === 'string' ? caption.trim() : '';
+  const sentMessages = [];
+
+  try {
+    if (ids.length === 1) {
+      const sent = await client.sendCopy({
+        fromChatId: 'me',
+        message: ids[0],
+        toChatId: numericPeer,
+        caption: captionText || undefined,
+      });
+      const serialized = serializeMessage(sent);
+      if (serialized) sentMessages.push(serialized);
+      return sentMessages;
+    }
+
+    for (let offset = 0; offset < ids.length; offset += VAULT_ALBUM_MAX) {
+      const chunk = ids.slice(offset, offset + VAULT_ALBUM_MAX);
+      const source = await fetchSavedMessages(client, chunk);
+      const medias = [];
+      for (let i = 0; i < source.length; i += 1) {
+        const msg = source[i];
+        if (!msg) {
+          throw new TelegramWorkerError('A vault item is missing from Saved Messages', 404);
+        }
+        const useCaption = offset === 0 && i === 0 ? captionText : '';
+        const input = inputMediaFromMessage(msg, useCaption);
+        if (!input) {
+          throw new TelegramWorkerError('Vault item is not a photo or video', 400);
+        }
+        medias.push(input);
+      }
+      const sent = await client.sendMediaGroup(numericPeer, medias);
+      for (const msg of asMessageList(sent)) {
+        const serialized = serializeMessage(msg);
+        if (serialized) sentMessages.push(serialized);
+      }
+    }
+    return sentMessages;
+  } catch (err) {
+    if (err instanceof TelegramWorkerError) throw err;
+    throw new TelegramWorkerError(describeError(err), 400);
+  }
+}
+
+async function deleteSavedVaultMessage(creatorId, savedMessageId) {
+  const client = await getClient(creatorId);
+  const msgId = Number(savedMessageId);
+  if (!Number.isFinite(msgId)) {
+    throw new TelegramWorkerError('Invalid vault message id');
+  }
+  try {
+    if (typeof client.deleteMessages === 'function') {
+      await client.deleteMessages('me', [msgId], { revoke: true });
+    } else if (typeof client.deleteMessagesById === 'function') {
+      await client.deleteMessagesById('me', [msgId]);
+    }
+  } catch (err) {
+    throw new TelegramWorkerError(describeError(err), 400);
+  }
+}
+
+async function downloadLocationToFile(client, location, destPath) {
+  if (!client || !location || !destPath) return false;
+  const tmp = path.join(
+    os.tmpdir(),
+    `tg-media-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
+  try {
+    await client.downloadToFile(tmp, location);
+    if (!fs.existsSync(tmp) || !fs.statSync(tmp).size) return false;
+    fs.mkdirSync(path.dirname(destPath), { recursive: true });
+    fs.copyFileSync(tmp, destPath);
+    return true;
+  } catch (err) {
+    console.warn('[telegram] Media download failed:', err.message || err);
+    return false;
+  } finally {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function resolveChatMessage(client, peerId, messageId) {
+  const numericPeer = peerId === 'me' || peerId === 'self' ? 'me' : Number(peerId);
+  const msgId = Number(messageId);
+  if (numericPeer !== 'me' && !Number.isFinite(numericPeer)) {
+    throw new TelegramWorkerError('Invalid chat id');
+  }
+  if (!Number.isFinite(msgId)) {
+    throw new TelegramWorkerError('Invalid message id');
+  }
+  const fetched = await client.getMessages(numericPeer, [msgId]);
+  const found = asMessageList(fetched)[0] || null;
+  if (found) return found;
+  if (numericPeer === 'me') return null;
+  try {
+    const history = await client.getHistory(numericPeer, { limit: 100 });
+    return [...history].find((msg) => Number(msg.id) === msgId) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getCachedMessageMedia(creatorId, peerId, messageId, variant) {
+  const client = await getClient(creatorId);
+  const wantThumb = variant !== 'full';
+  const msg = await resolveChatMessage(client, peerId, messageId);
+  if (!msg) {
+    throw new TelegramWorkerError('Message not found', 404);
+  }
+  const media = msg.media;
+  const kind = vaultKindFromMedia(media) || mediaPlaceholder(media)?.kind || 'media';
+  const location = wantThumb ? pickMediaThumb(media) : pickMediaFull(media);
+  if (!location) {
+    throw new TelegramWorkerError('No media on this message', 404);
+  }
+  const ext = wantThumb || kind === 'photo' ? 'jpg' : 'bin';
+  const rel = vaultCacheRel(
+    creatorId,
+    String(peerId),
+    `${messageId}_${wantThumb ? 'thumb' : 'full'}.${ext}`
+  );
+  const dest = vaultCacheAbs(rel);
+  if (!fs.existsSync(dest) || !fs.statSync(dest).size) {
+    const saved = await downloadLocationToFile(client, location, dest);
+    if (!saved) {
+      throw new TelegramWorkerError('Failed to download media', 502);
+    }
+  }
+  return {
+    filePath: dest,
+    mimeType: guessMediaMime(kind, wantThumb ? 'thumb' : 'full'),
+    kind,
+  };
+}
+
+async function getCachedVaultMedia(creatorId, savedMessageId, variant) {
+  return getCachedMessageMedia(creatorId, 'me', savedMessageId, variant);
+}
+
+async function prewarmVaultThumb(creatorId, savedMessageId) {
+  try {
+    await getCachedVaultMedia(creatorId, savedMessageId, 'thumb');
+  } catch (err) {
+    console.warn('[telegram] Vault thumb prewarm failed:', err.message || err);
+  }
+}
+
 async function deleteText(creatorId, peerId, messageId) {
   const client = await getClient(creatorId);
   const numericId = Number(peerId);
@@ -1137,11 +1459,12 @@ async function resolveUsername(creatorId, username) {
   };
 }
 
-async function unreadCount(creatorId) {
+async function unreadCount(creatorId, { hideService = false } = {}) {
   const client = await getClient(creatorId);
   let messages = 0;
   for await (const dialog of client.iterDialogs({ limit: 80 })) {
     if (!isInboxPeer(dialog.peer)) continue;
+    if (hideService && isTelegramServicePeer(dialog.peer)) continue;
     messages += Number(dialog.unreadCount) || 0;
   }
   return { messages, notifications: 0 };
@@ -1195,9 +1518,17 @@ module.exports = {
   listDialogs,
   listMessages,
   sendText,
+  sendVaultToPeer,
+  uploadVaultMedia,
+  deleteSavedVaultMessage,
+  getCachedMessageMedia,
+  getCachedVaultMedia,
+  prewarmVaultThumb,
   deleteText,
   resolveUsername,
   unreadCount,
   startTelegramManager,
   upsertFanProfile,
+  isTelegramServicePeer,
+  isTelegramServiceDialog,
 };

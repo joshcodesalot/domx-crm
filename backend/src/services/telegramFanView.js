@@ -7,12 +7,18 @@ const USERNAME_VISIBLE_ROLES = new Set([
 
 const OPEN_BY_USERNAME_ROLES = new Set(['owner', 'manager']);
 
+const SERVICE_CHAT_ROLES = new Set(['owner', 'manager', 'backend']);
+
 function canViewFanUsername(user) {
   return USERNAME_VISIBLE_ROLES.has(user?.role);
 }
 
 function canOpenChatByUsername(user) {
   return OPEN_BY_USERNAME_ROLES.has(user?.role);
+}
+
+function canSeeTelegramServiceChats(user) {
+  return SERVICE_CHAT_ROLES.has(user?.role);
 }
 
 function redactFan(fan, user) {
@@ -76,6 +82,7 @@ function redactDialog(dialog, user) {
 module.exports = {
   canViewFanUsername,
   canOpenChatByUsername,
+  canSeeTelegramServiceChats,
   redactFan,
   redactDialog,
   redactMessage,

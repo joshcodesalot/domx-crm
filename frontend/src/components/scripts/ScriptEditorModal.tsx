@@ -87,7 +87,8 @@ export default function ScriptEditorModal({
     setSaving(true);
     setError(null);
     try {
-      const priceNum = price.trim() ? Number(price) : 0;
+      const priceNum =
+        platform === 'telegram' ? 0 : price.trim() ? Number(price) : 0;
       if (!Number.isFinite(priceNum) || priceNum < 0) {
         setError('Price must be a non-negative number');
         setSaving(false);
@@ -128,7 +129,9 @@ export default function ScriptEditorModal({
               {isEdit ? 'Edit script' : 'Create script'}
             </h3>
             <p className="text-sm text-gray-500 dark:text-zinc-400 mt-0.5">
-              Message, media, price, and shortcut
+              {platform === 'telegram'
+                ? 'Message, media, and shortcut'
+                : 'Message, media, price, and shortcut'}
             </p>
           </div>
           <button
@@ -157,7 +160,11 @@ export default function ScriptEditorModal({
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div
+            className={
+              platform === 'telegram' ? '' : 'grid grid-cols-2 gap-3'
+            }
+          >
             <div>
               <label className="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1.5">
                 Shortcut code
@@ -170,20 +177,22 @@ export default function ScriptEditorModal({
                 className="w-full px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-domx-500/40"
               />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1.5">
-                Price
-              </label>
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                value={price}
-                onChange={(e) => setPrice(e.target.value)}
-                placeholder="0"
-                className="w-full px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-domx-500/40"
-              />
-            </div>
+            {platform !== 'telegram' && (
+              <div>
+                <label className="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1.5">
+                  Price
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  placeholder="0"
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-domx-500/40"
+                />
+              </div>
+            )}
           </div>
 
           <div>
