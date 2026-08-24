@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Image as ImageIcon, Loader2, Plus, Send, X } from 'lucide-react';
+import { Image as ImageIcon, Loader2, Plus, Send, Trash2, X } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
@@ -10,8 +10,10 @@ import {
 } from '@/components/telegram/TelegramSextingSessionForm';
 import { useToast } from '@/context/ToastContext';
 import { useAuth } from '@/context/AuthContext';
+import { useConfirm } from '@/context/ConfirmDialogContext';
 import {
   createMessagingDashboardEntry,
+  deleteTelegramSextingSession,
   getTelegramSextingSession,
   listTelegramSextingSessions,
   sendTelegramSextingSessionBlock,
@@ -45,6 +47,7 @@ function stubVaultItems(ids: string[]): TelegramVaultItem[] {
 export default function TelegramSextingSession() {
   const { toast } = useToast();
   const { user } = useAuth();
+  const confirm = useConfirm();
   const [searchParams, setSearchParams] = useSearchParams();
   const sessionFromUrl = searchParams.get('session') || '';
 
@@ -63,6 +66,7 @@ export default function TelegramSextingSession() {
   const [vaultBlockId, setVaultBlockId] = useState<string | null>(null);
   const [sendingBlockId, setSendingBlockId] = useState<string | null>(null);
   const [savingBlockId, setSavingBlockId] = useState<string | null>(null);
+  const [deletingSession, setDeletingSession] = useState(false);
 
   useEffect(() => {
     if (sessionFromUrl && sessionFromUrl !== selectedId) {
@@ -238,6 +242,29 @@ export default function TelegramSextingSession() {
     }
   }
 
+  async function handleDeleteSession() {
+    if (!session || deletingSession) return;
+    const ok = await confirm({
+      title: 'Delete session',
+      message: `Delete “${session.fanName}”? This cannot be undone. Already sent Telegram messages stay in the group.`,
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    setDeletingSession(true);
+    try {
+      await deleteTelegramSextingSession(session.id);
+      setSessions((prev) => prev.filter((item) => item.id !== session.id));
+      setSession(null);
+      selectSession(NEW_SESSION_ID);
+      toast.success('Session deleted');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete session');
+    } finally {
+      setDeletingSession(false);
+    }
+  }
+
   const vaultBlock = session?.blocks?.find((block) => block.id === vaultBlockId) || null;
 
   return (
@@ -326,17 +353,32 @@ export default function TelegramSextingSession() {
             </div>
           ) : session ? (
             <div className="max-w-4xl mx-auto p-6 space-y-4">
-              <div>
-                <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
-                  {session.fanName}
-                </h1>
-                <p className="text-sm text-gray-500 dark:text-zinc-500 mt-1">
-                  Slave {session.slaveName} · Group {session.groupPeerId} · {session.pendingCount} pending ·{' '}
-                  {session.sentCount} sent
-                </p>
-                <p className="text-xs text-gray-400 dark:text-zinc-500 mt-1">
-                  Add media, edit the English text, then send at the right time. Selected creators must already be in the group.
-                </p>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
+                    {session.fanName}
+                  </h1>
+                  <p className="text-sm text-gray-500 dark:text-zinc-500 mt-1">
+                    Slave {session.slaveName} · Group {session.groupPeerId} · {session.pendingCount} pending ·{' '}
+                    {session.sentCount} sent
+                  </p>
+                  <p className="text-xs text-gray-400 dark:text-zinc-500 mt-1">
+                    Add media, edit the English text, then send at the right time. Selected creators must already be in the group.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={deletingSession}
+                  onClick={() => void handleDeleteSession()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/50 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50 shrink-0"
+                >
+                  {deletingSession ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                  Delete session
+                </button>
               </div>
 
               <div className="space-y-3">

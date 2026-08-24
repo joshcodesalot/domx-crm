@@ -3065,6 +3065,14 @@ export async function createTelegramSextingSession(
   });
 }
 
+export async function deleteTelegramSextingSession(
+  sessionId: string
+): Promise<{ ok: boolean }> {
+  return request(`/api/telegram-sexting-sessions/${sessionId}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function updateTelegramSextingSessionBlock(
   sessionId: string,
   blockId: string,

@@ -217,6 +217,27 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+router.delete('/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!isValidUuid(id)) {
+    return res.status(400).json({ error: 'Invalid session ID' });
+  }
+  try {
+    const session = await loadSessionRow(id);
+    if (!session) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    if (!(await userCanAccessSession(req.user, session.creatorIds))) {
+      return res.status(403).json({ error: 'You do not have access to this session' });
+    }
+    await pool.query(`DELETE FROM telegram_sexting_sessions WHERE id = $1`, [id]);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('Delete telegram sexting session error:', err);
+    return res.status(500).json({ error: 'Failed to delete session' });
+  }
+});
+
 router.post('/', async (req, res) => {
   req.setTimeout(180000);
   const body = req.body || {};

@@ -1275,6 +1275,31 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
   }
 }
 
+async function deleteClientMessages(client, chatId, ids, foundMessages = []) {
+  const idList = (ids || []).map((id) => Number(id)).filter(Number.isFinite);
+  if (idList.length === 0) return;
+
+  if (typeof client.deleteMessagesById === 'function') {
+    await client.deleteMessagesById(chatId, idList, { revoke: true });
+    return;
+  }
+
+  if (typeof client.deleteMessages === 'function') {
+    let msgs = (foundMessages || []).filter(Boolean);
+    if (msgs.length === 0) {
+      const fetched = await client.getMessages(chatId, idList);
+      msgs = asMessageList(fetched);
+    }
+    if (msgs.length === 0) {
+      throw new TelegramWorkerError('Message not found', 404);
+    }
+    await client.deleteMessages(msgs, { revoke: true });
+    return;
+  }
+
+  throw new TelegramWorkerError('Telegram delete is not available', 500);
+}
+
 async function deleteSavedVaultMessage(creatorId, savedMessageId) {
   const client = await getClient(creatorId);
   const msgId = Number(savedMessageId);
@@ -1282,11 +1307,7 @@ async function deleteSavedVaultMessage(creatorId, savedMessageId) {
     throw new TelegramWorkerError('Invalid vault message id');
   }
   try {
-    if (typeof client.deleteMessages === 'function') {
-      await client.deleteMessages('me', [msgId], { revoke: true });
-    } else if (typeof client.deleteMessagesById === 'function') {
-      await client.deleteMessagesById('me', [msgId]);
-    }
+    await deleteClientMessages(client, 'me', [msgId]);
   } catch (err) {
     throw new TelegramWorkerError(describeError(err), 400);
   }
@@ -1413,13 +1434,7 @@ async function deleteText(creatorId, peerId, messageId) {
   }
 
   try {
-    if (typeof client.deleteMessages === 'function') {
-      await client.deleteMessages(numericId, [msgId], { revoke: true });
-    } else if (typeof client.deleteMessagesById === 'function') {
-      await client.deleteMessagesById(numericId, [msgId]);
-    } else {
-      throw new TelegramWorkerError('Telegram delete is not available', 500);
-    }
+    await deleteClientMessages(client, numericId, [msgId], found ? [found] : []);
   } catch (err) {
     if (err instanceof TelegramWorkerError) throw err;
     throw new TelegramWorkerError(describeError(err), 400);
