@@ -2647,6 +2647,18 @@ export interface TelegramFan {
   avatarUrl?: string | null;
 }
 
+export interface TelegramGroupMember {
+  telegramUserId: string;
+  displayName: string;
+  username?: string | null;
+  hasUsername?: boolean;
+  isBot?: boolean;
+  isSelf?: boolean;
+  status?: 'creator' | 'admin' | 'member';
+  title?: string | null;
+  avatarUrl?: string | null;
+}
+
 export interface TelegramMessage {
   id: string;
   peerId: string;
@@ -2776,6 +2788,19 @@ export async function getTelegramMessages(
 }> {
   return request(
     `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages`
+  );
+}
+
+export async function getTelegramGroupMembers(
+  creatorId: string,
+  peerId: string
+): Promise<{
+  peerId: string;
+  memberCount: number | null;
+  members: TelegramGroupMember[];
+}> {
+  return request(
+    `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/members`
   );
 }
 

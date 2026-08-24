@@ -332,7 +332,7 @@ export default function MessagePro() {
             })}
           </div>
 
-          <div className="flex-1 min-h-0 relative">
+          <div className="flex-1 min-h-0 overflow-hidden relative">
             {mountedHomeIds.map((creatorId) => {
               const workspace = workspaces.find((w) => w.creator.id === creatorId);
               if (!workspace) return null;
@@ -357,7 +357,7 @@ export default function MessagePro() {
               );
             })}
             {activeFanTab ? (
-              <div className="h-full">
+              <div className="h-full min-h-0 overflow-hidden flex">
                 <MaloumChatThread
                   creator={activeWorkspace.creator}
                   chatId={activeFanTab.chatId}

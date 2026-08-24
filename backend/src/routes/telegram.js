@@ -18,6 +18,7 @@ const {
   applyReconnectReady,
   listDialogs,
   listMessages,
+  listChatMembers,
   sendText,
   sendVaultToPeer,
   uploadVaultMedia,
@@ -37,6 +38,7 @@ const {
   redactFan,
   redactDialog,
   redactMessage,
+  redactMember,
 } = require('../services/telegramFanView');
 const { upsertMessageUnsend } = require('../services/messageUnsend');
 
@@ -423,6 +425,32 @@ router.get(
       });
     } catch (err) {
       return handleTelegramError(res, err, 'List Telegram messages error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/telegram/dialogs/:peerId/members',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, peerId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+      const result = await listChatMembers(id, peerId);
+      return res.json({
+        peerId: result.peerId,
+        memberCount: result.memberCount,
+        members: result.members.map((member) => redactMember(member, req.user)),
+      });
+    } catch (err) {
+      return handleTelegramError(res, err, 'List Telegram group members error:');
     }
   }
 );

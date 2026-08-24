@@ -2743,9 +2743,9 @@ export function FourBasedChatThread({
   return (
     <div
       ref={threadRootRef}
-      className={`flex-1 flex min-w-0 min-h-0 relative ${className}`}
+      className={`flex-1 flex h-full min-w-0 min-h-0 overflow-hidden relative ${className}`}
     >
-    <div className="flex-1 flex flex-col min-w-0 min-h-0 relative chatter-thread-bg">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative chatter-thread-bg">
       <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95 z-0 pointer-events-none" />
 
       <div className="h-16 px-4 md:px-6 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 shrink-0 relative z-10 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-md min-w-0">
@@ -2838,7 +2838,7 @@ export function FourBasedChatThread({
       <div
         ref={messagesScrollRef}
         onScroll={handleMessagesScroll}
-        className="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 min-h-0 relative z-10 scroll-smooth animate-fade-in"
+        className="flex-1 overflow-y-auto px-4 md:px-8 py-6 space-y-6 min-h-0 relative z-10 scroll-smooth animate-fade-in chat-thread-scroll"
       >
         {(loadingOlder || (messagesHasMore && messages.length > 0)) && (
           <div className="flex justify-center py-1">

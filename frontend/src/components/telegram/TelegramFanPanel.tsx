@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Check, Loader2, Pencil, Trash2, X } from 'lucide-react';
 import { DEFAULT_FAN_NOTES_TEMPLATE } from '@/components/maloum/MaloumFanPanel';
 import {
+  getTelegramGroupMembers,
   patchTelegramFan,
   resolveCreatorAvatarUrl,
   type TelegramFan,
+  type TelegramGroupMember,
 } from '@/lib/api';
 
 const NOTES_DEBOUNCE_MS = 3500;
+const MEMBER_FILTER_THRESHOLD = 12;
+const STATUS_ORDER: Record<string, number> = { creator: 0, admin: 1, member: 2 };
 
 function SectionHeading({ children }: { children: ReactNode }) {
   return (
@@ -20,28 +24,52 @@ function SectionHeading({ children }: { children: ReactNode }) {
 function FanAvatar({
   avatarUrl,
   name,
+  size = 'md',
 }: {
   avatarUrl?: string | null;
   name: string;
+  size?: 'md' | 'sm';
 }) {
   const [failed, setFailed] = useState(false);
   const src = resolveCreatorAvatarUrl(avatarUrl);
   const initial = (name || '?').charAt(0).toUpperCase();
+  const dim = size === 'sm' ? 'w-8 h-8 text-[11px]' : 'w-12 h-12 text-sm';
   if (src && !failed) {
     return (
       <img
         src={src}
         alt=""
-        className="w-12 h-12 rounded-full object-cover border border-gray-300 dark:border-zinc-700 shrink-0 bg-gray-100 dark:bg-zinc-800"
+        className={`${dim} rounded-full object-cover border border-gray-300 dark:border-zinc-700 shrink-0 bg-gray-100 dark:bg-zinc-800`}
         onError={() => setFailed(true)}
       />
     );
   }
   return (
-    <div className="w-12 h-12 rounded-full bg-gray-100 dark:bg-zinc-800 flex items-center justify-center text-sm font-medium border border-gray-300 dark:border-zinc-700 shrink-0 text-gray-700 dark:text-zinc-300">
+    <div
+      className={`${dim} rounded-full bg-gray-100 dark:bg-zinc-800 flex items-center justify-center font-medium border border-gray-300 dark:border-zinc-700 shrink-0 text-gray-700 dark:text-zinc-300`}
+    >
       {initial}
     </div>
   );
+}
+
+function memberRoleLabel(member: TelegramGroupMember): string | null {
+  if (member.title) return member.title;
+  if (member.status === 'creator') return 'Owner';
+  if (member.status === 'admin') return 'Admin';
+  return null;
+}
+
+function sortMembers(members: TelegramGroupMember[]): TelegramGroupMember[] {
+  return [...members].sort((a, b) => {
+    const sa = STATUS_ORDER[a.status || 'member'] ?? 2;
+    const sb = STATUS_ORDER[b.status || 'member'] ?? 2;
+    if (sa !== sb) return sa - sb;
+    if (Boolean(a.isBot) !== Boolean(b.isBot)) return a.isBot ? 1 : -1;
+    return (a.displayName || '').localeCompare(b.displayName || '', undefined, {
+      sensitivity: 'base',
+    });
+  });
 }
 
 export default function TelegramFanPanel({
@@ -60,7 +88,9 @@ export default function TelegramFanPanel({
   onClose?: () => void;
 }) {
   const fanId = fan?.telegramUserId || '';
-  const displayName = fan?.nickname?.trim() || fan?.displayName?.trim() || 'Fan';
+  const isGroup = fan?.kind === 'group';
+  const displayName =
+    fan?.nickname?.trim() || fan?.displayName?.trim() || (isGroup ? 'Group' : 'Fan');
 
   const [alias, setAlias] = useState(fan?.nickname || '');
   const [nicknameDraft, setNicknameDraft] = useState(fan?.nickname || '');
@@ -81,6 +111,14 @@ export default function TelegramFanPanel({
   const notesDraftRef = useRef(notesDraft);
   const fanIdRef = useRef(fanId);
   fanIdRef.current = fanId;
+
+  const [members, setMembers] = useState<TelegramGroupMember[]>([]);
+  const [memberCount, setMemberCount] = useState<number | null>(null);
+  const [membersStatus, setMembersStatus] = useState<'idle' | 'loading' | 'error'>(
+    'idle'
+  );
+  const [membersError, setMembersError] = useState<string | null>(null);
+  const [memberQuery, setMemberQuery] = useState('');
 
   useEffect(() => {
     notesDraftRef.current = notesDraft;
@@ -103,6 +141,52 @@ export default function TelegramFanPanel({
     notesSavedBaselineRef.current = nextNotes;
     setNotesDraft(nextNotes.trim() ? nextNotes : DEFAULT_FAN_NOTES_TEMPLATE);
   }, [fan?.telegramUserId, fan?.nickname, fan?.notes]);
+
+  useEffect(() => {
+    if (!isGroup || !creatorId || !fanId) {
+      setMembers([]);
+      setMemberCount(null);
+      setMembersStatus('idle');
+      setMembersError(null);
+      setMemberQuery('');
+      return;
+    }
+    let cancelled = false;
+    setMembersStatus('loading');
+    setMembersError(null);
+    setMemberQuery('');
+    void getTelegramGroupMembers(creatorId, fanId)
+      .then((result) => {
+        if (cancelled) return;
+        setMembers(sortMembers(result.members || []));
+        setMemberCount(
+          typeof result.memberCount === 'number' ? result.memberCount : null
+        );
+        setMembersStatus('idle');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setMembers([]);
+        setMemberCount(null);
+        setMembersStatus('error');
+        setMembersError(
+          err instanceof Error ? err.message : 'Failed to load members'
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isGroup, creatorId, fanId]);
+
+  const visibleMembers = useMemo(() => {
+    const query = memberQuery.trim().toLowerCase();
+    if (!query) return members;
+    return members.filter((member) => {
+      const name = (member.displayName || '').toLowerCase();
+      const username = (member.username || '').toLowerCase();
+      return name.includes(query) || username.includes(query);
+    });
+  }, [members, memberQuery]);
 
   async function handleNicknameSave() {
     if (!fanId) return;
@@ -193,7 +277,9 @@ export default function TelegramFanPanel({
       className={`flex flex-col h-full min-h-0 bg-white dark:bg-zinc-950 border-l border-gray-200 dark:border-zinc-800 ${className}`}
     >
       <div className="h-12 px-3 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-1 shrink-0">
-        <p className="text-xs font-semibold text-gray-900 dark:text-white">Fan info</p>
+        <p className="text-xs font-semibold text-gray-900 dark:text-white">
+          {isGroup ? 'Group info' : 'Fan info'}
+        </p>
         {onClose && (
           <button
             type="button"
@@ -225,6 +311,95 @@ export default function TelegramFanPanel({
         </div>
 
         <div className="p-4 space-y-5">
+          {isGroup && (
+            <section>
+              <div className="flex items-center justify-between mb-2">
+                <SectionHeading>Participants</SectionHeading>
+                {membersStatus !== 'loading' && members.length > 0 && (
+                  <span className="text-[10px] text-gray-400 dark:text-zinc-500 tabular-nums">
+                    {memberCount != null && memberCount > members.length
+                      ? `${members.length} of ${memberCount}`
+                      : String(memberCount ?? members.length)}
+                  </span>
+                )}
+              </div>
+              {membersStatus === 'loading' && (
+                <p className="text-xs text-gray-500 dark:text-zinc-500 inline-flex items-center gap-1.5">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Loading members…
+                </p>
+              )}
+              {membersStatus === 'error' && (
+                <p className="text-[11px] text-red-400">
+                  {membersError || 'Failed to load members'}
+                </p>
+              )}
+              {membersStatus === 'idle' && members.length === 0 && (
+                <p className="text-xs text-gray-400 dark:text-zinc-500">
+                  No members found
+                </p>
+              )}
+              {membersStatus === 'idle' && members.length > 0 && (
+                <>
+                  {members.length > MEMBER_FILTER_THRESHOLD && (
+                    <input
+                      type="search"
+                      value={memberQuery}
+                      onChange={(e) => setMemberQuery(e.target.value)}
+                      placeholder="Filter members…"
+                      className="w-full mb-2 px-2.5 py-1.5 text-xs rounded-lg bg-gray-50 dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 text-gray-900 dark:text-white outline-none focus:border-sky-500/60"
+                    />
+                  )}
+                  {visibleMembers.length === 0 ? (
+                    <p className="text-xs text-gray-400 dark:text-zinc-500">
+                      No matching members
+                    </p>
+                  ) : (
+                    <ul className="space-y-1 max-h-72 overflow-y-auto -mx-1 px-1">
+                      {visibleMembers.map((member) => {
+                        const role = memberRoleLabel(member);
+                        return (
+                          <li
+                            key={member.telegramUserId}
+                            className="flex items-center gap-2 py-1.5"
+                          >
+                            <FanAvatar
+                              avatarUrl={member.avatarUrl}
+                              name={member.displayName}
+                              size="sm"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <p className="text-xs font-medium text-gray-900 dark:text-white truncate">
+                                  {member.displayName || 'Fan'}
+                                  {member.isSelf ? ' (you)' : ''}
+                                </p>
+                                {role && (
+                                  <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide text-sky-600 bg-sky-500/10 px-1.5 py-0.5 rounded">
+                                    {role}
+                                  </span>
+                                )}
+                                {member.isBot && (
+                                  <span className="shrink-0 text-[9px] font-semibold uppercase tracking-wide text-gray-500 dark:text-zinc-400 bg-gray-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">
+                                    Bot
+                                  </span>
+                                )}
+                              </div>
+                              {showUsername && member.username ? (
+                                <p className="text-[11px] text-gray-500 dark:text-zinc-500 truncate">
+                                  @{member.username}
+                                </p>
+                              ) : null}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+
           <section>
             <div className="flex items-center justify-between mb-2">
               <SectionHeading>Nickname</SectionHeading>

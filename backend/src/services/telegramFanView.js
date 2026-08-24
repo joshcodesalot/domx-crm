@@ -48,6 +48,24 @@ function redactFan(fan, user) {
   };
 }
 
+function redactMember(member, user) {
+  if (!member || typeof member !== 'object') return member;
+  const base = {
+    telegramUserId: member.telegramUserId,
+    displayName: member.displayName || 'Fan',
+    hasUsername: Boolean(member.username),
+    isBot: Boolean(member.isBot),
+    isSelf: Boolean(member.isSelf),
+    status: member.status || 'member',
+    title: member.title || null,
+    avatarUrl: member.avatarUrl || null,
+  };
+  if (canViewFanUsername(user)) {
+    return { ...base, username: member.username || null };
+  }
+  return base;
+}
+
 function redactMessage(msg, user) {
   if (!msg || typeof msg !== 'object') return msg;
   if (canViewFanUsername(user)) return msg;
@@ -86,4 +104,5 @@ module.exports = {
   redactFan,
   redactDialog,
   redactMessage,
+  redactMember,
 };

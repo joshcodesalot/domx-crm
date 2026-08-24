@@ -277,7 +277,7 @@ export default function MessageProTelegram() {
             })}
           </div>
 
-          <div className="flex-1 min-h-0 relative">
+          <div className="flex-1 min-h-0 overflow-hidden relative">
             {mountedHomeIds.map((creatorId) => {
               const workspace = workspaces.find((w) => w.creator.id === creatorId);
               if (!workspace) return null;
@@ -304,7 +304,7 @@ export default function MessageProTelegram() {
               );
             })}
             {activeFanTab ? (
-              <div className="h-full">
+              <div className="h-full min-h-0 overflow-hidden flex">
                 <TelegramChatThread
                   creatorId={activeWorkspace.creator.id}
                   creator={activeWorkspace.creator}

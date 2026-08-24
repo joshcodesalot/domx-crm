@@ -1121,6 +1121,95 @@ async function listMessages(creatorId, peerId, { limit = 50 } = {}) {
   };
 }
 
+function isListedChatMember(member) {
+  const status = member?.status;
+  if (status === 'creator' || status === 'admin' || status === 'member') return true;
+  if (status === 'restricted') return Boolean(member.isMember);
+  return false;
+}
+
+function serializeChatMember(member) {
+  const user = member?.user;
+  if (!user) return null;
+  const status = member.status;
+  return {
+    telegramUserId: String(user.id),
+    displayName: user.displayName || user.firstName || 'Fan',
+    username: user.username || null,
+    isBot: Boolean(user.isBot),
+    isSelf: Boolean(user.isSelf),
+    status:
+      status === 'creator' || status === 'admin' || status === 'member'
+        ? status
+        : 'member',
+    title: member.title || null,
+    avatarUrl: null,
+  };
+}
+
+async function listChatMembers(creatorId, peerId) {
+  const client = await getClient(creatorId);
+  const numericId = Number(peerId);
+  if (!Number.isFinite(numericId)) {
+    throw new TelegramWorkerError('Invalid chat id');
+  }
+
+  let peer = null;
+  try {
+    peer = await client.getChat(numericId);
+  } catch {
+    peer = null;
+  }
+  if (!peer || peerKind(peer) !== 'group') {
+    throw new TelegramWorkerError('Not a group chat');
+  }
+
+  let fetched = [];
+  try {
+    fetched = await client.getChatMembers(numericId, {
+      type: 'recent',
+      limit: 200,
+    });
+  } catch (err) {
+    throw new TelegramWorkerError(
+      err?.message ? String(err.message).slice(0, 240) : 'Failed to list group members'
+    );
+  }
+
+  const rawList = Array.isArray(fetched) ? fetched : fetched ? [fetched] : [];
+  const listed = rawList.filter(isListedChatMember);
+  const members = listed.map(serializeChatMember).filter(Boolean);
+  const users = listed.map((member) => member.user).filter(Boolean);
+
+  let memberCount = Number(fetched?.total);
+  if (!Number.isFinite(memberCount) || memberCount <= 0) {
+    try {
+      const full = await client.getFullChat(numericId);
+      memberCount = Number(full?.membersCount);
+    } catch {
+      memberCount = NaN;
+    }
+  }
+  if (!Number.isFinite(memberCount) || memberCount <= 0) {
+    memberCount = members.length;
+  }
+  await Promise.all(users.map((user) => upsertFanProfile(creatorId, user)));
+  const profiles = await loadProfiles(
+    creatorId,
+    members.map((m) => m.telegramUserId)
+  );
+  scheduleFanAvatarPrefetch(creatorId, client, users, profiles);
+
+  return {
+    peerId: String(numericId),
+    memberCount,
+    members: members.map((member) => ({
+      ...member,
+      avatarUrl: profiles.get(member.telegramUserId)?.avatarUrl || null,
+    })),
+  };
+}
+
 async function attachSenderAvatars(creatorId, client, messages) {
   const senderIds = [
     ...new Set(
@@ -1533,6 +1622,7 @@ module.exports = {
   getClient,
   listDialogs,
   listMessages,
+  listChatMembers,
   sendText,
   sendVaultToPeer,
   uploadVaultMedia,
