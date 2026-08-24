@@ -7,6 +7,7 @@ import {
   PanelRightClose,
   Search,
   Send,
+  Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
@@ -23,6 +24,7 @@ import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
 import TelegramFanPanel from '@/components/telegram/TelegramFanPanel';
+import TelegramSextingSessionModal from '@/components/telegram/TelegramSextingSessionModal';
 import TelegramVaultModal from '@/components/telegram/TelegramVaultModal';
 import {
   createHistoryTranslateQueue,
@@ -490,6 +492,7 @@ export function TelegramChatThread({
   const [chatMediaPreview, setChatMediaPreview] = useState<TelegramMessage | null>(
     null
   );
+  const [generateSessionOpen, setGenerateSessionOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const threadKeyRef = useRef(`${creatorId}:${peerId}`);
   threadKeyRef.current = `${creatorId}:${peerId}`;
@@ -575,6 +578,7 @@ export function TelegramChatThread({
     setSkipOutgoingTranslate(false);
     setSuggestedEnglish(null);
     setChatMediaPreview(null);
+    setGenerateSessionOpen(false);
   }, [creatorId, peerId]);
 
   const loadMessages = useCallback(async () => {
@@ -919,6 +923,17 @@ export function TelegramChatThread({
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          {isGroup && (
+            <button
+              type="button"
+              onClick={() => setGenerateSessionOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
+              title="Generate multi-model sexting session"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Generate session
+            </button>
+          )}
           <button
             type="button"
             onClick={toggleFanPanel}
@@ -1274,6 +1289,15 @@ export function TelegramChatThread({
           </button>
         </div>
       </div>
+      {generateSessionOpen && isGroup && (
+        <TelegramSextingSessionModal
+          groupPeerId={peerId}
+          groupLabel={fanLabel(fan, 'Group')}
+          defaultFanName={fanLabel(fan, 'Group')}
+          defaultCreatorIds={creatorId ? [creatorId] : []}
+          onClose={() => setGenerateSessionOpen(false)}
+        />
+      )}
       {vaultOpen && (
         <TelegramVaultModal
           creatorId={creatorId}

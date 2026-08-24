@@ -1,31 +1,23 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import {
-  Image as ImageIcon,
-  Loader2,
-  Plus,
-  Send,
-  Sparkles,
-  X,
-} from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Image as ImageIcon, Loader2, Plus, Send, X } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import TelegramVaultModal from '@/components/telegram/TelegramVaultModal';
-import { useCreatorLive } from '@/context/CreatorLiveContext';
+import {
+  SEXTING_FORM_INPUT_CLASS,
+  TelegramSextingSessionForm,
+} from '@/components/telegram/TelegramSextingSessionForm';
 import { useToast } from '@/context/ToastContext';
 import { useAuth } from '@/context/AuthContext';
 import {
   createMessagingDashboardEntry,
-  createTelegramSextingSession,
   getTelegramSextingSession,
   listTelegramSextingSessions,
   sendTelegramSextingSessionBlock,
   telegramVaultMediaUrl,
   translateToGerman,
   updateTelegramSextingSessionBlock,
-  type Creator,
-  type TelegramSextingGoal,
-  type TelegramSextingIntensity,
-  type TelegramSextingOrgasmRule,
   type TelegramSextingSession,
   type TelegramSextingSessionBlock,
   type TelegramVaultItem,
@@ -34,23 +26,6 @@ import telegramIcon from '@/assets/telegram_icon.svg';
 
 const NEW_SESSION_ID = 'new';
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
-
-const INTENSITY_OPTIONS: TelegramSextingIntensity[] = ['soft', 'medium', 'extreme'];
-const ORGASM_OPTIONS: TelegramSextingOrgasmRule[] = [
-  'denied',
-  'ruined',
-  'full',
-  'multiple',
-];
-const GOAL_OPTIONS: TelegramSextingGoal[] = [
-  'training',
-  'punishment',
-  'reward',
-  'edge-only',
-];
-
-const inputClass =
-  'w-full rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-zinc-500';
 
 function readAutoTranslateOutgoing(): boolean {
   const stored = localStorage.getItem(AUTO_TRANSLATE_OUTGOING_KEY);
@@ -67,41 +42,19 @@ function stubVaultItems(ids: string[]): TelegramVaultItem[] {
   }));
 }
 
-function formatLabel(value: string): string {
-  return value
-    .split('-')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ');
-}
-
 export default function TelegramSextingSession() {
   const { toast } = useToast();
   const { user } = useAuth();
-  const { creators } = useCreatorLive({ platform: 'telegram' });
-  const telegramCreators = useMemo(
-    () => creators.filter((creator) => creator.platform === 'telegram'),
-    [creators]
-  );
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sessionFromUrl = searchParams.get('session') || '';
 
   const [sessions, setSessions] = useState<TelegramSextingSession[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState<string>(NEW_SESSION_ID);
+  const [selectedId, setSelectedId] = useState<string>(
+    sessionFromUrl || NEW_SESSION_ID
+  );
   const [session, setSession] = useState<TelegramSextingSession | null>(null);
   const [sessionLoading, setSessionLoading] = useState(false);
-  const [generating, setGenerating] = useState(false);
-
-  const [slaveName, setSlaveName] = useState('');
-  const [fanName, setFanName] = useState('');
-  const [groupPeerId, setGroupPeerId] = useState('');
-  const [selectedCreatorIds, setSelectedCreatorIds] = useState<string[]>([]);
-  const [creatorMenuOpen, setCreatorMenuOpen] = useState(false);
-  const [toys, setToys] = useState('');
-  const [intensity, setIntensity] = useState<TelegramSextingIntensity>('medium');
-  const [orgasmRule, setOrgasmRule] = useState<TelegramSextingOrgasmRule>('denied');
-  const [themes, setThemes] = useState('');
-  const [goal, setGoal] = useState<TelegramSextingGoal>('training');
-  const [scenario, setScenario] = useState('');
-  const [extraInstructions, setExtraInstructions] = useState('');
 
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [vaultByBlock, setVaultByBlock] = useState<Record<string, TelegramVaultItem[]>>(
@@ -111,13 +64,20 @@ export default function TelegramSextingSession() {
   const [sendingBlockId, setSendingBlockId] = useState<string | null>(null);
   const [savingBlockId, setSavingBlockId] = useState<string | null>(null);
 
-  const selectedCreators = useMemo(
-    () =>
-      selectedCreatorIds
-        .map((id) => telegramCreators.find((creator) => creator.id === id))
-        .filter((creator): creator is Creator => Boolean(creator)),
-    [selectedCreatorIds, telegramCreators]
-  );
+  useEffect(() => {
+    if (sessionFromUrl && sessionFromUrl !== selectedId) {
+      setSelectedId(sessionFromUrl);
+    }
+  }, [sessionFromUrl, selectedId]);
+
+  function selectSession(id: string) {
+    setSelectedId(id);
+    if (id === NEW_SESSION_ID) {
+      setSearchParams({});
+      return;
+    }
+    setSearchParams({ session: id });
+  }
 
   const loadSessions = useCallback(async () => {
     try {
@@ -192,50 +152,6 @@ export default function TelegramSextingSession() {
     }
     void loadSession(selectedId);
   }, [selectedId, loadSession]);
-
-  function toggleCreator(id: string) {
-    setSelectedCreatorIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    );
-  }
-
-  async function handleGenerate(event: FormEvent) {
-    event.preventDefault();
-    if (generating) return;
-    if (!slaveName.trim() || !fanName.trim() || !groupPeerId.trim()) {
-      toast.error('Slave name, fan name, and group ID are required');
-      return;
-    }
-    if (selectedCreatorIds.length === 0) {
-      toast.error('Select at least one Telegram creator');
-      return;
-    }
-
-    setGenerating(true);
-    try {
-      const result = await createTelegramSextingSession({
-        slaveName: slaveName.trim(),
-        fanName: fanName.trim(),
-        groupPeerId: groupPeerId.trim(),
-        creatorIds: selectedCreatorIds,
-        toys: toys.trim(),
-        intensity,
-        orgasmRule,
-        themes: themes.trim(),
-        goal,
-        scenario: scenario.trim(),
-        extraInstructions: extraInstructions.trim(),
-      });
-      applySession(result.session, true);
-      setSessions((prev) => [result.session, ...prev.filter((item) => item.id !== result.session.id)]);
-      setSelectedId(result.session.id);
-      toast.success('Session generated');
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to generate session');
-    } finally {
-      setGenerating(false);
-    }
-  }
 
   async function persistBlock(
     block: TelegramSextingSessionBlock,
@@ -338,7 +254,7 @@ export default function TelegramSextingSession() {
             </div>
             <button
               type="button"
-              onClick={() => setSelectedId(NEW_SESSION_ID)}
+              onClick={() => selectSession(NEW_SESSION_ID)}
               className="inline-flex items-center gap-1 rounded-lg bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -360,7 +276,7 @@ export default function TelegramSextingSession() {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setSelectedId(item.id)}
+                  onClick={() => selectSession(item.id)}
                   className={`w-full text-left rounded-xl px-3 py-2.5 border transition-colors ${
                     active
                       ? 'bg-sky-50 border-sky-200 dark:bg-sky-900/20 dark:border-sky-800'
@@ -394,202 +310,16 @@ export default function TelegramSextingSession() {
 
         <section className="flex-1 min-w-0 overflow-y-auto">
           {selectedId === NEW_SESSION_ID ? (
-            <form onSubmit={(event) => void handleGenerate(event)} className="max-w-3xl mx-auto p-6 space-y-5">
-              <div>
-                <h1 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-                  <Sparkles className="w-5 h-5 text-sky-500" />
-                  Generate Multi-Model Sexting Session
-                </h1>
-                <p className="text-sm text-gray-500 dark:text-zinc-500 mt-1">
-                  Creates 20 blocks once. Each selected Telegram creator gets their turns ready to send.
-                </p>
-              </div>
-
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">Slave name</span>
-                <input
-                  className={inputClass}
-                  value={slaveName}
-                  onChange={(event) => setSlaveName(event.target.value)}
-                  placeholder="worthless cock"
-                  required
-                />
-              </label>
-
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">Fan name</span>
-                <input
-                  className={inputClass}
-                  value={fanName}
-                  onChange={(event) => setFanName(event.target.value)}
-                  placeholder="Session label, e.g. Jake"
-                  required
-                />
-              </label>
-
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">
-                  Conversation group ID
-                </span>
-                <input
-                  className={inputClass}
-                  value={groupPeerId}
-                  onChange={(event) => setGroupPeerId(event.target.value)}
-                  placeholder="Telegram group peer ID"
-                  required
-                />
-              </label>
-
-              <div className="space-y-1.5">
-                <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">
-                  Creator list (Domme list)
-                </span>
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setCreatorMenuOpen((open) => !open)}
-                    className={`${inputClass} text-left`}
-                  >
-                    {selectedCreators.length === 0
-                      ? 'Select Telegram creators'
-                      : selectedCreators.map((creator) => creator.displayName).join(', ')}
-                  </button>
-                  {creatorMenuOpen && (
-                    <div className="absolute z-20 mt-1 w-full rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg max-h-64 overflow-y-auto">
-                      {telegramCreators.length === 0 && (
-                        <p className="px-3 py-2 text-sm text-gray-500">No Telegram creators</p>
-                      )}
-                      {telegramCreators.map((creator) => {
-                        const checked = selectedCreatorIds.includes(creator.id);
-                        return (
-                          <label
-                            key={creator.id}
-                            className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleCreator(creator.id)}
-                            />
-                            <CreatorAvatar
-                              avatarUrl={creator.avatarUrl}
-                              displayName={creator.displayName}
-                              className="w-5 h-5 rounded-full object-cover"
-                              initialsClassName="w-5 h-5 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-[9px]"
-                            />
-                            <span>{creator.displayName}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">Toy list</span>
-                <input
-                  className={inputClass}
-                  value={toys}
-                  onChange={(event) => setToys(event.target.value)}
-                  placeholder="penis pump, anal plug, prostate vibrator, dildo, cock ring, and lube"
-                />
-              </label>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">Intensity</span>
-                  <select
-                    className={inputClass}
-                    value={intensity}
-                    onChange={(event) =>
-                      setIntensity(event.target.value as TelegramSextingIntensity)
-                    }
-                  >
-                    {INTENSITY_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {formatLabel(option)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">
-                    Orgasm rule
-                  </span>
-                  <select
-                    className={inputClass}
-                    value={orgasmRule}
-                    onChange={(event) =>
-                      setOrgasmRule(event.target.value as TelegramSextingOrgasmRule)
-                    }
-                  >
-                    {ORGASM_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {formatLabel(option)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block space-y-1.5">
-                  <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">Goal</span>
-                  <select
-                    className={inputClass}
-                    value={goal}
-                    onChange={(event) => setGoal(event.target.value as TelegramSextingGoal)}
-                  >
-                    {GOAL_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {formatLabel(option)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">Theme</span>
-                <input
-                  className={inputClass}
-                  value={themes}
-                  onChange={(event) => setThemes(event.target.value)}
-                  placeholder="small dick, cuck, pathetic loser"
-                />
-              </label>
-
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">
-                  Scenario <span className="text-gray-400">(optional)</span>
-                </span>
-                <input
-                  className={inputClass}
-                  value={scenario}
-                  onChange={(event) => setScenario(event.target.value)}
-                  placeholder="slow prostate milking with heavy denial"
-                />
-              </label>
-
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">
-                  Extra instructions / fan limits
-                </span>
-                <textarea
-                  className={`${inputClass} min-h-[96px] resize-y`}
-                  value={extraInstructions}
-                  onChange={(event) => setExtraInstructions(event.target.value)}
-                  placeholder="Keep the slave edged. No blood. No public risk."
-                />
-              </label>
-
-              <button
-                type="submit"
-                disabled={generating}
-                className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-60"
-              >
-                {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-                {generating ? 'Generating… this can take a minute' : 'Generate session'}
-              </button>
-            </form>
+            <TelegramSextingSessionForm
+              onCreated={(created) => {
+                applySession(created, true);
+                setSessions((prev) => [
+                  created,
+                  ...prev.filter((item) => item.id !== created.id),
+                ]);
+                selectSession(created.id);
+              }}
+            />
           ) : sessionLoading ? (
             <div className="h-full flex items-center justify-center text-sm text-gray-500">
               Loading session…
@@ -646,7 +376,7 @@ export default function TelegramSextingSession() {
                       </div>
 
                       <textarea
-                        className={`${inputClass} min-h-[140px] resize-y`}
+                        className={`${SEXTING_FORM_INPUT_CLASS} min-h-[140px] resize-y`}
                         value={drafts[block.id] ?? block.englishText}
                         disabled={sent}
                         onChange={(event) =>
