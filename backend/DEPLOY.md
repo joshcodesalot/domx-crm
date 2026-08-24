@@ -34,7 +34,7 @@ From the `backend/` folder, copy to `/home/debian/domx_backend` on the server:
 | `package-lock.json` or `yarn.lock` | Yes |
 | `src/` (entire folder) | Yes |
 | `.env` (production values) | Yes |
-| `data/avatars/` | Optional — can create empty on server |
+| `data/` | Optional — file caches and Telegram sessions; can create empty on server. Prefer `DOMX_DATA_DIR` (see below). |
 
 **Do not copy:**
 - `node_modules/` — must be installed on the server (native deps are OS-specific)
@@ -53,7 +53,7 @@ scp backend/.env root@your-server:/home/debian/domx_backend/.env
 ### On the server — install, migrate, start
 
 ```bash
-mkdir -p /home/debian/domx_backend/data/avatars
+mkdir -p /home/debian/domx_backend/data
 cd /home/debian/domx_backend
 
 yarn install                # or: npm ci
@@ -121,10 +121,10 @@ cd /home/debian/domx_backend
 yarn install                # or: npm ci
 ```
 
-Ensure the avatar upload directory exists:
+Ensure the data directory exists (avatars, Telegram sessions/vault, media caches):
 
 ```bash
-mkdir -p /home/debian/domx_backend/data/avatars
+mkdir -p /home/debian/domx_backend/data
 ```
 
 ---
@@ -167,6 +167,9 @@ ENCRYPTION_KEY=base64-encoded-32-byte-key
 XAI_API_KEY=your-xai-api-key
 XAI_MODEL=grok-4.20-non-reasoning
 DOMX_ELECTRON_SERVICE_KEY=generate-a-long-random-string
+# Optional. Default: /home/debian/domx_backend/data
+# Mount a disk here, or rsync this folder when moving servers.
+# DOMX_DATA_DIR=/var/lib/domx
 ```
 
 Generate secrets:
@@ -187,6 +190,7 @@ chmod 600 /home/debian/domx_backend/.env
 
 ### Notes
 
+- **`DOMX_DATA_DIR`**: Root for avatars, Telegram sessions/vault/fan photos, scheduled media, and Maloum/4based media caches. Default is `data/` next to the API. Set this to a mounted volume if you want to keep files off the app directory.
 - **`CORS_ORIGIN`**: Set to your actual client origin(s). Avoid `*` in production — the API uses `credentials: true`, which does not work reliably with a wildcard origin in browsers.
 - **`DOMX_ELECTRON_SERVICE_KEY`**: Must match the same value in the Electron app's environment (`frontend/.env` / build config).
 - **Client API URL**: Point desktop builds at `https://api.low7labs.cloud` via `VITE_API_URL` and `DOMX_API_URL`.
@@ -318,31 +322,66 @@ Port **4001** does not need to be exposed publicly — nginx proxies to it on lo
 
 ---
 
-## 4based media disk cache
+## Data directory (shared / movable volume)
 
-Vault thumbs, chat previews, and videos fetched through
-`GET /api/creators/:id/4based/media` are stored on disk so the residential
-proxy is not hit again for the same path.
+All backend files that should survive a restart or a server move live under one root:
 
-By default the cache lives under the OS temp dir
-(`$TMPDIR/domx-4based-media-cache` or `/tmp/domx-4based-media-cache`), which
-can be wiped on reboot. For production, set a durable path in `.env`:
+| Subdir / file | Contents |
+| --- | --- |
+| `avatars/` | Creator avatars |
+| `telegram/` | Telegram MTProto sessions |
+| `telegram-fans/` | Fan/group avatar cache |
+| `telegram-vault/` | Vault photo/video thumbs |
+| `scheduled-media/` | Scheduled mass-message media |
+| `maloum-media-cache/` | Maloum vault/chat thumbs |
+| `4based-media-cache/` | 4based vault/chat media |
+| `jwt-secret` | Fallback JWT secret if `JWT_SECRET` is unset |
+
+Default root: `data/` next to the API (`/home/debian/domx_backend/data` in this guide). Override with `DOMX_DATA_DIR`. `MALOUM_MEDIA_CACHE_DIR` and `FOURBASED_MEDIA_CACHE_DIR` still win if set.
 
 ```bash
-mkdir -p /home/debian/domx_backend/data/4based-media-cache
-chown debian:debian /home/debian/domx_backend/data/4based-media-cache
+mkdir -p /home/debian/domx_backend/data
+# or, for a dedicated disk:
+# mkdir -p /var/lib/domx
+# chown debian:debian /var/lib/domx
 ```
 
+### Moving to a new server
+
+Copy the **whole data dir**, plus Postgres and `.env`. Postgres is not inside this folder.
+
+```bash
+# On the old server
+pg_dump -Fc -d domx -f /tmp/domx.dump
+rsync -av /home/debian/domx_backend/data/ newserver:/home/debian/domx_backend/data/
+scp /home/debian/domx_backend/.env newserver:/home/debian/domx_backend/.env
+scp /tmp/domx.dump newserver:/tmp/domx.dump
+
+# On the new server
+pg_restore -d domx /tmp/domx.dump
+```
+
+If you use `DOMX_DATA_DIR=/var/lib/domx`, rsync that path instead.
+
+---
+
+## 4based / Maloum media disk cache
+
+Vault thumbs, chat previews, and videos fetched through the creator media routes are stored on disk so the residential proxy is not hit again for the same path.
+
+By default they live under `DOMX_DATA_DIR` (`maloum-media-cache/` and `4based-media-cache/`). You can still override:
+
 ```env
-FOURBASED_MEDIA_CACHE_DIR=/home/debian/domx_backend/data/4based-media-cache
-# Optional:
+# Optional — only if you want caches outside DOMX_DATA_DIR
+# MALOUM_MEDIA_CACHE_DIR=/home/debian/domx_backend/data/maloum-media-cache
+# FOURBASED_MEDIA_CACHE_DIR=/home/debian/domx_backend/data/4based-media-cache
 # FOURBASED_MEDIA_CACHE_TTL_MS=604800000
 # FOURBASED_MEDIA_CACHE_MAX_BYTES=10737418240
 # FOURBASED_MEDIA_UPSTREAM_CONCURRENCY=5
 ```
 
 Restart the API after changing these env vars. Response header
-`X-DomX-Media-Cache: HIT|MISS|BYPASS` shows whether a request used the cache.
+`X-DomX-Media-Cache: HIT|MISS|BYPASS` shows whether a 4based request used the cache.
 
 ---
 

@@ -2,7 +2,9 @@ const fs = require('fs');
 const path = require('path');
 const { ProxyAgent, fetch: undiciFetch } = require('undici');
 
-const AVATARS_DIR = path.join(__dirname, '../../data/avatars');
+const { dataPath } = require('./dataDir');
+
+const AVATARS_DIR = dataPath('avatars');
 const MAX_AVATAR_BYTES = 4 * 1024 * 1024;
 
 const EXT_BY_MIME = {

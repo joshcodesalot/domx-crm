@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { dataPath } = require('./dataDir');
 
 const PLACEHOLDERS = new Set([
   '',
@@ -9,7 +10,7 @@ const PLACEHOLDERS = new Set([
   'generate-a-long-random-string',
 ]);
 
-const SECRET_PATH = path.join(__dirname, '../../data/jwt-secret');
+const SECRET_PATH = dataPath('jwt-secret');
 
 function resolveJwtSecret() {
   const fromEnv = String(process.env.JWT_SECRET || '').trim();

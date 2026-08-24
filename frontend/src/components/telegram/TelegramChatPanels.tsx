@@ -5,6 +5,7 @@ import {
   Loader2,
   PanelRight,
   PanelRightClose,
+  RefreshCw,
   Search,
   Send,
   Sparkles,
@@ -256,6 +257,7 @@ export function TelegramChatList({
   const { onSyncEvent } = useStaffSync();
   const [dialogs, setDialogs] = useState<TelegramDialog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [usernameDraft, setUsernameDraft] = useState('');
@@ -298,6 +300,17 @@ export function TelegramChatList({
     });
   }, [onSyncEvent, creatorId, loadDialogs, pollEnabled, onRefreshExtra]);
 
+  const handleRefreshDialogs = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await loadDialogs();
+      onRefreshExtra?.();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadDialogs, onRefreshExtra, refreshing]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return dialogs;
@@ -335,8 +348,22 @@ export function TelegramChatList({
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center">
+      <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-2 shrink-0">
         <span className="text-sm font-semibold text-gray-900 dark:text-white">Chats</span>
+        <button
+          type="button"
+          onClick={() => void handleRefreshDialogs()}
+          disabled={loading || refreshing}
+          className="p-1.5 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all disabled:opacity-40"
+          title="Refresh chats"
+          aria-label="Refresh chats"
+        >
+          {loading || refreshing ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <RefreshCw className="w-4 h-4" />
+          )}
+        </button>
       </div>
       <div className="p-3 space-y-2 border-b border-gray-200 dark:border-zinc-800/60">
         <div className="relative">
@@ -460,6 +487,7 @@ export function TelegramChatThread({
   const [skipOutgoingTranslate, setSkipOutgoingTranslate] = useState(false);
   const [suggestedEnglish, setSuggestedEnglish] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [messagesRefreshing, setMessagesRefreshing] = useState(false);
   const threadRootRef = useRef<HTMLDivElement | null>(null);
   const [threadWide, setThreadWide] = useState(true);
   const [fanPanelOpen, setFanPanelOpen] = useState(() =>
@@ -610,6 +638,20 @@ export function TelegramChatThread({
       // best-effort
     }
   }, [creatorId, peerId]);
+
+  const handleRefreshMessages = useCallback(async () => {
+    if (messagesRefreshing) return;
+    setMessagesRefreshing(true);
+    setError(null);
+    try {
+      await loadMessages();
+      await loadSenders();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load messages');
+    } finally {
+      setMessagesRefreshing(false);
+    }
+  }, [loadMessages, loadSenders, messagesRefreshing]);
 
   useEffect(() => {
     setError(null);
@@ -934,6 +976,20 @@ export function TelegramChatThread({
               Generate session
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => void handleRefreshMessages()}
+            disabled={messagesRefreshing}
+            className="p-2 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all border border-transparent hover:border-gray-300 dark:hover:border-zinc-700 disabled:opacity-40"
+            title="Refresh"
+            aria-label="Refresh messages"
+          >
+            {messagesRefreshing ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4" />
+            )}
+          </button>
           <button
             type="button"
             onClick={toggleFanPanel}

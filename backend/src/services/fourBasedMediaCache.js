@@ -1,12 +1,13 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const fsp = require('fs/promises');
-const os = require('os');
 const path = require('path');
 
+const { dataPath } = require('./dataDir');
+
 const CACHE_DIR =
-  process.env.FOURBASED_MEDIA_CACHE_DIR ||
-  path.join(os.tmpdir(), 'domx-4based-media-cache');
+  String(process.env.FOURBASED_MEDIA_CACHE_DIR || '').trim() ||
+  dataPath('4based-media-cache');
 
 /** Media is immutable; keep warm for a week by default. */
 const TTL_MS =

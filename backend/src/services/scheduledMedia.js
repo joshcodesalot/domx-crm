@@ -1,7 +1,9 @@
 const path = require('path');
 const fs = require('fs');
 
-const MEDIA_DIR = path.join(__dirname, '../../data/scheduled-media');
+const { dataPath } = require('./dataDir');
+
+const MEDIA_DIR = dataPath('scheduled-media');
 
 function ensureMediaDir() {
   fs.mkdirSync(MEDIA_DIR, { recursive: true });

@@ -25,7 +25,6 @@ const {
   deleteSavedVaultMessage,
   getCachedMessageMedia,
   getCachedVaultMedia,
-  prewarmVaultThumb,
   deleteText,
   resolveUsername,
   unreadCount,
@@ -1010,7 +1009,6 @@ router.post(
           req.user.id,
         ]
       );
-      void prewarmVaultThumb(creator.id, uploaded.savedMessageId);
       return res.status(201).json({ item: serializeVaultItem(inserted.rows[0]) });
     } catch (err) {
       return handleTelegramError(res, err, 'Upload Telegram vault error:');

@@ -49,6 +49,33 @@ function formatDuration(seconds?: number | null): string | null {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
+function VaultThumbImg({
+  src,
+  kind,
+}: {
+  src: string;
+  kind?: TelegramVaultItem['kind'];
+}) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    const Icon = kind === 'video' ? Video : ImageIcon;
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-gray-100 dark:bg-zinc-900 text-gray-400 dark:text-zinc-500">
+        <Icon className="w-6 h-6" />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      className="w-full h-full object-cover opacity-80 group-hover:opacity-100"
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 export default function TelegramVaultModal({
   creatorId,
   fanId,
@@ -482,12 +509,7 @@ export default function TelegramVaultModal({
                         className="absolute inset-0 w-full h-full"
                         aria-label={item.kind === 'video' ? 'Select video' : 'Select image'}
                       >
-                        <img
-                          src={src}
-                          alt=""
-                          className="w-full h-full object-cover opacity-80 group-hover:opacity-100"
-                          loading="lazy"
-                        />
+                        <VaultThumbImg key={src} src={src} kind={item.kind} />
                       </button>
                       <VaultMediaNoteButton
                         hasNote={Boolean(notes[item.id]?.trim())}

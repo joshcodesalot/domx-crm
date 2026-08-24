@@ -1,11 +1,11 @@
 const crypto = require('crypto');
 const fsp = require('fs/promises');
-const os = require('os');
 const path = require('path');
+const { dataPath } = require('./dataDir');
 
 const CACHE_DIR =
-  process.env.MALOUM_MEDIA_CACHE_DIR ||
-  path.join(os.tmpdir(), 'domx-maloum-media-cache');
+  String(process.env.MALOUM_MEDIA_CACHE_DIR || '').trim() ||
+  dataPath('maloum-media-cache');
 
 /** Preview images stay warm for a day; avoids re-pulling thumbs through the residential proxy. */
 const TTL_MS = Number(process.env.MALOUM_MEDIA_CACHE_TTL_MS) || 24 * 60 * 60 * 1000;

@@ -1,10 +1,11 @@
 require('dotenv').config();
+const { dataPath, ensureDataDirs } = require('./services/dataDir');
+ensureDataDirs();
 require('./services/jwtSecret').resolveJwtSecret();
 
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const path = require('path');
 const pool = require('./db/pool');
 const authRoutes = require('./routes/auth');
 const staffRoutes = require('./routes/staff');
@@ -48,7 +49,7 @@ app.use(
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     next();
   },
-  express.static(path.join(__dirname, '../data/avatars'))
+  express.static(dataPath('avatars'))
 );
 app.use(
   '/uploads/telegram-fans',
@@ -56,7 +57,7 @@ app.use(
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     next();
   },
-  express.static(path.join(__dirname, '../data/telegram-fans'))
+  express.static(dataPath('telegram-fans'))
 );
 
 app.get('/api/health', async (_req, res) => {

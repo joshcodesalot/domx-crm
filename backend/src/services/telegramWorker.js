@@ -2,16 +2,18 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { TelegramClient } = require('@mtcute/node');
+const sharp = require('sharp');
 const pool = require('../db/pool');
 const { encryptJson, decryptJson } = require('./crypto');
 const { emitToUsers } = require('./userEventBus');
 const { getUserIdsWithCreatorAccess } = require('./creatorAccess');
 const { saveCreatorAvatarFromBuffer } = require('./creatorAvatar');
+const { dataPath } = require('./dataDir');
 
-const DATA_DIR = path.join(__dirname, '../../data/telegram');
-const FAN_AVATARS_DIR = path.join(__dirname, '../../data/telegram-fans');
+const DATA_DIR = dataPath('telegram');
+const FAN_AVATARS_DIR = dataPath('telegram-fans');
 const FAN_AVATARS_PUBLIC = '/uploads/telegram-fans';
-const VAULT_CACHE_DIR = path.join(__dirname, '../../data/telegram-vault');
+const VAULT_CACHE_DIR = dataPath('telegram-vault');
 const LOGIN_TIMEOUT_MS = 90_000;
 const VAULT_ALBUM_MAX = 10;
 const FAN_AVATAR_PREFETCH_CONCURRENCY = 3;
@@ -298,16 +300,33 @@ function vaultCacheAbs(rel) {
   return path.join(VAULT_CACHE_DIR, rel);
 }
 
+function vaultThumbAbs(creatorId, savedMessageId) {
+  return vaultCacheAbs(
+    vaultCacheRel(creatorId, 'me', `${savedMessageId}_thumb.jpg`)
+  );
+}
+
+function fileLooksLikeJpeg(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(3);
+    fs.readSync(fd, buf, 0, 3, 0);
+    fs.closeSync(fd);
+    return buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  } catch {
+    return false;
+  }
+}
+
 function pickMediaThumb(media) {
   if (!media || typeof media !== 'object') return null;
   if (typeof media.getThumbnail === 'function') {
-    return (
+    const thumb =
       media.getThumbnail('m') ||
       media.getThumbnail('x') ||
       media.getThumbnail('s') ||
-      (Array.isArray(media.thumbnails) ? media.thumbnails[0] : null) ||
-      media
-    );
+      (Array.isArray(media.thumbnails) ? media.thumbnails[0] : null);
+    if (thumb) return thumb;
   }
   if (media.videoCover) return media.videoCover;
   if (Array.isArray(media.thumbnails) && media.thumbnails[0]) {
@@ -1300,6 +1319,29 @@ async function uploadVaultMedia(creatorId, { filePath, mimeType, fileName }) {
     if (!fields) {
       throw new TelegramWorkerError('Telegram did not return vault media', 502);
     }
+    let wroteThumb = false;
+    try {
+      if (isPhoto) {
+        wroteThumb = await writePhotoThumbFromFile(
+          creatorId,
+          fields.savedMessageId,
+          abs
+        );
+      }
+      if (!wroteThumb) {
+        wroteThumb = await writeVaultThumbFromMedia(
+          creatorId,
+          client,
+          fields.savedMessageId,
+          sent.media
+        );
+      }
+    } catch (err) {
+      console.warn('[telegram] Vault thumb write failed:', err.message || err);
+    }
+    if (!wroteThumb) {
+      void prewarmVaultThumb(creatorId, fields.savedMessageId);
+    }
     return fields;
   } catch (err) {
     if (err instanceof TelegramWorkerError) throw err;
@@ -1402,6 +1444,43 @@ async function deleteSavedVaultMessage(creatorId, savedMessageId) {
   }
 }
 
+async function writePhotoThumbFromFile(creatorId, savedMessageId, filePath) {
+  const dest = vaultThumbAbs(creatorId, savedMessageId);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const tmp = `${dest}.${Date.now()}.tmp`;
+  try {
+    await sharp(filePath, { failOn: 'none' })
+      .rotate()
+      .resize(320, 320, { fit: 'cover' })
+      .jpeg({ quality: 80 })
+      .toFile(tmp);
+    if (!fs.existsSync(tmp) || !fs.statSync(tmp).size || !fileLooksLikeJpeg(tmp)) {
+      return false;
+    }
+    fs.copyFileSync(tmp, dest);
+    return true;
+  } catch (err) {
+    console.warn('[telegram] Local vault thumb failed:', err.message || err);
+    return false;
+  } finally {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+async function writeVaultThumbFromMedia(creatorId, client, savedMessageId, media) {
+  const location = pickMediaThumb(media);
+  if (!location) return false;
+  return downloadLocationToFile(
+    client,
+    location,
+    vaultThumbAbs(creatorId, savedMessageId)
+  );
+}
+
 async function downloadLocationToFile(client, location, destPath) {
   if (!client || !location || !destPath) return false;
   const tmp = path.join(
@@ -1467,9 +1546,24 @@ async function getCachedMessageMedia(creatorId, peerId, messageId, variant) {
     `${messageId}_${wantThumb ? 'thumb' : 'full'}.${ext}`
   );
   const dest = vaultCacheAbs(rel);
+  if (wantThumb && fs.existsSync(dest) && fs.statSync(dest).size && !fileLooksLikeJpeg(dest)) {
+    try {
+      fs.unlinkSync(dest);
+    } catch {
+      // ignore
+    }
+  }
   if (!fs.existsSync(dest) || !fs.statSync(dest).size) {
     const saved = await downloadLocationToFile(client, location, dest);
     if (!saved) {
+      throw new TelegramWorkerError('Failed to download media', 502);
+    }
+    if (wantThumb && !fileLooksLikeJpeg(dest)) {
+      try {
+        fs.unlinkSync(dest);
+      } catch {
+        // ignore
+      }
       throw new TelegramWorkerError('Failed to download media', 502);
     }
   }
