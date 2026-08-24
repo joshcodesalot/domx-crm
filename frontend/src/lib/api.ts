@@ -2988,6 +2988,111 @@ export async function getTelegramBadges(
   return request(`/api/creators/${creatorId}/telegram/badges`);
 }
 
+export type TelegramSextingIntensity = 'soft' | 'medium' | 'extreme';
+export type TelegramSextingOrgasmRule = 'denied' | 'ruined' | 'full' | 'multiple';
+export type TelegramSextingGoal = 'training' | 'punishment' | 'reward' | 'edge-only';
+
+export interface TelegramSextingSessionBlock {
+  id: string;
+  sessionId: string;
+  blockIndex: number;
+  creatorId: string;
+  speakerName: string;
+  creatorName: string;
+  creatorAvatarUrl: string | null;
+  englishText: string;
+  vaultIds: string[];
+  status: 'pending' | 'sent';
+  sentAt: string | null;
+  sentBy: string | null;
+  telegramMessageId: string | null;
+}
+
+export interface TelegramSextingSession {
+  id: string;
+  fanName: string;
+  slaveName: string;
+  groupPeerId: string;
+  creatorIds: string[];
+  numberOfBlocks: number;
+  toys: string;
+  intensity: TelegramSextingIntensity;
+  orgasmRule: TelegramSextingOrgasmRule;
+  themes: string;
+  goal: TelegramSextingGoal;
+  scenario: string;
+  extraInstructions: string;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+  pendingCount: number;
+  sentCount: number;
+  blocks?: TelegramSextingSessionBlock[];
+}
+
+export interface CreateTelegramSextingSessionInput {
+  fanName: string;
+  slaveName: string;
+  groupPeerId: string;
+  creatorIds: string[];
+  toys: string;
+  intensity: TelegramSextingIntensity;
+  orgasmRule: TelegramSextingOrgasmRule;
+  themes: string;
+  goal: TelegramSextingGoal;
+  scenario?: string;
+  extraInstructions?: string;
+}
+
+export async function listTelegramSextingSessions(): Promise<{
+  sessions: TelegramSextingSession[];
+}> {
+  return request('/api/telegram-sexting-sessions');
+}
+
+export async function getTelegramSextingSession(
+  sessionId: string
+): Promise<{ session: TelegramSextingSession }> {
+  return request(`/api/telegram-sexting-sessions/${sessionId}`);
+}
+
+export async function createTelegramSextingSession(
+  input: CreateTelegramSextingSessionInput
+): Promise<{ session: TelegramSextingSession }> {
+  return request('/api/telegram-sexting-sessions', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateTelegramSextingSessionBlock(
+  sessionId: string,
+  blockId: string,
+  input: { englishText?: string; vaultIds?: string[] }
+): Promise<{ session: TelegramSextingSession }> {
+  return request(
+    `/api/telegram-sexting-sessions/${sessionId}/blocks/${blockId}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }
+  );
+}
+
+export async function sendTelegramSextingSessionBlock(
+  sessionId: string,
+  blockId: string,
+  input: { text?: string; englishText?: string; vaultIds?: string[] } = {}
+): Promise<{ session: TelegramSextingSession; telegramMessageId: string | null }> {
+  return request(
+    `/api/telegram-sexting-sessions/${sessionId}/blocks/${blockId}/send`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }
+  );
+}
+
 export interface FourBasedActivityUser {
   _id?: string;
   name?: string;

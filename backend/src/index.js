@@ -22,6 +22,7 @@ const moderationRoutes = require('./routes/moderation');
 const activityRoutes = require('./routes/activity');
 const contentScheduleRoutes = require('./routes/contentSchedule');
 const telegramRoutes = require('./routes/telegram');
+const telegramSextingSessionRoutes = require('./routes/telegramSextingSessions');
 const {
   startMaloumTokenRefreshScheduler,
 } = require('./services/maloumTokenRefresh');
@@ -83,6 +84,7 @@ app.use('/api/events', eventsRoutes);
 app.use('/api/moderation', moderationRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/scheduled-content', contentScheduleRoutes);
+app.use('/api/telegram-sexting-sessions', telegramSextingSessionRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });

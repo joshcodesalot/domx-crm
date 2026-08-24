@@ -9,19 +9,23 @@ const isDev = !app.isPackaged;
 const windowsByRoute = new Map();
 
 function normalizePlatform(platform) {
-  return platform === '4based' ? '4based' : 'maloum';
+  if (platform === '4based') return '4based';
+  if (platform === 'telegram') return 'telegram';
+  return 'maloum';
 }
 
 function routeForPlatform(platform) {
-  return normalizePlatform(platform) === '4based'
-    ? '/message-pro/4based'
-    : '/message-pro';
+  const normalized = normalizePlatform(platform);
+  if (normalized === '4based') return '/message-pro/4based';
+  if (normalized === 'telegram') return '/message-pro/telegram';
+  return '/message-pro';
 }
 
 function titleForPlatform(platform) {
-  return normalizePlatform(platform) === '4based'
-    ? 'DomX Message Pro (4based)'
-    : 'DomX Message Pro';
+  const normalized = normalizePlatform(platform);
+  if (normalized === '4based') return 'DomX Message Pro (4based)';
+  if (normalized === 'telegram') return 'DomX Message Pro (Telegram)';
+  return 'DomX Message Pro';
 }
 
 function getMessageProWindow(platform = 'maloum') {

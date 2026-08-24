@@ -97,7 +97,7 @@ export interface ElectronAPI {
     failed: number;
   }>;
   openMessageProWindow?: (
-    platform?: 'maloum' | '4based'
+    platform?: 'maloum' | '4based' | 'telegram'
   ) => Promise<{ opened: boolean; focused?: boolean; route?: string }>;
   onActivityKeydown?: (callback: () => void) => () => void;
   onUpdaterChecking: (callback: (state: UpdaterState) => void) => () => void;

@@ -46,13 +46,16 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   const navigate = useNavigate();
   const [maloumMenuOpen, setMaloumMenuOpen] = useState(false);
   const [fourBasedMenuOpen, setFourBasedMenuOpen] = useState(false);
+  const [telegramMenuOpen, setTelegramMenuOpen] = useState(false);
   const maloumMenuRef = useRef<HTMLDivElement>(null);
   const fourBasedMenuRef = useRef<HTMLDivElement>(null);
+  const telegramMenuRef = useRef<HTMLDivElement>(null);
   const hash =
     typeof window !== 'undefined' ? window.location.hash : '';
   const isFourBasedActive =
     hash.includes('/chatter/4based') || hash.includes('/message-pro/4based');
-  const isTelegramActive = hash.includes('/chatter/telegram');
+  const isTelegramActive =
+    hash.includes('/chatter/telegram') || hash.includes('/message-pro/telegram');
   const isMaloumActive =
     activePage === 'chatter' &&
     !isFourBasedActive &&
@@ -65,7 +68,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   }
 
   useEffect(() => {
-    if (!maloumMenuOpen && !fourBasedMenuOpen) {
+    if (!maloumMenuOpen && !fourBasedMenuOpen && !telegramMenuOpen) {
       return;
     }
 
@@ -85,12 +88,20 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       ) {
         setFourBasedMenuOpen(false);
       }
+      if (
+        telegramMenuOpen &&
+        telegramMenuRef.current &&
+        !telegramMenuRef.current.contains(target)
+      ) {
+        setTelegramMenuOpen(false);
+      }
     }
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         setMaloumMenuOpen(false);
         setFourBasedMenuOpen(false);
+        setTelegramMenuOpen(false);
       }
     }
 
@@ -101,7 +112,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [maloumMenuOpen, fourBasedMenuOpen]);
+  }, [maloumMenuOpen, fourBasedMenuOpen, telegramMenuOpen]);
 
   const initial = user?.name?.charAt(0).toUpperCase() || 'U';
 
@@ -110,8 +121,13 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       ? 'text-gray-900 dark:text-white'
       : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors';
 
-  async function openMessagePro(platform: 'maloum' | '4based') {
-    const route = platform === '4based' ? '/message-pro/4based' : '/message-pro';
+  async function openMessagePro(platform: 'maloum' | '4based' | 'telegram') {
+    const route =
+      platform === '4based'
+        ? '/message-pro/4based'
+        : platform === 'telegram'
+          ? '/message-pro/telegram'
+          : '/message-pro';
     if (window.electronAPI?.openMessageProWindow) {
       try {
         await window.electronAPI.openMessageProWindow(platform);
@@ -209,6 +225,21 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     navigate('/chatter/4based');
   }
 
+  async function handleTelegramNavigate(
+    view: 'chat' | 'message-pro' | 'sexting-session'
+  ) {
+    setTelegramMenuOpen(false);
+    if (view === 'message-pro') {
+      await openMessagePro('telegram');
+      return;
+    }
+    if (view === 'sexting-session') {
+      navigate('/chatter/telegram/sexting-session');
+      return;
+    }
+    navigate('/chatter/telegram');
+  }
+
   return (
     <aside className="w-16 flex flex-col items-center py-6 border-r border-gray-200 dark:border-white/10 shrink-0">
       <div className="w-8 h-8 bg-gray-900 dark:bg-white rounded flex items-center justify-center mb-10 shadow-sm">
@@ -294,6 +325,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
               type="button"
               onClick={() => {
                 setFourBasedMenuOpen(false);
+                setTelegramMenuOpen(false);
                 setMaloumMenuOpen((open) => !open);
               }}
               className={`${
@@ -413,6 +445,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
               type="button"
               onClick={() => {
                 setMaloumMenuOpen(false);
+                setTelegramMenuOpen(false);
                 setFourBasedMenuOpen((open) => !open);
               }}
               className={`${
@@ -527,26 +560,69 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
           </div>
         )}
         {hasPermission('creators.view') && (
-          <button
-            type="button"
-            onClick={() => navigate('/chatter/telegram')}
-            className={`${
-              isTelegramActive
-                ? 'text-gray-900 dark:text-white'
-                : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
-            } group`}
-            title="Telegram"
-          >
-            <img
-              src={telegramIcon}
-              alt=""
-              className={`w-5 h-5 rounded-full transition-opacity ${
+          <div ref={telegramMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setMaloumMenuOpen(false);
+                setFourBasedMenuOpen(false);
+                setTelegramMenuOpen((open) => !open);
+              }}
+              className={`${
                 isTelegramActive
-                  ? 'opacity-100'
-                  : 'opacity-50 group-hover:opacity-100'
-              }`}
-            />
-          </button>
+                  ? 'text-gray-900 dark:text-white'
+                  : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
+              } group`}
+              title="Telegram"
+              aria-haspopup="menu"
+              aria-expanded={telegramMenuOpen}
+            >
+              <img
+                src={telegramIcon}
+                alt=""
+                className={`w-5 h-5 rounded-full transition-opacity ${
+                  isTelegramActive
+                    ? 'opacity-100'
+                    : 'opacity-50 group-hover:opacity-100'
+                }`}
+              />
+            </button>
+
+            {telegramMenuOpen && (
+              <div
+                role="menu"
+                className="absolute left-full top-1/2 -translate-y-1/2 ml-3 z-50 min-w-[180px] rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => void handleTelegramNavigate('chat')}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                >
+                  <MessageSquare className="w-4 h-4 shrink-0" />
+                  Chat
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => void handleTelegramNavigate('message-pro')}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                >
+                  <PanelsTopLeft className="w-4 h-4 shrink-0" />
+                  Message Pro
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => void handleTelegramNavigate('sexting-session')}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                >
+                  <Sparkles className="w-4 h-4 shrink-0" />
+                  Sexting Session
+                </button>
+              </div>
+            )}
+          </div>
         )}
         {hasPermission('creators.manage') && (
           <button

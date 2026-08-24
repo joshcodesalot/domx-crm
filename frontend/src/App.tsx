@@ -35,6 +35,8 @@ const MaloumNotifications = lazy(() => import('@/pages/MaloumNotifications'));
 const FourBasedNotifications = lazy(() => import('@/pages/FourBasedNotifications'));
 const MessagePro = lazy(() => import('@/pages/MessagePro'));
 const MessagePro4Based = lazy(() => import('@/pages/MessagePro4Based'));
+const MessageProTelegram = lazy(() => import('@/pages/MessageProTelegram'));
+const TelegramSextingSession = lazy(() => import('@/pages/TelegramSextingSession'));
 const MessagingDashboard = lazy(() => import('@/pages/MessagingDashboard'));
 const SalesLogs = lazy(() => import('@/pages/SalesLogs'));
 const FalseSalesReview = lazy(() => import('@/pages/FalseSalesReview'));
@@ -239,6 +241,41 @@ function PersistentMessagePro4BasedPanel() {
   );
 }
 
+function PersistentMessageProTelegramPanel() {
+  const location = useLocation();
+  const { isAuthenticated, hasPermission } = useAuth();
+  const [everOpened, setEverOpened] = useState(false);
+
+  const isActive = location.pathname === '/message-pro/telegram';
+  const canView = isAuthenticated && hasPermission('creators.view');
+
+  useEffect(() => {
+    if (isActive && canView) {
+      setEverOpened(true);
+    }
+  }, [isActive, canView]);
+
+  useEffect(() => {
+    if (!canView) {
+      setEverOpened(false);
+    }
+  }, [canView]);
+
+  if (!everOpened || !canView) {
+    return null;
+  }
+
+  return (
+    <div
+      className={isActive ? 'contents' : 'hidden'}
+      aria-hidden={!isActive}
+      style={isActive ? undefined : { display: 'none' }}
+    >
+      <MessageProTelegram />
+    </div>
+  );
+}
+
 function AppRoutes() {
   return (
     <HashRouter>
@@ -250,6 +287,7 @@ function AppRoutes() {
             <PersistentMaloumPanel />
             <PersistentMessageProPanel />
             <PersistentMessagePro4BasedPanel />
+            <PersistentMessageProTelegramPanel />
             <ModerationAlertsListener />
             <ActivityHeartbeatListener />
             <Routes>
@@ -290,6 +328,11 @@ function AppRoutes() {
                     <Route path="/chatter/telegram" element={null} />
                     <Route path="/message-pro" element={null} />
                     <Route path="/message-pro/4based" element={null} />
+                    <Route path="/message-pro/telegram" element={null} />
+                    <Route
+                      path="/chatter/telegram/sexting-session"
+                      element={<TelegramSextingSession />}
+                    />
                     <Route
                       path="/chatter/maloum/notifications"
                       element={<MaloumNotifications />}
