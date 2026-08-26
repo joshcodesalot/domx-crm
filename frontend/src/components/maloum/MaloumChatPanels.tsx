@@ -1162,6 +1162,8 @@ export function MaloumChatThread({
   const messagesNextRef = useRef<string | null>(null);
   const loadingMoreMediaRef = useRef(false);
   const vaultMediaNextRef = useRef<number | null>(null);
+  const threadKeyRef = useRef(`${creatorId}:${chatId}`);
+  threadKeyRef.current = `${creatorId}:${chatId}`;
   /** Maloum is EUR-only in the chatter UI. */
   const currency = 'EUR';
 
@@ -1169,6 +1171,7 @@ export function MaloumChatThread({
     async (opts?: { append?: boolean; next?: string | null; silent?: boolean }) => {
       const append = Boolean(opts?.append);
       const silent = Boolean(opts?.silent);
+      const key = `${creatorId}:${chatId}`;
       if (append) {
         if (loadingOlderRef.current) return;
         loadingOlderRef.current = true;
@@ -1187,6 +1190,7 @@ export function MaloumChatThread({
             next: opts?.next || undefined,
           }),
         ]);
+        if (threadKeyRef.current !== key) return;
         if (chatResult?.chat) {
           setChat(chatResult.chat);
         }
@@ -1258,7 +1262,7 @@ export function MaloumChatThread({
           setMessagesNext(nextCursor);
         }
       } catch (err) {
-        if (!silent) {
+        if (!silent && threadKeyRef.current === key) {
           setMessagesError(
             err instanceof Error ? err.message : 'Failed to load messages'
           );
@@ -1266,8 +1270,8 @@ export function MaloumChatThread({
       } finally {
         if (append) {
           loadingOlderRef.current = false;
-          setLoadingOlder(false);
-        } else if (!silent) {
+          if (threadKeyRef.current === key) setLoadingOlder(false);
+        } else if (!silent && threadKeyRef.current === key) {
           setMessagesLoading(false);
         }
       }
@@ -1276,12 +1280,14 @@ export function MaloumChatThread({
   );
 
   const loadSenders = useCallback(async () => {
+    const key = `${creatorId}:${chatId}`;
     try {
       const result = await getMessagingDashboardSenders({
         creatorId,
         chatId,
         limit: 200,
       });
+      if (threadKeyRef.current !== key) return;
       setMessageSenders(result.senders || {});
       setMessageUnlockMeta(result.unlockMeta || {});
     } catch {
@@ -1290,6 +1296,7 @@ export function MaloumChatThread({
   }, [creatorId, chatId]);
 
   const loadUnsends = useCallback(async () => {
+    const key = `${creatorId}:${chatId}`;
     try {
       const result = await getMessageUnsends({
         creatorId,
@@ -1297,6 +1304,7 @@ export function MaloumChatThread({
         platform: 'maloum',
         limit: 500,
       });
+      if (threadKeyRef.current !== key) return;
       const next = result.unsends || {};
       messageUnsendsRef.current = next;
       setMessageUnsends(next);
@@ -1322,6 +1330,7 @@ export function MaloumChatThread({
   const loadVaultSent = useCallback(async () => {
     const fanId = partnerId(chat);
     if (!fanId && !chatId) return;
+    const key = `${creatorId}:${chatId}`;
     const cacheKey = vaultCacheKey({
       platform: 'maloum',
       creatorId,
@@ -1331,6 +1340,7 @@ export function MaloumChatThread({
     const cached =
       getVaultListingCache<{ uploadIds: string[] }>(cacheKey) ||
       (await loadVaultListingCache<{ uploadIds: string[] }>(cacheKey));
+    if (threadKeyRef.current !== key) return;
     if (cached?.uploadIds?.length) {
       const fromCache: Record<string, true> = {};
       for (const id of cached.uploadIds) fromCache[id] = true;
@@ -1341,6 +1351,7 @@ export function MaloumChatThread({
         fanId: fanId || undefined,
         chatId,
       });
+      if (threadKeyRef.current !== key) return;
       const fromApi: Record<string, true> = {};
       const uploadIds: string[] = [];
       for (const id of result.uploadIds || []) {
@@ -3490,6 +3501,7 @@ export function MaloumSingleCreatorChat({
       <main className="flex-1 min-w-0 min-h-0 flex flex-col">
         {selectedCreator && selectedChatId ? (
           <MaloumChatThread
+            key={`${selectedCreator.id}:${selectedChatId}`}
             creator={selectedCreator}
             chatId={selectedChatId}
             initialChat={selectedChat}

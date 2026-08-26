@@ -1523,6 +1523,7 @@ export function FourBasedChatThread({
     localStorage.getItem(FAN_PANEL_OPEN_KEY) != null
   );
   const threadKeyRef = useRef(`${creatorId}:${chatId}`);
+  threadKeyRef.current = `${creatorId}:${chatId}`;
 
   useEffect(() => {
     const el = threadRootRef.current;
@@ -1556,10 +1557,6 @@ export function FourBasedChatThread({
   const handleChatUpdated = useCallback((patch: Partial<FourBasedChat>) => {
     setChat((prev) => (prev ? { ...prev, ...patch } : prev));
   }, []);
-
-  useEffect(() => {
-    threadKeyRef.current = `${creatorId}:${chatId}`;
-  }, [creatorId, chatId]);
 
   const fan = useMemo(
     () => (chat ? fanFromChat(chat, providerUserId) : EMPTY_FAN),

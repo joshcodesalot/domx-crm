@@ -306,6 +306,7 @@ export default function MessageProTelegram() {
             {activeFanTab ? (
               <div className="h-full min-h-0 overflow-hidden flex">
                 <TelegramChatThread
+                  key={`${activeWorkspace.creator.id}:${activeFanTab.peerId}`}
                   creatorId={activeWorkspace.creator.id}
                   creator={activeWorkspace.creator}
                   peerId={activeFanTab.peerId}

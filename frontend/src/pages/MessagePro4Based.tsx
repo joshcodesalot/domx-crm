@@ -300,6 +300,7 @@ export default function MessagePro4Based() {
             {activeFanTab ? (
               <div className="h-full min-h-0 overflow-hidden flex">
                 <FourBasedChatThread
+                  key={`${activeWorkspace.creator.id}:${activeFanTab.chatId}`}
                   creator={activeWorkspace.creator}
                   chatId={activeFanTab.chatId}
                   initialChat={activeFanTab.chat || null}

@@ -278,6 +278,7 @@ export default function Chatter4Based() {
         {/* Thread */}
         {selectedCreator && selectedChatId ? (
           <FourBasedChatThread
+            key={`${selectedCreator.id}:${selectedChatId}`}
             creator={selectedCreator}
             chatId={selectedChatId}
             initialChat={selectedChat}

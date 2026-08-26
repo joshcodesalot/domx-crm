@@ -47,6 +47,7 @@ import {
   getCreators,
   getFourBasedProfile,
   getMassUnsendAll,
+  getMassUnsendAllPlatform,
   listFourBasedMassMessages,
   listFourBasedUserLists,
   listFourBasedVault,
@@ -56,7 +57,9 @@ import {
   resolveFourBasedMediaSrc,
   sendFourBasedMassMessage,
   startMassUnsendAll,
+  startMassUnsendAllPlatform,
   stopMassUnsendAll,
+  stopMassUnsendAllPlatform,
   translateToGerman,
   type Creator,
   type FourBasedMassMessage,
@@ -229,6 +232,8 @@ export default function FourBasedMassMessage() {
   const [scheduleDate, setScheduleDate] = useState(berlin.date);
   const [scheduleTime, setScheduleTime] = useState(berlin.time);
   const [unsendAll, setUnsendAll] = useState<MassUnsendAllProgress | null>(null);
+  const [unsendAllPlatform, setUnsendAllPlatform] =
+    useState<MassUnsendAllProgress | null>(null);
 
   const [userLists, setUserLists] = useState<FourBasedUserList[]>([]);
   const [listsOffset, setListsOffset] = useState(0);
@@ -465,6 +470,31 @@ export default function FourBasedMassMessage() {
   }, [selectedCreatorId, unsendAll?.status, documentVisible]);
 
   useEffect(() => {
+    if (!documentVisible) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const result = await getMassUnsendAllPlatform('4based');
+        if (cancelled) return;
+        setUnsendAllPlatform(result.progress);
+        if (result.progress.status === 'running') {
+          timer = window.setTimeout(() => void poll(), 2000);
+        }
+      } catch {
+        if (!cancelled) {
+          timer = window.setTimeout(() => void poll(), 4000);
+        }
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [unsendAllPlatform?.status, documentVisible]);
+
+  useEffect(() => {
     if (
       unsendAll?.status === 'completed' ||
       unsendAll?.status === 'stopped'
@@ -472,6 +502,15 @@ export default function FourBasedMassMessage() {
       void loadMessages({ tab: 'sent' });
     }
   }, [unsendAll?.status, loadMessages]);
+
+  useEffect(() => {
+    if (
+      unsendAllPlatform?.status === 'completed' ||
+      unsendAllPlatform?.status === 'stopped'
+    ) {
+      void loadMessages({ tab: 'sent' });
+    }
+  }, [unsendAllPlatform?.status, loadMessages]);
 
   useEffect(() => {
     if (!selectedCreatorId) {
@@ -835,7 +874,13 @@ export default function FourBasedMassMessage() {
   ]);
 
   const handleUnsendAll = useCallback(async () => {
-    if (!selectedCreatorId || unsendAll?.status === 'running') return;
+    if (
+      !selectedCreatorId ||
+      unsendAll?.status === 'running' ||
+      unsendAllPlatform?.status === 'running'
+    ) {
+      return;
+    }
     const ok = await confirm({
       title: 'Unsend all sent',
       message:
@@ -850,7 +895,44 @@ export default function FourBasedMassMessage() {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to start unsend all');
     }
-  }, [selectedCreatorId, unsendAll?.status, confirm, toast]);
+  }, [
+    selectedCreatorId,
+    unsendAll?.status,
+    unsendAllPlatform?.status,
+    confirm,
+    toast,
+  ]);
+
+  const handleUnsendAllPlatform = useCallback(async () => {
+    if (
+      unsendAll?.status === 'running' ||
+      unsendAllPlatform?.status === 'running'
+    ) {
+      return;
+    }
+    const count = creators.length;
+    const ok = await confirm({
+      title: 'Unsend all on 4based',
+      message: `Unsend every still-sent mass message for all ${count} 4based creator${count === 1 ? '' : 's'} you can access. Each delete waits 5–10s. You can stop it later.`,
+      confirmLabel: 'Unsend all on 4based',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    try {
+      const result = await startMassUnsendAllPlatform('4based');
+      setUnsendAllPlatform(result.progress);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : 'Failed to start platform unsend all'
+      );
+    }
+  }, [
+    creators.length,
+    unsendAll?.status,
+    unsendAllPlatform?.status,
+    confirm,
+    toast,
+  ]);
 
   const handleSend = useCallback(async () => {
     if (!selectedCreatorId || sending || translatingOutgoing) return;
@@ -1088,6 +1170,43 @@ export default function FourBasedMassMessage() {
               </div>
               <div className="flex items-center gap-2 flex-wrap justify-end">
                 {historyTab === 'sent' && (
+                  unsendAllPlatform?.status === 'running' ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500">
+                        Unsending all {unsendAllPlatform.done}
+                        {unsendAllPlatform.totalEstimate
+                          ? `/${unsendAllPlatform.totalEstimate}`
+                          : ''}
+                        {unsendAllPlatform.currentCreatorName
+                          ? ` · ${unsendAllPlatform.currentCreatorName}`
+                          : ''}
+                        {unsendAllPlatform.creatorsTotal
+                          ? ` (${unsendAllPlatform.creatorsDone || 0}/${unsendAllPlatform.creatorsTotal})`
+                          : ''}
+                        …
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void stopMassUnsendAllPlatform('4based');
+                        }}
+                        className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 dark:border-zinc-700"
+                      >
+                        Stop
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void handleUnsendAllPlatform()}
+                      disabled={bulkUnsending || unsendAll?.status === 'running'}
+                      className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 disabled:opacity-40"
+                    >
+                      Unsend all on 4based
+                    </button>
+                  )
+                )}
+                {historyTab === 'sent' && (
                   unsendAll?.status === 'running' ? (
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-gray-500">
@@ -1112,7 +1231,9 @@ export default function FourBasedMassMessage() {
                     <button
                       type="button"
                       onClick={() => void handleUnsendAll()}
-                      disabled={bulkUnsending}
+                      disabled={
+                        bulkUnsending || unsendAllPlatform?.status === 'running'
+                      }
                       className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 disabled:opacity-40"
                     >
                       Unsend all sent

@@ -430,6 +430,102 @@ router.get('/', authenticate, requirePermission('creators.view'), async (req, re
   }
 });
 
+function parseMassUnsendPlatform(req) {
+  const platform = String(req.body?.platform || req.query?.platform || '').trim();
+  if (platform !== '4based' && platform !== 'maloum') return null;
+  return platform;
+}
+
+async function listAccessibleCreatorsForPlatform(user, platform) {
+  let result;
+  if (userSeesAllCreators(user)) {
+    result = await pool.query(
+      `SELECT id, "displayName" FROM creators WHERE platform = $1 ORDER BY "createdAt" ASC`,
+      [platform]
+    );
+  } else {
+    result = await pool.query(
+      `SELECT c.id, c."displayName"
+       FROM creators c
+       INNER JOIN creator_staff_assignments a
+         ON a."creatorId" = c.id AND a."userId" = $1
+       WHERE c.platform = $2
+       ORDER BY c."createdAt" ASC`,
+      [user.id, platform]
+    );
+  }
+  return result.rows;
+}
+
+router.post(
+  '/mass-messages/unsend-all-platform',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const platform = parseMassUnsendPlatform(req);
+    if (!platform) {
+      return res.status(400).json({ error: 'platform must be 4based or maloum' });
+    }
+    try {
+      const creators = await listAccessibleCreatorsForPlatform(req.user, platform);
+      if (creators.length === 0) {
+        return res.status(400).json({ error: `No ${platform} creators you can access` });
+      }
+      const started = massMessageUnsendAllRunner.startUnsendAllPlatform(
+        platform,
+        creators
+      );
+      if (started.error) {
+        return res.status(started.error.status).json({ error: started.error.message });
+      }
+      res.json({ progress: started });
+    } catch (err) {
+      console.error('Start platform unsend-all error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/mass-messages/unsend-all-platform',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const platform = parseMassUnsendPlatform(req);
+    if (!platform) {
+      return res.status(400).json({ error: 'platform must be 4based or maloum' });
+    }
+    try {
+      res.json({
+        progress: massMessageUnsendAllRunner.snapshotPlatform(platform),
+      });
+    } catch (err) {
+      console.error('Get platform unsend-all error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/mass-messages/unsend-all-platform/stop',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const platform = parseMassUnsendPlatform(req);
+    if (!platform) {
+      return res.status(400).json({ error: 'platform must be 4based or maloum' });
+    }
+    try {
+      res.json({
+        progress: massMessageUnsendAllRunner.stopUnsendAllPlatform(platform),
+      });
+    } catch (err) {
+      console.error('Stop platform unsend-all error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
 router.post(
   '/connect',
   authenticate,
@@ -4520,8 +4616,11 @@ router.post(
       if (loaded.error) {
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
-      const progress = massMessageUnsendAllRunner.startUnsendAll('4based', id);
-      res.json({ progress });
+      const started = massMessageUnsendAllRunner.startUnsendAll('4based', id);
+      if (started.error) {
+        return res.status(started.error.status).json({ error: started.error.message });
+      }
+      res.json({ progress: started });
     } catch (err) {
       return handleFourBasedError(res, err, 'Start 4based unsend-all error:');
     }
@@ -5643,8 +5742,11 @@ router.post(
       if (loaded.error) {
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
-      const progress = massMessageUnsendAllRunner.startUnsendAll('maloum', id);
-      res.json({ progress });
+      const started = massMessageUnsendAllRunner.startUnsendAll('maloum', id);
+      if (started.error) {
+        return res.status(started.error.status).json({ error: started.error.message });
+      }
+      res.json({ progress: started });
     } catch (err) {
       return handleMaloumError(res, err, 'Start Maloum unsend-all error:');
     }

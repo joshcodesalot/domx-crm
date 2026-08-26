@@ -610,6 +610,7 @@ export function TelegramChatThread({
   }, [creatorId, peerId]);
 
   const loadMessages = useCallback(async () => {
+    const key = `${creatorId}:${peerId}`;
     const [result, unsendResult] = await Promise.all([
       getTelegramMessages(creatorId, peerId),
       getMessageUnsends({
@@ -619,6 +620,7 @@ export function TelegramChatThread({
         limit: 200,
       }).catch(() => ({ unsends: {} as Record<string, MessageUnsendRecord> })),
     ]);
+    if (threadKeyRef.current !== key) return;
     const unsends = unsendResult.unsends || {};
     setFan({ ...result.fan, kind: result.kind || result.fan.kind || 'dm' });
     setMessageUnsends(unsends);
@@ -626,13 +628,14 @@ export function TelegramChatThread({
   }, [creatorId, peerId]);
 
   const loadSenders = useCallback(async () => {
+    const key = `${creatorId}:${peerId}`;
     try {
       const result = await getMessagingDashboardSenders({
         creatorId,
         chatId: peerId,
         limit: 200,
       });
-      if (threadKeyRef.current !== `${creatorId}:${peerId}`) return;
+      if (threadKeyRef.current !== key) return;
       setMessageSenders(result.senders || {});
     } catch {
       // best-effort

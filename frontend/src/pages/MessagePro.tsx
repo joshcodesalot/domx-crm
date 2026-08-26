@@ -359,6 +359,7 @@ export default function MessagePro() {
             {activeFanTab ? (
               <div className="h-full min-h-0 overflow-hidden flex">
                 <MaloumChatThread
+                  key={`${activeWorkspace.creator.id}:${activeFanTab.chatId}`}
                   creator={activeWorkspace.creator}
                   chatId={activeFanTab.chatId}
                   initialChat={activeFanTab.chat || null}

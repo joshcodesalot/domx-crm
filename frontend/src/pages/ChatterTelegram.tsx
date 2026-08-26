@@ -157,6 +157,7 @@ export default function ChatterTelegram() {
 
         {selectedCreator && selectedPeerId ? (
           <TelegramChatThread
+            key={`${selectedCreator.id}:${selectedPeerId}`}
             creatorId={selectedCreator.id}
             creator={selectedCreator}
             peerId={selectedPeerId}

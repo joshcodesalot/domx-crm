@@ -4563,6 +4563,11 @@ export interface MassUnsendAllProgress {
   currentId: string | null;
   lastError: string | null;
   startedAt?: number;
+  currentCreatorId?: string | null;
+  currentCreatorName?: string | null;
+  creatorsDone?: number;
+  creatorsTotal?: number;
+  creatorsSkipped?: number;
 }
 
 export async function listScheduledContent(options: {
@@ -4835,5 +4840,31 @@ export async function stopMassUnsendAll(
       ? `/api/creators/${creatorId}/4based/mass-messages/unsend-all/stop`
       : `/api/creators/${creatorId}/maloum/broadcasts/unsend-all/stop`;
   return request(path, { method: 'POST', body: JSON.stringify({}) });
+}
+
+export async function startMassUnsendAllPlatform(
+  platform: 'maloum' | '4based'
+): Promise<{ progress: MassUnsendAllProgress }> {
+  return request('/api/creators/mass-messages/unsend-all-platform', {
+    method: 'POST',
+    body: JSON.stringify({ platform }),
+  });
+}
+
+export async function getMassUnsendAllPlatform(
+  platform: 'maloum' | '4based'
+): Promise<{ progress: MassUnsendAllProgress }> {
+  return request(
+    `/api/creators/mass-messages/unsend-all-platform?platform=${encodeURIComponent(platform)}`
+  );
+}
+
+export async function stopMassUnsendAllPlatform(
+  platform: 'maloum' | '4based'
+): Promise<{ progress: MassUnsendAllProgress }> {
+  return request('/api/creators/mass-messages/unsend-all-platform/stop', {
+    method: 'POST',
+    body: JSON.stringify({ platform }),
+  });
 }
 

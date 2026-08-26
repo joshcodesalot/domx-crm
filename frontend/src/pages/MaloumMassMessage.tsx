@@ -55,6 +55,7 @@ import {
 import {
   getCreators,
   getMassUnsendAll,
+  getMassUnsendAllPlatform,
   listMaloumBroadcasts,
   listMaloumChatLists,
   listAllMaloumVaultFolders,
@@ -65,7 +66,9 @@ import {
   sendMaloumBroadcast,
   createScheduledContent,
   startMassUnsendAll,
+  startMassUnsendAllPlatform,
   stopMassUnsendAll,
+  stopMassUnsendAllPlatform,
   translateToGerman,
   type Creator,
   type MaloumBroadcast,
@@ -196,6 +199,8 @@ export default function MaloumMassMessage() {
   const [scheduleDate, setScheduleDate] = useState(berlin.date);
   const [scheduleTime, setScheduleTime] = useState(berlin.time);
   const [unsendAll, setUnsendAll] = useState<MassUnsendAllProgress | null>(null);
+  const [unsendAllPlatform, setUnsendAllPlatform] =
+    useState<MassUnsendAllProgress | null>(null);
 
   const [chatLists, setChatLists] = useState<MaloumChatListItem[]>([]);
   const [chatListsNext, setChatListsNext] = useState<string | null>(null);
@@ -376,6 +381,31 @@ export default function MaloumMassMessage() {
   }, [selectedCreatorId, unsendAll?.status, documentVisible]);
 
   useEffect(() => {
+    if (!documentVisible) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const result = await getMassUnsendAllPlatform('maloum');
+        if (cancelled) return;
+        setUnsendAllPlatform(result.progress);
+        if (result.progress.status === 'running') {
+          timer = window.setTimeout(() => void poll(), 2000);
+        }
+      } catch {
+        if (!cancelled) {
+          timer = window.setTimeout(() => void poll(), 4000);
+        }
+      }
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [unsendAllPlatform?.status, documentVisible]);
+
+  useEffect(() => {
     if (
       unsendAll?.status === 'completed' ||
       unsendAll?.status === 'stopped'
@@ -383,6 +413,15 @@ export default function MaloumMassMessage() {
       void loadBroadcasts();
     }
   }, [unsendAll?.status, loadBroadcasts]);
+
+  useEffect(() => {
+    if (
+      unsendAllPlatform?.status === 'completed' ||
+      unsendAllPlatform?.status === 'stopped'
+    ) {
+      void loadBroadcasts();
+    }
+  }, [unsendAllPlatform?.status, loadBroadcasts]);
 
   const loadVaultFolders = useCallback(async () => {
     if (!selectedCreatorId) return;
@@ -700,7 +739,13 @@ export default function MaloumMassMessage() {
   ]);
 
   const handleUnsendAll = useCallback(async () => {
-    if (!selectedCreatorId || unsendAll?.status === 'running') return;
+    if (
+      !selectedCreatorId ||
+      unsendAll?.status === 'running' ||
+      unsendAllPlatform?.status === 'running'
+    ) {
+      return;
+    }
     const ok = await confirm({
       title: 'Delete all sent',
       message:
@@ -715,7 +760,44 @@ export default function MaloumMassMessage() {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to start unsend all');
     }
-  }, [selectedCreatorId, unsendAll?.status, confirm, toast]);
+  }, [
+    selectedCreatorId,
+    unsendAll?.status,
+    unsendAllPlatform?.status,
+    confirm,
+    toast,
+  ]);
+
+  const handleUnsendAllPlatform = useCallback(async () => {
+    if (
+      unsendAll?.status === 'running' ||
+      unsendAllPlatform?.status === 'running'
+    ) {
+      return;
+    }
+    const count = creators.length;
+    const ok = await confirm({
+      title: 'Unsend all on Maloum',
+      message: `Unsend every still-sent mass message for all ${count} Maloum creator${count === 1 ? '' : 's'} you can access. Each delete waits 5–10s.`,
+      confirmLabel: 'Unsend all on Maloum',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    try {
+      const result = await startMassUnsendAllPlatform('maloum');
+      setUnsendAllPlatform(result.progress);
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : 'Failed to start platform unsend all'
+      );
+    }
+  }, [
+    creators.length,
+    unsendAll?.status,
+    unsendAllPlatform?.status,
+    confirm,
+    toast,
+  ]);
 
   const handleSend = useCallback(async () => {
     if (!selectedCreatorId || sending || translatingOutgoing) return;
@@ -913,6 +995,41 @@ export default function MaloumMassMessage() {
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-wrap justify-end">
+                {unsendAllPlatform?.status === 'running' ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500">
+                      Deleting all {unsendAllPlatform.done}
+                      {unsendAllPlatform.totalEstimate
+                        ? `/${unsendAllPlatform.totalEstimate}`
+                        : ''}
+                      {unsendAllPlatform.currentCreatorName
+                        ? ` · ${unsendAllPlatform.currentCreatorName}`
+                        : ''}
+                      {unsendAllPlatform.creatorsTotal
+                        ? ` (${unsendAllPlatform.creatorsDone || 0}/${unsendAllPlatform.creatorsTotal})`
+                        : ''}
+                      …
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void stopMassUnsendAllPlatform('maloum');
+                      }}
+                      className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 dark:border-zinc-700"
+                    >
+                      Stop
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleUnsendAllPlatform()}
+                    disabled={bulkUnsending || unsendAll?.status === 'running'}
+                    className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 disabled:opacity-40"
+                  >
+                    Unsend all on Maloum
+                  </button>
+                )}
                 {unsendAll?.status === 'running' ? (
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-500">
@@ -934,7 +1051,9 @@ export default function MaloumMassMessage() {
                   <button
                     type="button"
                     onClick={() => void handleUnsendAll()}
-                    disabled={bulkUnsending}
+                    disabled={
+                      bulkUnsending || unsendAllPlatform?.status === 'running'
+                    }
                     className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-red-500/15 text-red-500 hover:bg-red-500/25 disabled:opacity-40"
                   >
                     Unsend all sent
