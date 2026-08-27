@@ -52,6 +52,7 @@ import {
   getMessageUnsends,
   getMessagingDashboardSenders,
   listMaloumChats,
+  listMaloumChatLists,
   listAllMaloumVaultFolders,
   listMaloumVaultMedia,
   listMaloumVaultSent,
@@ -66,6 +67,7 @@ import {
   type CreatorScript,
   type CreatorScriptMediaItem,
   type MaloumChat,
+  type MaloumChatListItem,
   type MaloumChatPartner,
   type MaloumMessage,
   type MaloumVaultFolder,
@@ -123,6 +125,11 @@ function maloumInboxFilterParams(filterId: MaloumInboxFilterId): {
     return { filter: 'unread', lastMessageSender: 'sentByOther' };
   }
   return {};
+}
+
+function maloumListTag(list: MaloumChatListItem): string | null {
+  const tag = typeof list.tag === 'string' ? list.tag.trim() : '';
+  return tag || null;
 }
 
 function mergeMaloumChatPages(
@@ -800,6 +807,15 @@ export function MaloumChatList({
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inboxFilter, setInboxFilter] = useState<MaloumInboxFilterId>('all');
+  const [selectedListId, setSelectedListId] = useState<string | null>(null);
+  const [taggedLists, setTaggedLists] = useState<MaloumChatListItem[]>([]);
+  const [listsCreatorId, setListsCreatorId] = useState(creatorId);
+  if (listsCreatorId !== creatorId) {
+    setListsCreatorId(creatorId);
+    setSelectedListId(null);
+    setTaggedLists([]);
+    setInboxFilter('all');
+  }
   const chatCountRef = useRef(0);
   const nextCursorRef = useRef<string | null>(null);
   const loadingMoreRef = useRef(false);
@@ -821,6 +837,11 @@ export function MaloumChatList({
     nextCursorRef.current = nextCursor;
   }, [nextCursor]);
 
+  const loadTaggedLists = useCallback(async () => {
+    const result = await listMaloumChatLists(creatorId, { limit: 100 });
+    return (result.lists || []).filter((list) => maloumListTag(list));
+  }, [creatorId]);
+
   const loadChats = useCallback(
     async (opts?: { append?: boolean; next?: string | null; silent?: boolean }) => {
       const append = Boolean(opts?.append);
@@ -837,11 +858,12 @@ export function MaloumChatList({
       }
 
       try {
-        const filterParams = maloumInboxFilterParams(inboxFilter);
         const result = await listMaloumChats(creatorId, {
           limit: CHAT_PAGE_LIMIT,
           next: next || undefined,
-          ...filterParams,
+          ...(selectedListId
+            ? { listIds: selectedListId }
+            : maloumInboxFilterParams(inboxFilter)),
         });
         const page = result.chats || [];
         const resultNext = result.next || null;
@@ -880,8 +902,28 @@ export function MaloumChatList({
         }
       }
     },
-    [creatorId, inboxFilter]
+    [creatorId, inboxFilter, selectedListId]
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadTaggedLists()
+      .then((tagged) => {
+        if (!cancelled) setTaggedLists(tagged);
+      })
+      .catch(() => {
+        if (!cancelled) setTaggedLists([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [creatorId, loadTaggedLists]);
+
+  useEffect(() => {
+    if (!selectedListId) return;
+    if (taggedLists.some((list) => list._id === selectedListId)) return;
+    setSelectedListId(null);
+  }, [selectedListId, taggedLists]);
 
   function handleChatsScroll(e: UIEvent<HTMLDivElement>) {
     if (!nearScrollEnd(e.currentTarget, CHAT_LIST_NEAR_BOTTOM_PX)) return;
@@ -932,7 +974,12 @@ export function MaloumChatList({
           </h2>
           <button
             type="button"
-            onClick={() => void loadChats()}
+            onClick={() => {
+              void loadTaggedLists()
+                .then(setTaggedLists)
+                .catch(() => setTaggedLists([]));
+              void loadChats();
+            }}
             disabled={loading}
             className="p-1.5 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all disabled:opacity-40"
             title="Refresh chats"
@@ -948,12 +995,15 @@ export function MaloumChatList({
       <div className="px-2 py-2 border-b border-gray-200 dark:border-zinc-800/60 shrink-0">
         <div className="flex flex-wrap gap-1">
           {MALOUM_INBOX_FILTERS.map((chip) => {
-            const active = inboxFilter === chip.id;
+            const active = !selectedListId && inboxFilter === chip.id;
             return (
               <button
                 key={chip.id}
                 type="button"
-                onClick={() => setInboxFilter(chip.id)}
+                onClick={() => {
+                  setSelectedListId(null);
+                  setInboxFilter(chip.id);
+                }}
                 className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-colors ${
                   active
                     ? 'bg-maloum-500 text-white'
@@ -961,6 +1011,28 @@ export function MaloumChatList({
                 }`}
               >
                 {chip.label}
+              </button>
+            );
+          })}
+          {taggedLists.map((list) => {
+            const tag = maloumListTag(list);
+            if (!tag) return null;
+            const active = selectedListId === list._id;
+            return (
+              <button
+                key={list._id}
+                type="button"
+                onClick={() => {
+                  setInboxFilter('all');
+                  setSelectedListId(list._id);
+                }}
+                className={`px-2 py-1 rounded-full text-[10px] font-semibold transition-colors ${
+                  active
+                    ? 'bg-maloum-500 text-white'
+                    : 'bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white'
+                }`}
+              >
+                {tag}
               </button>
             );
           })}

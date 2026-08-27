@@ -25,6 +25,7 @@ const ChatterTelegram = lazy(() => import('@/pages/ChatterTelegram'));
 const MaloumMassMessage = lazy(() => import('@/pages/MaloumMassMessage'));
 const MaloumFeed = lazy(() => import('@/pages/MaloumFeed'));
 const MaloumFanScraper = lazy(() => import('@/pages/MaloumFanScraper'));
+const MaloumLists = lazy(() => import('@/pages/MaloumLists'));
 const FourBasedFanScraper = lazy(() => import('@/pages/FourBasedFanScraper'));
 const FourBasedMassMessage = lazy(() => import('@/pages/FourBasedMassMessage'));
 const FourBasedFeed = lazy(() => import('@/pages/FourBasedFeed'));
@@ -350,6 +351,7 @@ function AppRoutes() {
                       path="/chatter/maloum/fan-scraper"
                       element={<MaloumFanScraper />}
                     />
+                    <Route path="/chatter/maloum/lists" element={<MaloumLists />} />
                     <Route
                       path="/chatter/4based/mass-message"
                       element={<FourBasedMassMessage />}

@@ -3400,14 +3400,19 @@ export async function listMaloumChats(
     next?: string;
     filter?: 'unread' | null;
     lastMessageSender?: 'sentByMe' | 'sentByOther' | null;
+    listIds?: string | null;
   } = {}
 ): Promise<{ chats: MaloumChat[]; next: string | null; providerUserId: string | null }> {
   const params = new URLSearchParams();
   if (options.limit != null) params.set('limit', String(options.limit));
   if (options.next) params.set('next', options.next);
-  if (options.filter) params.set('filter', options.filter);
-  if (options.lastMessageSender) {
-    params.set('lastMessageSender', options.lastMessageSender);
+  if (options.listIds) {
+    params.set('listIds', options.listIds);
+  } else {
+    if (options.filter) params.set('filter', options.filter);
+    if (options.lastMessageSender) {
+      params.set('lastMessageSender', options.lastMessageSender);
+    }
   }
   const query = params.toString();
   return request(
@@ -3577,6 +3582,7 @@ export async function sendMaloumPpv(
 export interface MaloumChatListItem {
   _id: string;
   name?: string;
+  tag?: string;
   isManaged?: boolean;
   totalMemberCount?: number;
   [key: string]: unknown;
@@ -3686,12 +3692,24 @@ export async function listMaloumChatLists(
 
 export async function createMaloumChatList(
   creatorId: string,
-  name: string
+  name: string,
+  options?: { tag?: string }
 ): Promise<{ list: MaloumChatListItem; providerUserId: string | null }> {
+  const tag = options?.tag?.trim();
   return request(`/api/creators/${creatorId}/maloum/chat-lists`, {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(tag ? { name, tag } : { name }),
   });
+}
+
+export async function deleteMaloumChatList(
+  creatorId: string,
+  listId: string
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/maloum/chat-lists/${encodeURIComponent(listId)}`,
+    { method: 'DELETE' }
+  );
 }
 
 export interface MaloumTopCreatorItem {

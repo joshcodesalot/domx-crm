@@ -5,6 +5,7 @@ import {
   CalendarDays,
   LayoutGrid,
   LineChart,
+  List,
   LogOut,
   Megaphone,
   MessageSquare,
@@ -146,6 +147,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       | 'mass-message'
       | 'feed'
       | 'fan-scraper'
+      | 'lists'
       | 'ai-bulk-reply'
       | 'notifications'
       | 'schedule'
@@ -169,6 +171,10 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     }
     if (view === 'fan-scraper') {
       navigate('/chatter/maloum/fan-scraper');
+      return;
+    }
+    if (view === 'lists') {
+      navigate('/chatter/maloum/lists');
       return;
     }
     if (view === 'ai-bulk-reply') {
@@ -422,6 +428,17 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                   >
                     <UserSearch className="w-4 h-4 shrink-0" />
                     Fan Scraper
+                  </button>
+                )}
+                {hasPermission('mass_messages.send') && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => void handleMaloumNavigate('lists')}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                  >
+                    <List className="w-4 h-4 shrink-0" />
+                    Lists
                   </button>
                 )}
                 {hasPermission('mass_messages.send') && (

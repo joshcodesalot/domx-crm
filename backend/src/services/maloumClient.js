@@ -426,12 +426,12 @@ function buildQuery(params) {
 
 async function listChats(
   creator,
-  { limit = 15, next, filter, lastMessageSender } = {}
+  { limit = 15, next, filter, lastMessageSender, listIds } = {}
 ) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
-    path: `/chats${buildQuery({ limit, next, filter, lastMessageSender })}`,
+    path: `/chats${buildQuery({ limit, next, filter, lastMessageSender, listIds })}`,
     proxyUrl,
     accessToken,
     timezone,
@@ -684,11 +684,16 @@ async function uploadToSignedUrl(proxyUrl, uploadUrl, buffer, contentType) {
   return { ok: true, status: response.status };
 }
 
-async function createChatList(creator, name) {
+async function createChatList(creator, name, { tag } = {}) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   const trimmed = typeof name === 'string' ? name.trim() : '';
   if (!trimmed) {
     throw new MaloumApiError('name is required', 400);
+  }
+  const body = { name: trimmed };
+  const trimmedTag = typeof tag === 'string' ? tag.trim() : '';
+  if (trimmedTag) {
+    body.tag = trimmedTag;
   }
   const result = await requestJson({
     method: 'POST',
@@ -696,7 +701,22 @@ async function createChatList(creator, name) {
     proxyUrl,
     accessToken,
     timezone,
-    body: { name: trimmed },
+    body,
+  });
+  return result.data;
+}
+
+async function deleteChatList(creator, listId) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  if (!listId) {
+    throw new MaloumApiError('listId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'DELETE',
+    path: `/chat-lists/${encodeURIComponent(listId)}`,
+    proxyUrl,
+    accessToken,
+    timezone,
   });
   return result.data;
 }
@@ -1629,6 +1649,7 @@ module.exports = {
   listChatLists,
   listAllChatLists,
   createChatList,
+  deleteChatList,
   updateFanNickname,
   updateFanNotes,
   getMemberChatLists,

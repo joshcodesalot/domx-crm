@@ -5153,6 +5153,9 @@ router.get(
 
       const limit = Math.min(Number(req.query.limit) || 15, 100);
       const next = typeof req.query.next === 'string' ? req.query.next : undefined;
+      const listIdsRaw =
+        typeof req.query.listIds === 'string' ? req.query.listIds.trim() : '';
+      const listIds = listIdsRaw || undefined;
       const filterRaw =
         typeof req.query.filter === 'string' ? req.query.filter.trim() : '';
       const lastMessageSenderRaw =
@@ -5173,13 +5176,16 @@ router.get(
           error: 'Invalid lastMessageSender. Use sentByMe or sentByOther.',
         });
       }
-      const filter = filterRaw || undefined;
-      const lastMessageSender = lastMessageSenderRaw || undefined;
+      const filter = listIds ? undefined : filterRaw || undefined;
+      const lastMessageSender = listIds
+        ? undefined
+        : lastMessageSenderRaw || undefined;
       const chats = await maloumClient.listChats(loaded.creator, {
         limit,
         next,
         filter,
         lastMessageSender,
+        listIds,
       });
       res.json({
         next: chats?.next ?? null,
@@ -5881,7 +5887,7 @@ router.post(
   requirePermission('mass_messages.send'),
   async (req, res) => {
     const { id } = req.params;
-    const { name } = req.body || {};
+    const { name, tag } = req.body || {};
     if (!isValidUuid(id)) {
       return res.status(400).json({ error: 'Invalid creator ID' });
     }
@@ -5897,13 +5903,47 @@ router.post(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
-      const list = await maloumClient.createChatList(loaded.creator, name);
+      const list = await maloumClient.createChatList(loaded.creator, name, {
+        tag: typeof tag === 'string' ? tag : undefined,
+      });
       return res.status(201).json({
         list,
         providerUserId: loaded.creator.providerUserId,
       });
     } catch (err) {
       return handleMaloumError(res, err, 'Create Maloum chat list error:');
+    }
+  }
+);
+
+router.delete(
+  '/:id/maloum/chat-lists/:listId',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id, listId } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!listId || !String(listId).trim()) {
+      return res.status(400).json({ error: 'listId is required' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      await maloumClient.deleteChatList(loaded.creator, String(listId).trim());
+      return res.json({ ok: true });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Delete Maloum chat list error:');
     }
   }
 );
