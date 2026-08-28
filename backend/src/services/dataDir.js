@@ -12,8 +12,6 @@ const DATA_SUBDIRS = [
 ];
 
 function getDataDir() {
-  const fromEnv = String(process.env.DOMX_DATA_DIR || '').trim();
-  if (fromEnv) return path.resolve(fromEnv);
   return path.join(__dirname, '../../data');
 }
 

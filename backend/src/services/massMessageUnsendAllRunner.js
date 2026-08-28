@@ -15,8 +15,14 @@ function platformAllKey(platform) {
   return `${platform}:all`;
 }
 
+const MAX_UNSEND_PER_CREATOR = 30;
+
 function randomUnsendGapMs() {
   return 5000 + Math.floor(Math.random() * 5001);
+}
+
+function creatorUnsendCap(opts) {
+  return opts.skipLoadErrors ? MAX_UNSEND_PER_CREATOR : Number.POSITIVE_INFINITY;
 }
 
 function sleep(ms, shouldAbort) {
@@ -118,6 +124,49 @@ function conflictResult(platform, activeKey) {
   return { error: { status: 409, message } };
 }
 
+function isUnsendThrottled(err) {
+  if (Number(err?.status) === 429) return true;
+  const message = String(err?.message || '');
+  const body = err?.body;
+  const bodyText =
+    typeof body === 'string' ? body : body ? JSON.stringify(body) : '';
+  const haystack = `${message} ${bodyText}`;
+  return /throttled/i.test(haystack) || /hourly-broadcast-deleting/i.test(haystack);
+}
+
+/**
+ * @param {UnsendRun} run
+ * @param {{ skipLoadErrors?: boolean }} opts
+ * @param {string} message
+ * @returns {'skipped' | 'failed'}
+ */
+function failOrSkip(run, opts, message) {
+  run.lastError = message;
+  if (opts.skipLoadErrors) {
+    run.creatorsSkipped += 1;
+    return 'skipped';
+  }
+  run.status = 'failed';
+  return 'failed';
+}
+
+/**
+ * @returns {'skipped' | 'failed' | null} null means keep going
+ */
+function handleUnsendDeleteError(run, opts, err, fallbackMessage) {
+  run.failed += 1;
+  const message = err?.message || fallbackMessage;
+  run.lastError = message;
+  if (isUnsendThrottled(err)) {
+    return failOrSkip(run, opts, message);
+  }
+  if (!opts.skipLoadErrors) {
+    run.status = 'failed';
+    return 'failed';
+  }
+  return null;
+}
+
 /**
  * @param {string} creatorId
  * @param {UnsendRun} run
@@ -127,34 +176,53 @@ function conflictResult(platform, activeKey) {
 async function runFourBased(creatorId, run, opts = {}) {
   const loaded = await loadFourBasedCreator(creatorId);
   if (loaded.error) {
-    if (opts.skipLoadErrors) {
-      run.creatorsSkipped += 1;
-      run.lastError = loaded.error.message;
-      return 'skipped';
-    }
-    run.status = 'failed';
-    run.lastError = loaded.error.message;
-    return 'failed';
+    return failOrSkip(run, opts, loaded.error.message);
   }
 
-  const pageSize = 50;
+  const cap = creatorUnsendCap(opts);
+  const pageSize = Number.isFinite(cap) ? Math.min(50, cap) : 50;
   let offset = 0;
+  let processed = 0;
+  const attempted = new Set();
   for (;;) {
     if (run.abort) {
       run.status = 'stopped';
       return 'stopped';
     }
-    const page = await fourBasedClient.listMassMessages(loaded.creator, {
-      tab: 'sent',
-      limit: pageSize,
-      offset,
-    });
-    const ids = (Array.isArray(page) ? page : [])
+    if (processed >= cap) break;
+    const limit = Number.isFinite(cap)
+      ? Math.min(pageSize, cap - processed)
+      : pageSize;
+    let page;
+    try {
+      page = await fourBasedClient.listMassMessages(loaded.creator, {
+        tab: 'sent',
+        limit,
+        offset,
+      });
+    } catch (err) {
+      return failOrSkip(
+        run,
+        opts,
+        err?.message || 'Failed to list mass messages'
+      );
+    }
+    const rawIds = (Array.isArray(page) ? page : [])
       .map(massMessageId)
       .filter(Boolean);
-    if (ids.length === 0) break;
-    run.totalEstimate = Math.max(run.totalEstimate, offset + ids.length);
-    if (ids.length === pageSize) {
+    const ids = rawIds.filter((id) => !attempted.has(id));
+    for (const id of rawIds) attempted.add(id);
+    if (ids.length === 0) {
+      if (rawIds.length === 0 || rawIds.length < limit) break;
+      // Failed deletes stay on the sent list; step past a full page of them.
+      offset += rawIds.length;
+      continue;
+    }
+    run.totalEstimate = Math.max(
+      run.totalEstimate,
+      offset + Math.min(rawIds.length, cap - processed)
+    );
+    if (!Number.isFinite(cap) && rawIds.length === pageSize) {
       run.totalEstimate = Math.max(run.totalEstimate, offset + pageSize + 1);
     }
 
@@ -163,21 +231,30 @@ async function runFourBased(creatorId, run, opts = {}) {
         run.status = 'stopped';
         return 'stopped';
       }
+      if (processed >= cap) break;
       run.currentId = id;
       try {
         await fourBasedClient.deleteMassMessage(loaded.creator, id);
         run.done += 1;
       } catch (err) {
-        run.failed += 1;
-        run.lastError = err?.message || 'Failed to unsend mass message';
-        run.status = 'failed';
-        return 'failed';
+        const outcome = handleUnsendDeleteError(
+          run,
+          opts,
+          err,
+          'Failed to unsend mass message'
+        );
+        if (outcome) {
+          run.currentId = null;
+          return outcome;
+        }
       }
+      processed += 1;
       await sleep(randomUnsendGapMs(), () => run.abort);
     }
 
-    if (ids.length < pageSize) break;
-    // Always restart at offset 0: deleted items drop off the sent list.
+    if (processed >= cap || rawIds.length < limit) break;
+    // Successful deletes drop off the sent list; failed ones are skipped via
+    // `attempted`, so restart at 0 unless a full page was already tried.
     offset = 0;
   }
 
@@ -194,28 +271,36 @@ async function runFourBased(creatorId, run, opts = {}) {
 async function runMaloum(creatorId, run, opts = {}) {
   const loaded = await loadMaloumCreator(creatorId);
   if (loaded.error) {
-    if (opts.skipLoadErrors) {
-      run.creatorsSkipped += 1;
-      run.lastError = loaded.error.message;
-      return 'skipped';
-    }
-    run.status = 'failed';
-    run.lastError = loaded.error.message;
-    return 'failed';
+    return failOrSkip(run, opts, loaded.error.message);
   }
 
+  const cap = creatorUnsendCap(opts);
   let next;
+  let processed = 0;
   const seen = new Set();
   for (;;) {
     if (run.abort) {
       run.status = 'stopped';
       return 'stopped';
     }
-    const result = await maloumClient.listSentBroadcasts(loaded.creator, {
-      limit: 50,
-      filter: 'ALL',
-      next,
-    });
+    if (processed >= cap) break;
+    const limit = Number.isFinite(cap)
+      ? Math.min(50, cap - processed)
+      : 50;
+    let result;
+    try {
+      result = await maloumClient.listSentBroadcasts(loaded.creator, {
+        limit,
+        filter: 'ALL',
+        next,
+      });
+    } catch (err) {
+      return failOrSkip(
+        run,
+        opts,
+        err?.message || 'Failed to list mass messages'
+      );
+    }
     const broadcasts = Array.isArray(result?.data)
       ? result.data
       : Array.isArray(result)
@@ -227,8 +312,11 @@ async function runMaloum(creatorId, run, opts = {}) {
     for (const id of broadcasts.map((row) => row._id).filter(Boolean)) {
       seen.add(id);
     }
-    run.totalEstimate = Math.max(run.totalEstimate, seen.size);
-    if (result?.next) {
+    run.totalEstimate = Math.max(
+      run.totalEstimate,
+      Math.min(seen.size, Number.isFinite(cap) ? cap : seen.size)
+    );
+    if (!Number.isFinite(cap) && result?.next) {
       run.totalEstimate = Math.max(run.totalEstimate, seen.size + 1);
     }
 
@@ -237,21 +325,32 @@ async function runMaloum(creatorId, run, opts = {}) {
         run.status = 'stopped';
         return 'stopped';
       }
+      if (processed >= cap) break;
       run.currentId = id;
       try {
         await maloumClient.revokeBroadcast(loaded.creator, id);
         run.done += 1;
       } catch (err) {
-        run.failed += 1;
-        run.lastError = err?.message || 'Failed to delete mass message';
-        run.status = 'failed';
-        return 'failed';
+        const outcome = handleUnsendDeleteError(
+          run,
+          opts,
+          err,
+          'Failed to delete mass message'
+        );
+        if (outcome) {
+          run.currentId = null;
+          return outcome;
+        }
       }
+      processed += 1;
       await sleep(randomUnsendGapMs(), () => run.abort);
     }
 
     next = result?.next;
-    if (!next || broadcasts.length === 0) break;
+    // Platform unsend-all only touches the latest page (cap 30), then the next creator.
+    if (processed >= cap || Number.isFinite(cap) || !next || broadcasts.length === 0) {
+      break;
+    }
   }
 
   run.currentId = null;
@@ -267,8 +366,15 @@ async function runPlatform(platform, creators, run) {
     }
     run.currentCreatorId = creator.id;
     run.currentCreatorName = creator.displayName || creator.id;
-    const outcome = await worker(creator.id, run, { skipLoadErrors: true });
-    if (outcome === 'stopped' || outcome === 'failed') return;
+    let outcome;
+    try {
+      outcome = await worker(creator.id, run, { skipLoadErrors: true });
+    } catch (err) {
+      run.creatorsSkipped += 1;
+      run.lastError = err?.message || 'Unsend all failed for creator';
+      continue;
+    }
+    if (outcome === 'stopped') return;
     if (outcome === 'ok') run.creatorsDone += 1;
   }
   run.status = 'completed';
