@@ -1,6 +1,6 @@
 const pool = require('../db/pool');
 
-const ROLES_SEEING_ALL_CREATORS = ['owner', 'manager'];
+const ROLES_SEEING_ALL_CREATORS = ['owner', 'manager', 'backend'];
 const ACCESS_CACHE_TTL_MS = 60_000;
 const accessCache = new Map();
 

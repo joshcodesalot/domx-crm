@@ -419,7 +419,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                     Schedule
                   </button>
                 )}
-                {hasPermission('mass_messages.send') && (
+                {hasPermission('fan_scraper.use') && (
                   <button
                     type="button"
                     role="menuitem"
@@ -441,7 +441,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                     Lists
                   </button>
                 )}
-                {hasPermission('mass_messages.send') && (
+                {(user?.role === 'owner' || user?.role === 'manager') && (
                   <button
                     type="button"
                     role="menuitem"
@@ -550,7 +550,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                     Schedule
                   </button>
                 )}
-                {hasPermission('mass_messages.send') && (
+                {hasPermission('fan_scraper.use') && (
                   <button
                     type="button"
                     role="menuitem"
@@ -561,7 +561,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                     Fan Scraper
                   </button>
                 )}
-                {hasPermission('mass_messages.send') && (
+                {(user?.role === 'owner' || user?.role === 'manager') && (
                   <button
                     type="button"
                     role="menuitem"

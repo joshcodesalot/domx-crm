@@ -306,6 +306,14 @@ function AppRoutes() {
                       element={<CreatorAnalytics />}
                     />
                     <Route path="/dashboard/false-sales" element={<FalseSalesReview />} />
+                    <Route
+                      path="/chatter/maloum/ai-bulk-reply"
+                      element={<MaloumAiBulkReply />}
+                    />
+                    <Route
+                      path="/chatter/4based/ai-bulk-reply"
+                      element={<FourBasedAiBulkReply />}
+                    />
                   </Route>
                   <Route element={<PermissionRoute permission="analytics.view" />}>
                     <Route path="/dashboard/messaging" element={<MessagingDashboard />} />
@@ -347,27 +355,21 @@ function AppRoutes() {
                     <Route path="/chatter/schedule" element={<ContentSchedule />} />
                     <Route path="/chatter/maloum/mass-message" element={<MaloumMassMessage />} />
                     <Route path="/chatter/maloum/feed" element={<MaloumFeed />} />
-                    <Route
-                      path="/chatter/maloum/fan-scraper"
-                      element={<MaloumFanScraper />}
-                    />
                     <Route path="/chatter/maloum/lists" element={<MaloumLists />} />
                     <Route
                       path="/chatter/4based/mass-message"
                       element={<FourBasedMassMessage />}
                     />
                     <Route path="/chatter/4based/feed" element={<FourBasedFeed />} />
+                  </Route>
+                  <Route element={<PermissionRoute permission="fan_scraper.use" />}>
+                    <Route
+                      path="/chatter/maloum/fan-scraper"
+                      element={<MaloumFanScraper />}
+                    />
                     <Route
                       path="/chatter/4based/fan-scraper"
                       element={<FourBasedFanScraper />}
-                    />
-                    <Route
-                      path="/chatter/maloum/ai-bulk-reply"
-                      element={<MaloumAiBulkReply />}
-                    />
-                    <Route
-                      path="/chatter/4based/ai-bulk-reply"
-                      element={<FourBasedAiBulkReply />}
                     />
                   </Route>
                   <Route element={<PermissionRoute permission="creators.manage" />}>

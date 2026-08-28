@@ -138,7 +138,7 @@ async function getOrCreateJob(motherCreatorId, userId) {
 router.get(
   '/:id/4based/fan-scrape/job',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     try {
@@ -168,7 +168,7 @@ router.get(
 router.patch(
   '/:id/4based/fan-scrape/job',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     const {
@@ -269,7 +269,7 @@ router.patch(
 router.post(
   '/:id/4based/fan-scrape/job/start',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     try {
@@ -296,7 +296,7 @@ router.post(
 router.post(
   '/:id/4based/fan-scrape/job/stop',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     try {

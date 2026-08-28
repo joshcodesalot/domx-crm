@@ -200,7 +200,7 @@ async function getOrCreateJob(motherCreatorId, userId) {
 router.get(
   '/:id/maloum/fan-scrape/job',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     try {
@@ -230,7 +230,7 @@ router.get(
 router.post(
   '/:id/maloum/fan-scrape/job',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     try {
@@ -252,7 +252,7 @@ router.post(
 router.patch(
   '/:id/maloum/fan-scrape/job',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     const {
@@ -413,7 +413,7 @@ router.patch(
 router.post(
   '/:id/maloum/fan-scrape/job/start',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     try {
@@ -440,7 +440,7 @@ router.post(
 router.post(
   '/:id/maloum/fan-scrape/job/stop',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     try {
@@ -464,7 +464,7 @@ router.post(
 router.post(
   '/:id/maloum/fan-scrape/job/checkpoint',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     const { checkpoint, status } = req.body || {};
@@ -515,7 +515,7 @@ router.post(
 router.get(
   '/:id/maloum/fan-scrape/fans/exists',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     const fanId =
@@ -551,7 +551,7 @@ router.get(
 router.post(
   '/:id/maloum/fan-scrape/fans/exists',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     const fanIds = Array.isArray(req.body?.fanIds)
@@ -590,7 +590,7 @@ router.post(
 router.post(
   '/:id/maloum/fan-scrape/fans',
   authenticate,
-  requirePermission('mass_messages.send'),
+  requirePermission('fan_scraper.use'),
   async (req, res) => {
     const { id } = req.params;
     const {

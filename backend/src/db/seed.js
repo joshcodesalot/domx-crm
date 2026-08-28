@@ -23,6 +23,7 @@ const PERMISSIONS = [
   { slug: 'roles.view', name: 'View Roles', category: 'RBAC', description: 'View roles and permission matrix' },
   { slug: 'roles.manage', name: 'Manage Roles', category: 'RBAC', description: 'Edit role permissions' },
   { slug: 'mass_messages.send', name: 'Send Mass Messages', category: 'App', description: 'Send and manage Maloum mass messages (Managers and above)' },
+  { slug: 'fan_scraper.use', name: 'Use Fan Scraper', category: 'App', description: 'Run Maloum and 4based fan scraper jobs (Managers and above)' },
   { slug: 'vault.notes.edit', name: 'Edit Vault Media Notes', category: 'App', description: 'Create and edit notes on vault images and videos (Team Leaders and above)' },
   { slug: 'scripts.manage', name: 'Manage Chat Scripts', category: 'App', description: 'Create, edit, and remove chat scripts and folders (Managers and above)' },
   { slug: 'moderation.manage', name: 'Manage Keyword Rules', category: 'App', description: 'Create, edit, and remove keyword moderation rules (Managers and above)' },
@@ -35,6 +36,7 @@ const DEFAULT_MATRIX = {
     'staff.view', 'staff.create', 'staff.edit', 'staff.deactivate', 'staff.delete', 'staff.assign_role',
     'roles.view', 'roles.manage',
     'mass_messages.send',
+    'fan_scraper.use',
     'vault.notes.edit',
     'scripts.manage',
     'moderation.manage',
@@ -45,6 +47,7 @@ const DEFAULT_MATRIX = {
     'staff.view', 'staff.create', 'staff.edit', 'staff.deactivate', 'staff.delete', 'staff.assign_role',
     'roles.view', 'roles.manage',
     'mass_messages.send',
+    'fan_scraper.use',
     'vault.notes.edit',
     'scripts.manage',
     'moderation.manage',
@@ -53,7 +56,9 @@ const DEFAULT_MATRIX = {
   backend: [
     'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view',
     'staff.view',
+    'mass_messages.send',
     'vault.notes.edit',
+    'scripts.manage',
   ],
   team_leader: [
     'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view',
