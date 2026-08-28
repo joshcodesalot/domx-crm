@@ -1083,25 +1083,49 @@ async function listDialogs(creatorId, { limit = 80 } = {}) {
   });
 }
 
-async function listMessages(creatorId, peerId, { limit = 50 } = {}) {
+async function listMessages(
+  creatorId,
+  peerId,
+  { limit = 50, offsetId, offsetDate } = {}
+) {
   const client = await getClient(creatorId);
   const numericId = Number(peerId);
   if (!Number.isFinite(numericId)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
+  const clamped = Math.min(Math.max(Number(limit) || 50, 1), 100);
+  const numericOffsetId = Number(offsetId);
+  const hasOffset = Number.isFinite(numericOffsetId) && numericOffsetId > 0;
+  const numericOffsetDate = Number(offsetDate);
   const history = await client.getHistory(numericId, {
-    limit: Math.min(Math.max(Number(limit) || 50, 1), 100),
+    limit: clamped,
+    ...(hasOffset
+      ? {
+          offset: {
+            id: numericOffsetId,
+            date: Number.isFinite(numericOffsetDate) ? numericOffsetDate : 0,
+          },
+        }
+      : {}),
   });
+  const nextRaw = history.next || null;
   const messages = [...history]
     .map(serializeMessage)
     .filter(Boolean)
     .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+  const next =
+    nextRaw && nextRaw.id != null
+      ? { id: String(nextRaw.id), date: Number(nextRaw.date) || 0 }
+      : null;
+  const hasMore = Boolean(next) && messages.length >= clamped;
   let peer = null;
-  try {
-    const users = await client.getUsers(numericId);
-    if (users[0] && users[0].type === 'user') peer = users[0];
-  } catch {
-    peer = null;
+  if (!hasOffset) {
+    try {
+      const users = await client.getUsers(numericId);
+      if (users[0] && users[0].type === 'user') peer = users[0];
+    } catch {
+      peer = null;
+    }
   }
   if (!peer) {
     try {
@@ -1110,7 +1134,7 @@ async function listMessages(creatorId, peerId, { limit = 50 } = {}) {
       peer = null;
     }
   }
-  if (peer) {
+  if (peer && !hasOffset) {
     await upsertFanProfile(creatorId, peer);
     await cachePeerAvatar(creatorId, client, peer);
   }
@@ -1137,6 +1161,8 @@ async function listMessages(creatorId, peerId, { limit = 50 } = {}) {
       avatarUrl: profile?.avatarUrl || null,
     },
     messages: withSenders,
+    next,
+    hasMore,
   };
 }
 

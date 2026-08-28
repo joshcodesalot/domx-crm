@@ -11,7 +11,7 @@ export interface MessagingDashboardEntry {
   creatorName: string;
   creatorUsername: string | null;
   creatorAvatarUrl: string | null;
-  platform?: 'maloum' | '4based' | null;
+  platform?: 'maloum' | '4based' | 'telegram' | null;
   chatterId: string;
   chatterName: string;
   chatterEmail: string | null;
@@ -128,24 +128,25 @@ export function formatResponseTime(seconds: number | null | undefined): string {
 
 export function resolveDashboardCurrency(
   currency?: string | null,
-  platform?: 'maloum' | '4based' | null
+  platform?: 'maloum' | '4based' | 'telegram' | null
 ): 'EUR' | 'USD' {
   const normalized = typeof currency === 'string' ? currency.trim().toUpperCase() : '';
   if (normalized === 'USD' || normalized === 'EUR') {
     return normalized;
   }
-  return platform === '4based' ? 'USD' : 'EUR';
+  return platform === '4based' || platform === 'telegram' ? 'USD' : 'EUR';
 }
 
-/** Net take: Maloum 80%, 4based 70%. */
+/** Net take: Maloum 80%, 4based 70%, Telegram/Throne 100%. */
 export function netTakeAmount(
   priceNet: number | null | undefined,
-  platform?: 'maloum' | '4based' | null
+  platform?: 'maloum' | '4based' | 'telegram' | null
 ): number | null {
   if (priceNet == null || Number.isNaN(Number(priceNet))) {
     return null;
   }
-  const take = platform === '4based' ? 0.7 : 0.8;
+  const take =
+    platform === '4based' ? 0.7 : platform === 'telegram' ? 1 : 0.8;
   return Math.abs(Number(priceNet)) * take;
 }
 

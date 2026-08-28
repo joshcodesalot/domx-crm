@@ -34,6 +34,7 @@ const MaloumAiBulkReply = lazy(() => import('@/pages/MaloumAiBulkReply'));
 const FourBasedAiBulkReply = lazy(() => import('@/pages/FourBasedAiBulkReply'));
 const MaloumNotifications = lazy(() => import('@/pages/MaloumNotifications'));
 const FourBasedNotifications = lazy(() => import('@/pages/FourBasedNotifications'));
+const TelegramNotifications = lazy(() => import('@/pages/TelegramNotifications'));
 const MessagePro = lazy(() => import('@/pages/MessagePro'));
 const MessagePro4Based = lazy(() => import('@/pages/MessagePro4Based'));
 const MessageProTelegram = lazy(() => import('@/pages/MessageProTelegram'));
@@ -349,6 +350,10 @@ function AppRoutes() {
                     <Route
                       path="/chatter/4based/notifications"
                       element={<FourBasedNotifications />}
+                    />
+                    <Route
+                      path="/chatter/telegram/notifications"
+                      element={<TelegramNotifications />}
                     />
                   </Route>
                   <Route element={<PermissionRoute permission="mass_messages.send" />}>

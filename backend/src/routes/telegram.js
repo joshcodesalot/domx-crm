@@ -402,8 +402,12 @@ router.get(
       ) {
         return res.status(403).json({ error: 'You do not have access to this chat' });
       }
+      const offsetId = req.query.offsetId ? String(req.query.offsetId) : undefined;
+      const offsetDateRaw = Number(req.query.offsetDate);
       const result = await listMessages(id, peerId, {
         limit: Number(req.query.limit) || 50,
+        offsetId,
+        offsetDate: Number.isFinite(offsetDateRaw) ? offsetDateRaw : undefined,
       });
       if (
         !canSeeTelegramServiceChats(req.user) &&
@@ -421,6 +425,8 @@ router.get(
         kind: result.kind || 'dm',
         fan: redactFan(result.fan, req.user),
         messages: result.messages.map((msg) => redactMessage(msg, req.user)),
+        next: result.next || null,
+        hasMore: Boolean(result.hasMore),
       });
     } catch (err) {
       return handleTelegramError(res, err, 'List Telegram messages error:');

@@ -4742,7 +4742,7 @@ router.get(
       paramIndex += 1;
     }
 
-    if (platform === 'maloum' || platform === '4based') {
+    if (platform === 'maloum' || platform === '4based' || platform === 'telegram') {
       conditions.push(`m.platform = $${paramIndex}`);
       values.push(platform);
       paramIndex += 1;

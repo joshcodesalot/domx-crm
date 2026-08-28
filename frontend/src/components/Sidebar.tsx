@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BarChart2,
   Bell,
@@ -21,10 +21,33 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
+import { useCreatorLive } from '@/context/CreatorLiveContext';
 import ThemeToggle from '@/components/ThemeToggle';
 import maloumIcon from '@/assets/maloum_icon.png';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import telegramIcon from '@/assets/telegram_icon.svg';
+
+function formatUnreadCount(count: number): string {
+  return count > 99 ? '99+' : String(count);
+}
+
+function SidebarUnreadPill({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span className="absolute -top-1 -right-1 min-w-[14px] h-3.5 px-0.5 rounded-full bg-red-500 text-white text-[9px] font-semibold leading-[14px] text-center pointer-events-none">
+      {formatUnreadCount(count)}
+    </span>
+  );
+}
+
+function FlyoutUnreadCount({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <span className="ml-auto min-w-[18px] px-1.5 py-0.5 rounded-full bg-red-500 text-white text-[10px] font-semibold leading-none text-center">
+      {formatUnreadCount(count)}
+    </span>
+  );
+}
 
 interface SidebarProps {
   activePage?:
@@ -45,6 +68,22 @@ interface SidebarProps {
 export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   const { user, logout, hasPermission } = useAuth();
   const navigate = useNavigate();
+  const { creators, badgesByCreatorId, throneUnread } = useCreatorLive({
+    wantBadges: true,
+  });
+  const unreadTotals = useMemo(() => {
+    const totals = {
+      maloum: { messages: 0, notifications: 0 },
+      '4based': { messages: 0, notifications: 0 },
+      telegram: { messages: 0, notifications: 0 },
+    };
+    for (const creator of creators) {
+      const badges = badgesByCreatorId[creator.id];
+      totals[creator.platform].messages += badges?.messages ?? 0;
+      totals[creator.platform].notifications += badges?.notifications ?? 0;
+    }
+    return totals;
+  }, [creators, badgesByCreatorId]);
   const [maloumMenuOpen, setMaloumMenuOpen] = useState(false);
   const [fourBasedMenuOpen, setFourBasedMenuOpen] = useState(false);
   const [telegramMenuOpen, setTelegramMenuOpen] = useState(false);
@@ -232,7 +271,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   }
 
   async function handleTelegramNavigate(
-    view: 'chat' | 'message-pro' | 'sexting-session'
+    view: 'chat' | 'message-pro' | 'sexting-session' | 'notifications'
   ) {
     setTelegramMenuOpen(false);
     if (view === 'message-pro') {
@@ -241,6 +280,10 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     }
     if (view === 'sexting-session') {
       navigate('/chatter/telegram/sexting-session');
+      return;
+    }
+    if (view === 'notifications') {
+      navigate('/chatter/telegram/notifications');
       return;
     }
     navigate('/chatter/telegram');
@@ -334,12 +377,16 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 setTelegramMenuOpen(false);
                 setMaloumMenuOpen((open) => !open);
               }}
-              className={`${
+              className={`relative ${
                 isMaloumActive
                   ? 'text-gray-900 dark:text-white'
                   : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
               } group`}
-              title="Maloum"
+              title={
+                unreadTotals.maloum.messages > 0
+                  ? `Maloum (${formatUnreadCount(unreadTotals.maloum.messages)} unread)`
+                  : 'Maloum'
+              }
               aria-haspopup="menu"
               aria-expanded={maloumMenuOpen}
             >
@@ -352,6 +399,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                     : 'opacity-50 group-hover:opacity-100'
                 }`}
               />
+              <SidebarUnreadPill count={unreadTotals.maloum.messages} />
             </button>
 
             {maloumMenuOpen && (
@@ -376,6 +424,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 >
                   <Bell className="w-4 h-4 shrink-0" />
                   Notifications
+                  <FlyoutUnreadCount count={unreadTotals.maloum.notifications} />
                 </button>
                 <button
                   type="button"
@@ -465,12 +514,16 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 setTelegramMenuOpen(false);
                 setFourBasedMenuOpen((open) => !open);
               }}
-              className={`${
+              className={`relative ${
                 isFourBasedActive
                   ? 'text-gray-900 dark:text-white'
                   : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
               } group`}
-              title="4based"
+              title={
+                unreadTotals['4based'].messages > 0
+                  ? `4based (${formatUnreadCount(unreadTotals['4based'].messages)} unread)`
+                  : '4based'
+              }
               aria-haspopup="menu"
               aria-expanded={fourBasedMenuOpen}
             >
@@ -483,6 +536,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                     : 'opacity-50 group-hover:opacity-100'
                 }`}
               />
+              <SidebarUnreadPill count={unreadTotals['4based'].messages} />
             </button>
 
             {fourBasedMenuOpen && (
@@ -507,6 +561,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 >
                   <Bell className="w-4 h-4 shrink-0" />
                   Notifications
+                  <FlyoutUnreadCount count={unreadTotals['4based'].notifications} />
                 </button>
                 <button
                   type="button"
@@ -585,12 +640,16 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 setFourBasedMenuOpen(false);
                 setTelegramMenuOpen((open) => !open);
               }}
-              className={`${
+              className={`relative ${
                 isTelegramActive
                   ? 'text-gray-900 dark:text-white'
                   : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
               } group`}
-              title="Telegram"
+              title={
+                unreadTotals.telegram.messages > 0
+                  ? `Telegram (${formatUnreadCount(unreadTotals.telegram.messages)} unread)`
+                  : 'Telegram'
+              }
               aria-haspopup="menu"
               aria-expanded={telegramMenuOpen}
             >
@@ -603,6 +662,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                     : 'opacity-50 group-hover:opacity-100'
                 }`}
               />
+              <SidebarUnreadPill count={unreadTotals.telegram.messages} />
             </button>
 
             {telegramMenuOpen && (
@@ -618,6 +678,16 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                 >
                   <MessageSquare className="w-4 h-4 shrink-0" />
                   Chat
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => void handleTelegramNavigate('notifications')}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
+                >
+                  <Bell className="w-4 h-4 shrink-0" />
+                  Notifications
+                  <FlyoutUnreadCount count={throneUnread} />
                 </button>
                 <button
                   type="button"

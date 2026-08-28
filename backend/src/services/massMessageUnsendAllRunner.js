@@ -22,6 +22,8 @@ function randomUnsendGapMs() {
 }
 
 function creatorUnsendCap(opts) {
+  const cap = Number(opts?.cap);
+  if (Number.isFinite(cap) && cap > 0) return Math.floor(cap);
   return opts.skipLoadErrors ? MAX_UNSEND_PER_CREATOR : Number.POSITIVE_INFINITY;
 }
 
@@ -136,7 +138,7 @@ function isUnsendThrottled(err) {
 
 /**
  * @param {UnsendRun} run
- * @param {{ skipLoadErrors?: boolean }} opts
+ * @param {{ skipLoadErrors?: boolean, bestEffortDeletes?: boolean, cap?: number }} opts
  * @param {string} message
  * @returns {'skipped' | 'failed'}
  */
@@ -151,12 +153,15 @@ function failOrSkip(run, opts, message) {
 }
 
 /**
- * @returns {'skipped' | 'failed' | null} null means keep going
+ * @returns {'skipped' | 'failed' | 'ok' | null} null means keep going
  */
 function handleUnsendDeleteError(run, opts, err, fallbackMessage) {
   run.failed += 1;
   const message = err?.message || fallbackMessage;
   run.lastError = message;
+  if (opts.bestEffortDeletes) {
+    return 'ok';
+  }
   if (isUnsendThrottled(err)) {
     return failOrSkip(run, opts, message);
   }
@@ -170,7 +175,7 @@ function handleUnsendDeleteError(run, opts, err, fallbackMessage) {
 /**
  * @param {string} creatorId
  * @param {UnsendRun} run
- * @param {{ skipLoadErrors?: boolean }} [opts]
+ * @param {{ skipLoadErrors?: boolean, bestEffortDeletes?: boolean, cap?: number }} [opts]
  * @returns {Promise<'ok' | 'skipped' | 'failed' | 'stopped'>}
  */
 async function runFourBased(creatorId, run, opts = {}) {
@@ -265,7 +270,7 @@ async function runFourBased(creatorId, run, opts = {}) {
 /**
  * @param {string} creatorId
  * @param {UnsendRun} run
- * @param {{ skipLoadErrors?: boolean }} [opts]
+ * @param {{ skipLoadErrors?: boolean, bestEffortDeletes?: boolean, cap?: number }} [opts]
  * @returns {Promise<'ok' | 'skipped' | 'failed' | 'stopped'>}
  */
 async function runMaloum(creatorId, run, opts = {}) {
@@ -442,6 +447,54 @@ function stopUnsendAllPlatform(platform) {
   return snapshotPlatform(platform);
 }
 
+/**
+ * Awaited helper for scheduled sends: unsend up to `cap` recent mass messages.
+ * If a manual unsend-all is already running on this platform, skip cleanup.
+ * Load/list failures throw so the scheduled job can fail; delete failures stop
+ * remaining deletes and resolve so the send can still go out.
+ *
+ * @param {'4based' | 'maloum'} platform
+ * @param {string} creatorId
+ * @param {{ cap?: number }} [opts]
+ */
+async function unsendRecentForCreator(platform, creatorId, opts = {}) {
+  if (platform !== '4based' && platform !== 'maloum') {
+    return { skipped: true, reason: 'unsupported_platform', done: 0, failed: 0 };
+  }
+  const active = findActiveRunOnPlatform(platform);
+  if (active) {
+    return { skipped: true, reason: 'unsend_all_running', done: 0, failed: 0 };
+  }
+
+  const cap =
+    Number.isFinite(Number(opts.cap)) && Number(opts.cap) > 0
+      ? Math.floor(Number(opts.cap))
+      : MAX_UNSEND_PER_CREATOR;
+  const key = runKey(platform, creatorId);
+  const run = createRun();
+  run.currentCreatorId = creatorId;
+  runs.set(key, run);
+
+  try {
+    const worker = platform === '4based' ? runFourBased : runMaloum;
+    const outcome = await worker(creatorId, run, {
+      cap,
+      bestEffortDeletes: true,
+    });
+    if (outcome === 'failed') {
+      throw new Error(run.lastError || 'Failed to list mass messages for unsend');
+    }
+    return {
+      skipped: false,
+      reason: outcome === 'stopped' ? 'stopped' : null,
+      done: run.done,
+      failed: run.failed,
+    };
+  } finally {
+    runs.delete(key);
+  }
+}
+
 module.exports = {
   startUnsendAll,
   stopUnsendAll,
@@ -449,4 +502,6 @@ module.exports = {
   startUnsendAllPlatform,
   stopUnsendAllPlatform,
   snapshotPlatform,
+  unsendRecentForCreator,
+  MAX_UNSEND_PER_CREATOR,
 };

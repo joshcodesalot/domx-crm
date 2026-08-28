@@ -69,7 +69,9 @@ function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
       ? '4based'
       : entry.platform === 'maloum'
         ? 'Maloum'
-        : null;
+        : entry.platform === 'telegram'
+          ? 'Telegram'
+          : null;
 
   return (
     <tr className="border-b border-gray-100 dark:border-white/5 hover:bg-gray-50/60 dark:hover:bg-white/[0.02]">
@@ -189,7 +191,9 @@ export default function MessagingDashboard() {
   const dateRangeLabel = formatDateRangeLabel(startDate, endDate);
 
   const filteredCreators = useMemo(() => {
-    if (platform !== 'maloum' && platform !== '4based') return creators;
+    if (platform !== 'maloum' && platform !== '4based' && platform !== 'telegram') {
+      return creators;
+    }
     return creators.filter((creator) => creator.platform === platform);
   }, [creators, platform]);
 
@@ -220,7 +224,9 @@ export default function MessagingDashboard() {
           chatterId: chatterId || undefined,
           creatorId: creatorId || undefined,
           platform:
-            platform === 'maloum' || platform === '4based' ? platform : undefined,
+            platform === 'maloum' || platform === '4based' || platform === 'telegram'
+              ? platform
+              : undefined,
           purchased:
             purchased === 'true' ? true : purchased === 'false' ? false : undefined,
           contentType:
@@ -357,6 +363,7 @@ export default function MessagingDashboard() {
                 <option value="">All</option>
                 <option value="maloum">Maloum</option>
                 <option value="4based">4based</option>
+                <option value="telegram">Telegram</option>
               </select>
             </label>
 

@@ -33,6 +33,18 @@ export type StaffSyncEvent =
       payload: unknown;
     }
   | {
+      type: 'telegram:throne';
+      event: 'created' | 'claimed' | string;
+      notification?: {
+        id: string;
+        isRead?: boolean;
+        claimedByUserId?: string | null;
+        claimedByUserName?: string | null;
+        claimedAt?: string | null;
+        [key: string]: unknown;
+      };
+    }
+  | {
       type: 'messaging:sent';
       creatorId: string;
       chatId: string;

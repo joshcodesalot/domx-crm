@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type UIEvent,
+} from 'react';
 import {
   Image as ImageIcon,
   Languages,
@@ -65,6 +73,11 @@ const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const FAN_PANEL_OPEN_KEY = 'domx-telegram-fan-panel';
 const THREAD_WIDE_BREAKPOINT = 1000;
 const MAX_TRANSLATION_HISTORY = 8;
+const MESSAGE_PAGE_LIMIT = 50;
+const NEAR_BOTTOM_PX = 120;
+const NEAR_TOP_PX = 80;
+
+type TelegramHistoryCursor = { id: string; date: number };
 
 function readStoredBoolean(key: string, defaultValue: boolean): boolean {
   const stored = localStorage.getItem(key);
@@ -163,6 +176,20 @@ function incomingClusterRadius(isStart: boolean, isEnd: boolean): string {
   if (isStart) return 'rounded-2xl rounded-bl-md';
   if (isEnd) return 'rounded-2xl rounded-tl-md';
   return 'rounded-2xl rounded-l-md';
+}
+
+function mergeTelegramMessages(
+  prev: TelegramMessage[],
+  incoming: TelegramMessage[]
+): TelegramMessage[] {
+  const byId = new Map(prev.map((msg) => [msg.id, msg]));
+  for (const msg of incoming) {
+    if (!msg?.id) continue;
+    byId.set(msg.id, msg);
+  }
+  return [...byId.values()].sort((a, b) =>
+    String(a.date || '').localeCompare(String(b.date || ''))
+  );
 }
 
 function mergeUnsendTombstones(
@@ -488,6 +515,10 @@ export function TelegramChatThread({
   const [suggestedEnglish, setSuggestedEnglish] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [messagesRefreshing, setMessagesRefreshing] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [messagesNext, setMessagesNext] = useState<TelegramHistoryCursor | null>(
+    null
+  );
   const threadRootRef = useRef<HTMLDivElement | null>(null);
   const [threadWide, setThreadWide] = useState(true);
   const [fanPanelOpen, setFanPanelOpen] = useState(() =>
@@ -522,6 +553,14 @@ export function TelegramChatThread({
   );
   const [generateSessionOpen, setGenerateSessionOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const loadingOlderRef = useRef(false);
+  const nearBottomRef = useRef(true);
+  const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
+  const messagesNextRef = useRef<TelegramHistoryCursor | null>(null);
+  const loadedOlderRef = useRef(false);
+  const messageUnsendsRef = useRef(messageUnsends);
+  messageUnsendsRef.current = messageUnsends;
   const threadKeyRef = useRef(`${creatorId}:${peerId}`);
   threadKeyRef.current = `${creatorId}:${peerId}`;
   const historyTranslateQueueRef = useRef<HistoryTranslateQueue | null>(null);
@@ -598,6 +637,14 @@ export function TelegramChatThread({
     historyTranslateQueueRef.current?.clear();
     setMessageSenders({});
     setMessageUnsends({});
+    setMessages([]);
+    setMessagesNext(null);
+    messagesNextRef.current = null;
+    loadedOlderRef.current = false;
+    loadingOlderRef.current = false;
+    setLoadingOlder(false);
+    nearBottomRef.current = true;
+    preserveScrollRef.current = null;
     setVaultItems([]);
     setVaultOpen(false);
     setVaultPickMode('composer');
@@ -609,23 +656,118 @@ export function TelegramChatThread({
     setGenerateSessionOpen(false);
   }, [creatorId, peerId]);
 
-  const loadMessages = useCallback(async () => {
-    const key = `${creatorId}:${peerId}`;
-    const [result, unsendResult] = await Promise.all([
-      getTelegramMessages(creatorId, peerId),
-      getMessageUnsends({
-        creatorId,
-        chatId: peerId,
-        platform: 'telegram',
-        limit: 200,
-      }).catch(() => ({ unsends: {} as Record<string, MessageUnsendRecord> })),
-    ]);
-    if (threadKeyRef.current !== key) return;
-    const unsends = unsendResult.unsends || {};
-    setFan({ ...result.fan, kind: result.kind || result.fan.kind || 'dm' });
-    setMessageUnsends(unsends);
-    setMessages(mergeUnsendTombstones(result.messages || [], unsends, peerId));
-  }, [creatorId, peerId]);
+  const loadMessages = useCallback(
+    async (opts?: {
+      append?: boolean;
+      next?: TelegramHistoryCursor | null;
+      silent?: boolean;
+    }) => {
+      const append = Boolean(opts?.append);
+      const silent = Boolean(opts?.silent);
+      const key = `${creatorId}:${peerId}`;
+      if (append) {
+        if (loadingOlderRef.current) return;
+        loadingOlderRef.current = true;
+        setLoadingOlder(true);
+      }
+      try {
+        const offset = append ? opts?.next || messagesNextRef.current : null;
+        const [result, unsendResult] = await Promise.all([
+          getTelegramMessages(creatorId, peerId, {
+            limit: MESSAGE_PAGE_LIMIT,
+            ...(append && offset
+              ? { offsetId: offset.id, offsetDate: offset.date }
+              : {}),
+          }),
+          append
+            ? Promise.resolve({ unsends: messageUnsendsRef.current })
+            : getMessageUnsends({
+                creatorId,
+                chatId: peerId,
+                platform: 'telegram',
+                limit: 200,
+              }).catch(() => ({
+                unsends: {} as Record<string, MessageUnsendRecord>,
+              })),
+        ]);
+        if (threadKeyRef.current !== key) return;
+        const unsends = unsendResult.unsends || {};
+        if (!append) setMessageUnsends(unsends);
+        if (result.fan) {
+          setFan({
+            ...result.fan,
+            kind: result.kind || result.fan.kind || 'dm',
+          });
+        }
+        const incoming = result.messages || [];
+        const hasMore =
+          result.hasMore != null
+            ? Boolean(result.hasMore)
+            : Boolean(result.next?.id);
+        const nextCursor =
+          hasMore && result.next?.id
+            ? {
+                id: String(result.next.id),
+                date: Number(result.next.date) || 0,
+              }
+            : null;
+        if (append) {
+          const scrollEl = messagesScrollRef.current;
+          if (scrollEl) {
+            preserveScrollRef.current = {
+              height: scrollEl.scrollHeight,
+              top: scrollEl.scrollTop,
+            };
+          }
+          const incomingIds = incoming.map((msg) => msg.id).filter(Boolean);
+          setMessages((prev) => {
+            const existing = new Set(prev.map((msg) => msg.id));
+            const fresh = incoming.filter(
+              (msg) => msg.id && !existing.has(msg.id)
+            );
+            if (fresh.length === 0) return prev;
+            return mergeUnsendTombstones(
+              [...fresh, ...prev],
+              messageUnsendsRef.current,
+              peerId
+            );
+          });
+          loadedOlderRef.current = true;
+          const offsetUnchanged =
+            Boolean(offset?.id) && nextCursor?.id === offset?.id;
+          const exhausted =
+            incomingIds.length === 0 || offsetUnchanged || !nextCursor;
+          const cursor = exhausted ? null : nextCursor;
+          messagesNextRef.current = cursor;
+          setMessagesNext(cursor);
+        } else {
+          setMessages((prev) => {
+            const merged =
+              silent && (prev.length > 0 || loadedOlderRef.current)
+                ? mergeTelegramMessages(prev, incoming)
+                : incoming;
+            return mergeUnsendTombstones(merged, unsends, peerId);
+          });
+          if (!loadedOlderRef.current) {
+            messagesNextRef.current = nextCursor;
+            setMessagesNext(nextCursor);
+          }
+        }
+      } catch (err) {
+        if (!silent && threadKeyRef.current === key) {
+          setError(
+            err instanceof Error ? err.message : 'Failed to load messages'
+          );
+        }
+      } finally {
+        if (append) {
+          loadingOlderRef.current = false;
+          if (threadKeyRef.current === key) setLoadingOlder(false);
+        }
+      }
+    },
+    [creatorId, peerId]
+  );
 
   const loadSenders = useCallback(async () => {
     const key = `${creatorId}:${peerId}`;
@@ -647,7 +789,7 @@ export function TelegramChatThread({
     setMessagesRefreshing(true);
     setError(null);
     try {
-      await loadMessages();
+      await loadMessages({ silent: true });
       await loadSenders();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load messages');
@@ -667,7 +809,7 @@ export function TelegramChatThread({
   useEffect(() => {
     if (!pollEnabled) return;
     const timer = window.setInterval(() => {
-      void loadMessages().catch(() => undefined);
+      void loadMessages({ silent: true }).catch(() => undefined);
       void loadSenders();
     }, 12_000);
     return () => window.clearInterval(timer);
@@ -682,14 +824,61 @@ export function TelegramChatThread({
         ? String((event.payload as { peerId?: string }).peerId || '')
         : '';
       if (eventPeer && eventPeer !== peerId) return;
-      void loadMessages().catch(() => undefined);
+      void loadMessages({ silent: true }).catch(() => undefined);
       void loadSenders();
     });
   }, [onSyncEvent, creatorId, peerId, loadMessages, loadSenders, pollEnabled]);
 
+  const updateNearBottom = useCallback((el: HTMLDivElement) => {
+    nearBottomRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+  }, []);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const el = messagesScrollRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior });
+      nearBottomRef.current = true;
+      return;
+    }
+    bottomRef.current?.scrollIntoView({ behavior });
+    nearBottomRef.current = true;
+  }, []);
+
+  useLayoutEffect(() => {
+    const preserved = preserveScrollRef.current;
+    const el = messagesScrollRef.current;
+    if (!preserved || !el) return;
+    el.scrollTop = preserved.top + (el.scrollHeight - preserved.height);
+    preserveScrollRef.current = null;
+    updateNearBottom(el);
+  }, [messages, updateNearBottom]);
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, historyTranslations]);
+    if (loadingOlderRef.current || preserveScrollRef.current) return;
+    if (!nearBottomRef.current) return;
+    scrollToBottom('smooth');
+  }, [messages.length, scrollToBottom]);
+
+  useEffect(() => {
+    if (!autoTranslateHistory) return;
+    if (loadingOlderRef.current || preserveScrollRef.current) return;
+    if (!nearBottomRef.current) return;
+    if (Object.keys(historyTranslations).length === 0) return;
+    scrollToBottom('smooth');
+  }, [historyTranslations, autoTranslateHistory, scrollToBottom]);
+
+  const handleMessagesScroll = useCallback(
+    (event: UIEvent<HTMLDivElement>) => {
+      const el = event.currentTarget;
+      updateNearBottom(el);
+      if (el.scrollTop > NEAR_TOP_PX) return;
+      if (!messagesNextRef.current) return;
+      if (loadingOlderRef.current) return;
+      void loadMessages({ append: true, next: messagesNextRef.current });
+    },
+    [loadMessages, updateNearBottom]
+  );
 
   useEffect(() => {
     if (!autoTranslateHistory || !pollEnabled) return;
@@ -761,9 +950,11 @@ export function TelegramChatThread({
         Boolean
       ) as TelegramMessage[];
       if (sentMessages.length) {
+        nearBottomRef.current = true;
         setMessages((prev) => [...prev, ...sentMessages]);
       } else {
-        await loadMessages();
+        nearBottomRef.current = true;
+        await loadMessages({ silent: true });
       }
 
       if (attached.length && fan?.telegramUserId) {
@@ -1025,7 +1216,25 @@ export function TelegramChatThread({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 relative z-10 chat-thread-scroll">
+      <div
+        ref={messagesScrollRef}
+        onScroll={handleMessagesScroll}
+        className="flex-1 min-h-0 overflow-y-auto px-4 py-3 relative z-10 chat-thread-scroll"
+      >
+        {(loadingOlder || (messagesNext && messages.length > 0)) && (
+          <div className="flex justify-center py-1">
+            {loadingOlder ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-zinc-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Loading older messages…
+              </span>
+            ) : (
+              <span className="text-[11px] text-gray-400 dark:text-zinc-600">
+                Scroll up for older messages
+              </span>
+            )}
+          </div>
+        )}
         {messages.map((msg, index) => {
           const msgText = msg.text || '';
           const cacheKey = `${msg.id}::${msgText.trim()}`;

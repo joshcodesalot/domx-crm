@@ -715,7 +715,7 @@ export default function Dashboard() {
                 hint={`Photo-only vs video PPVs sent in ${periodLabel}`}
               />
               {showTeamWidgets ? (
-                <MetricCard label="Online Chatters" value={String(onlineCount)} />
+                <MetricCard label="Online Staff" value={String(onlineCount)} />
               ) : null}
             </div>
 

@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import ToggleSwitch from '@/components/ToggleSwitch';
 import ScheduleDateTimePicker, {
   type ScheduleJobKindFilter,
   type ScheduleJobPlatformFilter,
@@ -23,6 +24,7 @@ import {
   cancelScheduledContent,
   commitScheduledContentImport,
   getCreators,
+  getUnsendBeforeMassSetting,
   listFourBasedUserLists,
   listMaloumCategories,
   listMaloumChatLists,
@@ -30,6 +32,7 @@ import {
   listScheduledContent,
   previewScheduledContentImport,
   updateScheduleSettings,
+  updateUnsendBeforeMassSetting,
   uploadScheduledContentAsset,
   type Creator,
   type CreatorScheduleSettings,
@@ -267,6 +270,9 @@ export default function ContentSchedule() {
   const [importing, setImporting] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [unsendBeforeMass, setUnsendBeforeMass] = useState(true);
+  const [canEditUnsendBeforeMass, setCanEditUnsendBeforeMass] = useState(false);
+  const [savingUnsendBeforeMass, setSavingUnsendBeforeMass] = useState(false);
   const [lists, setLists] = useState<Array<FourBasedUserList | MaloumChatListItem>>(
     []
   );
@@ -300,14 +306,17 @@ export default function ContentSchedule() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [creatorRes, jobRes, settingRes] = await Promise.all([
+      const [creatorRes, jobRes, settingRes, unsendRes] = await Promise.all([
         getCreators(),
         listScheduledContent(),
         listScheduleSettings(),
+        getUnsendBeforeMassSetting(),
       ]);
       setCreators(creatorRes.creators || []);
       setJobs(jobRes.jobs || []);
       setSettings(settingRes.settings || []);
+      setUnsendBeforeMass(unsendRes.enabled !== false);
+      setCanEditUnsendBeforeMass(Boolean(unsendRes.canEdit));
       setSelectedCreatorId((prev) => {
         if (prev) return prev;
         return creatorRes.creators?.[0]?.id || null;
@@ -419,6 +428,30 @@ export default function ContentSchedule() {
       toast.error(err instanceof Error ? err.message : 'Failed to save settings');
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  const saveUnsendBeforeMass = async (enabled: boolean) => {
+    if (!canEditUnsendBeforeMass || savingUnsendBeforeMass) return;
+    const previous = unsendBeforeMass;
+    setUnsendBeforeMass(enabled);
+    setSavingUnsendBeforeMass(true);
+    try {
+      const result = await updateUnsendBeforeMassSetting(enabled);
+      setUnsendBeforeMass(result.enabled);
+      setCanEditUnsendBeforeMass(Boolean(result.canEdit));
+      toast.success(
+        result.enabled
+          ? 'Will unsend the last 30 mass messages before each scheduled send'
+          : 'Scheduled mass messages will send without unsending older ones'
+      );
+    } catch (err) {
+      setUnsendBeforeMass(previous);
+      toast.error(
+        err instanceof Error ? err.message : 'Failed to update unsend setting'
+      );
+    } finally {
+      setSavingUnsendBeforeMass(false);
     }
   };
 
@@ -1189,6 +1222,31 @@ export default function ContentSchedule() {
             </p>
 
             <section className="rounded-lg border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 p-5 flex flex-col gap-6">
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-semibold text-gray-500 tracking-wider">
+                    UNSEND BEFORE SCHEDULED MASS
+                  </span>
+                  <ToggleSwitch
+                    checked={unsendBeforeMass}
+                    disabled={
+                      !canEditUnsendBeforeMass || savingUnsendBeforeMass || loading
+                    }
+                    onChange={(enabled) => {
+                      void saveUnsendBeforeMass(enabled);
+                    }}
+                    aria-label="Unsend last 30 mass messages before a scheduled send"
+                  />
+                </label>
+                <p className="text-[11px] text-gray-500 leading-relaxed">
+                  When on, each scheduled mass message unsends the last 30 existing
+                  mass messages for that creator first so inboxes look less spammy.
+                  {!loading && !canEditUnsendBeforeMass
+                    ? ' Only managers and owners can change this.'
+                    : ''}
+                </p>
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold text-gray-500 tracking-wider mb-3">
                   PER-CREATOR TARGETING

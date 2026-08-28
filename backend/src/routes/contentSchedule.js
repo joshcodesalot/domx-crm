@@ -20,6 +20,10 @@ const {
 } = require('../services/scheduledMedia');
 const { DEFAULT_AUDIENCE } = require('../services/contentScheduleRunner');
 const { asIdList, asNamedRefs } = require('../services/scheduleNamedRefs');
+const {
+  getUnsendBeforeMass,
+  setUnsendBeforeMass,
+} = require('../services/appSettings');
 
 const router = express.Router();
 
@@ -324,6 +328,38 @@ router.get('/', async (req, res) => {
     res.json({ jobs: result.rows.map(mapJob) });
   } catch (err) {
     console.error('List scheduled content error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+function canManageScheduleFlags(user) {
+  const role = user?.role;
+  return role === 'owner' || role === 'manager';
+}
+
+router.get('/unsend-before-mass', async (req, res) => {
+  try {
+    const enabled = await getUnsendBeforeMass();
+    res.json({ enabled, canEdit: canManageScheduleFlags(req.user) });
+  } catch (err) {
+    console.error('Get unsend-before-mass setting error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.put('/unsend-before-mass', async (req, res) => {
+  if (!canManageScheduleFlags(req.user)) {
+    return res.status(403).json({ error: 'Owner or manager access required' });
+  }
+  try {
+    const body = req.body || {};
+    if (typeof body.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled must be a boolean' });
+    }
+    const enabled = await setUnsendBeforeMass(body.enabled, req.user.id);
+    res.json({ enabled, canEdit: true });
+  } catch (err) {
+    console.error('Update unsend-before-mass setting error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

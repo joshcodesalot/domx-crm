@@ -22,12 +22,13 @@ import {
 import { formatMoney, formatResponseTime } from '@/lib/messagingDashboardFormat';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import maloumIcon from '@/assets/maloum_icon.png';
+import telegramIcon from '@/assets/telegram_icon.svg';
 
 function PlatformIcon({
   platform,
   className = 'w-3.5 h-3.5',
 }: {
-  platform?: 'maloum' | '4based' | null;
+  platform?: 'maloum' | '4based' | 'telegram' | null;
   className?: string;
 }) {
   if (platform === '4based') {
@@ -40,6 +41,11 @@ function PlatformIcon({
         alt=""
         className={`${className} rounded-sm object-cover`}
       />
+    );
+  }
+  if (platform === 'telegram') {
+    return (
+      <img src={telegramIcon} alt="" className={`${className} rounded-full`} />
     );
   }
   return null;

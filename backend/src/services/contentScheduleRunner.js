@@ -6,6 +6,11 @@ const fourBasedClient = require('./fourBasedClient');
 const maloumClient = require('./maloumClient');
 const { loadFourBasedCreator, loadMaloumCreator } = require('./platformCreatorSession');
 const { isInsideMediaDir } = require('./scheduledMedia');
+const { getUnsendBeforeMass } = require('./appSettings');
+const {
+  unsendRecentForCreator,
+  MAX_UNSEND_PER_CREATOR,
+} = require('./massMessageUnsendAllRunner');
 const {
   asIdList,
   asNamedRefs,
@@ -361,12 +366,36 @@ async function postMaloumFeed(job, settings, text) {
   }
 }
 
+async function unsendBeforeScheduledMass(job) {
+  const enabled = await getUnsendBeforeMass();
+  if (!enabled) return;
+  const result = await unsendRecentForCreator(job.platform, job.creatorId, {
+    cap: MAX_UNSEND_PER_CREATOR,
+  });
+  if (result?.skipped) {
+    console.log(
+      'Scheduled mass skipped unsend-before-send:',
+      job.id,
+      job.platform,
+      result.reason
+    );
+    return;
+  }
+  console.log(
+    'Scheduled mass unsend-before-send:',
+    job.id,
+    job.platform,
+    `done=${result.done} failed=${result.failed}`
+  );
+}
+
 async function executeJob(job) {
   const settings = await loadSettings(job.creatorId);
   const english = String(job.bodyText || '').trim();
   const text = english ? await translateCaption(english) : '';
 
   if (job.kind === 'mass_message') {
+    await unsendBeforeScheduledMass(job);
     if (job.platform === '4based') {
       await sendFourBasedMass(job, settings, text);
       return;

@@ -24,6 +24,8 @@ const activityRoutes = require('./routes/activity');
 const contentScheduleRoutes = require('./routes/contentSchedule');
 const telegramRoutes = require('./routes/telegram');
 const telegramSextingSessionRoutes = require('./routes/telegramSextingSessions');
+const throneWebhookRoutes = require('./routes/throneWebhook');
+const throneRoutes = require('./routes/throne');
 const {
   startMaloumTokenRefreshScheduler,
 } = require('./services/maloumTokenRefresh');
@@ -40,6 +42,11 @@ app.use(
     origin: process.env.CORS_ORIGIN || '*',
     credentials: true,
   })
+);
+app.use(
+  '/api/webhooks/throne',
+  express.raw({ type: 'application/json' }),
+  throneWebhookRoutes
 );
 app.use(express.json({ limit: '6mb' }));
 
@@ -86,6 +93,7 @@ app.use('/api/moderation', moderationRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/scheduled-content', contentScheduleRoutes);
 app.use('/api/telegram-sexting-sessions', telegramSextingSessionRoutes);
+app.use('/api/throne', throneRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });

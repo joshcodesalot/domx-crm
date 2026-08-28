@@ -1,8 +1,10 @@
 const TEAM_ANALYTICS_ROLES = ['owner', 'manager'];
 const TRACKED_STAFF_ROLES = ['chatter', 'team_leader'];
+const DASHBOARD_ACTIVITY_ROLES = ['chatter', 'team_leader', 'backend'];
 
 /**
- * Manager+ sees org-wide chatter + team_leader data.
+ * Manager+ sees org-wide chatter + team_leader sales data.
+ * Dashboard presence/history also includes backend ops staff.
  * Team Leader / Chatter see only their own rows.
  */
 function isTeamAnalyticsRole(role) {
@@ -62,6 +64,7 @@ function staffRoleFilter(scope, column, startIndex = 1) {
 module.exports = {
   TEAM_ANALYTICS_ROLES,
   TRACKED_STAFF_ROLES,
+  DASHBOARD_ACTIVITY_ROLES,
   isTeamAnalyticsRole,
   getAnalyticsScope,
   chatterIdFilter,

@@ -4,7 +4,7 @@ const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/authorize');
 const {
   getAnalyticsScope,
-  TRACKED_STAFF_ROLES,
+  DASHBOARD_ACTIVITY_ROLES,
 } = require('../services/analyticsScope');
 const {
   BUSINESS_TZ,
@@ -243,7 +243,7 @@ router.get(
                       FROM users u
                       WHERE u.role = ANY($1::text[]) AND u.status = 'active'
                       ORDER BY u.name ASC`;
-        staffParams = [TRACKED_STAFF_ROLES];
+        staffParams = [DASHBOARD_ACTIVITY_ROLES];
         dailyQuery = `SELECT d."userId",
                              d.day::text AS date,
                              COALESCE(d."activeSeconds", 0)::int AS "activeSeconds",
@@ -254,7 +254,7 @@ router.get(
                       WHERE u.role = ANY($1::text[])
                         AND d.day >= $2::date
                         AND d.day <= $3::date`;
-        dailyParams = [TRACKED_STAFF_ROLES, startDate, endDate];
+        dailyParams = [DASHBOARD_ACTIVITY_ROLES, startDate, endDate];
       } else {
         staffQuery = `SELECT u.id AS "userId", u.name AS "userName"
                       FROM users u
@@ -375,7 +375,7 @@ router.get(
                  LEFT JOIN user_activity_presence p ON p."userId" = u.id
                  WHERE u.role = ANY($1::text[]) AND u.status = 'active'
                  ORDER BY u.name ASC`;
-        params = [TRACKED_STAFF_ROLES];
+        params = [DASHBOARD_ACTIVITY_ROLES];
       } else {
         query = `SELECT u.id AS "userId",
                         u.name AS "userName",

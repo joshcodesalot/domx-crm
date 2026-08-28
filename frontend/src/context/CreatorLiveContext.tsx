@@ -16,6 +16,7 @@ import {
   getFourBasedBadges,
   getMaloumBadges,
   getTelegramBadges,
+  getThroneUnreadCount,
   type Creator,
 } from '@/lib/api';
 import { isCreatorRosterEvent } from '@/lib/creatorAccessEvents';
@@ -31,8 +32,10 @@ type CreatorLiveContextValue = {
   creatorsLoading: boolean;
   creatorsError: string | null;
   badgesByCreatorId: Record<string, CreatorBadgeCounts>;
+  throneUnread: number;
   refreshCreators: (opts?: { silent?: boolean }) => Promise<void>;
   refreshBadges: (creatorIds?: string[]) => Promise<void>;
+  refreshThroneUnread: () => Promise<void>;
   registerBadgeNeed: (key: string, enabled: boolean) => void;
 };
 
@@ -84,6 +87,7 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
     Record<string, CreatorBadgeCounts>
   >({});
   const [badgeNeeds, setBadgeNeeds] = useState(0);
+  const [throneUnread, setThroneUnread] = useState(0);
   const creatorsRef = useRef<Creator[]>([]);
   const badgeNeedsRef = useRef(new Map<string, boolean>());
   const refreshCreatorsRef = useRef<(opts?: { silent?: boolean }) => Promise<void>>(
@@ -92,6 +96,7 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
   const refreshBadgesRef = useRef<(creatorIds?: string[]) => Promise<void>>(
     async () => undefined
   );
+  const refreshThroneUnreadRef = useRef<() => Promise<void>>(async () => undefined);
 
   useEffect(() => {
     creatorsRef.current = creators;
@@ -175,13 +180,28 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const refreshThroneUnread = useCallback(async () => {
+    try {
+      const result = await getThroneUnreadCount();
+      const next = Number(result.unreadCount) || 0;
+      setThroneUnread((prev) => (prev === next ? prev : next));
+    } catch (err) {
+      console.warn(
+        'Throne unread poll failed:',
+        err instanceof Error ? err.message : err
+      );
+    }
+  }, []);
+
   refreshCreatorsRef.current = refreshCreators;
   refreshBadgesRef.current = refreshBadges;
+  refreshThroneUnreadRef.current = refreshThroneUnread;
 
   useEffect(() => {
     if (!isAuthenticated) {
       setCreators([]);
       setBadgesByCreatorId({});
+      setThroneUnread(0);
       setCreatorsError(null);
       setCreatorsLoading(false);
       return;
@@ -200,11 +220,13 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!isAuthenticated || !documentVisible || badgeNeeds === 0) return;
     void refreshBadges();
+    void refreshThroneUnread();
     const timer = window.setInterval(() => {
       void refreshBadges();
+      void refreshThroneUnread();
     }, BADGE_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [isAuthenticated, documentVisible, badgeNeeds, refreshBadges]);
+  }, [isAuthenticated, documentVisible, badgeNeeds, refreshBadges, refreshThroneUnread]);
 
   const wasVisibleRef = useRef(documentVisible);
   useEffect(() => {
@@ -214,6 +236,7 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
     void refreshCreatorsRef.current({ silent: true });
     if (badgeNeedsRef.current.size > 0) {
       void refreshBadgesRef.current();
+      void refreshThroneUnreadRef.current();
     }
   }, [documentVisible, isAuthenticated]);
 
@@ -224,14 +247,23 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
     });
   }, [onSyncEvent, refreshCreators]);
 
+  useEffect(() => {
+    return onSyncEvent((event) => {
+      if (event.type !== 'telegram:throne') return;
+      void refreshThroneUnread();
+    });
+  }, [onSyncEvent, refreshThroneUnread]);
+
   const value = useMemo(
     () => ({
       creators,
       creatorsLoading,
       creatorsError,
       badgesByCreatorId,
+      throneUnread,
       refreshCreators,
       refreshBadges,
+      refreshThroneUnread,
       registerBadgeNeed,
     }),
     [
@@ -239,8 +271,10 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
       creatorsLoading,
       creatorsError,
       badgesByCreatorId,
+      throneUnread,
       refreshCreators,
       refreshBadges,
+      refreshThroneUnread,
       registerBadgeNeed,
     ]
   );
@@ -280,7 +314,9 @@ export function useCreatorLive(opts?: {
     creatorsLoading: ctx.creatorsLoading,
     creatorsError: ctx.creatorsError,
     badgesByCreatorId: ctx.badgesByCreatorId,
+    throneUnread: ctx.throneUnread,
     refreshCreators: ctx.refreshCreators,
     refreshBadges: ctx.refreshBadges,
+    refreshThroneUnread: ctx.refreshThroneUnread,
   };
 }

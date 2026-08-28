@@ -167,12 +167,13 @@ const EXTENDED_MESSAGE_STATS_SELECT = `
 const SERIES_CURRENCY_EXPR =
   `UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR'))`;
 
-/** DomX net take: Maloum 80% / 4Based 70% of stored (gross) priceNet. */
+/** DomX net take: Maloum 80% / 4Based 70% / Telegram (Throne) 100% of stored priceNet. */
 function netSalesExpr(alias = 'm') {
   const prefix = alias ? `${alias}.` : '';
   return (
     `ABS(${prefix}"priceNet") * CASE` +
     ` WHEN ${prefix}platform = '4based' THEN 0.7` +
+    ` WHEN ${prefix}platform = 'telegram' THEN 1.0` +
     ` ELSE 0.8 END`
   );
 }

@@ -225,7 +225,7 @@ export interface MessagingDashboardEntry {
   creatorName: string;
   creatorUsername: string | null;
   creatorAvatarUrl: string | null;
-  platform: 'maloum' | '4based' | null;
+  platform: 'maloum' | '4based' | 'telegram' | null;
   chatterId: string;
   chatterName: string;
   chatterEmail: string | null;
@@ -979,7 +979,7 @@ export interface OverviewCreatorStats {
   creatorName: string;
   creatorUsername?: string | null;
   creatorAvatarUrl?: string | null;
-  platform?: 'maloum' | '4based' | null;
+  platform?: 'maloum' | '4based' | 'telegram' | null;
   messagesSent: number;
   ppvsSent: number;
   ppvsUnlocked: number;
@@ -1374,7 +1374,7 @@ export async function getMessagingDashboard(filters: {
   endDate?: string;
   chatterId?: string;
   creatorId?: string;
-  platform?: 'maloum' | '4based';
+  platform?: 'maloum' | '4based' | 'telegram';
   purchased?: boolean;
   contentType?: 'chat_product' | 'tip';
   salesOnly?: boolean;
@@ -2779,15 +2779,25 @@ export async function getTelegramDialogs(
 
 export async function getTelegramMessages(
   creatorId: string,
-  peerId: string
+  peerId: string,
+  options: { limit?: number; offsetId?: string; offsetDate?: number } = {}
 ): Promise<{
   peerId: string;
   kind?: 'dm' | 'group';
   fan: TelegramFan;
   messages: TelegramMessage[];
+  next: { id: string; date: number } | null;
+  hasMore?: boolean;
 }> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.offsetId) params.set('offsetId', options.offsetId);
+  if (options.offsetDate != null) params.set('offsetDate', String(options.offsetDate));
+  const query = params.toString();
   return request(
-    `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages`
+    `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages${
+      query ? `?${query}` : ''
+    }`
   );
 }
 
@@ -3011,6 +3021,66 @@ export async function getTelegramBadges(
   creatorId: string
 ): Promise<{ messages: number; notifications: number }> {
   return request(`/api/creators/${creatorId}/telegram/badges`);
+}
+
+export type ThroneEventType =
+  | 'gift_purchased'
+  | 'contribution_purchased'
+  | 'gift_crowdfunded'
+  | string;
+
+export interface ThroneNotification {
+  id: string;
+  eventId: string;
+  eventType: ThroneEventType;
+  throneCreatorId: string | null;
+  throneCreatorUsername: string | null;
+  gifterUsername: string | null;
+  message: string | null;
+  itemName: string | null;
+  itemThumbnailUrl: string | null;
+  amount: number | null;
+  currency: string | null;
+  isSurpriseGift: boolean;
+  isRead: boolean;
+  claimedByUserId: string | null;
+  claimedByUserName: string | null;
+  claimedAt: string | null;
+  createdAt: string;
+}
+
+export async function getThroneNotifications(options: {
+  limit?: number;
+  before?: string;
+} = {}): Promise<{
+  notifications: ThroneNotification[];
+  next: string | null;
+  webhookUrl: string;
+}> {
+  const params = new URLSearchParams();
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.before) params.set('before', options.before);
+  const query = params.toString();
+  return request(`/api/throne/notifications${query ? `?${query}` : ''}`);
+}
+
+export async function getThroneUnreadCount(): Promise<{
+  unreadCount: number;
+  webhookUrl: string;
+}> {
+  return request('/api/throne/notifications/unread-count');
+}
+
+export async function markThroneNotificationsReadAll(): Promise<{ ok: boolean }> {
+  return request('/api/throne/notifications/read-all', { method: 'POST' });
+}
+
+export async function claimThroneNotification(
+  id: string
+): Promise<{ notification: ThroneNotification }> {
+  return request(`/api/throne/notifications/${encodeURIComponent(id)}/claim`, {
+    method: 'POST',
+  });
 }
 
 export type TelegramSextingIntensity = 'soft' | 'medium' | 'extreme';
@@ -4607,6 +4677,22 @@ export async function listScheduleSettings(): Promise<{
   settings: CreatorScheduleSettings[];
 }> {
   return request('/api/scheduled-content/settings');
+}
+
+export async function getUnsendBeforeMassSetting(): Promise<{
+  enabled: boolean;
+  canEdit: boolean;
+}> {
+  return request('/api/scheduled-content/unsend-before-mass');
+}
+
+export async function updateUnsendBeforeMassSetting(
+  enabled: boolean
+): Promise<{ enabled: boolean; canEdit: boolean }> {
+  return request('/api/scheduled-content/unsend-before-mass', {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
 }
 
 export async function updateScheduleSettings(

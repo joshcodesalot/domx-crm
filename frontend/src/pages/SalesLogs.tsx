@@ -61,6 +61,7 @@ function formatCurrencyAmounts(amounts: CurrencyAmount[] | undefined): string {
 function platformLabel(platform: MessagingDashboardEntry['platform']): string {
   if (platform === '4based') return '4based';
   if (platform === 'maloum') return 'Maloum';
+  if (platform === 'telegram') return 'Telegram';
   return '--';
 }
 
@@ -155,7 +156,9 @@ export default function SalesLogs() {
   const dateRangeLabel = formatDateRangeLabel(startDate, endDate);
 
   const filteredCreators = useMemo(() => {
-    if (platform !== 'maloum' && platform !== '4based') return creators;
+    if (platform !== 'maloum' && platform !== '4based' && platform !== 'telegram') {
+      return creators;
+    }
     return creators.filter((creator) => creator.platform === platform);
   }, [creators, platform]);
 
@@ -190,7 +193,9 @@ export default function SalesLogs() {
           chatterId: chatterId || undefined,
           creatorId: creatorId || undefined,
           platform:
-            platform === 'maloum' || platform === '4based' ? platform : undefined,
+            platform === 'maloum' || platform === '4based' || platform === 'telegram'
+              ? platform
+              : undefined,
           contentType:
             contentType === 'chat_product' || contentType === 'tip'
               ? contentType
@@ -329,6 +334,7 @@ export default function SalesLogs() {
                 <option value="">All</option>
                 <option value="maloum">Maloum</option>
                 <option value="4based">4based</option>
+                <option value="telegram">Telegram</option>
               </select>
             </label>
 
@@ -347,7 +353,11 @@ export default function SalesLogs() {
                 <option value="">All</option>
                 {filteredCreators.map((creator) => (
                   <option key={creator.id} value={creator.id}>
-                    {creator.platform === '4based' ? '4based · ' : 'Maloum · '}
+                    {creator.platform === '4based'
+                      ? '4based · '
+                      : creator.platform === 'telegram'
+                        ? 'Telegram · '
+                        : 'Maloum · '}
                     {creator.displayName}
                   </option>
                 ))}
