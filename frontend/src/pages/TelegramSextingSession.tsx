@@ -319,7 +319,7 @@ export default function TelegramSextingSession() {
                     </span>
                   </div>
                   <p className="text-[11px] text-gray-500 dark:text-zinc-500 truncate mt-0.5">
-                    Group {item.groupPeerId}
+                    Chat {item.groupPeerId}
                   </p>
                   <div className="mt-1.5 flex items-center gap-1.5">
                     <span className="rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300 px-1.5 py-0.5 text-[10px]">
@@ -359,11 +359,11 @@ export default function TelegramSextingSession() {
                     {session.fanName}
                   </h1>
                   <p className="text-sm text-gray-500 dark:text-zinc-500 mt-1">
-                    Slave {session.slaveName} · Group {session.groupPeerId} · {session.pendingCount} pending ·{' '}
+                    Slave {session.slaveName} · Chat {session.groupPeerId} · {session.pendingCount} pending ·{' '}
                     {session.sentCount} sent
                   </p>
                   <p className="text-xs text-gray-400 dark:text-zinc-500 mt-1">
-                    Add media, edit the English text, then send at the right time. Selected creators must already be in the group.
+                    Add media, edit the English text, then send at the right time.
                   </p>
                 </div>
                 <button

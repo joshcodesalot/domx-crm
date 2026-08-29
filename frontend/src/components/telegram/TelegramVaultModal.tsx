@@ -49,6 +49,64 @@ function formatDuration(seconds?: number | null): string | null {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
+function videoFrameThumb(file: File): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    let settled = false;
+    const finish = (blob: Blob | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      URL.revokeObjectURL(url);
+      video.removeAttribute('src');
+      video.load();
+      resolve(blob);
+    };
+    const timer = window.setTimeout(() => finish(null), 4000);
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    video.onerror = () => finish(null);
+    const capture = () => {
+      try {
+        const width = video.videoWidth || 0;
+        const height = video.videoHeight || 0;
+        if (!width || !height) {
+          finish(null);
+          return;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          finish(null);
+          return;
+        }
+        ctx.drawImage(video, 0, 0, width, height);
+        canvas.toBlob((blob) => finish(blob), 'image/jpeg', 0.82);
+      } catch {
+        finish(null);
+      }
+    };
+    video.onloadeddata = () => {
+      const duration = Number(video.duration);
+      const seekTo =
+        Number.isFinite(duration) && duration > 0
+          ? Math.min(0.5, duration * 0.1)
+          : 0.1;
+      video.onseeked = capture;
+      try {
+        video.currentTime = seekTo;
+      } catch {
+        capture();
+      }
+    };
+    video.src = url;
+  });
+}
+
 function VaultThumbImg({
   src,
   kind,
@@ -57,6 +115,9 @@ function VaultThumbImg({
   kind?: TelegramVaultItem['kind'];
 }) {
   const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
   if (failed) {
     const Icon = kind === 'video' ? Video : ImageIcon;
     return (
@@ -104,6 +165,10 @@ export default function TelegramVaultModal({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [folderDraft, setFolderDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -116,6 +181,7 @@ export default function TelegramVaultModal({
   const offsetRef = useRef(0);
   const loadingMoreRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const cancelUploadRef = useRef(false);
 
   useEffect(() => {
     setSelected(selectedItems);
@@ -257,24 +323,54 @@ export default function TelegramVaultModal({
     }
   }
 
+  function cancelUpload() {
+    cancelUploadRef.current = true;
+  }
+
   async function handleUpload(files: FileList | null) {
     if (!files?.length || !folderId || uploading) return;
+    const queue = Array.from(files);
+    cancelUploadRef.current = false;
     setUploading(true);
+    setUploadProgress({ done: 0, total: queue.length });
     setError(null);
+    let failed = 0;
     try {
-      const uploaded: TelegramVaultItem[] = [];
-      for (const file of Array.from(files)) {
+      for (let index = 0; index < queue.length; index += 1) {
+        if (cancelUploadRef.current) break;
+        setUploadProgress({ done: index + 1, total: queue.length });
+        const file = queue[index];
         const form = new FormData();
         form.append('file', file);
         form.append('folderId', folderId);
-        const result = await uploadTelegramVaultItem(creatorId, form);
-        uploaded.push(result.item);
+        const isVideo =
+          file.type.startsWith('video/') ||
+          /\.(mp4|mov|webm|mkv|avi|m4v)$/i.test(file.name);
+        if (isVideo) {
+          const thumb = await videoFrameThumb(file);
+          if (cancelUploadRef.current) break;
+          if (thumb) {
+            form.append('thumb', new File([thumb], 'thumb.jpg', { type: 'image/jpeg' }));
+          }
+        }
+        try {
+          const result = await uploadTelegramVaultItem(creatorId, form);
+          setItems((prev) => [result.item, ...prev.filter((item) => item.id !== result.item.id)]);
+          if (kindFilter === 'all' || result.item.kind === kindFilter) {
+            offsetRef.current += 1;
+          }
+        } catch (err) {
+          failed += 1;
+          setError(err instanceof Error ? err.message : 'Upload failed');
+        }
       }
-      setItems((prev) => [...uploaded, ...prev]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed');
+      if (cancelUploadRef.current && failed === 0) {
+        setError(null);
+      }
     } finally {
       setUploading(false);
+      setUploadProgress(null);
+      cancelUploadRef.current = false;
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }
@@ -332,8 +428,19 @@ export default function TelegramVaultModal({
               ) : (
                 <Upload className="w-4 h-4" />
               )}
-              Upload
+              {uploading && uploadProgress
+                ? `Uploading ${uploadProgress.done}/${uploadProgress.total}`
+                : 'Upload'}
             </button>
+            {uploading && (
+              <button
+                type="button"
+                onClick={cancelUpload}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800"
+              >
+                Cancel
+              </button>
+            )}
             {selected.length > 0 && (
               <button
                 type="button"

@@ -12,6 +12,11 @@ const {
   MAX_UNSEND_PER_CREATOR,
 } = require('./massMessageUnsendAllRunner');
 const {
+  createCampaign,
+  runSendAndWait,
+  runUnsendLastAndWait,
+} = require('./telegramMassMessageRunner');
+const {
   asIdList,
   asNamedRefs,
   pickRequested,
@@ -227,6 +232,34 @@ async function sendFourBasedMass(job, settings, text) {
   });
 }
 
+async function sendTelegramMass(job, settings, text) {
+  const payload = job.payload && typeof job.payload === 'object' ? job.payload : {};
+  const includeRefs = pickRequested(payload.includeFromLists, settings.includeLists);
+  const excludeRefs = pickRequested(payload.excludeFromLists, settings.excludeLists);
+  const includeIds = asIdList(includeRefs.length ? includeRefs : settings.includeListIds);
+  const excludeIds = asIdList(excludeRefs.length ? excludeRefs : settings.excludeListIds);
+  if (includeIds.length === 0) {
+    throw new Error('Set include lists for this Telegram creator before the job can send');
+  }
+  const vaultIds = Array.isArray(payload.vaultIds)
+    ? payload.vaultIds
+    : payload.vaultId
+      ? [payload.vaultId]
+      : [];
+  const campaign = await createCampaign({
+    creatorId: job.creatorId,
+    bodyText: text || job.bodyText,
+    vaultIds,
+    includeListIds: includeIds,
+    excludeListIds: excludeIds,
+    createdBy: job.createdByUserId,
+  });
+  if ((Number(campaign.total) || 0) === 0) {
+    throw new Error('No recipients in the selected Telegram lists');
+  }
+  await runSendAndWait(campaign.id, job.creatorId);
+}
+
 async function sendMaloumMass(job, settings, text) {
   const loaded = await loadMaloumCreator(job.creatorId);
   if (loaded.error) throw new Error(loaded.error.message);
@@ -369,6 +402,16 @@ async function postMaloumFeed(job, settings, text) {
 async function unsendBeforeScheduledMass(job) {
   const enabled = await getUnsendBeforeMass();
   if (!enabled) return;
+  if (job.platform === 'telegram') {
+    const result = await runUnsendLastAndWait(job.creatorId, MAX_UNSEND_PER_CREATOR);
+    console.log(
+      'Scheduled mass unsend-before-send:',
+      job.id,
+      job.platform,
+      `done=${result?.done || 0} failed=${result?.failed || 0}`
+    );
+    return;
+  }
   const result = await unsendRecentForCreator(job.platform, job.creatorId, {
     cap: MAX_UNSEND_PER_CREATOR,
   });
@@ -392,7 +435,12 @@ async function unsendBeforeScheduledMass(job) {
 async function executeJob(job) {
   const settings = await loadSettings(job.creatorId);
   const english = String(job.bodyText || '').trim();
-  const text = english ? await translateCaption(english) : '';
+  const text =
+    job.platform === 'telegram'
+      ? english
+      : english
+        ? await translateCaption(english)
+        : '';
 
   if (job.kind === 'mass_message') {
     await unsendBeforeScheduledMass(job);
@@ -400,8 +448,16 @@ async function executeJob(job) {
       await sendFourBasedMass(job, settings, text);
       return;
     }
+    if (job.platform === 'telegram') {
+      await sendTelegramMass(job, settings, text);
+      return;
+    }
     await sendMaloumMass(job, settings, text);
     return;
+  }
+
+  if (job.platform === 'telegram') {
+    throw new Error('Telegram can only schedule mass messages');
   }
 
   if (job.platform === '4based') {

@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, Loader2, Pencil, Trash2, X } from 'lucide-react';
+import { Check, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { DEFAULT_FAN_NOTES_TEMPLATE } from '@/components/maloum/MaloumFanPanel';
 import {
+  getTelegramFanLists,
   getTelegramGroupMembers,
+  listTelegramLists,
   patchTelegramFan,
   resolveCreatorAvatarUrl,
+  setTelegramFanLists,
   type TelegramFan,
   type TelegramGroupMember,
+  type TelegramList,
 } from '@/lib/api';
 
 const NOTES_DEBOUNCE_MS = 3500;
@@ -118,6 +122,13 @@ export default function TelegramFanPanel({
     'idle'
   );
   const [membersError, setMembersError] = useState<string | null>(null);
+
+  const [assignedLists, setAssignedLists] = useState<TelegramList[]>([]);
+  const [listsLoading, setListsLoading] = useState(false);
+  const [listsError, setListsError] = useState<string | null>(null);
+  const [listPickerOpen, setListPickerOpen] = useState(false);
+  const [allLists, setAllLists] = useState<TelegramList[]>([]);
+  const [listMutating, setListMutating] = useState(false);
   const [memberQuery, setMemberQuery] = useState('');
 
   useEffect(() => {
@@ -140,6 +151,9 @@ export default function TelegramFanPanel({
     setRemoteNotes(nextNotes);
     notesSavedBaselineRef.current = nextNotes;
     setNotesDraft(nextNotes.trim() ? nextNotes : DEFAULT_FAN_NOTES_TEMPLATE);
+    setListPickerOpen(false);
+    setAllLists([]);
+    setListsError(null);
   }, [fan?.telegramUserId, fan?.nickname, fan?.notes]);
 
   useEffect(() => {
@@ -177,6 +191,64 @@ export default function TelegramFanPanel({
       cancelled = true;
     };
   }, [isGroup, creatorId, fanId]);
+
+  const loadAssignedLists = useCallback(async () => {
+    if (isGroup || !creatorId || !fanId) {
+      setAssignedLists([]);
+      return;
+    }
+    setListsLoading(true);
+    setListsError(null);
+    try {
+      const result = await getTelegramFanLists(creatorId, fanId);
+      setAssignedLists(result.lists || []);
+    } catch (err) {
+      setListsError(err instanceof Error ? err.message : 'Failed to load lists');
+    } finally {
+      setListsLoading(false);
+    }
+  }, [isGroup, creatorId, fanId]);
+
+  useEffect(() => {
+    void loadAssignedLists();
+  }, [loadAssignedLists]);
+
+  const loadAllLists = useCallback(async () => {
+    if (!creatorId) return;
+    try {
+      const result = await listTelegramLists(creatorId);
+      setAllLists(result.lists || []);
+    } catch (err) {
+      setListsError(err instanceof Error ? err.message : 'Failed to load lists');
+    }
+  }, [creatorId]);
+
+  const assignedIds = useMemo(
+    () => new Set(assignedLists.map((list) => list.id)),
+    [assignedLists]
+  );
+
+  const updateAssigned = useCallback(
+    async (nextIds: string[]) => {
+      if (!fanId) return;
+      setListMutating(true);
+      setListsError(null);
+      try {
+        const result = await setTelegramFanLists(creatorId, fanId, nextIds);
+        setAssignedLists(result.lists || []);
+      } catch (err) {
+        setListsError(err instanceof Error ? err.message : 'Failed to update lists');
+      } finally {
+        setListMutating(false);
+      }
+    },
+    [creatorId, fanId]
+  );
+
+  const availableLists = useMemo(
+    () => allLists.filter((list) => !assignedIds.has(list.id)),
+    [allLists, assignedIds]
+  );
 
   const visibleMembers = useMemo(() => {
     const query = memberQuery.trim().toLowerCase();
@@ -480,6 +552,98 @@ export default function TelegramFanPanel({
               <p className="mt-1.5 text-[11px] text-red-400">{nicknameError}</p>
             )}
           </section>
+
+          {!isGroup && (
+            <section>
+              <SectionHeading>Lists</SectionHeading>
+              {listsLoading && assignedLists.length === 0 ? (
+                <p className="text-xs text-gray-500 dark:text-zinc-500 flex items-center gap-1.5">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Loading…
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {assignedLists.map((list) => (
+                      <span
+                        key={list.id}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium bg-gray-100 dark:bg-zinc-800 text-gray-800 dark:text-zinc-200 border border-gray-200 dark:border-zinc-700"
+                      >
+                        {list.name || 'List'}
+                        <button
+                          type="button"
+                          disabled={listMutating}
+                          onClick={() =>
+                            void updateAssigned(
+                              [...assignedIds].filter((id) => id !== list.id)
+                            )
+                          }
+                          className="p-0.5 rounded hover:bg-gray-200 dark:hover:bg-zinc-700 text-gray-500 dark:text-zinc-400"
+                          title="Remove from list"
+                          aria-label={`Remove from ${list.name || 'list'}`}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setListPickerOpen(true);
+                        if (allLists.length === 0) void loadAllLists();
+                      }}
+                      disabled={!fanId || listMutating}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold border border-dashed border-gray-300 dark:border-zinc-700 text-gray-600 dark:text-zinc-400 hover:border-sky-500/50 hover:text-sky-500 disabled:opacity-50"
+                    >
+                      <Plus className="w-3 h-3" /> List
+                    </button>
+                  </div>
+                  {listPickerOpen && (
+                    <div className="rounded-lg border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900 overflow-hidden">
+                      <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-gray-200 dark:border-zinc-800">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500">
+                          Add to list
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setListPickerOpen(false)}
+                          className="p-0.5 text-gray-400 hover:text-gray-700 dark:hover:text-zinc-200"
+                          aria-label="Close list picker"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="max-h-48 overflow-y-auto">
+                        {availableLists.length === 0 && (
+                          <p className="px-2.5 py-3 text-xs text-gray-500 dark:text-zinc-500">
+                            {allLists.length === 0
+                              ? 'No lists yet. Create one from Telegram Lists.'
+                              : 'No more lists available.'}
+                          </p>
+                        )}
+                        {availableLists.map((list) => (
+                          <button
+                            key={list.id}
+                            type="button"
+                            disabled={listMutating}
+                            onClick={() => void updateAssigned([...assignedIds, list.id])}
+                            className="w-full text-left px-2.5 py-2 text-xs text-gray-800 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800 disabled:opacity-50 flex items-center justify-between gap-2"
+                          >
+                            <span className="truncate">{list.name || 'List'}</span>
+                            <span className="text-[10px] text-gray-400 dark:text-zinc-500 shrink-0">
+                              {list.memberCount}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {listsError && (
+                    <p className="text-[11px] text-red-400">{listsError}</p>
+                  )}
+                </div>
+              )}
+            </section>
+          )}
 
           <section>
             <div className="flex items-center justify-between mb-2">

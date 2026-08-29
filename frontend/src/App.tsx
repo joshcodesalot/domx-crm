@@ -39,6 +39,8 @@ const MessagePro = lazy(() => import('@/pages/MessagePro'));
 const MessagePro4Based = lazy(() => import('@/pages/MessagePro4Based'));
 const MessageProTelegram = lazy(() => import('@/pages/MessageProTelegram'));
 const TelegramSextingSession = lazy(() => import('@/pages/TelegramSextingSession'));
+const TelegramMassMessage = lazy(() => import('@/pages/TelegramMassMessage'));
+const TelegramLists = lazy(() => import('@/pages/TelegramLists'));
 const MessagingDashboard = lazy(() => import('@/pages/MessagingDashboard'));
 const SalesLogs = lazy(() => import('@/pages/SalesLogs'));
 const FalseSalesReview = lazy(() => import('@/pages/FalseSalesReview'));
@@ -366,6 +368,11 @@ function AppRoutes() {
                       element={<FourBasedMassMessage />}
                     />
                     <Route path="/chatter/4based/feed" element={<FourBasedFeed />} />
+                    <Route
+                      path="/chatter/telegram/mass-message"
+                      element={<TelegramMassMessage />}
+                    />
+                    <Route path="/chatter/telegram/lists" element={<TelegramLists />} />
                   </Route>
                   <Route element={<PermissionRoute permission="fan_scraper.use" />}>
                     <Route

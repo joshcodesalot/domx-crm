@@ -946,7 +946,10 @@ router.post(
   authenticate,
   requirePermission('creators.view'),
   (req, res, next) => {
-    vaultUpload.single('file')(req, res, (err) => {
+    vaultUpload.fields([
+      { name: 'file', maxCount: 1 },
+      { name: 'thumb', maxCount: 1 },
+    ])(req, res, (err) => {
       if (err) {
         return res.status(400).json({ error: err.message || 'Upload failed' });
       }
@@ -954,21 +957,26 @@ router.post(
     });
   },
   async (req, res) => {
+    const mediaFile = Array.isArray(req.files?.file) ? req.files.file[0] : null;
+    const thumbFile = Array.isArray(req.files?.thumb) ? req.files.thumb[0] : null;
     const folderId =
       typeof req.body?.folderId === 'string' && isValidUuid(req.body.folderId)
         ? req.body.folderId
         : null;
     if (!folderId) {
-      cleanupUpload(req.file);
+      cleanupUpload(mediaFile);
+      cleanupUpload(thumbFile);
       return res.status(400).json({ error: 'folderId is required' });
     }
-    if (!req.file?.path) {
+    if (!mediaFile?.path) {
+      cleanupUpload(thumbFile);
       return res.status(400).json({ error: 'file is required' });
     }
     try {
       const creator = await requireTelegramCreator(req, res);
       if (!creator) {
-        cleanupUpload(req.file);
+        cleanupUpload(mediaFile);
+        cleanupUpload(thumbFile);
         return undefined;
       }
       const folder = await pool.query(
@@ -976,13 +984,15 @@ router.post(
         [folderId, creator.id]
       );
       if (folder.rows.length === 0) {
-        cleanupUpload(req.file);
+        cleanupUpload(mediaFile);
+        cleanupUpload(thumbFile);
         return res.status(404).json({ error: 'Folder not found' });
       }
       const uploaded = await uploadVaultMedia(creator.id, {
-        filePath: req.file.path,
-        mimeType: req.file.mimetype,
-        fileName: req.file.originalname,
+        filePath: mediaFile.path,
+        mimeType: mediaFile.mimetype,
+        fileName: mediaFile.originalname,
+        thumbPath: thumbFile?.path || null,
       });
       const inserted = await pool.query(
         `INSERT INTO telegram_vault_items (
@@ -1008,7 +1018,7 @@ router.post(
           uploaded.savedMessageId,
           uploaded.fileUniqueId,
           uploaded.kind,
-          uploaded.fileName || req.file.originalname || null,
+          uploaded.fileName || mediaFile.originalname || null,
           uploaded.duration,
           uploaded.width,
           uploaded.height,
@@ -1019,7 +1029,8 @@ router.post(
     } catch (err) {
       return handleTelegramError(res, err, 'Upload Telegram vault error:');
     } finally {
-      cleanupUpload(req.file);
+      cleanupUpload(mediaFile);
+      cleanupUpload(thumbFile);
     }
   }
 );

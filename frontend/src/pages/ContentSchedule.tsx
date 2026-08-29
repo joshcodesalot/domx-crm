@@ -28,6 +28,7 @@ import {
   listFourBasedUserLists,
   listMaloumCategories,
   listMaloumChatLists,
+  listTelegramLists,
   listScheduleSettings,
   listScheduledContent,
   previewScheduledContentImport,
@@ -103,7 +104,7 @@ type ReviewRow = {
   key: string;
   included: boolean;
   kind: ScheduledContentKind | '';
-  platform: 'maloum' | '4based' | '';
+  platform: 'maloum' | '4based' | 'telegram' | '';
   model: string;
   creatorId: string;
   date: string;
@@ -157,6 +158,13 @@ function vaultPayloadForKind(
     }
     if (platform === 'maloum' && mediaId) {
       return { media: [{ mediaId, type: 'picture' }] };
+    }
+    if (platform === 'telegram') {
+      const ids = Array.isArray(source.vaultIds)
+        ? source.vaultIds.map((id) => String(id || '')).filter(Boolean)
+        : [];
+      const one = vaultId || ids[0];
+      if (one) return { vaultIds: ids.length ? ids : [one] };
     }
     return {};
   }
@@ -242,6 +250,9 @@ function rowIssues(row: ReviewRow): string[] {
   if (!row.platform) errors.push('Choose a platform');
   if (!row.creatorId) errors.push('Choose a creator');
   if (!row.date || !row.time) errors.push('Date and time are required');
+  if (row.platform === 'telegram' && row.kind === 'feed_post') {
+    errors.push('Telegram can only schedule mass messages');
+  }
   if (row.kind === 'feed_post') {
     const hasVault =
       (row.platform === '4based' && Boolean(row.payload.vaultId)) ||
@@ -350,6 +361,19 @@ export default function ContentSchedule() {
             setCategories([]);
             setListsCreatorId(creatorId);
           }
+        } else if (selectedCreator.platform === 'telegram') {
+          const result = await listTelegramLists(creatorId);
+          if (!cancelled) {
+            setLists(
+              (result.lists || []).map((list) => ({
+                _id: list.id,
+                name: list.name,
+                totalMemberCount: list.memberCount,
+              })) as FourBasedUserList[]
+            );
+            setCategories([]);
+            setListsCreatorId(creatorId);
+          }
         } else {
           const [listRes, catRes] = await Promise.all([
             listMaloumChatLists(creatorId, { limit: 80 }),
@@ -417,7 +441,8 @@ export default function ContentSchedule() {
             displayName: selectedCreator?.displayName,
             platform:
               selectedCreator?.platform === 'maloum' ||
-              selectedCreator?.platform === '4based'
+              selectedCreator?.platform === '4based' ||
+              selectedCreator?.platform === 'telegram'
                 ? selectedCreator.platform
                 : undefined,
           },
@@ -836,6 +861,9 @@ export default function ContentSchedule() {
                                     payload: {},
                                     vaultLabel: '',
                                     vaultThumb: null,
+                                    ...(platform === 'telegram'
+                                      ? { kind: 'mass_message' as const }
+                                      : {}),
                                   });
                                 }}
                                 className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-1 py-1"
@@ -843,6 +871,7 @@ export default function ContentSchedule() {
                                 <option value="">Platform</option>
                                 <option value="4based">4based</option>
                                 <option value="maloum">maloum</option>
+                                <option value="telegram">telegram</option>
                               </select>
                               <select
                                 value={row.creatorId}
@@ -882,7 +911,9 @@ export default function ContentSchedule() {
                               >
                                 <option value="">Kind</option>
                                 <option value="mass_message">Mass</option>
-                                <option value="feed_post">Feed</option>
+                                {row.platform !== 'telegram' && (
+                                  <option value="feed_post">Feed</option>
+                                )}
                               </select>
                             </td>
                             <td className="p-2 space-y-1">
@@ -1113,6 +1144,7 @@ export default function ContentSchedule() {
                     ['all', 'All'],
                     ['maloum', 'Maloum'],
                     ['4based', '4based'],
+                    ['telegram', 'Telegram'],
                   ] as const).map(([id, label]) => (
                     <button
                       key={id}
@@ -1477,7 +1509,7 @@ export default function ContentSchedule() {
         <ScheduleVaultPicker
           open={Boolean(vaultRowKey)}
           creatorId={vaultRow.creatorId}
-          platform={vaultRow.platform}
+          platform={vaultRow.platform as '4based' | 'maloum' | 'telegram'}
           onClose={() => setVaultRowKey(null)}
           onSelect={(pick: ScheduleVaultPick) => {
             updateRow(vaultRow.key, {

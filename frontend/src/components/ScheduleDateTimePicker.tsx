@@ -4,7 +4,7 @@ import ScheduleCalendar from '@/components/ScheduleCalendar';
 import { listScheduledContent, type ScheduledContentJob } from '@/lib/api';
 import { berlinMonthUtcRange, berlinNowParts, useStaffTimeZone } from '@/lib/berlinTime';
 
-export type ScheduleJobPlatformFilter = 'all' | 'maloum' | '4based';
+export type ScheduleJobPlatformFilter = 'all' | 'maloum' | '4based' | 'telegram';
 export type ScheduleJobKindFilter = 'all' | 'feed_post' | 'mass_message';
 
 export default function ScheduleDateTimePicker({

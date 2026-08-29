@@ -41,6 +41,7 @@ export function TelegramSextingSessionForm({
   groupPeerId: lockedGroupPeerId = '',
   defaultCreatorIds = [],
   lockGroupId = false,
+  lockCreators = false,
   groupLabel = '',
   compact = false,
   onCreated,
@@ -49,6 +50,7 @@ export function TelegramSextingSessionForm({
   groupPeerId?: string;
   defaultCreatorIds?: string[];
   lockGroupId?: boolean;
+  lockCreators?: boolean;
   groupLabel?: string;
   compact?: boolean;
   onCreated: (session: TelegramSextingSession) => void;
@@ -72,6 +74,7 @@ export function TelegramSextingSessionForm({
   const [goal, setGoal] = useState<TelegramSextingGoal>('training');
   const [scenario, setScenario] = useState('');
   const [extraInstructions, setExtraInstructions] = useState('');
+  const [numberOfBlocks, setNumberOfBlocks] = useState(20);
   const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
@@ -101,6 +104,7 @@ export function TelegramSextingSessionForm({
   );
 
   function toggleCreator(id: string) {
+    if (lockCreators) return;
     setSelectedCreatorIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
@@ -110,7 +114,7 @@ export function TelegramSextingSessionForm({
     event.preventDefault();
     if (generating) return;
     if (!slaveName.trim() || !fanName.trim() || !groupPeerId.trim()) {
-      toast.error('Slave name, fan name, and group ID are required');
+      toast.error('Slave name, fan name, and chat ID are required');
       return;
     }
     if (selectedCreatorIds.length === 0) {
@@ -132,6 +136,7 @@ export function TelegramSextingSessionForm({
         goal,
         scenario: scenario.trim(),
         extraInstructions: extraInstructions.trim(),
+        numberOfBlocks,
       });
       toast.success('Session generated');
       onCreated(result.session);
@@ -151,10 +156,11 @@ export function TelegramSextingSessionForm({
         <div>
           <h1 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
             <Sparkles className="w-5 h-5 text-sky-500" />
-            Generate Multi-Model Sexting Session
+            Generate Sexting Session
           </h1>
           <p className="text-sm text-gray-500 dark:text-zinc-500 mt-1">
-            Creates 20 blocks once. Each selected Telegram creator gets their turns ready to send.
+            Creates {numberOfBlocks} blocks once (max 30). One creator is a 1:1 DM script;
+            several creators rotate in a group.
           </p>
         </div>
       )}
@@ -183,7 +189,7 @@ export function TelegramSextingSessionForm({
 
       {lockGroupId ? (
         <div className="space-y-1.5">
-          <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">Group</span>
+          <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">Chat</span>
           <p className="rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-zinc-900 px-3 py-2 text-sm text-gray-900 dark:text-gray-100">
             {groupLabel || groupPeerId}
           </p>
@@ -191,17 +197,38 @@ export function TelegramSextingSessionForm({
       ) : (
         <label className="block space-y-1.5">
           <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">
-            Conversation group ID
+            Chat ID
           </span>
           <input
             className={SEXTING_FORM_INPUT_CLASS}
             value={groupPeerId}
             onChange={(event) => setGroupPeerId(event.target.value)}
-            placeholder="Telegram group peer ID"
+            placeholder="Telegram chat peer ID"
             required
           />
         </label>
       )}
+
+      <label className="block space-y-1.5">
+        <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">
+          Blocks
+        </span>
+        <input
+          type="number"
+          min={1}
+          max={30}
+          className={SEXTING_FORM_INPUT_CLASS}
+          value={numberOfBlocks}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            if (!Number.isFinite(next)) {
+              setNumberOfBlocks(20);
+              return;
+            }
+            setNumberOfBlocks(Math.min(30, Math.max(1, Math.floor(next))));
+          }}
+        />
+      </label>
 
       <div className="space-y-1.5">
         <span className="text-xs font-medium text-gray-600 dark:text-zinc-400">
@@ -210,7 +237,10 @@ export function TelegramSextingSessionForm({
         <div className="relative">
           <button
             type="button"
-            onClick={() => setCreatorMenuOpen((open) => !open)}
+            onClick={() => {
+              if (lockCreators) return;
+              setCreatorMenuOpen((open) => !open);
+            }}
             className={`${SEXTING_FORM_INPUT_CLASS} text-left`}
           >
             {selectedCreators.length === 0

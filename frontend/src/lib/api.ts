@@ -3055,7 +3055,7 @@ export async function getThroneNotifications(options: {
 } = {}): Promise<{
   notifications: ThroneNotification[];
   next: string | null;
-  webhookUrl: string;
+  webhookUrl?: string;
 }> {
   const params = new URLSearchParams();
   if (options.limit != null) params.set('limit', String(options.limit));
@@ -3066,7 +3066,7 @@ export async function getThroneNotifications(options: {
 
 export async function getThroneUnreadCount(): Promise<{
   unreadCount: number;
-  webhookUrl: string;
+  webhookUrl?: string;
 }> {
   return request('/api/throne/notifications/unread-count');
 }
@@ -3080,6 +3080,180 @@ export async function claimThroneNotification(
 ): Promise<{ notification: ThroneNotification }> {
   return request(`/api/throne/notifications/${encodeURIComponent(id)}/claim`, {
     method: 'POST',
+  });
+}
+
+export interface TelegramList {
+  id: string;
+  _id?: string;
+  creatorId?: string;
+  name: string;
+  memberCount: number;
+  totalMemberCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface TelegramListMember {
+  telegramUserId: string;
+  displayName: string;
+  nickname?: string;
+  username?: string | null;
+}
+
+export async function listTelegramLists(
+  creatorId: string
+): Promise<{ lists: TelegramList[] }> {
+  return request(`/api/creators/${creatorId}/telegram/lists`);
+}
+
+export async function createTelegramList(
+  creatorId: string,
+  name: string
+): Promise<{ list: TelegramList }> {
+  return request(`/api/creators/${creatorId}/telegram/lists`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function deleteTelegramList(
+  creatorId: string,
+  listId: string
+): Promise<{ ok: boolean; id: string }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/lists/${encodeURIComponent(listId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export async function getTelegramFanLists(
+  creatorId: string,
+  fanId: string
+): Promise<{ lists: TelegramList[] }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/fans/${encodeURIComponent(fanId)}/lists`
+  );
+}
+
+export async function setTelegramFanLists(
+  creatorId: string,
+  fanId: string,
+  listIds: string[]
+): Promise<{ lists: TelegramList[] }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/fans/${encodeURIComponent(fanId)}/lists`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ listIds }),
+    }
+  );
+}
+
+export type TelegramMmCampaignStatus =
+  | 'queued'
+  | 'running'
+  | 'paused'
+  | 'done'
+  | 'failed'
+  | 'unsending'
+  | 'unsent';
+
+export interface TelegramMmProgress {
+  status: string;
+  kind?: string | null;
+  done: number;
+  failed: number;
+  skipped: number;
+  total: number;
+  currentPeerId: string | null;
+  lastError: string | null;
+  campaignId?: string | null;
+  startedAt?: number;
+}
+
+export interface TelegramMmCampaign {
+  id: string;
+  creatorId: string;
+  bodyText: string;
+  vaultIds: string[];
+  includeListIds: string[];
+  excludeListIds: string[];
+  status: TelegramMmCampaignStatus;
+  total: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+  unsent: number;
+  unsendFailed: number;
+  lastError: string | null;
+  createdBy: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  progress?: TelegramMmProgress;
+}
+
+export async function listTelegramMassMessages(
+  creatorId: string
+): Promise<{ campaigns: TelegramMmCampaign[]; progress: TelegramMmProgress }> {
+  return request(`/api/creators/${creatorId}/telegram/mass-messages`);
+}
+
+export async function countTelegramMassRecipients(
+  creatorId: string,
+  includeListIds: string[],
+  excludeListIds: string[] = []
+): Promise<{ count: number }> {
+  return request(`/api/creators/${creatorId}/telegram/mass-messages/recipients/count`, {
+    method: 'POST',
+    body: JSON.stringify({ includeListIds, excludeListIds }),
+  });
+}
+
+export async function sendTelegramMassMessage(
+  creatorId: string,
+  input: {
+    text?: string;
+    englishText?: string;
+    vaultIds?: string[];
+    includeListIds: string[];
+    excludeListIds?: string[];
+  }
+): Promise<{ campaign: TelegramMmCampaign; progress: TelegramMmProgress }> {
+  return request(`/api/creators/${creatorId}/telegram/mass-messages`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function stopTelegramMassMessage(
+  creatorId: string,
+  campaignId?: string
+): Promise<{ progress: TelegramMmProgress }> {
+  const path = campaignId
+    ? `/api/creators/${creatorId}/telegram/mass-messages/${encodeURIComponent(campaignId)}/stop`
+    : `/api/creators/${creatorId}/telegram/mass-messages/stop`;
+  return request(path, { method: 'POST' });
+}
+
+export async function unsendTelegramMassCampaign(
+  creatorId: string,
+  campaignId: string
+): Promise<{ campaign: TelegramMmCampaign; progress: TelegramMmProgress }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/mass-messages/${encodeURIComponent(campaignId)}/unsend`,
+    { method: 'POST' }
+  );
+}
+
+export async function unsendLastTelegramMassMessages(
+  creatorId: string,
+  cap = 30
+): Promise<{ progress: TelegramMmProgress }> {
+  return request(`/api/creators/${creatorId}/telegram/mass-messages/unsend-last`, {
+    method: 'POST',
+    body: JSON.stringify({ cap }),
   });
 }
 
@@ -3130,6 +3304,7 @@ export interface CreateTelegramSextingSessionInput {
   slaveName: string;
   groupPeerId: string;
   creatorIds: string[];
+  numberOfBlocks?: number;
   toys: string;
   intensity: TelegramSextingIntensity;
   orgasmRule: TelegramSextingOrgasmRule;
@@ -4612,7 +4787,7 @@ export interface ScheduledContentJob {
   kind: ScheduledContentKind;
   creatorId: string;
   creatorName: string | null;
-  platform: 'maloum' | '4based';
+  platform: 'maloum' | '4based' | 'telegram';
   runAt: string;
   status: ScheduledContentStatus;
   bodyText: string;
@@ -4716,7 +4891,7 @@ export async function updateScheduleSettings(
 export async function createScheduledContent(input: {
   kind: ScheduledContentKind;
   creatorId: string;
-  platform: 'maloum' | '4based';
+  platform: 'maloum' | '4based' | 'telegram';
   runAt: string;
   bodyText?: string;
   payload?: Record<string, unknown>;
@@ -4771,7 +4946,7 @@ export interface ScheduledImportPreviewRow {
   index: number;
   included: boolean;
   kind: ScheduledContentKind | null;
-  platform: 'maloum' | '4based' | null;
+  platform: 'maloum' | '4based' | 'telegram' | null;
   model: string;
   creatorId: string | null;
   creatorName: string | null;

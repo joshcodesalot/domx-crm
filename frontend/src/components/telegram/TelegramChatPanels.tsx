@@ -1159,17 +1159,19 @@ export function TelegramChatThread({
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {isGroup && (
-            <button
-              type="button"
-              onClick={() => setGenerateSessionOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
-              title="Generate multi-model sexting session"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              Generate session
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setGenerateSessionOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
+            title={
+              isGroup
+                ? 'Generate multi-model sexting session'
+                : 'Generate 1:1 sexting session'
+            }
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            Generate session
+          </button>
           <button
             type="button"
             onClick={() => void handleRefreshMessages()}
@@ -1557,12 +1559,13 @@ export function TelegramChatThread({
           </button>
         </div>
       </div>
-      {generateSessionOpen && isGroup && (
+      {generateSessionOpen && (
         <TelegramSextingSessionModal
           groupPeerId={peerId}
-          groupLabel={fanLabel(fan, 'Group')}
-          defaultFanName={fanLabel(fan, 'Group')}
+          groupLabel={fanLabel(fan, isGroup ? 'Group' : 'Fan')}
+          defaultFanName={fanLabel(fan, isGroup ? 'Group' : 'Fan')}
           defaultCreatorIds={creatorId ? [creatorId] : []}
+          lockCreators={!isGroup}
           onClose={() => setGenerateSessionOpen(false)}
         />
       )}

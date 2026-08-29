@@ -15,12 +15,16 @@ import {
   listAllMaloumVaultFolders,
   listFourBasedVault,
   listMaloumVaultMedia,
+  listTelegramVault,
+  listTelegramVaultFolders,
   pickFourBasedPreviewUrl,
   pickFourBasedSourceUrl,
   resolveFourBasedMediaSrc,
+  telegramVaultMediaUrl,
   type FourBasedVaultItem,
   type MaloumVaultFolder,
   type MaloumVaultMediaItem,
+  type TelegramVaultItem,
 } from '@/lib/api';
 
 export type ScheduleVaultPick = {
@@ -53,7 +57,7 @@ export default function ScheduleVaultPicker({
 }: {
   open: boolean;
   creatorId: string;
-  platform: '4based' | 'maloum';
+  platform: '4based' | 'maloum' | 'telegram';
   onClose: () => void;
   onSelect: (pick: ScheduleVaultPick) => void;
 }) {
@@ -64,6 +68,7 @@ export default function ScheduleVaultPicker({
   const [error, setError] = useState<string | null>(null);
   const [fourBasedItems, setFourBasedItems] = useState<FourBasedVaultItem[]>([]);
   const [maloumItems, setMaloumItems] = useState<MaloumVaultMediaItem[]>([]);
+  const [telegramItems, setTelegramItems] = useState<TelegramVaultItem[]>([]);
   const offsetRef = useRef(0);
   const maloumNextRef = useRef<number | null>(null);
   const hasMoreRef = useRef(false);
@@ -74,6 +79,7 @@ export default function ScheduleVaultPicker({
     setError(null);
     setFourBasedItems([]);
     setMaloumItems([]);
+    setTelegramItems([]);
     try {
       const folderKey = vaultCacheKey({
         platform,
@@ -95,6 +101,16 @@ export default function ScheduleVaultPicker({
         const nextFolders = names.map((name) => ({ id: name, name }));
         setFolders(nextFolders);
         setFolderId(names[0] || null);
+        setVaultListingCache(folderKey, { folders: nextFolders });
+      } else if (platform === 'telegram') {
+        const result = await listTelegramVaultFolders(creatorId);
+        const list = (result.folders || []).map((folder) => ({
+          id: folder.id,
+          name: folder.name,
+        }));
+        const nextFolders = list.length ? list : [{ id: 'all', name: 'All' }];
+        setFolders(nextFolders);
+        setFolderId(nextFolders[0]?.id || 'all');
         setVaultListingCache(folderKey, { folders: nextFolders });
       } else {
         const result = await listAllMaloumVaultFolders(creatorId);
@@ -125,6 +141,7 @@ export default function ScheduleVaultPicker({
         setLoading(true);
         setFourBasedItems([]);
         setMaloumItems([]);
+        setTelegramItems([]);
         offsetRef.current = 0;
         hasMoreRef.current = false;
         maloumNextRef.current = null;
@@ -145,7 +162,18 @@ export default function ScheduleVaultPicker({
           if (cached?.fourBasedItems) setFourBasedItems(cached.fourBasedItems);
           if (cached?.maloumItems) setMaloumItems(cached.maloumItems);
         }
-        if (platform === '4based') {
+        if (platform === 'telegram') {
+          const nextOffset = append ? offsetRef.current : 0;
+          const result = await listTelegramVault(creatorId, {
+            folderId: folderId === 'all' ? null : folderId,
+            limit: 60,
+            offset: nextOffset,
+          });
+          const items = result.items || [];
+          setTelegramItems((prev) => (append ? [...prev, ...items] : items));
+          offsetRef.current = nextOffset + items.length;
+          hasMoreRef.current = Boolean(result.hasMore);
+        } else if (platform === '4based') {
           const nextOffset = append ? offsetRef.current : 0;
           const result = await listFourBasedVault(creatorId, null, {
             limit: 60,
@@ -275,6 +303,26 @@ export default function ScheduleVaultPicker({
                           {item.name || id}
                         </span>
                       )}
+                    </button>
+                  );
+                })}
+              {platform === 'telegram' &&
+                telegramItems.map((item) => {
+                  const thumb = telegramVaultMediaUrl(creatorId, item.id, 'thumb');
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() =>
+                        onSelect({
+                          label: item.fileName || item.id,
+                          thumbUrl: thumb,
+                          payload: { vaultIds: [item.id], vaultId: item.id },
+                        })
+                      }
+                      className="aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-zinc-800"
+                    >
+                      <img src={thumb} alt="" className="w-full h-full object-cover" />
                     </button>
                   );
                 })}

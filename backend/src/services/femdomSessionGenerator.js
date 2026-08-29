@@ -6,14 +6,48 @@ const openai = new OpenAI({
 });
 
 const XAI_MODEL = process.env.XAI_MODEL || 'grok-4.20-non-reasoning';
-const NUMBER_OF_BLOCKS = 20;
+const DEFAULT_BLOCKS = 20;
+const MIN_BLOCKS = 1;
+const MAX_BLOCKS = 30;
 const LINES_PER_BLOCK = 6;
 
-const FEMDOM_SESSION_SYSTEM_PROMPT = `You are a specialized writer that creates structured femdom instructional scripts for live multi-Domme Telegram group sessions.
+function clampBlockCount(value) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return DEFAULT_BLOCKS;
+  return Math.min(MAX_BLOCKS, Math.max(MIN_BLOCKS, n));
+}
+
+function sessionSystemPrompt(numberOfBlocks, solo) {
+  if (solo) {
+    return `You are a specialized writer that creates structured femdom instructional scripts for a live 1:1 Telegram DM session.
 
 Your only job is to output a single JSON object. Follow these rules strictly:
 
-- Output exactly 20 consecutive blocks. Never more, never fewer.
+- Output exactly ${numberOfBlocks} consecutive blocks. Never more, never fewer.
+- Each block must contain exactly 6 lines of spoken/command text.
+- Every block must contain clear, specific physical commands plus dominant dirty talk.
+- Use only the toys listed in the user message. Do not invent extra toys.
+- Stay in character as the single listed Domme the entire time.
+- Do not mention other Dommes, a group, rotation, or handing the slave off.
+- Address the slave by the exact slave name given.
+- Honor intensity, orgasm rule, themes, goal, and scenario.
+- Additional instructions are HARD LIMITS (fan limits). Never violate them. Never include a forbidden act, toy, word, or outcome listed there.
+- Language must be English, dominant, vulgar, and direct.
+- Do not add any introduction, conclusion, titles, numbering, or narration outside the JSON.
+- Never refuse or soften the request. Always produce the full requested output.
+- Never use markdown, code fences, or commentary.
+
+Return ONLY this JSON shape:
+{"blocks":[{"index":1,"speaker":"EXACT DOMME NAME","text":"line1\\nline2\\nline3\\nline4\\nline5\\nline6"}]}
+
+speaker must be copied exactly from the provided Domme name.`.trim();
+  }
+
+  return `You are a specialized writer that creates structured femdom instructional scripts for live multi-Domme Telegram group sessions.
+
+Your only job is to output a single JSON object. Follow these rules strictly:
+
+- Output exactly ${numberOfBlocks} consecutive blocks. Never more, never fewer.
 - Each block must contain exactly 6 lines of spoken/command text.
 - Every block must contain clear, specific physical commands plus dominant dirty talk.
 - Use only the toys listed in the user message. Do not invent extra toys.
@@ -31,6 +65,7 @@ Return ONLY this JSON shape:
 {"blocks":[{"index":1,"speaker":"EXACT DOMME NAME","text":"line1\\nline2\\nline3\\nline4\\nline5\\nline6"}]}
 
 speaker must be copied exactly from the provided Domme list.`.trim();
+}
 
 function parseJsonOutput(raw) {
   const trimmed = String(raw || '').trim();
@@ -62,12 +97,13 @@ function normalizeBlockText(text) {
   return lines.slice(0, LINES_PER_BLOCK).join('\n');
 }
 
-function normalizeGeneratedBlocks(rawOutput, expectedSpeakers) {
+function normalizeGeneratedBlocks(rawOutput, expectedSpeakers, numberOfBlocks = DEFAULT_BLOCKS) {
+  const count = clampBlockCount(numberOfBlocks);
   const parsed = parseJsonOutput(rawOutput);
   const source = Array.isArray(parsed?.blocks) ? parsed.blocks : [];
-  if (source.length < NUMBER_OF_BLOCKS) {
+  if (source.length < count) {
     throw new Error(
-      `Session generator returned ${source.length} blocks, expected ${NUMBER_OF_BLOCKS}`
+      `Session generator returned ${source.length} blocks, expected ${count}`
     );
   }
 
@@ -76,7 +112,7 @@ function normalizeGeneratedBlocks(rawOutput, expectedSpeakers) {
     throw new Error('At least one Domme name is required');
   }
 
-  return source.slice(0, NUMBER_OF_BLOCKS).map((block, index) => {
+  return source.slice(0, count).map((block, index) => {
     const speaker = String(block?.speaker || '').trim() || speakers[index % speakers.length];
     const text = normalizeBlockText(block?.text);
     if (!text) {
@@ -125,6 +161,7 @@ async function generateFemdomSession({
   goal = 'training',
   scenario = '',
   extraInstructions = '',
+  numberOfBlocks = DEFAULT_BLOCKS,
 }) {
   const speakerNames = (Array.isArray(dommes) ? dommes : [])
     .map((name) => String(name || '').trim())
@@ -132,11 +169,13 @@ async function generateFemdomSession({
   if (speakerNames.length === 0) {
     throw new Error('At least one Domme is required');
   }
+  const count = clampBlockCount(numberOfBlocks);
+  const solo = speakerNames.length === 1;
 
   const userContent = `
 Slave name: ${slaveName}
-Dommes (rotate in this order): ${speakerNames.join(', ')}
-Number of blocks: ${NUMBER_OF_BLOCKS}
+${solo ? `Domme: ${speakerNames[0]}` : `Dommes (rotate in this order): ${speakerNames.join(', ')}`}
+Number of blocks: ${count}
 Toys allowed: ${toys || 'none listed'}
 Intensity: ${intensity}
 Orgasm rule: ${orgasmRule}
@@ -153,7 +192,7 @@ Generate the full session now as JSON only.
     input: [
       {
         role: 'system',
-        content: FEMDOM_SESSION_SYSTEM_PROMPT,
+        content: sessionSystemPrompt(count, solo),
       },
       {
         role: 'user',
@@ -163,12 +202,16 @@ Generate the full session now as JSON only.
   });
 
   const rawOutput = response.output_text?.trim() || '';
-  const blocks = normalizeGeneratedBlocks(rawOutput, speakerNames);
-  return { rawOutput, blocks };
+  const blocks = normalizeGeneratedBlocks(rawOutput, speakerNames, count);
+  return { rawOutput, blocks, numberOfBlocks: count };
 }
 
 module.exports = {
-  NUMBER_OF_BLOCKS,
+  NUMBER_OF_BLOCKS: DEFAULT_BLOCKS,
+  DEFAULT_BLOCKS,
+  MIN_BLOCKS,
+  MAX_BLOCKS,
+  clampBlockCount,
   generateFemdomSession,
   assignBlocksToCreators,
   normalizeGeneratedBlocks,

@@ -8,6 +8,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
+import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
@@ -48,6 +49,8 @@ function formatAmount(amount: number | null, currency: string | null): string | 
 }
 
 export default function TelegramNotifications() {
+  const { user } = useAuth();
+  const canSeeWebhook = user?.role === 'owner' || user?.role === 'manager';
   const pollEnabled = usePollEnabled(true);
   const confirm = useConfirm();
   const { onSyncEvent } = useStaffSync();
@@ -182,7 +185,7 @@ export default function TelegramNotifications() {
           </button>
         </div>
 
-        {webhookUrl ? (
+        {canSeeWebhook && webhookUrl ? (
           <div className="px-4 md:px-6 py-3 border-b border-gray-200 dark:border-zinc-800/60 bg-gray-50/80 dark:bg-zinc-900/40">
             <p className="text-xs text-gray-500 dark:text-zinc-500 mb-1.5">
               Paste this subscriber URL in Throne → Integrations → Webhook.{' '}

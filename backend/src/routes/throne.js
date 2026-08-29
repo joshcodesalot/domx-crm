@@ -10,12 +10,23 @@ const {
 
 const router = express.Router();
 
+function canSeeWebhookUrl(user) {
+  const role = user?.role;
+  return role === 'owner' || role === 'manager';
+}
+
+function withoutWebhookUnlessManager(user, result) {
+  if (!result || result.error || canSeeWebhookUrl(user)) return result;
+  const { webhookUrl: _webhookUrl, ...rest } = result;
+  return rest;
+}
+
 router.use(authenticate, requirePermission('creators.view'));
 
-router.get('/notifications/unread-count', async (_req, res) => {
+router.get('/notifications/unread-count', async (req, res) => {
   try {
     const result = await unreadCount();
-    return res.json(result);
+    return res.json(withoutWebhookUnlessManager(req.user, result));
   } catch (err) {
     console.error('[throne] Unread count error:', err);
     return res.status(500).json({ error: 'Failed to load unread count' });
@@ -31,7 +42,7 @@ router.get('/notifications', async (req, res) => {
     if (result.error) {
       return res.status(result.status || 400).json({ error: result.error });
     }
-    return res.json(result);
+    return res.json(withoutWebhookUnlessManager(req.user, result));
   } catch (err) {
     console.error('[throne] List notifications error:', err);
     return res.status(500).json({ error: 'Failed to load notifications' });

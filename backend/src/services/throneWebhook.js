@@ -26,6 +26,44 @@ function getThroneWebhookUrl() {
   return `${getPublicApiUrl()}/api/webhooks/throne`;
 }
 
+let throneNotificationsReady = false;
+
+async function ensureThroneNotificationsTable() {
+  if (throneNotificationsReady) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS throne_notifications (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      "eventId" TEXT NOT NULL UNIQUE,
+      "eventType" TEXT NOT NULL,
+      "throneCreatorId" TEXT,
+      "throneCreatorUsername" TEXT,
+      "gifterUsername" TEXT,
+      message TEXT,
+      "itemName" TEXT,
+      "itemThumbnailUrl" TEXT,
+      amount NUMERIC,
+      currency TEXT,
+      "isSurpriseGift" BOOLEAN,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      "isRead" BOOLEAN NOT NULL DEFAULT false,
+      "claimedByUserId" UUID REFERENCES users(id) ON DELETE SET NULL,
+      "claimedByUserName" TEXT,
+      "claimedAt" TIMESTAMPTZ,
+      "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_throne_notifications_created
+      ON throne_notifications ("createdAt" DESC)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_throne_notifications_unread
+      ON throne_notifications ("isRead")
+      WHERE "isRead" = false
+  `);
+  throneNotificationsReady = true;
+}
+
 function minorToMajor(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return null;
@@ -263,6 +301,7 @@ async function insertDashboardTip(event, sentAt) {
 }
 
 async function ingestThroneWebhook(rawBody, timestamp, signatureHex) {
+  await ensureThroneNotificationsTable();
   const verified = verifyThroneWebhook(rawBody, timestamp, signatureHex);
   if (!verified.ok) {
     return { status: 401, body: { error: 'Invalid webhook signature' } };
@@ -343,6 +382,7 @@ async function ingestThroneWebhook(rawBody, timestamp, signatureHex) {
 }
 
 async function listNotifications({ limit = 30, before } = {}) {
+  await ensureThroneNotificationsTable();
   const parsedLimit = Math.min(Math.max(Number(limit) || 30, 1), 100);
   const values = [];
   let where = '';
@@ -378,6 +418,7 @@ async function listNotifications({ limit = 30, before } = {}) {
 }
 
 async function unreadCount() {
+  await ensureThroneNotificationsTable();
   const result = await pool.query(
     `SELECT COUNT(*)::int AS count
      FROM throne_notifications
@@ -390,6 +431,7 @@ async function unreadCount() {
 }
 
 async function markAllRead() {
+  await ensureThroneNotificationsTable();
   await pool.query(
     `UPDATE throne_notifications SET "isRead" = true WHERE "isRead" = false`
   );
@@ -403,6 +445,7 @@ function isUuid(value) {
 }
 
 async function claimNotification(id, user) {
+  await ensureThroneNotificationsTable();
   if (!user?.id) {
     return { status: 401, body: { error: 'Authentication required' } };
   }

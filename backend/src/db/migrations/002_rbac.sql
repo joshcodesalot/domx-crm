@@ -1,5 +1,6 @@
--- Migrate legacy admin role to owner
+-- Migrate legacy roles to current slugs
 UPDATE users SET role = 'owner' WHERE role = 'admin';
+UPDATE users SET role = 'chatter' WHERE role = 'user';
 
 CREATE TABLE IF NOT EXISTS roles (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -30,4 +31,4 @@ CREATE INDEX IF NOT EXISTS idx_role_permissions_permission ON role_permissions (
 -- Constrain users.role to valid role slugs
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
 ALTER TABLE users ADD CONSTRAINT users_role_check
-  CHECK (role IN ('owner', 'manager', 'team_leader', 'chatter'));
+  CHECK (role IN ('owner', 'manager', 'backend', 'team_leader', 'chatter'));

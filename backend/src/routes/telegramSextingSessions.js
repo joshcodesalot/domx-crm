@@ -13,7 +13,8 @@ const {
   sendVaultToPeer,
 } = require('../services/telegramWorker');
 const {
-  NUMBER_OF_BLOCKS,
+  DEFAULT_BLOCKS,
+  clampBlockCount,
   generateFemdomSession,
   assignBlocksToCreators,
 } = require('../services/femdomSessionGenerator');
@@ -256,8 +257,11 @@ router.post('/', async (req, res) => {
   if (!fanName) return res.status(400).json({ error: 'Fan name is required' });
   if (!slaveName) return res.status(400).json({ error: 'Slave name is required' });
   if (!groupPeerId) {
-    return res.status(400).json({ error: 'Conversation group ID is required' });
+    return res.status(400).json({ error: 'Chat ID is required' });
   }
+  const numberOfBlocks = clampBlockCount(
+    body.numberOfBlocks == null ? DEFAULT_BLOCKS : body.numberOfBlocks
+  );
   if (creatorIds.length === 0) {
     return res.status(400).json({ error: 'Select at least one Telegram creator' });
   }
@@ -307,6 +311,7 @@ router.post('/', async (req, res) => {
       goal,
       scenario,
       extraInstructions,
+      numberOfBlocks,
     });
     const assigned = assignBlocksToCreators(generated.blocks, creators);
 
@@ -330,7 +335,7 @@ router.post('/', async (req, res) => {
           slaveName,
           groupPeerId,
           creatorIds,
-          NUMBER_OF_BLOCKS,
+          generated.numberOfBlocks || numberOfBlocks,
           toys,
           intensity,
           orgasmRule,

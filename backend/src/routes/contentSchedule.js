@@ -80,6 +80,13 @@ function normalizeMassPayload(platform, payload) {
     if (media.length === 0 && mediaId) {
       next.media = [{ mediaId: String(mediaId), type: 'picture' }];
     }
+  } else if (platform === 'telegram') {
+    const vaultIds = Array.isArray(next.vaultIds) ? next.vaultIds : [];
+    if (vaultIds.length === 0 && next.vaultId) {
+      next.vaultIds = [String(next.vaultId)];
+    } else {
+      next.vaultIds = vaultIds.map((id) => String(id || '').trim()).filter(Boolean);
+    }
   }
   return next;
 }
@@ -135,6 +142,7 @@ function normalizePlatform(value) {
   const raw = String(value || '').trim().toLowerCase();
   if (raw === '4based' || raw === 'fourbased') return '4based';
   if (raw === 'maloum') return 'maloum';
+  if (raw === 'telegram') return 'telegram';
   return null;
 }
 
@@ -252,7 +260,10 @@ function collectRowErrors(entry, {
     errors.push('Could not tell if this row is a mass message or feed post');
   }
   if (!platform) {
-    errors.push('platform must be 4based or maloum');
+    errors.push('platform must be 4based, maloum, or telegram');
+  }
+  if (platform === 'telegram' && kind === 'feed_post') {
+    errors.push('Telegram can only schedule mass messages');
   }
   if (!runAt) {
     errors.push('datetime is required');
@@ -485,7 +496,10 @@ router.post('/', (req, res, next) => {
       return res.status(400).json({ error: 'creatorId is required' });
     }
     if (!platform) {
-      return res.status(400).json({ error: 'platform must be 4based or maloum' });
+      return res.status(400).json({ error: 'platform must be 4based, maloum, or telegram' });
+    }
+    if (platform === 'telegram' && kind === 'feed_post') {
+      return res.status(400).json({ error: 'Telegram can only schedule mass messages' });
     }
     if (!runAt) {
       return res.status(400).json({ error: 'runAt / datetime is required' });
@@ -731,6 +745,10 @@ router.post('/import/commit', async (req, res) => {
           index,
           error: !runAt ? 'datetime is required' : 'kind, platform, and creator are required',
         });
+        continue;
+      }
+      if (platform === 'telegram' && kind === 'feed_post') {
+        errors.push({ index, error: 'Telegram can only schedule mass messages' });
         continue;
       }
 

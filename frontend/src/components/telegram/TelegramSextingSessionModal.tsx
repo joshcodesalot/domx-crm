@@ -7,12 +7,14 @@ export default function TelegramSextingSessionModal({
   groupLabel,
   defaultFanName,
   defaultCreatorIds,
+  lockCreators = false,
   onClose,
 }: {
   groupPeerId: string;
   groupLabel: string;
   defaultFanName: string;
   defaultCreatorIds: string[];
+  lockCreators?: boolean;
   onClose: () => void;
 }) {
   const navigate = useNavigate();
@@ -53,6 +55,7 @@ export default function TelegramSextingSessionModal({
             groupLabel={groupLabel}
             defaultFanName={defaultFanName}
             defaultCreatorIds={defaultCreatorIds}
+            lockCreators={lockCreators}
             onCreated={(session) => {
               onClose();
               navigate(
