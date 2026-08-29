@@ -3127,6 +3127,16 @@ export async function deleteTelegramList(
   );
 }
 
+export async function fillTelegramListFromDms(
+  creatorId: string,
+  listId: string
+): Promise<{ list: TelegramList; added: number; totalDms: number }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/lists/${encodeURIComponent(listId)}/members/from-dms`,
+    { method: 'POST' }
+  );
+}
+
 export async function getTelegramFanLists(
   creatorId: string,
   fanId: string

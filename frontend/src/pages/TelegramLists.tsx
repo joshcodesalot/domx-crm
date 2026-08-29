@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { List, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { List, Loader2, Plus, RefreshCw, Trash2, Users } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import { useConfirm } from '@/context/ConfirmDialogContext';
@@ -8,6 +8,7 @@ import { useToast } from '@/context/ToastContext';
 import {
   createTelegramList,
   deleteTelegramList,
+  fillTelegramListFromDms,
   listTelegramLists,
   type TelegramList,
 } from '@/lib/api';
@@ -27,6 +28,7 @@ export default function TelegramLists() {
   const [newListName, setNewListName] = useState('');
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [fillingId, setFillingId] = useState<string | null>(null);
 
   const selectedCreator = useMemo(
     () => creators.find((c) => c.id === selectedCreatorId) || null,
@@ -84,7 +86,7 @@ export default function TelegramLists() {
 
   const handleDelete = useCallback(
     async (list: TelegramList) => {
-      if (!selectedCreatorId || deletingId) return;
+      if (!selectedCreatorId || deletingId || fillingId) return;
       const ok = await confirm({
         title: 'Delete list?',
         message: `This removes "${list.name}". Fans stay in other lists.`,
@@ -103,7 +105,38 @@ export default function TelegramLists() {
         setDeletingId(null);
       }
     },
-    [selectedCreatorId, deletingId, confirm, toast]
+    [selectedCreatorId, deletingId, fillingId, confirm, toast]
+  );
+
+  const handleFillFromDms = useCallback(
+    async (list: TelegramList) => {
+      if (!selectedCreatorId || fillingId || deletingId) return;
+      const ok = await confirm({
+        title: 'Add all DMs?',
+        message: `Add every Telegram DM to “${list.name}”? Groups and service chats are skipped. People already on the list stay.`,
+        confirmLabel: 'Add all DMs',
+      });
+      if (!ok) return;
+      setFillingId(list.id);
+      try {
+        const result = await fillTelegramListFromDms(selectedCreatorId, list.id);
+        setLists((prev) =>
+          prev.map((item) => (item.id === list.id && result.list ? result.list : item))
+        );
+        const added = Number(result.added) || 0;
+        const scanned = Number(result.totalDms) || 0;
+        toast.success(
+          added
+            ? `Added ${added} fan${added === 1 ? '' : 's'} (${scanned} DMs scanned)`
+            : `No new DMs to add (${scanned} DMs scanned)`
+        );
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to add DMs');
+      } finally {
+        setFillingId(null);
+      }
+    },
+    [selectedCreatorId, fillingId, deletingId, confirm, toast]
   );
 
   return (
@@ -240,6 +273,8 @@ export default function TelegramLists() {
                 <div className="rounded-2xl border border-gray-200 dark:border-zinc-800 divide-y divide-gray-100 dark:divide-zinc-800/80 overflow-hidden">
                   {lists.map((list) => {
                     const deleting = deletingId === list.id;
+                    const filling = fillingId === list.id;
+                    const busy = Boolean(deletingId || fillingId);
                     const count = list.memberCount ?? list.totalMemberCount ?? 0;
                     return (
                       <div
@@ -256,7 +291,20 @@ export default function TelegramLists() {
                         </div>
                         <button
                           type="button"
-                          disabled={Boolean(deletingId)}
+                          disabled={busy}
+                          onClick={() => void handleFillFromDms(list)}
+                          className="p-2 rounded-lg text-gray-400 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-950/40 disabled:opacity-40"
+                          title="Add all DMs"
+                        >
+                          {filling ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Users className="w-4 h-4" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busy}
                           onClick={() => void handleDelete(list)}
                           className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-40"
                           title="Delete list"

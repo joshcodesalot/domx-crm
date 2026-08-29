@@ -1085,6 +1085,33 @@ async function listDialogs(creatorId, { limit = 80 } = {}) {
   });
 }
 
+const ALL_DM_DIALOG_CAP = 10_000;
+const PROFILE_UPSERT_BATCH = 20;
+
+async function listAllDmPeers(creatorId) {
+  const client = await getClient(creatorId);
+  const peers = [];
+  const seen = new Set();
+  for await (const dialog of client.iterDialogs({ limit: ALL_DM_DIALOG_CAP })) {
+    const peer = dialog.peer;
+    if (!isInboxPeer(peer)) continue;
+    if (peerKind(peer) !== 'dm') continue;
+    if (isTelegramServicePeer(peer)) continue;
+    const peerId = String(peer.id || '').trim();
+    if (!peerId || seen.has(peerId)) continue;
+    seen.add(peerId);
+    peers.push(peer);
+  }
+  for (let index = 0; index < peers.length; index += PROFILE_UPSERT_BATCH) {
+    const batch = peers.slice(index, index + PROFILE_UPSERT_BATCH);
+    await Promise.all(batch.map((peer) => upsertFanProfile(creatorId, peer)));
+  }
+  return peers.map((peer) => ({
+    peerId: String(peer.id),
+    peer,
+  }));
+}
+
 async function listMessages(
   creatorId,
   peerId,
@@ -1790,6 +1817,7 @@ module.exports = {
   disconnectCreator,
   getClient,
   listDialogs,
+  listAllDmPeers,
   listMessages,
   listChatMembers,
   sendText,

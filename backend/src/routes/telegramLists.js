@@ -3,7 +3,11 @@ const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/authorize');
 const { userCanAccessCreator } = require('../services/creatorAccess');
-const { isTelegramServiceDialog } = require('../services/telegramWorker');
+const {
+  isTelegramServiceDialog,
+  listAllDmPeers,
+  TelegramWorkerError,
+} = require('../services/telegramWorker');
 
 const router = express.Router();
 
@@ -51,6 +55,15 @@ async function requireTelegramCreator(req, res) {
     return null;
   }
   return loaded.creator;
+}
+
+function handleTelegramError(res, err, logLabel) {
+  if (err instanceof TelegramWorkerError) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+  console.error(logLabel, err);
+  const message = err?.message ? String(err.message).slice(0, 240) : 'Telegram request failed';
+  return res.status(400).json({ error: message });
 }
 
 function serializeList(row) {
@@ -235,6 +248,47 @@ router.get(
     } catch (err) {
       console.error('List Telegram list members error:', err);
       return res.status(500).json({ error: 'Failed to load members' });
+    }
+  }
+);
+
+router.post(
+  '/:id/telegram/lists/:listId/members/from-dms',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { listId } = req.params;
+    if (!isValidUuid(listId)) {
+      return res.status(400).json({ error: 'Invalid list ID' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const existing = await loadListForCreator(creator.id, listId);
+      if (!existing) {
+        return res.status(404).json({ error: 'List not found' });
+      }
+      const peers = await listAllDmPeers(creator.id);
+      const peerIds = peers.map((entry) => entry.peerId);
+      let added = 0;
+      if (peerIds.length > 0) {
+        const inserted = await pool.query(
+          `INSERT INTO telegram_list_members ("listId", "telegramUserId")
+           SELECT $1, x.peer_id
+           FROM unnest($2::text[]) AS x(peer_id)
+           ON CONFLICT DO NOTHING`,
+          [listId, peerIds]
+        );
+        added = inserted.rowCount || 0;
+      }
+      const list = await loadListForCreator(creator.id, listId);
+      return res.json({
+        list,
+        added,
+        totalDms: peerIds.length,
+      });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Fill Telegram list from DMs error:');
     }
   }
 );
