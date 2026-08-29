@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type UIEvent,
+} from 'react';
 import {
   Box,
   Check,
@@ -35,9 +43,47 @@ import {
 } from '@/lib/vaultListingCache';
 
 const PAGE_SIZE = 60;
+const MAX_VAULT_UPLOAD_BYTES = 512 * 1024 * 1024;
+const VAULT_MEDIA_EXT =
+  /\.(jpe?g|png|gif|webp|bmp|heic|heif|avif|tiff?|mp4|mov|webm|mkv|avi|m4v)$/i;
 
 type KindFilter = 'all' | 'photo' | 'video';
 type SentFilter = 'all' | 'sent' | 'not_sent';
+
+function isVaultMediaFile(file: File): boolean {
+  const mime = String(file.type || '');
+  if (mime.startsWith('image/') || mime.startsWith('video/')) return true;
+  return VAULT_MEDIA_EXT.test(file.name);
+}
+
+function hasFileDrag(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  return Array.from(dt.types || []).includes('Files');
+}
+
+function filesFromDataTransfer(dt: DataTransfer | null): File[] {
+  if (!dt) return [];
+  const items = dt.items;
+  if (items && items.length) {
+    const files: File[] = [];
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (item.kind !== 'file') continue;
+      const entry = item.webkitGetAsEntry?.();
+      if (entry && !entry.isFile) continue;
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+    return files;
+  }
+  return Array.from(dt.files || []);
+}
+
+function toFileList(files: File[]): FileList {
+  const transfer = new DataTransfer();
+  for (const file of files) transfer.items.add(file);
+  return transfer.files;
+}
 
 function formatDuration(seconds?: number | null): string | null {
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
@@ -182,10 +228,25 @@ export default function TelegramVaultModal({
   const loadingMoreRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const cancelUploadRef = useRef(false);
+  const dragDepthRef = useRef(0);
+  const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
     setSelected(selectedItems);
   }, [selectedItems]);
+
+  useEffect(() => {
+    const blockNavigate = (event: globalThis.DragEvent) => {
+      if (!hasFileDrag(event.dataTransfer)) return;
+      event.preventDefault();
+    };
+    window.addEventListener('dragover', blockNavigate);
+    window.addEventListener('drop', blockNavigate);
+    return () => {
+      window.removeEventListener('dragover', blockNavigate);
+      window.removeEventListener('drop', blockNavigate);
+    };
+  }, []);
 
   const loadFolders = useCallback(async () => {
     const cacheKey = vaultCacheKey({
@@ -327,13 +388,79 @@ export default function TelegramVaultModal({
     cancelUploadRef.current = true;
   }
 
-  async function handleUpload(files: FileList | null) {
+  const canDrop = Boolean(folderId) && !uploading;
+
+  function resetDragState() {
+    dragDepthRef.current = 0;
+    setIsDragging(false);
+  }
+
+  function handleDragEnter(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!canDrop || !hasFileDrag(event.dataTransfer)) return;
+    dragDepthRef.current += 1;
+    setIsDragging(true);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.dataTransfer) return;
+    event.dataTransfer.dropEffect = canDrop ? 'copy' : 'none';
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDragging(false);
+  }
+
+  function queueVaultFiles(input: File[] | FileList | null) {
+    if (!input?.length || !folderId || uploading) return;
+    const raw = Array.from(input);
+    const accepted: File[] = [];
+    let skippedType = 0;
+    let skippedSize = 0;
+    for (const file of raw) {
+      if (!isVaultMediaFile(file)) {
+        skippedType += 1;
+        continue;
+      }
+      if (file.size > MAX_VAULT_UPLOAD_BYTES) {
+        skippedSize += 1;
+        continue;
+      }
+      accepted.push(file);
+    }
+    const warningParts: string[] = [];
+    if (skippedType) warningParts.push('Only photos and videos can be added to the vault');
+    if (skippedSize) warningParts.push('Files larger than 512 MB were skipped');
+    const warning = warningParts.length ? `${warningParts.join('. ')}.` : null;
+    if (!accepted.length) {
+      setError(warning || 'No photos or videos to upload.');
+      return;
+    }
+    void handleUpload(toFileList(accepted), warning);
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    resetDragState();
+    if (!canDrop) return;
+    queueVaultFiles(filesFromDataTransfer(event.dataTransfer));
+  }
+
+  async function handleUpload(files: FileList | null, warning?: string | null) {
     if (!files?.length || !folderId || uploading) return;
     const queue = Array.from(files);
     cancelUploadRef.current = false;
+    resetDragState();
     setUploading(true);
     setUploadProgress({ done: 0, total: queue.length });
-    setError(null);
+    setError(warning || null);
     let failed = 0;
     try {
       for (let index = 0; index < queue.length; index += 1) {
@@ -415,7 +542,7 @@ export default function TelegramVaultModal({
               accept="image/*,video/*"
               multiple
               className="hidden"
-              onChange={(e) => void handleUpload(e.target.files)}
+              onChange={(e) => queueVaultFiles(e.target.files)}
             />
             <button
               type="button"
@@ -577,7 +704,15 @@ export default function TelegramVaultModal({
               ))}
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4" onScroll={handleScroll}>
+            <div className="flex-1 relative min-h-0">
+              <div
+                className="absolute inset-0 overflow-y-auto p-4"
+                onScroll={handleScroll}
+                onDragEnter={handleDragEnter}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+              >
               {error && <p className="text-sm text-red-400 mb-3">{error}</p>}
               {loading && items.length === 0 && (
                 <div className="flex justify-center py-12">
@@ -585,11 +720,23 @@ export default function TelegramVaultModal({
                 </div>
               )}
               {!loading && visibleItems.length === 0 && (
-                <p className="text-sm text-gray-500 dark:text-zinc-500">
-                  {folderId
-                    ? 'No media in this folder. Upload photos or videos to get started.'
-                    : 'Create a folder to start the vault.'}
-                </p>
+                folderId ? (
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={!canDrop}
+                    className="w-full rounded-xl border border-dashed border-gray-300 dark:border-zinc-700 py-16 px-4 text-sm text-gray-500 dark:text-zinc-400 hover:border-domx-500/50 hover:text-gray-800 dark:hover:text-zinc-200 disabled:opacity-50 disabled:hover:border-gray-300 dark:disabled:hover:border-zinc-700 disabled:hover:text-gray-500 dark:disabled:hover:text-zinc-400"
+                  >
+                    <span className="flex flex-col items-center gap-2">
+                      <Upload className="w-6 h-6" />
+                      Drop photos or videos here, or click to browse.
+                    </span>
+                  </button>
+                ) : (
+                  <p className="text-sm text-gray-500 dark:text-zinc-500">
+                    Create a folder to start the vault.
+                  </p>
+                )
               )}
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
                 {visibleItems.map((item) => {
@@ -649,6 +796,15 @@ export default function TelegramVaultModal({
               {loadingMore && (
                 <div className="flex justify-center py-4">
                   <Loader2 className="w-5 h-5 animate-spin text-gray-500" />
+                </div>
+              )}
+              </div>
+              {isDragging && canDrop && (
+                <div className="absolute inset-0 z-20 pointer-events-none flex items-center justify-center border-2 border-dashed border-domx-500 bg-domx-600/10 rounded-none">
+                  <div className="flex flex-col items-center gap-2 text-domx-600 dark:text-domx-400">
+                    <Upload className="w-8 h-8" />
+                    <span className="text-sm font-medium">Drop to upload</span>
+                  </div>
                 </div>
               )}
             </div>
