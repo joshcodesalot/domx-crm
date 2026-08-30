@@ -1112,6 +1112,14 @@ async function listAllDmPeers(creatorId) {
   }));
 }
 
+async function markPeerRead(client, peerId) {
+  try {
+    await client.readHistory(peerId, { clearMentions: true });
+  } catch (err) {
+    console.warn('[telegram] readHistory failed:', err.message || err);
+  }
+}
+
 async function listMessages(
   creatorId,
   peerId,
@@ -1166,6 +1174,9 @@ async function listMessages(
   if (peer && !hasOffset) {
     await upsertFanProfile(creatorId, peer);
     await cachePeerAvatar(creatorId, client, peer);
+  }
+  if (!hasOffset) {
+    await markPeerRead(client, numericId);
   }
   const profiles = await loadProfiles(creatorId, [String(numericId)]);
   const profile = profiles.get(String(numericId));
@@ -1336,6 +1347,7 @@ async function sendText(creatorId, peerId, text) {
     throw new TelegramWorkerError('Message text is required');
   }
   const sent = await client.sendText(numericId, trimmed);
+  await markPeerRead(client, numericId);
   return serializeMessage(sent);
 }
 
@@ -1446,6 +1458,7 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
       });
       const serialized = serializeMessage(sent);
       if (serialized) sentMessages.push(serialized);
+      await markPeerRead(client, numericPeer);
       return sentMessages;
     }
 
@@ -1471,6 +1484,7 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
         if (serialized) sentMessages.push(serialized);
       }
     }
+    await markPeerRead(client, numericPeer);
     return sentMessages;
   } catch (err) {
     if (err instanceof TelegramWorkerError) throw err;

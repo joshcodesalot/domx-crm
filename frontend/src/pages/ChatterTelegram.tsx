@@ -32,6 +32,8 @@ export default function ChatterTelegram() {
   const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
   const [selectedDialog, setSelectedDialog] = useState<TelegramDialog | null>(null);
+  const [clearedPeerId, setClearedPeerId] = useState<string | null>(null);
+  const [clearedReadNonce, setClearedReadNonce] = useState(0);
 
   const selectedCreator = useMemo(
     () => creators.find((c) => c.id === selectedCreatorId) || null,
@@ -48,6 +50,7 @@ export default function ChatterTelegram() {
   useEffect(() => {
     setSelectedPeerId(null);
     setSelectedDialog(null);
+    setClearedPeerId(null);
   }, [selectedCreatorId]);
 
   useEffect(() => {
@@ -63,6 +66,17 @@ export default function ChatterTelegram() {
     setSelectedPeerId(dialog.peerId);
     setSelectedDialog(dialog);
   }, []);
+
+  const handleMarkedRead = useCallback(
+    (peerId: string) => {
+      setClearedPeerId(peerId);
+      setClearedReadNonce((n) => n + 1);
+      if (selectedCreatorId) {
+        void refreshBadges([selectedCreatorId]);
+      }
+    },
+    [refreshBadges, selectedCreatorId]
+  );
 
   return (
     <div className="bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 h-screen flex antialiased overflow-hidden">
@@ -144,6 +158,8 @@ export default function ChatterTelegram() {
               selectedPeerId={selectedPeerId}
               onSelectDialog={handleSelectDialog}
               pollEnabled={pollEnabled}
+              clearedPeerId={clearedPeerId}
+              clearedReadNonce={clearedReadNonce}
               onRefreshExtra={() => {
                 void refreshBadges([selectedCreatorId]);
               }}
@@ -163,6 +179,7 @@ export default function ChatterTelegram() {
             peerId={selectedPeerId}
             initialFan={selectedDialog?.fan || null}
             pollEnabled={pollEnabled}
+            onMarkedRead={handleMarkedRead}
             onClose={() => {
               setSelectedPeerId(null);
               setSelectedDialog(null);

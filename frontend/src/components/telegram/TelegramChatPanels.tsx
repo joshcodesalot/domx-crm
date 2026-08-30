@@ -273,12 +273,16 @@ export function TelegramChatList({
   onSelectDialog,
   pollEnabled,
   onRefreshExtra,
+  clearedPeerId,
+  clearedReadNonce,
 }: {
   creatorId: string;
   selectedPeerId: string | null;
   onSelectDialog: (dialog: TelegramDialog) => void;
   pollEnabled: boolean;
   onRefreshExtra?: () => void;
+  clearedPeerId?: string | null;
+  clearedReadNonce?: number;
 }) {
   const { user } = useAuth();
   const { onSyncEvent } = useStaffSync();
@@ -337,6 +341,27 @@ export function TelegramChatList({
       setRefreshing(false);
     }
   }, [loadDialogs, onRefreshExtra, refreshing]);
+
+  useEffect(() => {
+    if (!clearedPeerId) return;
+    setDialogs((prev) =>
+      prev.map((dialog) =>
+        dialog.peerId === clearedPeerId && dialog.unreadCount > 0
+          ? { ...dialog, unreadCount: 0 }
+          : dialog
+      )
+    );
+  }, [clearedPeerId, clearedReadNonce]);
+
+  const markDialogRead = useCallback((peerId: string) => {
+    setDialogs((prev) =>
+      prev.map((dialog) =>
+        dialog.peerId === peerId && dialog.unreadCount > 0
+          ? { ...dialog, unreadCount: 0 }
+          : dialog
+      )
+    );
+  }, []);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -443,7 +468,10 @@ export function TelegramChatList({
             <button
               key={dialog.peerId}
               type="button"
-              onClick={() => onSelectDialog(dialog)}
+              onClick={() => {
+                markDialogRead(dialog.peerId);
+                onSelectDialog(dialog);
+              }}
               className={`w-full text-left px-4 py-3 border-b border-gray-100 dark:border-white/5 ${
                 active
                   ? 'bg-gray-100 dark:bg-zinc-800/50'
@@ -492,6 +520,7 @@ export function TelegramChatThread({
   initialFan,
   pollEnabled,
   onClose,
+  onMarkedRead,
 }: {
   creatorId: string;
   creator?: Creator | null;
@@ -499,6 +528,7 @@ export function TelegramChatThread({
   initialFan?: TelegramFan | null;
   pollEnabled: boolean;
   onClose?: () => void;
+  onMarkedRead?: (peerId: string) => void;
 }) {
   const { user, hasPermission } = useAuth();
   const confirm = useConfirm();
@@ -566,6 +596,9 @@ export function TelegramChatThread({
   const historyTranslateQueueRef = useRef<HistoryTranslateQueue | null>(null);
   const historyTranslationsRef = useRef(historyTranslations);
   historyTranslationsRef.current = historyTranslations;
+  const markedReadOnOpenRef = useRef(false);
+  const onMarkedReadRef = useRef(onMarkedRead);
+  onMarkedReadRef.current = onMarkedRead;
   const showUsername = canSeeFanUsername(user?.role);
   const isGroup = fan?.kind === 'group';
 
@@ -654,6 +687,7 @@ export function TelegramChatThread({
     setSuggestedEnglish(null);
     setChatMediaPreview(null);
     setGenerateSessionOpen(false);
+    markedReadOnOpenRef.current = false;
   }, [creatorId, peerId]);
 
   const loadMessages = useCallback(
@@ -751,6 +785,10 @@ export function TelegramChatThread({
           if (!loadedOlderRef.current) {
             messagesNextRef.current = nextCursor;
             setMessagesNext(nextCursor);
+          }
+          if (!markedReadOnOpenRef.current) {
+            markedReadOnOpenRef.current = true;
+            onMarkedReadRef.current?.(peerId);
           }
         }
       } catch (err) {
@@ -1025,6 +1063,7 @@ export function TelegramChatThread({
           });
         setAppliedScriptId(null);
       }
+      onMarkedRead?.(peerId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send');
     } finally {

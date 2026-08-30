@@ -59,6 +59,9 @@ export default function MessageProTelegram() {
   const [workspaces, setWorkspaces] = useState<CreatorWorkspace[]>([]);
   const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
   const [mountedHomeIds, setMountedHomeIds] = useState<string[]>([]);
+  const [clearedPeerId, setClearedPeerId] = useState<string | null>(null);
+  const [clearedCreatorId, setClearedCreatorId] = useState<string | null>(null);
+  const [clearedReadNonce, setClearedReadNonce] = useState(0);
 
   const openableCreators = useMemo(
     () => creators.filter(isOpenableCreator),
@@ -143,6 +146,16 @@ export default function MessageProTelegram() {
       })
     );
   }, []);
+
+  const handleMarkedRead = useCallback(
+    (creatorId: string, peerId: string) => {
+      setClearedCreatorId(creatorId);
+      setClearedPeerId(peerId);
+      setClearedReadNonce((n) => n + 1);
+      void refreshBadges([creatorId]);
+    },
+    [refreshBadges]
+  );
 
   const setActiveTab = useCallback((creatorId: string, tabId: string) => {
     setWorkspaces((prev) =>
@@ -296,6 +309,10 @@ export default function MessageProTelegram() {
                     selectedPeerId={null}
                     pollEnabled={pagePollEnabled && isActiveHome}
                     onSelectDialog={(dialog) => openFanTab(creatorId, dialog)}
+                    clearedPeerId={
+                      clearedCreatorId === creatorId ? clearedPeerId : null
+                    }
+                    clearedReadNonce={clearedReadNonce}
                     onRefreshExtra={() => {
                       void refreshBadges([creatorId]);
                     }}
@@ -312,6 +329,9 @@ export default function MessageProTelegram() {
                   peerId={activeFanTab.peerId}
                   initialFan={activeFanTab.fan || null}
                   pollEnabled={pagePollEnabled}
+                  onMarkedRead={(peerId) =>
+                    handleMarkedRead(activeWorkspace.creator.id, peerId)
+                  }
                   onClose={() =>
                     closeFanTab(activeWorkspace.creator.id, activeFanTab.peerId)
                   }
