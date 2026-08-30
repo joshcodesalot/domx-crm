@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { Loader2, X } from 'lucide-react';
 
 export type VaultMediaLightboxKind = 'picture' | 'video' | 'embed';
 
@@ -23,8 +23,10 @@ export default function VaultMediaLightbox({
   zClassName = 'z-[60]',
 }: VaultMediaLightboxProps) {
   const [useFallback, setUseFallback] = useState(false);
+  const [videoReady, setVideoReady] = useState(false);
   useEffect(() => {
     setUseFallback(false);
+    setVideoReady(false);
   }, [url]);
   const pictureSrc =
     useFallback && fallbackUrl && fallbackUrl !== url ? fallbackUrl : url;
@@ -48,16 +50,30 @@ export default function VaultMediaLightbox({
           allowFullScreen
         />
       ) : kind === 'video' ? (
-        <video
-          src={url}
-          controls
-          autoPlay
-          playsInline
-          poster={poster || undefined}
-          className="relative z-10 max-w-full max-h-full rounded-lg bg-gray-900 dark:bg-black animate-slide-up"
+        <div
+          className={`relative z-10 max-w-full max-h-full ${
+            videoReady ? '' : 'min-w-[240px] min-h-[160px]'
+          }`}
         >
-          <track kind="captions" />
-        </video>
+          {!videoReady && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-black/40 pointer-events-none">
+              <Loader2 className="w-8 h-8 animate-spin text-white" />
+            </div>
+          )}
+          <video
+            src={url}
+            controls
+            autoPlay
+            playsInline
+            poster={poster || undefined}
+            onCanPlay={() => setVideoReady(true)}
+            onPlaying={() => setVideoReady(true)}
+            onError={() => setVideoReady(true)}
+            className="max-w-full max-h-full rounded-lg bg-gray-900 dark:bg-black animate-slide-up"
+          >
+            <track kind="captions" />
+          </video>
+        </div>
       ) : (
         <img
           src={pictureSrc}

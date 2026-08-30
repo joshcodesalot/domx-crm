@@ -11,6 +11,7 @@ import {
   Image as ImageIcon,
   Languages,
   Loader2,
+  Play,
   PanelRight,
   PanelRightClose,
   RefreshCw,
@@ -1376,7 +1377,8 @@ export function TelegramChatThread({
                         <button
                           type="button"
                           onClick={() => setChatMediaPreview(msg)}
-                          className="mb-2 block overflow-hidden rounded-lg"
+                          className="mb-2 relative block overflow-hidden rounded-lg"
+                          aria-label={msg.kind === 'video' ? 'Play video' : 'Open image'}
                         >
                           <img
                             src={telegramChatMediaUrl(
@@ -1388,6 +1390,13 @@ export function TelegramChatThread({
                             alt=""
                             className="max-h-56 max-w-full object-cover"
                           />
+                          {msg.kind === 'video' && (
+                            <span className="absolute inset-0 flex items-center justify-center bg-black/25">
+                              <span className="w-10 h-10 rounded-full bg-black/50 backdrop-blur flex items-center justify-center">
+                                <Play className="w-5 h-5 ml-0.5 text-white" />
+                              </span>
+                            </span>
+                          )}
                         </button>
                       )}
                       {(msgText ||

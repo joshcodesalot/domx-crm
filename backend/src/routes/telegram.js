@@ -11,6 +11,7 @@ const { userCanAccessCreator } = require('../services/creatorAccess');
 const { applyModeration } = require('../services/contentModeration');
 const {
   TelegramWorkerError,
+  describeError,
   startPhoneLogin,
   completePhoneLogin,
   abortPendingLogin,
@@ -62,8 +63,7 @@ function handleTelegramError(res, err, logLabel) {
     return res.status(err.status || 400).json({ error: err.message });
   }
   console.error(logLabel, err);
-  const message = err?.message ? String(err.message).slice(0, 240) : 'Telegram request failed';
-  return res.status(400).json({ error: message });
+  return res.status(400).json({ error: describeError(err) });
 }
 
 const FOLDER_NAME_MAX = 120;
@@ -100,10 +100,21 @@ function authenticateMedia(req, res, next) {
 }
 
 function sendLocalFile(res, filePath, mimeType) {
+  const resolved = path.resolve(filePath);
+  const ext = path.extname(resolved);
+  const base = path.basename(resolved) || 'media';
+  const filename =
+    ext || !(mimeType && String(mimeType).startsWith('video/'))
+      ? base
+      : `${base}.mp4`;
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.setHeader('Content-Type', mimeType || 'application/octet-stream');
   res.setHeader('Cache-Control', 'private, max-age=86400');
-  return res.sendFile(path.resolve(filePath));
+  res.setHeader(
+    'Content-Disposition',
+    `inline; filename="${String(filename).replace(/"/g, '')}"`
+  );
+  return res.sendFile(resolved);
 }
 
 function cleanupUpload(file) {

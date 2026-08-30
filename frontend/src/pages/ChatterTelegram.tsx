@@ -67,16 +67,10 @@ export default function ChatterTelegram() {
     setSelectedDialog(dialog);
   }, []);
 
-  const handleMarkedRead = useCallback(
-    (peerId: string) => {
-      setClearedPeerId(peerId);
-      setClearedReadNonce((n) => n + 1);
-      if (selectedCreatorId) {
-        void refreshBadges([selectedCreatorId]);
-      }
-    },
-    [refreshBadges, selectedCreatorId]
-  );
+  const handleMarkedRead = useCallback((peerId: string) => {
+    setClearedPeerId(peerId);
+    setClearedReadNonce((n) => n + 1);
+  }, []);
 
   return (
     <div className="bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 h-screen flex antialiased overflow-hidden">

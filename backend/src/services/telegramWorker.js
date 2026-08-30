@@ -27,6 +27,10 @@ const hotClients = new Map();
 /** @type {Map<string, object>} */
 const pendingLogins = new Map();
 
+const READ_COOLDOWN_MS = 60_000;
+/** @type {Map<string, number>} */
+const lastReadAt = new Map();
+
 class TelegramWorkerError extends Error {
   constructor(message, status = 400) {
     super(message);
@@ -211,10 +215,34 @@ function peerTitle(peer) {
   return peer.displayName || peer.firstName || 'Fan';
 }
 
+const VIDEO_FILE_RE = /\.(mp4|mov|webm|m4v)$/i;
+
+function mediaMime(media) {
+  if (!media || typeof media !== 'object') return '';
+  return String(media.mimeType || media.mime || media.fileMime || '').toLowerCase();
+}
+
+function mediaFileName(media) {
+  if (!media || typeof media !== 'object') return '';
+  return String(media.fileName || '');
+}
+
+function isChatVideoMedia(media) {
+  if (!media || typeof media !== 'object') return false;
+  const type = String(media.type || '').toLowerCase();
+  if (type === 'video' || type === 'video_note' || type === 'round') return true;
+  const mime = mediaMime(media);
+  const name = mediaFileName(media);
+  const looksVideo = mime.startsWith('video/') || VIDEO_FILE_RE.test(name);
+  if (type === 'animation') return !mime.startsWith('image/');
+  if (type === 'document') return looksVideo;
+  return false;
+}
+
 function mediaPlaceholder(media) {
   const type = media && typeof media === 'object' ? media.type : null;
   if (type === 'photo') return { kind: 'photo', text: 'Photo' };
-  if (type === 'video') return { kind: 'video', text: 'Video' };
+  if (isChatVideoMedia(media)) return { kind: 'video', text: 'Video' };
   if (type === 'voice' || type === 'audio') return { kind: 'audio', text: 'Audio' };
   if (type === 'sticker') return { kind: 'sticker', text: 'Sticker' };
   if (type === 'document') return { kind: 'document', text: 'File' };
@@ -340,10 +368,27 @@ function pickMediaFull(media) {
   return media;
 }
 
-function guessMediaMime(kind, variant) {
+function guessMediaMime(kind, variant, media) {
   if (variant === 'thumb' || kind === 'photo') return 'image/jpeg';
-  if (kind === 'video') return 'video/mp4';
+  if (kind === 'video') {
+    const mime = mediaMime(media);
+    if (mime.startsWith('video/')) return mime;
+    const name = mediaFileName(media).toLowerCase();
+    if (name.endsWith('.webm')) return 'video/webm';
+    if (name.endsWith('.mov')) return 'video/quicktime';
+    return 'video/mp4';
+  }
   return 'application/octet-stream';
+}
+
+function fullMediaExt(kind, mimeType) {
+  if (kind === 'photo') return 'jpg';
+  if (kind === 'video') {
+    if (mimeType === 'video/webm') return 'webm';
+    if (mimeType === 'video/quicktime') return 'mov';
+    return 'mp4';
+  }
+  return 'bin';
 }
 
 function serializeUserPreview(user) {
@@ -1112,9 +1157,15 @@ async function listAllDmPeers(creatorId) {
   }));
 }
 
-async function markPeerRead(client, peerId) {
+async function markPeerRead(client, peerId, { creatorId, force = false } = {}) {
+  const key = `${creatorId || ''}:${peerId}`;
+  if (!force) {
+    const prev = lastReadAt.get(key) || 0;
+    if (Date.now() - prev < READ_COOLDOWN_MS) return;
+  }
   try {
     await client.readHistory(peerId, { clearMentions: true });
+    lastReadAt.set(key, Date.now());
   } catch (err) {
     console.warn('[telegram] readHistory failed:', err.message || err);
   }
@@ -1176,7 +1227,7 @@ async function listMessages(
     await cachePeerAvatar(creatorId, client, peer);
   }
   if (!hasOffset) {
-    await markPeerRead(client, numericId);
+    await markPeerRead(client, numericId, { creatorId });
   }
   const profiles = await loadProfiles(creatorId, [String(numericId)]);
   const profile = profiles.get(String(numericId));
@@ -1347,7 +1398,7 @@ async function sendText(creatorId, peerId, text) {
     throw new TelegramWorkerError('Message text is required');
   }
   const sent = await client.sendText(numericId, trimmed);
-  await markPeerRead(client, numericId);
+  await markPeerRead(client, numericId, { creatorId, force: true });
   return serializeMessage(sent);
 }
 
@@ -1458,7 +1509,7 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
       });
       const serialized = serializeMessage(sent);
       if (serialized) sentMessages.push(serialized);
-      await markPeerRead(client, numericPeer);
+      await markPeerRead(client, numericPeer, { creatorId, force: true });
       return sentMessages;
     }
 
@@ -1484,7 +1535,7 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
         if (serialized) sentMessages.push(serialized);
       }
     }
-    await markPeerRead(client, numericPeer);
+    await markPeerRead(client, numericPeer, { creatorId, force: true });
     return sentMessages;
   } catch (err) {
     if (err instanceof TelegramWorkerError) throw err;
@@ -1648,12 +1699,17 @@ async function getCachedMessageMedia(creatorId, peerId, messageId, variant) {
     throw new TelegramWorkerError('Message not found', 404);
   }
   const media = msg.media;
-  const kind = vaultKindFromMedia(media) || mediaPlaceholder(media)?.kind || 'media';
+  const kind =
+    vaultKindFromMedia(media) ||
+    (isChatVideoMedia(media) ? 'video' : null) ||
+    mediaPlaceholder(media)?.kind ||
+    'media';
   const location = wantThumb ? pickMediaThumb(media) : pickMediaFull(media);
   if (!location) {
     throw new TelegramWorkerError('No media on this message', 404);
   }
-  const ext = wantThumb || kind === 'photo' ? 'jpg' : 'bin';
+  const mimeType = guessMediaMime(kind, wantThumb ? 'thumb' : 'full', media);
+  const ext = wantThumb || kind === 'photo' ? 'jpg' : fullMediaExt(kind, mimeType);
   const rel = vaultCacheRel(
     creatorId,
     String(peerId),
@@ -1685,7 +1741,7 @@ async function getCachedMessageMedia(creatorId, peerId, messageId, variant) {
   }
   return {
     filePath: dest,
-    mimeType: guessMediaMime(kind, wantThumb ? 'thumb' : 'full'),
+    mimeType,
     kind,
   };
 }

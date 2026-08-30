@@ -147,15 +147,11 @@ export default function MessageProTelegram() {
     );
   }, []);
 
-  const handleMarkedRead = useCallback(
-    (creatorId: string, peerId: string) => {
-      setClearedCreatorId(creatorId);
-      setClearedPeerId(peerId);
-      setClearedReadNonce((n) => n + 1);
-      void refreshBadges([creatorId]);
-    },
-    [refreshBadges]
-  );
+  const handleMarkedRead = useCallback((creatorId: string, peerId: string) => {
+    setClearedCreatorId(creatorId);
+    setClearedPeerId(peerId);
+    setClearedReadNonce((n) => n + 1);
+  }, []);
 
   const setActiveTab = useCallback((creatorId: string, tabId: string) => {
     setWorkspaces((prev) =>
