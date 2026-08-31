@@ -66,21 +66,24 @@ function platformLabel(platform: MessagingDashboardEntry['platform']): string {
 }
 
 function SalesLogRow({ entry }: { entry: MessagingDashboardEntry }) {
+  const saleTime = formatSentTime(entry.unlockedAt || entry.sentAt);
   const sentTime = formatSentTime(entry.sentAt);
   const moneyCurrency = resolveDashboardCurrency(entry.currency, entry.platform);
   const listed = entry.priceNet;
   const net = netTakeAmount(entry.priceNet, entry.platform);
   const isTip = entry.contentType === 'tip';
+  const showSentTime =
+    entry.contentType === 'chat_product' &&
+    (sentTime.date !== saleTime.date || sentTime.time !== saleTime.time);
 
   return (
     <tr className="border-b border-gray-100 dark:border-white/5 hover:bg-gray-50/60 dark:hover:bg-white/[0.02]">
       <td className="px-4 py-3 align-top whitespace-nowrap">
-        <div>{sentTime.time}</div>
-        <div className="text-xs text-gray-500 dark:text-gray-400">{sentTime.date}</div>
-        {entry.contentType === 'chat_product' && entry.unlockedAt ? (
+        <div>{saleTime.time}</div>
+        <div className="text-xs text-gray-500 dark:text-gray-400">{saleTime.date}</div>
+        {showSentTime ? (
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-            Unlocked {formatSentTime(entry.unlockedAt).date}{' '}
-            {formatSentTime(entry.unlockedAt).time}
+            Sent {sentTime.date} {sentTime.time}
           </div>
         ) : null}
       </td>
@@ -294,7 +297,7 @@ export default function SalesLogs() {
 
         <div className="border-b border-gray-200 dark:border-white/10 bg-gray-50/60 dark:bg-white/[0.02] px-6 py-4">
           <div className="mb-4 flex flex-wrap items-center gap-4 text-sm text-gray-500 dark:text-gray-400">
-            <span>Showing data from {dateRangeLabel}</span>
+            <span>Showing data from {dateRangeLabel} (by unlock date)</span>
             <span className="hidden sm:inline h-4 w-px bg-gray-200 dark:bg-white/10" />
             <span className="font-medium text-gray-800 dark:text-gray-200">
               Total Sales: {formatCurrencyAmounts(totals)}

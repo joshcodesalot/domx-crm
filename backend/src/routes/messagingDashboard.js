@@ -4699,6 +4699,10 @@ router.get(
     const conditions = [];
     const values = [];
     let paramIndex = 1;
+    const salesOnlyEnabled = salesOnly === 'true' || salesOnly === '1';
+    const dateColumn = salesOnlyEnabled
+      ? 'COALESCE(m."unlockedAt", m."sentAt")'
+      : 'm."sentAt"';
 
     if (startDate) {
       const dateValue = String(startDate);
@@ -4706,7 +4710,7 @@ router.get(
         return res.status(400).json({ error: 'Invalid startDate' });
       }
       conditions.push(
-        `(m."sentAt" AT TIME ZONE '${tz}')::date >= $${paramIndex}::date`
+        `(${dateColumn} AT TIME ZONE '${tz}')::date >= $${paramIndex}::date`
       );
       values.push(dateValue);
       paramIndex += 1;
@@ -4718,7 +4722,7 @@ router.get(
         return res.status(400).json({ error: 'Invalid endDate' });
       }
       conditions.push(
-        `(m."sentAt" AT TIME ZONE '${tz}')::date <= $${paramIndex}::date`
+        `(${dateColumn} AT TIME ZONE '${tz}')::date <= $${paramIndex}::date`
       );
       values.push(dateValue);
       paramIndex += 1;
@@ -4766,7 +4770,6 @@ router.get(
       paramIndex += 1;
     }
 
-    const salesOnlyEnabled = salesOnly === 'true' || salesOnly === '1';
     if (salesOnlyEnabled) {
       conditions.push(`m."priceNet" IS NOT NULL`);
       conditions.push(`(
@@ -4806,7 +4809,7 @@ router.get(
        ) sales ON sales."chatterId" IS NOT DISTINCT FROM m."chatterId"
               AND sales.platform = m.platform
        ${whereClause}
-       ORDER BY m."sentAt" DESC
+       ORDER BY ${dateColumn} DESC
        LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
       [...values, parsedLimit, offset]
     );
