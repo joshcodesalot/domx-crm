@@ -17,9 +17,17 @@ const VAULT_CACHE_DIR = dataPath('telegram-vault');
 const LOGIN_TIMEOUT_MS = 90_000;
 const VAULT_ALBUM_MAX = 10;
 const FAN_AVATAR_PREFETCH_CONCURRENCY = 3;
+const MEDIA_DOWNLOAD_CONCURRENCY = 3;
 
 /** @type {Map<string, Promise<string | null>>} */
 const fanAvatarInFlight = new Map();
+
+/** @type {Map<string, Promise<{ filePath: string, mimeType: string, kind: string }>>} */
+const mediaInFlight = new Map();
+
+let mediaDownloadActive = 0;
+/** @type {Array<() => void>} */
+const mediaDownloadWaiters = [];
 
 /** @type {Map<string, { client: import('@mtcute/node').TelegramClient, self: object | null }>} */
 const hotClients = new Map();
@@ -121,10 +129,15 @@ function createClient(storageKey) {
 
 function subscribeUpdates(creatorId, client) {
   const handler = (msg) => {
+    const peerId = String(msg.chat?.id || '');
+    const messageId = msg.id;
     void relayUpdate(creatorId, 'new_message', {
-      peerId: String(msg.chat?.id || ''),
-      messageId: msg.id,
+      peerId,
+      messageId,
     });
+    if (peerId && messageId != null && mediaPlaceholder(msg.media)) {
+      void prewarmChatThumb(creatorId, peerId, messageId);
+    }
   };
   const editHandler = (msg) => {
     void relayUpdate(creatorId, 'edit_message', {
@@ -332,6 +345,85 @@ function vaultThumbAbs(creatorId, savedMessageId) {
   return vaultCacheAbs(
     vaultCacheRel(creatorId, 'me', `${savedMessageId}_thumb.jpg`)
   );
+}
+
+function chatThumbAbs(creatorId, peerId, messageId) {
+  return vaultCacheAbs(
+    vaultCacheRel(creatorId, String(peerId), `${messageId}_thumb.jpg`)
+  );
+}
+
+const FULL_CACHE_EXTS = [
+  { ext: 'jpg', mimeType: 'image/jpeg', kind: 'photo' },
+  { ext: 'mp4', mimeType: 'video/mp4', kind: 'video' },
+  { ext: 'webm', mimeType: 'video/webm', kind: 'video' },
+  { ext: 'mov', mimeType: 'video/quicktime', kind: 'video' },
+];
+
+function cachedFileReady(filePath) {
+  try {
+    return Boolean(filePath && fs.existsSync(filePath) && fs.statSync(filePath).size);
+  } catch {
+    return false;
+  }
+}
+
+function findCachedFullMedia(creatorId, peerId, messageId) {
+  for (const { ext, mimeType, kind } of FULL_CACHE_EXTS) {
+    const dest = vaultCacheAbs(
+      vaultCacheRel(creatorId, String(peerId), `${messageId}_full.${ext}`)
+    );
+    if (cachedFileReady(dest)) {
+      return { filePath: dest, mimeType, kind };
+    }
+  }
+  return null;
+}
+
+function cachedJpegReady(filePath) {
+  try {
+    return Boolean(
+      filePath &&
+        fs.existsSync(filePath) &&
+        fs.statSync(filePath).size &&
+        fileLooksLikeJpeg(filePath)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function copyVaultThumbToChat(creatorId, savedMessageId, peerId, sentMessageId) {
+  const fromPath = vaultThumbAbs(creatorId, savedMessageId);
+  const toPath = chatThumbAbs(creatorId, peerId, sentMessageId);
+  if (!cachedJpegReady(fromPath) || !sentMessageId) return false;
+  try {
+    fs.mkdirSync(path.dirname(toPath), { recursive: true });
+    fs.copyFileSync(fromPath, toPath);
+    return true;
+  } catch (err) {
+    console.warn('[telegram] Vault thumb copy failed:', err.message || err);
+    return false;
+  }
+}
+
+function acquireMediaDownloadSlot() {
+  if (mediaDownloadActive < MEDIA_DOWNLOAD_CONCURRENCY) {
+    mediaDownloadActive += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    mediaDownloadWaiters.push(resolve);
+  });
+}
+
+function releaseMediaDownloadSlot() {
+  const next = mediaDownloadWaiters.shift();
+  if (next) {
+    next();
+    return;
+  }
+  mediaDownloadActive = Math.max(0, mediaDownloadActive - 1);
 }
 
 function fileLooksLikeJpeg(filePath) {
@@ -1224,7 +1316,7 @@ async function listMessages(
   }
   if (peer && !hasOffset) {
     await upsertFanProfile(creatorId, peer);
-    await cachePeerAvatar(creatorId, client, peer);
+    void cachePeerAvatar(creatorId, client, peer).catch(() => undefined);
   }
   if (!hasOffset) {
     await markPeerRead(client, numericId, { creatorId });
@@ -1236,6 +1328,7 @@ async function listMessages(
     kind === 'group'
       ? await attachSenderAvatars(creatorId, client, messages)
       : messages;
+  scheduleChatThumbPrewarm(creatorId, String(numericId), withSenders);
   return {
     peerId: String(numericId),
     kind,
@@ -1508,7 +1601,10 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
         caption: captionText || undefined,
       });
       const serialized = serializeMessage(sent);
-      if (serialized) sentMessages.push(serialized);
+      if (serialized) {
+        copyVaultThumbToChat(creatorId, ids[0], numericPeer, serialized.id);
+        sentMessages.push(serialized);
+      }
       await markPeerRead(client, numericPeer, { creatorId, force: true });
       return sentMessages;
     }
@@ -1530,9 +1626,14 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
         medias.push(input);
       }
       const sent = await client.sendMediaGroup(numericPeer, medias);
-      for (const msg of asMessageList(sent)) {
-        const serialized = serializeMessage(msg);
-        if (serialized) sentMessages.push(serialized);
+      const sentList = asMessageList(sent);
+      for (let i = 0; i < sentList.length; i += 1) {
+        const serialized = serializeMessage(sentList[i]);
+        if (!serialized) continue;
+        if (chunk[i] != null) {
+          copyVaultThumbToChat(creatorId, chunk[i], numericPeer, serialized.id);
+        }
+        sentMessages.push(serialized);
       }
     }
     await markPeerRead(client, numericPeer, { creatorId, force: true });
@@ -1691,7 +1792,7 @@ async function resolveChatMessage(client, peerId, messageId) {
   }
 }
 
-async function getCachedMessageMedia(creatorId, peerId, messageId, variant) {
+async function fetchAndCacheMessageMedia(creatorId, peerId, messageId, variant) {
   const client = await getClient(creatorId);
   const wantThumb = variant !== 'full';
   const msg = await resolveChatMessage(client, peerId, messageId);
@@ -1746,6 +1847,48 @@ async function getCachedMessageMedia(creatorId, peerId, messageId, variant) {
   };
 }
 
+async function getCachedMessageMedia(creatorId, peerId, messageId, variant) {
+  const wantThumb = variant !== 'full';
+  if (wantThumb) {
+    const dest = chatThumbAbs(creatorId, peerId, messageId);
+    if (cachedJpegReady(dest)) {
+      return { filePath: dest, mimeType: 'image/jpeg', kind: 'photo' };
+    }
+  } else {
+    const cached = findCachedFullMedia(creatorId, peerId, messageId);
+    if (cached) return cached;
+  }
+
+  const cacheKey = `${creatorId}:${peerId}:${messageId}:${wantThumb ? 'thumb' : 'full'}`;
+  const pending = mediaInFlight.get(cacheKey);
+  if (pending) return pending;
+
+  const work = (async () => {
+    await acquireMediaDownloadSlot();
+    try {
+      if (wantThumb) {
+        const dest = chatThumbAbs(creatorId, peerId, messageId);
+        if (cachedJpegReady(dest)) {
+          return { filePath: dest, mimeType: 'image/jpeg', kind: 'photo' };
+        }
+      } else {
+        const cached = findCachedFullMedia(creatorId, peerId, messageId);
+        if (cached) return cached;
+      }
+      return await fetchAndCacheMessageMedia(creatorId, peerId, messageId, variant);
+    } finally {
+      releaseMediaDownloadSlot();
+    }
+  })();
+
+  mediaInFlight.set(cacheKey, work);
+  try {
+    return await work;
+  } finally {
+    mediaInFlight.delete(cacheKey);
+  }
+}
+
 async function getCachedVaultMedia(creatorId, savedMessageId, variant) {
   return getCachedMessageMedia(creatorId, 'me', savedMessageId, variant);
 }
@@ -1756,6 +1899,22 @@ async function prewarmVaultThumb(creatorId, savedMessageId) {
   } catch (err) {
     console.warn('[telegram] Vault thumb prewarm failed:', err.message || err);
   }
+}
+
+async function prewarmChatThumb(creatorId, peerId, messageId) {
+  try {
+    await getCachedMessageMedia(creatorId, peerId, messageId, 'thumb');
+  } catch (err) {
+    console.warn('[telegram] Chat thumb prewarm failed:', err.message || err);
+  }
+}
+
+function scheduleChatThumbPrewarm(creatorId, peerId, messages) {
+  const ids = (Array.isArray(messages) ? messages : [])
+    .filter((msg) => msg && msg.hasMedia && msg.id)
+    .map((msg) => msg.id);
+  if (!ids.length) return;
+  void Promise.all(ids.map((id) => prewarmChatThumb(creatorId, peerId, id)));
 }
 
 async function deleteText(creatorId, peerId, messageId) {

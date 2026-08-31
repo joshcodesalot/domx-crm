@@ -24,7 +24,7 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
-import { useStaffTimeZone } from '@/lib/berlinTime';
+import { berlinDateString, useStaffTimeZone } from '@/lib/berlinTime';
 import {
   TRANSLATION_SETTINGS_EVENT,
 } from '@/components/fourbased/FourBasedChatPanels';
@@ -77,6 +77,14 @@ const MAX_TRANSLATION_HISTORY = 8;
 const MESSAGE_PAGE_LIMIT = 50;
 const NEAR_BOTTOM_PX = 120;
 const NEAR_TOP_PX = 80;
+const MEDIA_RETRY_MS = 1500;
+const MEDIA_RETRY_MAX = 2;
+
+function withCacheBust(url: string, attempt: number): string {
+  if (attempt <= 0) return url;
+  const join = url.includes('?') ? '&' : '?';
+  return `${url}${join}retry=${attempt}`;
+}
 
 type TelegramHistoryCursor = { id: string; date: number };
 
@@ -109,6 +117,47 @@ function formatTime(iso: string | null, timeZone: string): string {
     hour: '2-digit',
     minute: '2-digit',
     timeZone,
+  });
+}
+
+function formatRelativeAgo(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0) return 'just now';
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return 'just now';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  return `${day}d ago`;
+}
+
+function messageDayKey(iso: string | null | undefined, timeZone: string): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return berlinDateString(date, timeZone);
+}
+
+function formatDayLabel(dayKey: string, timeZone: string): string {
+  const today = berlinDateString(new Date(), timeZone);
+  const yesterday = berlinDateString(new Date(Date.now() - 86_400_000), timeZone);
+  if (dayKey === today) return 'Today';
+  if (dayKey === yesterday) return 'Yesterday';
+  const [year, month, day] = dayKey.split('-').map(Number);
+  if (!year || !month || !day) return dayKey;
+  const date = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  const thisYear = Number(today.slice(0, 4));
+  return date.toLocaleDateString([], {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    ...(year !== thisYear ? { year: 'numeric' } : {}),
+    timeZone: 'UTC',
   });
 }
 
@@ -234,6 +283,7 @@ function TelegramFanAvatar({
   avatarUrl?: string | null;
   size?: 'xs' | 'cluster' | 'sm' | 'md';
 }) {
+  const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
   const dim =
     size === 'xs'
@@ -247,10 +297,26 @@ function TelegramFanAvatar({
   const initial = (name || '?').slice(0, 1).toUpperCase();
   const initialClass =
     size === 'xs' ? 'text-[10px]' : size === 'cluster' ? 'text-[11px]' : 'text-sm';
-  if (src && !failed) {
+
+  useEffect(() => {
+    setAttempt(0);
+    setFailed(false);
+  }, [src]);
+
+  useEffect(() => {
+    if (!failed || attempt >= MEDIA_RETRY_MAX) return undefined;
+    const timer = window.setTimeout(() => {
+      setAttempt((current) => current + 1);
+      setFailed(false);
+    }, MEDIA_RETRY_MS);
+    return () => window.clearTimeout(timer);
+  }, [failed, attempt]);
+
+  const exhausted = failed && attempt >= MEDIA_RETRY_MAX;
+  if (src && !exhausted) {
     return (
       <img
-        src={src}
+        src={withCacheBust(src, attempt)}
         alt=""
         loading="lazy"
         decoding="async"
@@ -265,6 +331,51 @@ function TelegramFanAvatar({
     >
       {initial}
     </div>
+  );
+}
+
+function TelegramChatThumb({ src }: { src: string }) {
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    setAttempt(0);
+    setFailed(false);
+    setLoaded(false);
+  }, [src]);
+
+  useEffect(() => {
+    if (!failed || attempt >= MEDIA_RETRY_MAX) return undefined;
+    const timer = window.setTimeout(() => {
+      setAttempt((current) => current + 1);
+      setFailed(false);
+      setLoaded(false);
+    }, MEDIA_RETRY_MS);
+    return () => window.clearTimeout(timer);
+  }, [failed, attempt]);
+
+  const exhausted = failed && attempt >= MEDIA_RETRY_MAX;
+
+  return (
+    <span className="relative block min-h-[80px] min-w-[80px] bg-black/10 dark:bg-white/10">
+      {!loaded && !exhausted ? (
+        <span className="absolute inset-0 animate-pulse bg-black/10 dark:bg-white/10" />
+      ) : null}
+      {!exhausted ? (
+        <img
+          src={withCacheBust(src, attempt)}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          onError={() => setFailed(true)}
+          className={`max-h-56 max-w-full object-cover ${loaded ? '' : 'opacity-0'}`}
+        />
+      ) : (
+        <span className="block h-20 w-28 bg-black/10 dark:bg-white/10" />
+      )}
+    </span>
   );
 }
 
@@ -465,6 +576,7 @@ export function TelegramChatList({
           const active = selectedPeerId === dialog.peerId;
           const preview = dialog.lastMessage?.text || dialog.lastMessage?.placeholder || '';
           const isGroup = (dialog.kind || dialog.fan?.kind) === 'group';
+          const ago = formatRelativeAgo(dialog.lastMessage?.date);
           return (
             <button
               key={dialog.peerId}
@@ -490,11 +602,18 @@ export function TelegramChatList({
                     <span className="text-sm font-medium text-gray-900 dark:text-zinc-100 truncate">
                       {fanLabel(dialog.fan, dialog.displayName)}
                     </span>
-                    {dialog.unreadCount > 0 && (
-                      <span className="text-[10px] font-semibold bg-sky-600 text-white rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center">
-                        {dialog.unreadCount}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {ago ? (
+                        <span className="text-[10px] text-gray-500 dark:text-zinc-500">
+                          {ago}
+                        </span>
+                      ) : null}
+                      {dialog.unreadCount > 0 && (
+                        <span className="text-[10px] font-semibold bg-sky-600 text-white rounded-full min-w-[18px] h-[18px] px-1 flex items-center justify-center">
+                          {dialog.unreadCount}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <p className="text-xs text-gray-500 dark:text-zinc-500 truncate mt-0.5">
                     {isGroup ? (
@@ -1298,8 +1417,16 @@ export function TelegramChatThread({
           const prevKey = index > 0 ? senderClusterKey(messages[index - 1]) : null;
           const nextKey =
             index < messages.length - 1 ? senderClusterKey(messages[index + 1]) : null;
-          const isClusterStart = clusterKey !== prevKey;
-          const isClusterEnd = clusterKey !== nextKey;
+          const dayKey = messageDayKey(msg.date, staffTimeZone);
+          const prevDayKey =
+            index > 0 ? messageDayKey(messages[index - 1].date, staffTimeZone) : null;
+          const nextDayKey =
+            index < messages.length - 1
+              ? messageDayKey(messages[index + 1].date, staffTimeZone)
+              : null;
+          const isNewDay = Boolean(dayKey && dayKey !== prevDayKey);
+          const isClusterStart = clusterKey !== prevKey || isNewDay;
+          const isClusterEnd = clusterKey !== nextKey || Boolean(dayKey && dayKey !== nextDayKey);
           const showGroupChrome = isGroup && !msg.isOutgoing;
           const showName = showGroupChrome && isClusterStart && Boolean(msg.senderName);
           const showAvatar = showGroupChrome && isClusterEnd;
@@ -1309,17 +1436,24 @@ export function TelegramChatThread({
             ? incomingClusterRadius(isClusterStart, isClusterEnd)
             : 'rounded-2xl';
           return (
-            <div
-              key={msg.id}
-              className={`group/msg flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'} ${
-                index === 0 ? '' : isClusterStart ? 'mt-3' : 'mt-0.5'
-              }`}
-            >
+            <div key={msg.id}>
+              {isNewDay && dayKey && (
+                <div className="flex justify-center my-3">
+                  <span className="text-[11px] font-medium text-gray-500 dark:text-zinc-400 bg-gray-100 dark:bg-zinc-800 rounded-full px-3 py-0.5">
+                    {formatDayLabel(dayKey, staffTimeZone)}
+                  </span>
+                </div>
+              )}
               <div
-                className={`max-w-[75%] min-w-0 flex flex-col ${
-                  msg.isOutgoing ? 'items-end' : 'items-start'
+                className={`group/msg flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'} ${
+                  isNewDay ? '' : index === 0 ? '' : isClusterStart ? 'mt-3' : 'mt-0.5'
                 }`}
               >
+                <div
+                  className={`max-w-[75%] min-w-0 flex flex-col ${
+                    msg.isOutgoing ? 'items-end' : 'items-start'
+                  }`}
+                >
                 {canUnsend && (
                   <div className={`mb-1 flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'}`}>
                     <button
@@ -1380,15 +1514,13 @@ export function TelegramChatThread({
                           className="mb-2 relative block overflow-hidden rounded-lg"
                           aria-label={msg.kind === 'video' ? 'Play video' : 'Open image'}
                         >
-                          <img
+                          <TelegramChatThumb
                             src={telegramChatMediaUrl(
                               creatorId,
                               peerId,
                               msg.id,
                               'thumb'
                             )}
-                            alt=""
-                            className="max-h-56 max-w-full object-cover"
                           />
                           {msg.kind === 'video' && (
                             <span className="absolute inset-0 flex items-center justify-center bg-black/25">
@@ -1467,6 +1599,7 @@ export function TelegramChatThread({
                     Translate
                   </button>
                 )}
+                </div>
               </div>
             </div>
           );
@@ -1651,6 +1784,12 @@ export function TelegramChatThread({
           )}
           kind={chatMediaPreview.kind === 'video' ? 'video' : 'picture'}
           poster={telegramChatMediaUrl(
+            creatorId,
+            peerId,
+            chatMediaPreview.id,
+            'thumb'
+          )}
+          fallbackUrl={telegramChatMediaUrl(
             creatorId,
             peerId,
             chatMediaPreview.id,
