@@ -647,7 +647,7 @@ export default function TelegramFanPanel({
 
           <section>
             <div className="flex items-center justify-between mb-2">
-              <SectionHeading>Notes</SectionHeading>
+              <SectionHeading>Notes (shared across creators)</SectionHeading>
               <span className="text-[10px] text-gray-400 dark:text-zinc-500">
                 {notesStatus === 'saving' && (
                   <span className="inline-flex items-center gap-1">

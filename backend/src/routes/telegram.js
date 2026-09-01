@@ -32,6 +32,8 @@ const {
   unreadCount,
   disconnectCreator,
   isTelegramServiceDialog,
+  loadFanProfile,
+  upsertFanNotes,
 } = require('../services/telegramWorker');
 const {
   canOpenChatByUsername,
@@ -678,7 +680,7 @@ router.patch(
       }
 
       const existing = await pool.query(
-        `SELECT "telegramUserId", username, "displayName", nickname, notes, "avatarUrl"
+        `SELECT "telegramUserId"
          FROM telegram_fan_profiles
          WHERE "creatorId" = $1 AND "telegramUserId" = $2`,
         [id, fanId]
@@ -686,43 +688,26 @@ router.patch(
       if (existing.rows.length === 0) {
         await pool.query(
           `INSERT INTO telegram_fan_profiles (
-             "creatorId", "telegramUserId", "displayName", nickname, notes
+             "creatorId", "telegramUserId", "displayName", nickname
            )
-           VALUES ($1, $2, $3, $4, $5)`,
-          [
-            id,
-            fanId,
-            'Fan',
-            nickname || '',
-            notes === undefined ? '' : String(notes),
-          ]
+           VALUES ($1, $2, $3, $4)`,
+          [id, fanId, 'Fan', nickname || '']
         );
-      } else {
-        const sets = ['"updatedAt" = NOW()'];
-        const vals = [id, fanId];
-        if (nickname !== undefined) {
-          vals.push(nickname);
-          sets.push(`nickname = $${vals.length}`);
-        }
-        if (notes !== undefined) {
-          vals.push(String(notes));
-          sets.push(`notes = $${vals.length}`);
-        }
+      } else if (nickname !== undefined) {
         await pool.query(
           `UPDATE telegram_fan_profiles
-           SET ${sets.join(', ')}
+           SET nickname = $3, "updatedAt" = NOW()
            WHERE "creatorId" = $1 AND "telegramUserId" = $2`,
-          vals
+          [id, fanId, nickname]
         );
       }
 
-      const row = await pool.query(
-        `SELECT "telegramUserId", username, "displayName", nickname, notes, "avatarUrl"
-         FROM telegram_fan_profiles
-         WHERE "creatorId" = $1 AND "telegramUserId" = $2`,
-        [id, fanId]
-      );
-      return res.json({ fan: redactFan(row.rows[0], req.user) });
+      if (notes !== undefined) {
+        await upsertFanNotes(fanId, notes);
+      }
+
+      const row = await loadFanProfile(id, fanId);
+      return res.json({ fan: redactFan(row, req.user) });
     } catch (err) {
       return handleTelegramError(res, err, 'Update Telegram fan error:');
     }

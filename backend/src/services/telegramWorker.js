@@ -564,15 +564,40 @@ async function upsertFanProfile(creatorId, peer) {
   );
 }
 
+const FAN_PROFILE_SELECT = `
+  SELECT p."telegramUserId", p.username, p."displayName", p.nickname, p.kind, p."avatarUrl",
+         COALESCE(n.notes, '') AS notes
+  FROM telegram_fan_profiles p
+  LEFT JOIN telegram_fan_notes n ON n."telegramUserId" = p."telegramUserId"
+`;
+
 async function loadProfiles(creatorId, userIds) {
   if (!userIds.length) return new Map();
   const result = await pool.query(
-    `SELECT "telegramUserId", username, "displayName", nickname, notes, "avatarUrl"
-     FROM telegram_fan_profiles
-     WHERE "creatorId" = $1 AND "telegramUserId" = ANY($2::text[])`,
+    `${FAN_PROFILE_SELECT}
+     WHERE p."creatorId" = $1 AND p."telegramUserId" = ANY($2::text[])`,
     [creatorId, userIds]
   );
   return new Map(result.rows.map((row) => [row.telegramUserId, row]));
+}
+
+async function loadFanProfile(creatorId, telegramUserId) {
+  const result = await pool.query(
+    `${FAN_PROFILE_SELECT}
+     WHERE p."creatorId" = $1 AND p."telegramUserId" = $2`,
+    [creatorId, telegramUserId]
+  );
+  return result.rows[0] || null;
+}
+
+async function upsertFanNotes(telegramUserId, notes) {
+  await pool.query(
+    `INSERT INTO telegram_fan_notes ("telegramUserId", notes, "updatedAt")
+     VALUES ($1, $2, NOW())
+     ON CONFLICT ("telegramUserId")
+     DO UPDATE SET notes = EXCLUDED.notes, "updatedAt" = NOW()`,
+    [telegramUserId, String(notes)]
+  );
 }
 
 function safePeerFileId(peerId) {
@@ -2146,6 +2171,8 @@ module.exports = {
   unreadCount,
   startTelegramManager,
   upsertFanProfile,
+  loadFanProfile,
+  upsertFanNotes,
   isTelegramServicePeer,
   isTelegramServiceDialog,
 };

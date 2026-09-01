@@ -19,6 +19,7 @@ const TABLE_MARKERS = {
   '048_schedule_unsend_before_mass.sql': 'app_settings',
   '049_throne_notifications.sql': 'throne_notifications',
   '050_telegram_lists_and_mm.sql': 'telegram_lists',
+  '051_telegram_global_fan_notes.sql': 'telegram_fan_notes',
 };
 
 async function tableExists(client, tableName) {
