@@ -21,6 +21,7 @@ const {
   listMessages,
   listChatMembers,
   sendText,
+  sendReaction,
   sendVaultToPeer,
   uploadVaultMedia,
   deleteSavedVaultMessage,
@@ -51,6 +52,17 @@ const connectLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+function isSingleUnicodeEmoji(value) {
+  const s = String(value || '').trim();
+  if (!s || s.length > 24) return false;
+  if (/\s/.test(s)) return false;
+  if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+    const parts = [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s)];
+    if (parts.length !== 1) return false;
+  }
+  return /\p{Extended_Pictographic}/u.test(s) || /\p{Emoji_Presentation}/u.test(s);
+}
 
 function isValidUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -604,6 +616,37 @@ router.delete(
       return res.json({ ok: true, unsend });
     } catch (err) {
       return handleTelegramError(res, err, 'Delete Telegram message error:');
+    }
+  }
+);
+
+router.put(
+  '/:id/telegram/dialogs/:peerId/messages/:messageId/reaction',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, peerId, messageId } = req.params;
+    const rawEmoji = req.body?.emoji;
+    let emoji = null;
+    if (rawEmoji != null && String(rawEmoji).trim() !== '') {
+      emoji = String(rawEmoji).trim();
+      if (!isSingleUnicodeEmoji(emoji)) {
+        return res.status(400).json({ error: 'Reaction must be a single emoji' });
+      }
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      if (
+        !canSeeTelegramServiceChats(req.user) &&
+        isTelegramServiceDialog({ peerId, kind: 'dm' })
+      ) {
+        return res.status(403).json({ error: 'You do not have access to this chat' });
+      }
+      const message = await sendReaction(id, peerId, messageId, emoji);
+      return res.json({ message: redactMessage(message, req.user) });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Set Telegram reaction error:');
     }
   }
 );

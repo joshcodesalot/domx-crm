@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Search,
   Send,
+  Smile,
   Sparkles,
   Trash2,
   X,
@@ -34,6 +35,12 @@ import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
 import TelegramFanPanel from '@/components/telegram/TelegramFanPanel';
+import TelegramReactionPicker, {
+  applyOptimisticReactions,
+  chosenReactionEmoji,
+  reactionsMatch,
+  TelegramReactionChips,
+} from '@/components/telegram/TelegramReactionPicker';
 import TelegramSextingSessionModal from '@/components/telegram/TelegramSextingSessionModal';
 import TelegramVaultModal from '@/components/telegram/TelegramVaultModal';
 import {
@@ -55,6 +62,7 @@ import {
   resolveCreatorAvatarUrl,
   resolveTelegramUsername,
   sendTelegramMessage,
+  setTelegramMessageReaction,
   telegramChatMediaUrl,
   telegramVaultMediaUrl,
   translateToGerman,
@@ -690,6 +698,8 @@ export function TelegramChatThread({
     Record<string, MessageUnsendRecord>
   >({});
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [reactingMessageId, setReactingMessageId] = useState<string | null>(null);
+  const [reactionPickerId, setReactionPickerId] = useState<string | null>(null);
   const [vaultOpen, setVaultOpen] = useState(false);
   const [vaultPickMode, setVaultPickMode] = useState<'composer' | 'script'>('composer');
   const [vaultItems, setVaultItems] = useState<TelegramVaultItem[]>([]);
@@ -807,6 +817,8 @@ export function TelegramChatThread({
     setSuggestedEnglish(null);
     setChatMediaPreview(null);
     setGenerateSessionOpen(false);
+    setReactingMessageId(null);
+    setReactionPickerId(null);
     markedReadOnOpenRef.current = false;
   }, [creatorId, peerId]);
 
@@ -1238,6 +1250,52 @@ export function TelegramChatThread({
     }
   }
 
+  async function handleReact(messageId: string, emoji: string) {
+    if (!messageId || reactingMessageId) return;
+    const existing = messages.find((m) => m.id === messageId);
+    if (!existing || existing.deleted) return;
+    const chosen = chosenReactionEmoji(existing.reactions);
+    const nextEmoji = chosen && reactionsMatch(emoji, chosen) ? null : emoji;
+    setReactingMessageId(messageId);
+    setReactionPickerId(null);
+    setError(null);
+    setMessages((prev) =>
+      prev.map((msg) =>
+        msg.id === messageId
+          ? { ...msg, reactions: applyOptimisticReactions(msg.reactions, nextEmoji) }
+          : msg
+      )
+    );
+    try {
+      const result = await setTelegramMessageReaction(
+        creatorId,
+        peerId,
+        messageId,
+        nextEmoji
+      );
+      if (result.message) {
+        setMessages((prev) => {
+          const current = prev.find((m) => m.id === messageId);
+          return mergeTelegramMessages(prev, [
+            {
+              ...result.message,
+              senderAvatarUrl:
+                result.message.senderAvatarUrl ||
+                current?.senderAvatarUrl ||
+                existing.senderAvatarUrl,
+              deleted: current?.deleted || existing.deleted,
+            },
+          ]);
+        });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to react');
+      void loadMessages({ silent: true }).catch(() => undefined);
+    } finally {
+      setReactingMessageId(null);
+    }
+  }
+
   const applySuggestedReply = useCallback(
     (payload: { english: string; german: string }) => {
       setDraft(payload.german || '');
@@ -1450,26 +1508,67 @@ export function TelegramChatThread({
                 }`}
               >
                 <div
-                  className={`max-w-[75%] min-w-0 flex flex-col ${
+                  className={`relative max-w-[75%] min-w-0 flex flex-col ${
                     msg.isOutgoing ? 'items-end' : 'items-start'
                   }`}
                 >
-                {canUnsend && (
-                  <div className={`mb-1 flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'}`}>
-                    <button
-                      type="button"
-                      onClick={() => void handleDeleteMessage(msg.id)}
-                      disabled={deleting}
-                      className="opacity-0 group-hover/msg:opacity-100 focus:opacity-100 p-1 rounded-md text-gray-500 dark:text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
-                      title="Unsend message"
-                      aria-label="Unsend message"
+                {!msg.deleted && (
+                  <div
+                    className={`absolute bottom-full mb-0.5 z-20 flex items-center gap-0.5 rounded-lg bg-white/95 dark:bg-zinc-950/95 px-0.5 shadow-sm ${
+                      msg.isOutgoing ? 'right-0' : 'left-0'
+                    } ${
+                      reactionPickerId === msg.id
+                        ? 'opacity-100'
+                        : 'opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100'
+                    } transition-opacity`}
+                  >
+                    {canUnsend && (
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteMessage(msg.id)}
+                        disabled={deleting}
+                        className="p-1 rounded-md text-gray-500 dark:text-zinc-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
+                        title="Unsend message"
+                        aria-label="Unsend message"
+                      >
+                        {deleting ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    )}
+                    <div
+                      className="relative"
+                      onMouseDown={(event) => event.stopPropagation()}
                     >
-                      {deleting ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Trash2 className="w-3.5 h-3.5" />
-                      )}
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setReactionPickerId((current) =>
+                            current === msg.id ? null : msg.id
+                          )
+                        }
+                        disabled={reactingMessageId === msg.id}
+                        className="p-1 rounded-md text-gray-500 dark:text-zinc-500 hover:text-sky-500 hover:bg-sky-500/10 transition-all disabled:opacity-50"
+                        title="React"
+                        aria-label="React to message"
+                        aria-expanded={reactionPickerId === msg.id}
+                      >
+                        {reactingMessageId === msg.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Smile className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                      <TelegramReactionPicker
+                        open={reactionPickerId === msg.id}
+                        chosenEmoji={chosenReactionEmoji(msg.reactions)}
+                        alignEnd={msg.isOutgoing}
+                        onSelect={(emoji) => void handleReact(msg.id, emoji)}
+                        onClose={() => setReactionPickerId(null)}
+                      />
+                    </div>
                   </div>
                 )}
                 <div className={showGroupChrome ? 'flex items-end gap-2 min-w-0' : 'min-w-0'}>
@@ -1569,6 +1668,13 @@ export function TelegramChatThread({
                         {formatTime(msg.date, staffTimeZone)}
                       </p>
                     </div>
+                    {!msg.deleted && (
+                      <TelegramReactionChips
+                        reactions={msg.reactions || []}
+                        disabled={reactingMessageId === msg.id}
+                        onToggle={(emoji) => void handleReact(msg.id, emoji)}
+                      />
+                    )}
                   </div>
                 </div>
                 {sentBy && !msg.deleted && (

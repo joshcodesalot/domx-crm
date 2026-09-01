@@ -112,6 +112,12 @@ function describeError(err) {
   if (/USER_PRIVACY_RESTRICTED/i.test(raw)) {
     return 'This user does not allow messages from this account';
   }
+  if (/REACTION_INVALID|REACTION_EMPTY/i.test(raw)) {
+    return 'That reaction is not allowed in this chat';
+  }
+  if (/REACTIONS_TOO_MANY/i.test(raw)) {
+    return 'This message already has too many different reactions';
+  }
   if (/USERNAME_NOT_OCCUPIED|USERNAME_INVALID/i.test(raw)) {
     return 'Telegram username not found';
   }
@@ -125,6 +131,16 @@ function createClient(storageKey) {
     apiHash,
     storage: storagePathFor(storageKey),
   });
+}
+
+const ZERO_CHANNEL_ID = -1000000000000;
+
+function markedPeerIdFromRaw(peer) {
+  if (!peer || typeof peer !== 'object') return '';
+  if (peer.userId != null) return String(peer.userId);
+  if (peer.chatId != null) return String(-Number(peer.chatId));
+  if (peer.channelId != null) return String(ZERO_CHANNEL_ID - Number(peer.channelId));
+  return '';
 }
 
 function subscribeUpdates(creatorId, client) {
@@ -145,14 +161,29 @@ function subscribeUpdates(creatorId, client) {
       messageId: msg.id,
     });
   };
+  const reactionHandler = (payload) => {
+    const update = payload?.update || payload;
+    if (!update || update._ !== 'updateMessageReactions') return;
+    const peerId = markedPeerIdFromRaw(update.peer);
+    const messageId = update.msgId;
+    if (!peerId || messageId == null) return;
+    void relayUpdate(creatorId, 'message_reaction', {
+      peerId,
+      messageId,
+    });
+  };
   if (client.onNewMessage && typeof client.onNewMessage.add === 'function') {
     client.onNewMessage.add(handler);
     client.onEditMessage?.add?.(editHandler);
+  }
+  if (client.onRawUpdate && typeof client.onRawUpdate.add === 'function') {
+    client.onRawUpdate.add(reactionHandler);
   }
   return () => {
     try {
       client.onNewMessage?.remove?.(handler);
       client.onEditMessage?.remove?.(editHandler);
+      client.onRawUpdate?.remove?.(reactionHandler);
     } catch {
       // ignore
     }
@@ -263,6 +294,25 @@ function mediaPlaceholder(media) {
   return null;
 }
 
+function serializeReactions(msg) {
+  const list = msg?.reactions?.reactions;
+  if (!Array.isArray(list) || !list.length) return [];
+  const out = [];
+  for (const item of list) {
+    if (!item || item.isPaid) continue;
+    const emoji = item.emoji;
+    if (typeof emoji !== 'string' || !emoji) continue;
+    const count = Number(item.count) || 0;
+    if (count <= 0) continue;
+    out.push({
+      emoji,
+      count,
+      chosen: item.order != null,
+    });
+  }
+  return out;
+}
+
 function serializeMessage(msg) {
   if (!msg) return null;
   const text = typeof msg.text === 'string' ? msg.text : '';
@@ -283,6 +333,7 @@ function serializeMessage(msg) {
       : null,
     senderUsername: sender?.username || null,
     senderAvatarUrl: null,
+    reactions: serializeReactions(msg),
   };
 }
 
@@ -1917,6 +1968,39 @@ function scheduleChatThumbPrewarm(creatorId, peerId, messages) {
   void Promise.all(ids.map((id) => prewarmChatThumb(creatorId, peerId, id)));
 }
 
+async function sendReaction(creatorId, peerId, messageId, emoji) {
+  const client = await getClient(creatorId);
+  const numericPeer = Number(peerId);
+  const msgId = Number(messageId);
+  if (!Number.isFinite(numericPeer) || !Number.isFinite(msgId)) {
+    throw new TelegramWorkerError('Invalid chat or message id');
+  }
+  const trimmed = emoji == null ? '' : String(emoji).trim();
+  const reactionEmoji = trimmed || null;
+  let sent = null;
+  try {
+    sent = await client.sendReaction({
+      chatId: numericPeer,
+      message: msgId,
+      emoji: reactionEmoji,
+    });
+  } catch (err) {
+    if (err instanceof TelegramWorkerError) throw err;
+    throw new TelegramWorkerError(describeError(err), 400);
+  }
+  const serialized = serializeMessage(sent);
+  if (serialized) return serialized;
+  try {
+    const fetched = await client.getMessages(numericPeer, [msgId]);
+    const found = Array.isArray(fetched) ? fetched[0] : fetched;
+    const fromFetch = serializeMessage(found);
+    if (fromFetch) return fromFetch;
+  } catch {
+    // fall through
+  }
+  throw new TelegramWorkerError('Telegram did not return the updated message', 502);
+}
+
 async function deleteText(creatorId, peerId, messageId) {
   const client = await getClient(creatorId);
   const numericId = Number(peerId);
@@ -2050,6 +2134,7 @@ module.exports = {
   listMessages,
   listChatMembers,
   sendText,
+  sendReaction,
   sendVaultToPeer,
   uploadVaultMedia,
   deleteSavedVaultMessage,

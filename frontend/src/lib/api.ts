@@ -2659,6 +2659,12 @@ export interface TelegramGroupMember {
   avatarUrl?: string | null;
 }
 
+export interface TelegramMessageReaction {
+  emoji: string;
+  count: number;
+  chosen?: boolean;
+}
+
 export interface TelegramMessage {
   id: string;
   peerId: string;
@@ -2673,6 +2679,7 @@ export interface TelegramMessage {
   senderUsername?: string | null;
   senderAvatarUrl?: string | null;
   deleted?: boolean;
+  reactions?: TelegramMessageReaction[];
 }
 
 export interface TelegramVaultFolder {
@@ -2989,6 +2996,21 @@ export async function deleteTelegramMessage(
         originalText: options.originalText || '',
         messageSentAt: options.messageSentAt || null,
       }),
+    }
+  );
+}
+
+export async function setTelegramMessageReaction(
+  creatorId: string,
+  peerId: string,
+  messageId: string,
+  emoji: string | null
+): Promise<{ message: TelegramMessage }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages/${encodeURIComponent(messageId)}/reaction`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ emoji }),
     }
   );
 }
