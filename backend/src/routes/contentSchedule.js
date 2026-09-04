@@ -327,13 +327,37 @@ router.get('/', async (req, res) => {
       where.push(`j."creatorId" = $${params.length}`);
     }
 
-    const result = await pool.query(
-      `SELECT j.*, c."displayName"
+    const hasRange =
+      (from && !Number.isNaN(from.getTime())) || (to && !Number.isNaN(to.getTime()));
+    const selectSql = `SELECT j.*, c."displayName"
        FROM scheduled_content_jobs j
-       JOIN creators c ON c.id = j."creatorId"
+       JOIN creators c ON c.id = j."creatorId"`;
+
+    // History (no date range): all pending/running, plus the 80 newest completed.
+    // Oldest-first LIMIT 2000 was dropping tonight's pending jobs under old sent/cancelled rows.
+    if (!hasRange && !status) {
+      const pendingWhere = [...where, `j.status IN ('pending', 'running')`];
+      const completedWhere = [...where, `j.status NOT IN ('pending', 'running')`];
+      const [pending, completed] = await Promise.all([
+        pool.query(
+          `${selectSql} WHERE ${pendingWhere.join(' AND ')} ORDER BY j."runAt" ASC`,
+          params
+        ),
+        pool.query(
+          `${selectSql} WHERE ${completedWhere.join(' AND ')} ORDER BY j."runAt" DESC LIMIT 80`,
+          params
+        ),
+      ]);
+      return res.json({
+        jobs: [...pending.rows, ...completed.rows].map(mapJob),
+      });
+    }
+
+    const result = await pool.query(
+      `${selectSql}
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
        ORDER BY j."runAt" ASC
-       LIMIT 2000`,
+       LIMIT ${hasRange ? 5000 : 2000}`,
       params
     );
     res.json({ jobs: result.rows.map(mapJob) });

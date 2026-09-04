@@ -36,9 +36,10 @@ Do not translate “sex toy,” “sex toys,” “toy,” or “toys” as “S
 Translate “chastity cage” or “cage,” when referring to male chastity, naturally depending on the context. Use “Schwanzkäfig,” “KG,” or “Käfig,” whichever sounds most natural in the specific message.
 
 For “unlock” never use “aufschließen.” Always use “freischalten.”
-Examples:
-- “you should unlock to see..” → “du solltest es freischalten um zu sehen”
-- “unlock it” → “schalte es frei”
+Example German: du solltest es freischalten um zu sehen
+Example German: schalte es frei
+
+Never include the English source text in the output. Never output arrows (→, ->, =>). Never stack the original and the translation. The fan must see a single German chat message only.
 
 Do not explain anything.
 
@@ -54,6 +55,58 @@ If conversation history is included, use it only for context, tone, terminology,
 
 const MAX_HISTORY_MESSAGES = 8;
 const VALID_HISTORY_ROLES = new Set(['user', 'assistant']);
+const ARROW = /(?:→|->|=>)/;
+const ARROW_ONLY_LINE = /\n\s*(?:→|->|=>)\s*\n/;
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripBilingualWrapper(output, original) {
+  const raw = String(output || '').replace(/\r\n/g, '\n').trim();
+  if (!raw) return raw;
+
+  let stripped = raw;
+
+  if (ARROW_ONLY_LINE.test(`\n${stripped}\n`)) {
+    const parts = `\n${stripped}\n`
+      .split(/\n\s*(?:→|->|=>)\s*\n/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length >= 2) {
+      stripped = parts[parts.length - 1];
+    }
+  }
+
+  const orig = String(original || '').replace(/\r\n/g, '\n').trim();
+  if (orig) {
+    const prefix = new RegExp(`^${escapeRegExp(orig)}\\s*${ARROW.source}\\s*`);
+    if (prefix.test(stripped)) {
+      const next = stripped.replace(prefix, '').trim();
+      if (next) stripped = next;
+    }
+  }
+
+  if (stripped === raw) {
+    const parts = stripped
+      .split(/\s*(?:→|->|=>)\s*/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (parts.length >= 2) {
+      const left = parts.slice(0, -1).join(' ');
+      const right = parts[parts.length - 1];
+      const originalMatches =
+        !orig ||
+        left.toLowerCase() === orig.toLowerCase() ||
+        stripped.toLowerCase().startsWith(orig.toLowerCase());
+      if (right && originalMatches) {
+        stripped = right;
+      }
+    }
+  }
+
+  return stripped || raw;
+}
 
 function normalizeHistory(history) {
   if (!Array.isArray(history)) {
@@ -87,7 +140,11 @@ function formatHistoryContext(history) {
 
   const lines = normalizedHistory.map((message) => {
     const speaker = message.role === 'assistant' ? 'Creator' : 'Fan';
-    return `${speaker}: ${message.content}`;
+    const content =
+      message.role === 'assistant'
+        ? stripBilingualWrapper(message.content)
+        : message.content;
+    return `${speaker}: ${content}`;
   });
 
   return `Recent conversation (context only — do not reply to this):\n${lines.join('\n')}`;
@@ -114,12 +171,15 @@ function buildTranslationInput(text, history) {
 }
 
 async function translateToGermanFemdom(text, history) {
+  const original = String(text || '').trim();
   const response = await openai.responses.create({
     model: XAI_MODEL,
     input: buildTranslationInput(text, history),
   });
 
-  return response.output_text?.trim() || '';
+  const raw = response.output_text?.trim() || '';
+  if (!raw) return '';
+  return stripBilingualWrapper(raw, original);
 }
 
 module.exports = {

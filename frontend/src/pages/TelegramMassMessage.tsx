@@ -16,6 +16,7 @@ import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import ScheduleDateTimePicker from '@/components/ScheduleDateTimePicker';
 import TelegramVaultModal from '@/components/telegram/TelegramVaultModal';
+import { TelegramVoiceTile } from '@/components/telegram/TelegramAudioPlayer';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
 import { useToast } from '@/context/ToastContext';
@@ -541,14 +542,23 @@ export default function TelegramMassMessage() {
 
               {vaultItems.length > 0 && (
                 <div className="flex items-center gap-2">
-                  {vaultItems.map((item) => (
-                    <img
-                      key={item.id}
-                      src={telegramVaultMediaUrl(selectedCreatorId, item.id, 'thumb')}
-                      alt=""
-                      className="w-12 h-12 rounded-lg object-cover"
-                    />
-                  ))}
+                  {vaultItems.map((item) =>
+                    item.kind === 'voice' ? (
+                      <div
+                        key={item.id}
+                        className="w-12 h-12 rounded-lg overflow-hidden border border-gray-200 dark:border-zinc-700"
+                      >
+                        <TelegramVoiceTile duration={item.duration} />
+                      </div>
+                    ) : (
+                      <img
+                        key={item.id}
+                        src={telegramVaultMediaUrl(selectedCreatorId, item.id, 'thumb')}
+                        alt=""
+                        className="w-12 h-12 rounded-lg object-cover"
+                      />
+                    )
+                  )}
                   <button
                     type="button"
                     onClick={() => setVaultItems([])}

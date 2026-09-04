@@ -2674,6 +2674,8 @@ export interface TelegramMessage {
   kind: string;
   placeholder: string | null;
   hasMedia?: boolean;
+  duration?: number | null;
+  fileName?: string | null;
   senderId?: string | null;
   senderName?: string | null;
   senderUsername?: string | null;
@@ -2695,7 +2697,7 @@ export interface TelegramVaultItem {
   folderId: string | null;
   savedMessageId: string;
   fileUniqueId?: string | null;
-  kind: 'photo' | 'video';
+  kind: 'photo' | 'video' | 'voice';
   fileName?: string | null;
   duration?: number | null;
   width?: number | null;
@@ -2916,7 +2918,7 @@ export async function listTelegramVault(
   creatorId: string,
   options: {
     folderId?: string | null;
-    kind?: 'photo' | 'video';
+    kind?: 'photo' | 'video' | 'voice';
     fanId?: string | null;
     limit?: number;
     offset?: number;

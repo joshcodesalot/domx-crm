@@ -43,6 +43,9 @@ import TelegramReactionPicker, {
 } from '@/components/telegram/TelegramReactionPicker';
 import TelegramSextingSessionModal from '@/components/telegram/TelegramSextingSessionModal';
 import TelegramVaultModal from '@/components/telegram/TelegramVaultModal';
+import TelegramAudioPlayer, {
+  TelegramVoiceTile,
+} from '@/components/telegram/TelegramAudioPlayer';
 import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
@@ -171,7 +174,18 @@ function formatDayLabel(dayKey: string, timeZone: string): string {
 
 function messageHasVisualMedia(msg: TelegramMessage): boolean {
   if (msg.deleted) return false;
-  return Boolean(msg.hasMedia) || msg.kind === 'photo' || msg.kind === 'video';
+  return msg.kind === 'photo' || msg.kind === 'video';
+}
+
+function messageHasPlayableAudio(msg: TelegramMessage): boolean {
+  if (msg.deleted) return false;
+  return msg.kind === 'voice' || msg.kind === 'audio';
+}
+
+function vaultMediaType(kind: TelegramVaultItem['kind']): 'video' | 'voice' | 'image' {
+  if (kind === 'video') return 'video';
+  if (kind === 'voice') return 'voice';
+  return 'image';
 }
 
 export function telegramVaultItemToScriptMedia(
@@ -180,8 +194,11 @@ export function telegramVaultItemToScriptMedia(
 ): CreatorScriptMediaItem {
   return {
     mediaKey: item.id,
-    type: item.kind === 'video' ? 'video' : 'image',
-    previewUrl: telegramVaultMediaUrl(creatorId, item.id, 'thumb'),
+    type: vaultMediaType(item.kind),
+    previewUrl:
+      item.kind === 'voice'
+        ? undefined
+        : telegramVaultMediaUrl(creatorId, item.id, 'thumb'),
     width: item.width || undefined,
     height: item.height || undefined,
   };
@@ -194,7 +211,8 @@ export function scriptMediaToTelegramVaultItem(
     id: item.mediaKey,
     folderId: null,
     savedMessageId: '',
-    kind: item.type === 'video' ? 'video' : 'photo',
+    kind:
+      item.type === 'video' ? 'video' : item.type === 'voice' ? 'voice' : 'photo',
     width: item.width ?? null,
     height: item.height ?? null,
   };
@@ -1173,7 +1191,7 @@ export function TelegramChatThread({
           mediaJson: attached.length
             ? attached.map((item) => ({
                 mediaId: item.id,
-                type: item.kind === 'video' ? 'video' : 'image',
+                type: vaultMediaType(item.kind),
                 width: item.width || undefined,
                 height: item.height || undefined,
               }))
@@ -1630,12 +1648,28 @@ export function TelegramChatThread({
                           )}
                         </button>
                       )}
+                      {messageHasPlayableAudio(msg) && (
+                        <div className={msgText ? 'mb-2' : undefined}>
+                          <TelegramAudioPlayer
+                            src={telegramChatMediaUrl(
+                              creatorId,
+                              peerId,
+                              msg.id,
+                              'full'
+                            )}
+                            duration={msg.duration}
+                            fileName={msg.kind === 'audio' ? msg.fileName : null}
+                            variant={msg.isOutgoing ? 'outgoing' : 'incoming'}
+                          />
+                        </div>
+                      )}
                       {(msgText ||
                         (!messageHasVisualMedia(msg) &&
+                          !messageHasPlayableAudio(msg) &&
                           (msg.placeholder || '—'))) && (
                         <p className="whitespace-pre-wrap break-words">
                           {msgText ||
-                            (messageHasVisualMedia(msg)
+                            (messageHasVisualMedia(msg) || messageHasPlayableAudio(msg)
                               ? ''
                               : msg.placeholder || '—')}
                         </p>
@@ -1727,11 +1761,15 @@ export function TelegramChatThread({
                   className="w-12 h-12 rounded-lg relative group overflow-hidden border border-gray-300 dark:border-zinc-700 shrink-0"
                   title="Remove"
                 >
-                  <img
-                    src={telegramVaultMediaUrl(creatorId, item.id, 'thumb')}
-                    alt=""
-                    className="w-full h-full object-cover"
-                  />
+                  {item.kind === 'voice' ? (
+                    <TelegramVoiceTile duration={item.duration} />
+                  ) : (
+                    <img
+                      src={telegramVaultMediaUrl(creatorId, item.id, 'thumb')}
+                      alt=""
+                      className="w-full h-full object-cover"
+                    />
+                  )}
                   <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-black/35 dark:bg-black/60 hover:bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                     <X className="w-3 h-3" />
                   </span>

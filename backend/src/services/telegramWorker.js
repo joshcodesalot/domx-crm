@@ -151,7 +151,8 @@ function subscribeUpdates(creatorId, client) {
       peerId,
       messageId,
     });
-    if (peerId && messageId != null && mediaPlaceholder(msg.media)) {
+    const mediaInfo = mediaPlaceholder(msg.media);
+    if (peerId && messageId != null && isVisualMediaKind(mediaInfo?.kind)) {
       void prewarmChatThumb(creatorId, peerId, messageId);
     }
   };
@@ -260,6 +261,7 @@ function peerTitle(peer) {
 }
 
 const VIDEO_FILE_RE = /\.(mp4|mov|webm|m4v)$/i;
+const AUDIO_FILE_RE = /\.(ogg|opus|mp3|m4a|wav|aac)$/i;
 
 function mediaMime(media) {
   if (!media || typeof media !== 'object') return '';
@@ -269,6 +271,14 @@ function mediaMime(media) {
 function mediaFileName(media) {
   if (!media || typeof media !== 'object') return '';
   return String(media.fileName || '');
+}
+
+function isPlayableAudioKind(kind) {
+  return kind === 'voice' || kind === 'audio';
+}
+
+function isVisualMediaKind(kind) {
+  return kind === 'photo' || kind === 'video';
 }
 
 function isChatVideoMedia(media) {
@@ -283,15 +293,33 @@ function isChatVideoMedia(media) {
   return false;
 }
 
+function isChatAudioMedia(media) {
+  if (!media || typeof media !== 'object') return false;
+  const type = String(media.type || '').toLowerCase();
+  if (type === 'voice' || type === 'audio') return true;
+  const mime = mediaMime(media);
+  const name = mediaFileName(media);
+  if (type === 'document') {
+    return mime.startsWith('audio/') || AUDIO_FILE_RE.test(name);
+  }
+  return false;
+}
+
 function mediaPlaceholder(media) {
   const type = media && typeof media === 'object' ? media.type : null;
   if (type === 'photo') return { kind: 'photo', text: 'Photo' };
   if (isChatVideoMedia(media)) return { kind: 'video', text: 'Video' };
-  if (type === 'voice' || type === 'audio') return { kind: 'audio', text: 'Audio' };
+  if (type === 'voice') return { kind: 'voice', text: 'Voice note' };
+  if (type === 'audio' || isChatAudioMedia(media)) return { kind: 'audio', text: 'Audio' };
   if (type === 'sticker') return { kind: 'sticker', text: 'Sticker' };
   if (type === 'document') return { kind: 'document', text: 'File' };
   if (type) return { kind: 'media', text: 'Media' };
   return null;
+}
+
+function mediaDuration(media) {
+  const duration = Number(media && typeof media === 'object' ? media.duration : NaN);
+  return Number.isFinite(duration) && duration > 0 ? Math.round(duration) : null;
 }
 
 function serializeReactions(msg) {
@@ -318,6 +346,7 @@ function serializeMessage(msg) {
   const text = typeof msg.text === 'string' ? msg.text : '';
   const mediaInfo = mediaPlaceholder(msg.media);
   const sender = msg.sender;
+  const fileName = mediaFileName(msg.media);
   return {
     id: String(msg.id),
     peerId: String(msg.chat?.id || ''),
@@ -327,6 +356,8 @@ function serializeMessage(msg) {
     kind: mediaInfo?.kind || (text ? 'text' : 'empty'),
     placeholder: text ? null : mediaInfo?.text || null,
     hasMedia: Boolean(mediaInfo),
+    duration: mediaDuration(msg.media),
+    fileName: fileName || null,
     senderId: sender?.id != null ? String(sender.id) : null,
     senderName: sender
       ? sender.displayName || sender.title || sender.firstName || null
@@ -341,6 +372,7 @@ function vaultKindFromMedia(media) {
   const type = media && typeof media === 'object' ? media.type : null;
   if (type === 'photo') return 'photo';
   if (type === 'video') return 'video';
+  if (type === 'voice' || type === 'audio' || isChatAudioMedia(media)) return 'voice';
   return null;
 }
 
@@ -372,7 +404,7 @@ function inputMediaFromMessage(msg, caption) {
   const media = msg?.media;
   if (!media) return null;
   const kind = vaultKindFromMedia(media);
-  if (!kind) return null;
+  if (kind !== 'photo' && kind !== 'video') return null;
   const file = media.inputMedia || media;
   if (caption) {
     return { type: kind, file, caption };
@@ -409,6 +441,12 @@ const FULL_CACHE_EXTS = [
   { ext: 'mp4', mimeType: 'video/mp4', kind: 'video' },
   { ext: 'webm', mimeType: 'video/webm', kind: 'video' },
   { ext: 'mov', mimeType: 'video/quicktime', kind: 'video' },
+  { ext: 'ogg', mimeType: 'audio/ogg', kind: 'voice' },
+  { ext: 'opus', mimeType: 'audio/ogg', kind: 'voice' },
+  { ext: 'mp3', mimeType: 'audio/mpeg', kind: 'audio' },
+  { ext: 'm4a', mimeType: 'audio/mp4', kind: 'audio' },
+  { ext: 'wav', mimeType: 'audio/wav', kind: 'audio' },
+  { ext: 'weba', mimeType: 'audio/webm', kind: 'audio' },
 ];
 
 function cachedFileReady(filePath) {
@@ -521,6 +559,17 @@ function guessMediaMime(kind, variant, media) {
     if (name.endsWith('.mov')) return 'video/quicktime';
     return 'video/mp4';
   }
+  if (isPlayableAudioKind(kind)) {
+    const mime = mediaMime(media);
+    if (mime.startsWith('audio/')) return mime;
+    const name = mediaFileName(media).toLowerCase();
+    if (name.endsWith('.mp3')) return 'audio/mpeg';
+    if (name.endsWith('.m4a') || name.endsWith('.aac')) return 'audio/mp4';
+    if (name.endsWith('.wav')) return 'audio/wav';
+    if (name.endsWith('.webm')) return 'audio/webm';
+    if (name.endsWith('.opus') || name.endsWith('.ogg')) return 'audio/ogg';
+    return kind === 'audio' ? 'audio/mpeg' : 'audio/ogg';
+  }
   return 'application/octet-stream';
 }
 
@@ -530,6 +579,16 @@ function fullMediaExt(kind, mimeType) {
     if (mimeType === 'video/webm') return 'webm';
     if (mimeType === 'video/quicktime') return 'mov';
     return 'mp4';
+  }
+  if (isPlayableAudioKind(kind)) {
+    if (mimeType === 'audio/mpeg') return 'mp3';
+    if (mimeType === 'audio/mp4' || mimeType === 'audio/aac' || mimeType === 'audio/x-m4a') {
+      return 'm4a';
+    }
+    if (mimeType === 'audio/wav' || mimeType === 'audio/x-wav') return 'wav';
+    if (mimeType === 'audio/webm') return 'weba';
+    if (mimeType === 'audio/opus') return 'opus';
+    return 'ogg';
   }
   return 'bin';
 }
@@ -1582,6 +1641,16 @@ async function fetchSavedMessages(client, messageIds) {
   return numericIds.map((id) => byId.get(id) || null);
 }
 
+function guessUploadAudioMime(mime, fileName) {
+  if (mime && mime.startsWith('audio/')) return mime;
+  const name = String(fileName || '').toLowerCase();
+  if (name.endsWith('.mp3')) return 'audio/mpeg';
+  if (name.endsWith('.m4a') || name.endsWith('.aac')) return 'audio/mp4';
+  if (name.endsWith('.wav')) return 'audio/wav';
+  if (name.endsWith('.webm')) return 'audio/webm';
+  return 'audio/ogg';
+}
+
 async function uploadVaultMedia(creatorId, { filePath, mimeType, fileName, thumbPath }) {
   const client = await getClient(creatorId);
   const abs = path.resolve(String(filePath || ''));
@@ -1589,23 +1658,32 @@ async function uploadVaultMedia(creatorId, { filePath, mimeType, fileName, thumb
     throw new TelegramWorkerError('Upload file is missing', 400);
   }
   const mime = String(mimeType || '').toLowerCase();
+  const name = String(fileName || path.basename(abs) || '');
   const isVideo = mime.startsWith('video/');
   const isPhoto = mime.startsWith('image/');
-  if (!isVideo && !isPhoto) {
-    throw new TelegramWorkerError('Only photos and videos can be added to the vault');
+  const isAudio =
+    mime.startsWith('audio/') ||
+    (!isVideo && !isPhoto && AUDIO_FILE_RE.test(name));
+  if (!isVideo && !isPhoto && !isAudio) {
+    throw new TelegramWorkerError('Only photos, videos, and audio can be added to the vault');
   }
   const thumbAbs = thumbPath ? path.resolve(String(thumbPath)) : '';
   try {
     const sent = await client.sendMedia('me', {
-      type: isVideo ? 'video' : 'photo',
+      type: isAudio ? 'voice' : isVideo ? 'video' : 'photo',
       // mtcute treats a bare string as a File ID; local paths need the file: prefix.
       file: `file:${abs}`,
       fileName: fileName || path.basename(abs),
-      fileMime: mime || undefined,
+      fileMime: isAudio
+        ? guessUploadAudioMime(mime, name)
+        : mime || undefined,
     });
     const fields = extractVaultFields(sent);
     if (!fields) {
       throw new TelegramWorkerError('Telegram did not return vault media', 502);
+    }
+    if (isAudio) {
+      return fields;
     }
     let wroteThumb = false;
     try {
@@ -1667,51 +1745,101 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
   }
   const captionText = typeof caption === 'string' ? caption.trim() : '';
   const sentMessages = [];
+  let captionUsed = false;
+
+  const takeCaption = () => {
+    if (captionUsed || !captionText) return '';
+    captionUsed = true;
+    return captionText;
+  };
+
+  const pushSent = (sent, savedId) => {
+    const serialized = serializeMessage(sent);
+    if (!serialized) return;
+    if (savedId != null) {
+      copyVaultThumbToChat(creatorId, savedId, numericPeer, serialized.id);
+    }
+    sentMessages.push(serialized);
+  };
+
+  const sendOneCopy = async (savedId) => {
+    const nextCaption = takeCaption();
+    const sent = await client.sendCopy({
+      fromChatId: 'me',
+      message: savedId,
+      toChatId: numericPeer,
+      caption: nextCaption || undefined,
+    });
+    pushSent(sent, savedId);
+  };
+
+  const sendAlbum = async (chunkIds, sourceMsgs) => {
+    if (chunkIds.length === 1) {
+      await sendOneCopy(chunkIds[0]);
+      return;
+    }
+    const medias = [];
+    for (let i = 0; i < sourceMsgs.length; i += 1) {
+      const msg = sourceMsgs[i];
+      if (!msg) {
+        throw new TelegramWorkerError('A vault item is missing from Saved Messages', 404);
+      }
+      const useCaption = i === 0 ? takeCaption() : '';
+      const input = inputMediaFromMessage(msg, useCaption);
+      if (!input) {
+        throw new TelegramWorkerError('Vault item is not a photo or video', 400);
+      }
+      medias.push(input);
+    }
+    const sent = await client.sendMediaGroup(numericPeer, medias);
+    const sentList = asMessageList(sent);
+    for (let i = 0; i < sentList.length; i += 1) {
+      pushSent(sentList[i], chunkIds[i]);
+    }
+  };
 
   try {
     if (ids.length === 1) {
-      const sent = await client.sendCopy({
-        fromChatId: 'me',
-        message: ids[0],
-        toChatId: numericPeer,
-        caption: captionText || undefined,
-      });
-      const serialized = serializeMessage(sent);
-      if (serialized) {
-        copyVaultThumbToChat(creatorId, ids[0], numericPeer, serialized.id);
-        sentMessages.push(serialized);
-      }
+      await sendOneCopy(ids[0]);
       await markPeerRead(client, numericPeer, { creatorId, force: true });
       return sentMessages;
     }
 
-    for (let offset = 0; offset < ids.length; offset += VAULT_ALBUM_MAX) {
-      const chunk = ids.slice(offset, offset + VAULT_ALBUM_MAX);
-      const source = await fetchSavedMessages(client, chunk);
-      const medias = [];
-      for (let i = 0; i < source.length; i += 1) {
-        const msg = source[i];
-        if (!msg) {
-          throw new TelegramWorkerError('A vault item is missing from Saved Messages', 404);
-        }
-        const useCaption = offset === 0 && i === 0 ? captionText : '';
-        const input = inputMediaFromMessage(msg, useCaption);
-        if (!input) {
-          throw new TelegramWorkerError('Vault item is not a photo or video', 400);
-        }
-        medias.push(input);
+    const source = await fetchSavedMessages(client, ids);
+    let albumIds = [];
+    let albumMsgs = [];
+
+    const flushAlbum = async () => {
+      if (!albumIds.length) return;
+      await sendAlbum(albumIds, albumMsgs);
+      albumIds = [];
+      albumMsgs = [];
+    };
+
+    for (let i = 0; i < source.length; i += 1) {
+      const msg = source[i];
+      if (!msg) {
+        throw new TelegramWorkerError('A vault item is missing from Saved Messages', 404);
       }
-      const sent = await client.sendMediaGroup(numericPeer, medias);
-      const sentList = asMessageList(sent);
-      for (let i = 0; i < sentList.length; i += 1) {
-        const serialized = serializeMessage(sentList[i]);
-        if (!serialized) continue;
-        if (chunk[i] != null) {
-          copyVaultThumbToChat(creatorId, chunk[i], numericPeer, serialized.id);
-        }
-        sentMessages.push(serialized);
+      const kind = vaultKindFromMedia(msg.media);
+      if (kind === 'voice') {
+        await flushAlbum();
+        await sendOneCopy(ids[i]);
+        continue;
+      }
+      if (!isVisualMediaKind(kind)) {
+        throw new TelegramWorkerError(
+          'Vault item is not a photo, video, or voice note',
+          400
+        );
+      }
+      albumIds.push(ids[i]);
+      albumMsgs.push(msg);
+      if (albumIds.length >= VAULT_ALBUM_MAX) {
+        await flushAlbum();
       }
     }
+    await flushAlbum();
     await markPeerRead(client, numericPeer, { creatorId, force: true });
     return sentMessages;
   } catch (err) {
@@ -1877,10 +2005,13 @@ async function fetchAndCacheMessageMedia(creatorId, peerId, messageId, variant) 
   }
   const media = msg.media;
   const kind =
-    vaultKindFromMedia(media) ||
     (isChatVideoMedia(media) ? 'video' : null) ||
     mediaPlaceholder(media)?.kind ||
+    vaultKindFromMedia(media) ||
     'media';
+  if (wantThumb && isPlayableAudioKind(kind)) {
+    throw new TelegramWorkerError('No media on this message', 404);
+  }
   const location = wantThumb ? pickMediaThumb(media) : pickMediaFull(media);
   if (!location) {
     throw new TelegramWorkerError('No media on this message', 404);
@@ -1987,7 +2118,7 @@ async function prewarmChatThumb(creatorId, peerId, messageId) {
 
 function scheduleChatThumbPrewarm(creatorId, peerId, messages) {
   const ids = (Array.isArray(messages) ? messages : [])
-    .filter((msg) => msg && msg.hasMedia && msg.id)
+    .filter((msg) => msg && msg.hasMedia && msg.id && isVisualMediaKind(msg.kind))
     .map((msg) => msg.id);
   if (!ids.length) return;
   void Promise.all(ids.map((id) => prewarmChatThumb(creatorId, peerId, id)));

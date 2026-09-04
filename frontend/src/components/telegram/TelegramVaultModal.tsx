@@ -14,6 +14,7 @@ import {
   FolderOpen,
   Image as ImageIcon,
   Loader2,
+  Mic,
   Plus,
   Upload,
   Video,
@@ -23,6 +24,9 @@ import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
+import TelegramAudioPlayer, {
+  TelegramVoiceTile,
+} from '@/components/telegram/TelegramAudioPlayer';
 import { useAuth } from '@/context/AuthContext';
 import {
   createTelegramVaultFolder,
@@ -45,14 +49,16 @@ import {
 const PAGE_SIZE = 60;
 const MAX_VAULT_UPLOAD_BYTES = 512 * 1024 * 1024;
 const VAULT_MEDIA_EXT =
-  /\.(jpe?g|png|gif|webp|bmp|heic|heif|avif|tiff?|mp4|mov|webm|mkv|avi|m4v)$/i;
+  /\.(jpe?g|png|gif|webp|bmp|heic|heif|avif|tiff?|mp4|mov|webm|mkv|avi|m4v|ogg|opus|mp3|m4a|wav|aac)$/i;
 
-type KindFilter = 'all' | 'photo' | 'video';
+type KindFilter = 'all' | 'photo' | 'video' | 'voice';
 type SentFilter = 'all' | 'sent' | 'not_sent';
 
 function isVaultMediaFile(file: File): boolean {
   const mime = String(file.type || '');
-  if (mime.startsWith('image/') || mime.startsWith('video/')) return true;
+  if (mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/')) {
+    return true;
+  }
   return VAULT_MEDIA_EXT.test(file.name);
 }
 
@@ -165,7 +171,7 @@ function VaultThumbImg({
     setFailed(false);
   }, [src]);
   if (failed) {
-    const Icon = kind === 'video' ? Video : ImageIcon;
+    const Icon = kind === 'video' ? Video : kind === 'voice' ? Mic : ImageIcon;
     return (
       <div className="w-full h-full flex items-center justify-center bg-gray-100 dark:bg-zinc-900 text-gray-400 dark:text-zinc-500">
         <Icon className="w-6 h-6" />
@@ -435,11 +441,11 @@ export default function TelegramVaultModal({
       accepted.push(file);
     }
     const warningParts: string[] = [];
-    if (skippedType) warningParts.push('Only photos and videos can be added to the vault');
+    if (skippedType) warningParts.push('Only photos, videos, and audio can be added to the vault');
     if (skippedSize) warningParts.push('Files larger than 512 MB were skipped');
     const warning = warningParts.length ? `${warningParts.join('. ')}.` : null;
     if (!accepted.length) {
-      setError(warning || 'No photos or videos to upload.');
+      setError(warning || 'No photos, videos, or audio to upload.');
       return;
     }
     void handleUpload(toFileList(accepted), warning);
@@ -539,7 +545,7 @@ export default function TelegramVaultModal({
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*,video/*"
+              accept="image/*,video/*,audio/*,.ogg,.opus,.mp3,.m4a,.wav,.aac"
               multiple
               className="hidden"
               onChange={(e) => queueVaultFiles(e.target.files)}
@@ -661,6 +667,7 @@ export default function TelegramVaultModal({
                   { id: 'all' as const, label: 'All Types' },
                   { id: 'photo' as const, label: 'Images', icon: ImageIcon },
                   { id: 'video' as const, label: 'Videos', icon: Video },
+                  { id: 'voice' as const, label: 'Audio', icon: Mic },
                 ] as const
               ).map((chip) => {
                 const Icon = 'icon' in chip ? chip.icon : null;
@@ -729,7 +736,7 @@ export default function TelegramVaultModal({
                   >
                     <span className="flex flex-col items-center gap-2">
                       <Upload className="w-6 h-6" />
-                      Drop photos or videos here, or click to browse.
+                      Drop photos, videos, or audio here, or click to browse.
                     </span>
                   </button>
                 ) : (
@@ -761,9 +768,19 @@ export default function TelegramVaultModal({
                           setPreview(item);
                         }}
                         className="absolute inset-0 w-full h-full"
-                        aria-label={item.kind === 'video' ? 'Select video' : 'Select image'}
+                        aria-label={
+                          item.kind === 'video'
+                            ? 'Select video'
+                            : item.kind === 'voice'
+                              ? 'Select voice note'
+                              : 'Select image'
+                        }
                       >
-                        <VaultThumbImg key={src} src={src} kind={item.kind} />
+                        {item.kind === 'voice' ? (
+                          <TelegramVoiceTile duration={item.duration} />
+                        ) : (
+                          <VaultThumbImg key={src} src={src} kind={item.kind} />
+                        )}
                       </button>
                       <VaultMediaNoteButton
                         hasNote={Boolean(notes[item.id]?.trim())}
@@ -812,7 +829,24 @@ export default function TelegramVaultModal({
         </div>
       </div>
 
-      {preview && (
+      {preview && preview.kind === 'voice' ? (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/20 dark:bg-black/70 p-6 animate-fade-in">
+          <button
+            type="button"
+            className="absolute inset-0"
+            aria-label="Close preview"
+            onClick={() => setPreview(null)}
+          />
+          <div className="relative z-10 w-full max-w-sm rounded-xl border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-2xl">
+            <TelegramAudioPlayer
+              src={telegramVaultMediaUrl(creatorId, preview.id, 'full')}
+              duration={preview.duration}
+              fileName={preview.fileName}
+              variant="neutral"
+            />
+          </div>
+        </div>
+      ) : preview ? (
         <VaultMediaLightbox
           url={telegramVaultMediaUrl(creatorId, preview.id, 'full')}
           kind={preview.kind === 'video' ? 'video' : 'picture'}
@@ -820,7 +854,7 @@ export default function TelegramVaultModal({
           onClose={() => setPreview(null)}
           zClassName="z-[100]"
         />
-      )}
+      ) : null}
       {noteModal && (
         <VaultMediaNoteModal
           creatorId={creatorId}

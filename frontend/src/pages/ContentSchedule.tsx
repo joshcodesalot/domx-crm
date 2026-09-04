@@ -297,6 +297,7 @@ export default function ContentSchedule() {
   const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
   const [vaultRowKey, setVaultRowKey] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'import' | 'history'>('import');
+  const [calendarReloadToken, setCalendarReloadToken] = useState(0);
   const [platformFilter, setPlatformFilter] =
     useState<ScheduleJobPlatformFilter>('all');
   const [kindFilter, setKindFilter] = useState<ScheduleJobKindFilter>('all');
@@ -328,6 +329,7 @@ export default function ContentSchedule() {
       setSettings(settingRes.settings || []);
       setUnsendBeforeMass(unsendRes.enabled !== false);
       setCanEditUnsendBeforeMass(Boolean(unsendRes.canEdit));
+      setCalendarReloadToken((n) => n + 1);
       setSelectedCreatorId((prev) => {
         if (prev) return prev;
         return creatorRes.creators?.[0]?.id || null;
@@ -676,6 +678,7 @@ export default function ContentSchedule() {
       setAssets([]);
       setFileByAssetId({});
       setFiles([]);
+      setActiveTab('history');
       await loadAll();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Confirm failed');
@@ -1237,6 +1240,7 @@ export default function ContentSchedule() {
               time={selectedRow?.time || pickerTime}
               platformFilter={platformFilter}
               kindFilter={kindFilter}
+              reloadToken={calendarReloadToken}
               onDateChange={(date) => {
                 setPickerDate(date);
                 if (selectedRow) updateRow(selectedRow.key, { date });

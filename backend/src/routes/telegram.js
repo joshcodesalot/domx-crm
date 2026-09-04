@@ -98,11 +98,17 @@ const vaultUpload = multer({
   limits: { fileSize: VAULT_UPLOAD_MAX_BYTES },
   fileFilter: (_req, file, cb) => {
     const mime = String(file.mimetype || '');
-    if (mime.startsWith('image/') || mime.startsWith('video/')) {
+    const name = String(file.originalname || '');
+    if (
+      mime.startsWith('image/') ||
+      mime.startsWith('video/') ||
+      mime.startsWith('audio/') ||
+      /\.(ogg|opus|mp3|m4a|wav|webm|aac)$/i.test(name)
+    ) {
       cb(null, true);
       return;
     }
-    cb(new Error('Only photos and videos can be added to the vault'));
+    cb(new Error('Only photos, videos, and audio can be added to the vault'));
   },
 });
 
@@ -927,7 +933,12 @@ router.get(
       typeof req.query.folderId === 'string' && isValidUuid(req.query.folderId)
         ? req.query.folderId
         : null;
-    const kind = req.query.kind === 'photo' || req.query.kind === 'video' ? req.query.kind : null;
+    const kind =
+      req.query.kind === 'photo' ||
+      req.query.kind === 'video' ||
+      req.query.kind === 'voice'
+        ? req.query.kind
+        : null;
     const fanId =
       typeof req.query.fanId === 'string' && req.query.fanId.trim()
         ? req.query.fanId.trim()
@@ -1165,7 +1176,6 @@ router.get(
   requirePermission('creators.view'),
   async (req, res) => {
     const { itemId } = req.params;
-    const variant = req.query.variant === 'full' ? 'full' : 'thumb';
     if (!isValidUuid(itemId)) {
       return res.status(400).json({ error: 'Invalid vault item ID' });
     }
@@ -1173,7 +1183,7 @@ router.get(
       const creator = await requireTelegramCreator(req, res);
       if (!creator) return undefined;
       const item = await pool.query(
-        `SELECT "savedMessageId"
+        `SELECT "savedMessageId", kind
          FROM telegram_vault_items
          WHERE id = $1 AND "creatorId" = $2`,
         [itemId, creator.id]
@@ -1181,6 +1191,8 @@ router.get(
       if (item.rows.length === 0) {
         return res.status(404).json({ error: 'Vault item not found' });
       }
+      const requested = req.query.variant === 'full' ? 'full' : 'thumb';
+      const variant = item.rows[0].kind === 'voice' ? 'full' : requested;
       const media = await getCachedVaultMedia(
         creator.id,
         item.rows[0].savedMessageId,

@@ -14,6 +14,7 @@ export default function ScheduleDateTimePicker({
   onTimeChange,
   platformFilter = 'all',
   kindFilter = 'all',
+  reloadToken = 0,
 }: {
   date: string;
   time: string;
@@ -21,6 +22,7 @@ export default function ScheduleDateTimePicker({
   onTimeChange: (time: string) => void;
   platformFilter?: ScheduleJobPlatformFilter;
   kindFilter?: ScheduleJobKindFilter;
+  reloadToken?: number;
 }) {
   const timeZone = useStaffTimeZone();
   const now = berlinNowParts(timeZone);
@@ -42,7 +44,7 @@ export default function ScheduleDateTimePicker({
 
   useEffect(() => {
     void loadMonth(year, month);
-  }, [year, month, loadMonth]);
+  }, [year, month, loadMonth, reloadToken]);
 
   const filteredJobs = useMemo(
     () =>

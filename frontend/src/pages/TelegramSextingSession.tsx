@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import TelegramVaultModal from '@/components/telegram/TelegramVaultModal';
+import { TelegramVoiceTile } from '@/components/telegram/TelegramAudioPlayer';
 import {
   SEXTING_FORM_INPUT_CLASS,
   TelegramSextingSessionForm,
@@ -436,11 +437,17 @@ export default function TelegramSextingSession() {
                         <div className="flex flex-wrap gap-2">
                           {vaultItems.map((item) => (
                             <div key={item.id} className="relative">
-                              <img
-                                src={telegramVaultMediaUrl(block.creatorId, item.id, 'thumb')}
-                                alt=""
-                                className="w-14 h-14 rounded-md object-cover border border-gray-200 dark:border-white/10"
-                              />
+                              {item.kind === 'voice' ? (
+                                <div className="w-14 h-14 rounded-md overflow-hidden border border-gray-200 dark:border-white/10">
+                                  <TelegramVoiceTile duration={item.duration} />
+                                </div>
+                              ) : (
+                                <img
+                                  src={telegramVaultMediaUrl(block.creatorId, item.id, 'thumb')}
+                                  alt=""
+                                  className="w-14 h-14 rounded-md object-cover border border-gray-200 dark:border-white/10"
+                                />
+                              )}
                               {!sent && (
                                 <button
                                   type="button"

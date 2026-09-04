@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type UIEvent } from 'react';
 import { Folder, Loader2, X } from 'lucide-react';
+import { TelegramVoiceTile } from '@/components/telegram/TelegramAudioPlayer';
 import {
   friendlyVaultFolderName,
   vaultThumbUrl,
@@ -308,7 +309,10 @@ export default function ScheduleVaultPicker({
                 })}
               {platform === 'telegram' &&
                 telegramItems.map((item) => {
-                  const thumb = telegramVaultMediaUrl(creatorId, item.id, 'thumb');
+                  const isVoice = item.kind === 'voice';
+                  const thumb = isVoice
+                    ? ''
+                    : telegramVaultMediaUrl(creatorId, item.id, 'thumb');
                   return (
                     <button
                       key={item.id}
@@ -322,7 +326,11 @@ export default function ScheduleVaultPicker({
                       }
                       className="aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-zinc-800"
                     >
-                      <img src={thumb} alt="" className="w-full h-full object-cover" />
+                      {isVoice ? (
+                        <TelegramVoiceTile duration={item.duration} />
+                      ) : (
+                        <img src={thumb} alt="" className="w-full h-full object-cover" />
+                      )}
                     </button>
                   );
                 })}
