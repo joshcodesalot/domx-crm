@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Bell, Home, MessageSquare, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import GermanTimeClock from '@/components/GermanTimeClock';
 import ThemeToggle from '@/components/ThemeToggle';
 import {
   FourBasedTranslationToggles,
@@ -222,6 +223,7 @@ export default function MessageProTelegram() {
           })}
         </div>
         <div className="flex items-center gap-3 shrink-0">
+          <GermanTimeClock />
           <FourBasedTranslationToggles compact />
           <ThemeToggle />
         </div>

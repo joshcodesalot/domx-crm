@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Bell, Home, MessageSquare, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import GermanTimeClock from '@/components/GermanTimeClock';
 import ThemeToggle from '@/components/ThemeToggle';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import {
@@ -267,6 +268,7 @@ export default function MessagePro() {
               aria-label="Translate chat history"
             />
           </label>
+          <GermanTimeClock />
           <ThemeToggle />
         </div>
       </header>

@@ -30,6 +30,7 @@ import {
   TRANSLATION_SETTINGS_EVENT,
 } from '@/components/fourbased/FourBasedChatPanels';
 import { DEFAULT_FAN_NOTES_TEMPLATE } from '@/components/maloum/MaloumFanPanel';
+import GermanTimeClock from '@/components/GermanTimeClock';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
@@ -1394,6 +1395,7 @@ export function TelegramChatThread({
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          <GermanTimeClock />
           <button
             type="button"
             onClick={() => setGenerateSessionOpen(true)}

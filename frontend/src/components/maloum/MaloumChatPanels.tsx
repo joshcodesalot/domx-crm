@@ -32,6 +32,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import GermanTimeClock from '@/components/GermanTimeClock';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
@@ -2325,6 +2326,7 @@ export function MaloumChatThread({
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <GermanTimeClock />
           <button
             type="button"
             onClick={() => void loadMessages()}

@@ -22,6 +22,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
+import GermanTimeClock from '@/components/GermanTimeClock';
 import ThemeToggle from '@/components/ThemeToggle';
 import maloumIcon from '@/assets/maloum_icon.png';
 import fourBasedIcon from '@/assets/4based_icon.ico';
@@ -781,6 +782,7 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       </nav>
 
       <div className="mt-auto flex flex-col gap-4 items-center">
+        <GermanTimeClock compact />
         <ThemeToggle className="p-0 hover:bg-transparent dark:hover:bg-transparent focus:ring-0" />
         <button
           type="button"
