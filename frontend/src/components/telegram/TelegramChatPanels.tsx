@@ -43,6 +43,8 @@ import TelegramReactionPicker, {
   TelegramReactionChips,
 } from '@/components/telegram/TelegramReactionPicker';
 import TelegramSextingSessionModal from '@/components/telegram/TelegramSextingSessionModal';
+import TelegramGifPicker from '@/components/telegram/TelegramGifPicker';
+import TelegramStickerPicker from '@/components/telegram/TelegramStickerPicker';
 import TelegramVaultModal from '@/components/telegram/TelegramVaultModal';
 import TelegramAudioPlayer, {
   TelegramVoiceTile,
@@ -62,10 +64,12 @@ import {
   getMessagingDashboardSenders,
   getTelegramDialogs,
   getTelegramMessages,
+  searchTelegramMessages,
   markScriptSent,
   resolveCreatorAvatarUrl,
   resolveTelegramUsername,
   sendTelegramMessage,
+  sendTelegramTyping,
   setTelegramMessageReaction,
   telegramChatMediaUrl,
   telegramVaultMediaUrl,
@@ -86,6 +90,8 @@ const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const FAN_PANEL_OPEN_KEY = 'domx-telegram-fan-panel';
 const THREAD_WIDE_BREAKPOINT = 1000;
 const MAX_TRANSLATION_HISTORY = 8;
+const TYPING_REFRESH_MS = 4000;
+const TYPING_IDLE_MS = 5000;
 const MESSAGE_PAGE_LIMIT = 50;
 const NEAR_BOTTOM_PX = 120;
 const NEAR_TOP_PX = 80;
@@ -181,6 +187,80 @@ function messageHasVisualMedia(msg: TelegramMessage): boolean {
 function messageHasPlayableAudio(msg: TelegramMessage): boolean {
   if (msg.deleted) return false;
   return msg.kind === 'voice' || msg.kind === 'audio';
+}
+
+function messageHasSticker(msg: TelegramMessage): boolean {
+  if (msg.deleted) return false;
+  return msg.kind === 'sticker';
+}
+
+function messageHasGif(msg: TelegramMessage): boolean {
+  if (msg.deleted) return false;
+  return msg.kind === 'gif';
+}
+
+function searchResultPreview(msg: TelegramMessage): string {
+  const text = String(msg.text || '').trim();
+  if (text) return text;
+  return msg.placeholder || 'Message';
+}
+
+function TelegramStickerBubble({
+  creatorId,
+  peerId,
+  msg,
+}: {
+  creatorId: string;
+  peerId: string;
+  msg: TelegramMessage;
+}) {
+  const source = msg.stickerSource;
+  if (source === 'video') {
+    return (
+      <video
+        className="block max-w-[160px] max-h-[160px] rounded-lg bg-transparent"
+        src={telegramChatMediaUrl(creatorId, peerId, msg.id, 'full')}
+        muted
+        loop
+        autoPlay
+        playsInline
+      />
+    );
+  }
+  return (
+    <img
+      className="block max-w-[160px] max-h-[160px] object-contain"
+      src={telegramChatMediaUrl(
+        creatorId,
+        peerId,
+        msg.id,
+        source === 'static' ? 'full' : 'thumb'
+      )}
+      alt={msg.placeholder || 'Sticker'}
+    />
+  );
+}
+
+function TelegramGifBubble({
+  creatorId,
+  peerId,
+  msg,
+}: {
+  creatorId: string;
+  peerId: string;
+  msg: TelegramMessage;
+}) {
+  return (
+    <video
+      className="block max-w-[220px] max-h-[220px] rounded-lg bg-black/10 dark:bg-white/10"
+      src={telegramChatMediaUrl(creatorId, peerId, msg.id, 'full')}
+      poster={telegramChatMediaUrl(creatorId, peerId, msg.id, 'thumb')}
+      muted
+      loop
+      autoPlay
+      playsInline
+    />
+  );
 }
 
 function vaultMediaType(kind: TelegramVaultItem['kind']): 'video' | 'voice' | 'image' {
@@ -731,6 +811,19 @@ export function TelegramChatThread({
     null
   );
   const [generateSessionOpen, setGenerateSessionOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<TelegramMessage[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchLoadingMore, setSearchLoadingMore] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchNextOffset, setSearchNextOffset] = useState<number | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(
+    null
+  );
+  const searchTimerRef = useRef<number | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const loadingOlderRef = useRef(false);
@@ -748,6 +841,9 @@ export function TelegramChatThread({
   const markedReadOnOpenRef = useRef(false);
   const onMarkedReadRef = useRef(onMarkedRead);
   onMarkedReadRef.current = onMarkedRead;
+  const typingActiveRef = useRef(false);
+  const lastTypingSentAtRef = useRef(0);
+  const typingIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showUsername = canSeeFanUsername(user?.role);
   const isGroup = fan?.kind === 'group';
 
@@ -838,6 +934,15 @@ export function TelegramChatThread({
     setGenerateSessionOpen(false);
     setReactingMessageId(null);
     setReactionPickerId(null);
+    setSearchOpen(false);
+    setSearchQuery('');
+    setDebouncedSearchQuery('');
+    setSearchResults([]);
+    setSearchLoading(false);
+    setSearchLoadingMore(false);
+    setSearchError(null);
+    setSearchNextOffset(null);
+    setHighlightedMessageId(null);
     markedReadOnOpenRef.current = false;
   }, [creatorId, peerId]);
 
@@ -973,6 +1078,112 @@ export function TelegramChatThread({
     }
   }, [creatorId, peerId]);
 
+  useEffect(() => {
+    if (searchTimerRef.current != null) {
+      window.clearTimeout(searchTimerRef.current);
+    }
+    searchTimerRef.current = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim());
+    }, 300);
+    return () => {
+      if (searchTimerRef.current != null) {
+        window.clearTimeout(searchTimerRef.current);
+      }
+    };
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (searchOpen) {
+      searchInputRef.current?.focus();
+    }
+  }, [searchOpen]);
+
+  useEffect(() => {
+    if (!searchOpen || !debouncedSearchQuery || !creatorId || !peerId) {
+      setSearchResults([]);
+      setSearchNextOffset(null);
+      setSearchError(null);
+      setSearchLoading(false);
+      return undefined;
+    }
+    const key = `${creatorId}:${peerId}`;
+    let cancelled = false;
+    setSearchLoading(true);
+    setSearchError(null);
+    void searchTelegramMessages(creatorId, peerId, {
+      query: debouncedSearchQuery,
+      limit: 30,
+    })
+      .then((result) => {
+        if (cancelled || threadKeyRef.current !== key) return;
+        setSearchResults(result.messages || []);
+        setSearchNextOffset(result.hasMore ? result.nextOffset : null);
+      })
+      .catch((err) => {
+        if (cancelled || threadKeyRef.current !== key) return;
+        setSearchResults([]);
+        setSearchNextOffset(null);
+        setSearchError(err instanceof Error ? err.message : 'Search failed');
+      })
+      .finally(() => {
+        if (!cancelled && threadKeyRef.current === key) setSearchLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [searchOpen, debouncedSearchQuery, creatorId, peerId]);
+
+  async function loadMoreSearchResults() {
+    if (
+      !searchOpen ||
+      !debouncedSearchQuery ||
+      searchNextOffset == null ||
+      searchLoading ||
+      searchLoadingMore
+    ) {
+      return;
+    }
+    const key = `${creatorId}:${peerId}`;
+    setSearchLoadingMore(true);
+    setSearchError(null);
+    try {
+      const result = await searchTelegramMessages(creatorId, peerId, {
+        query: debouncedSearchQuery,
+        offset: searchNextOffset,
+        limit: 30,
+      });
+      if (threadKeyRef.current !== key) return;
+      setSearchResults((prev) => {
+        const existing = new Set(prev.map((msg) => msg.id));
+        const extra = (result.messages || []).filter(
+          (msg) => msg.id && !existing.has(msg.id)
+        );
+        return [...extra, ...prev];
+      });
+      setSearchNextOffset(result.hasMore ? result.nextOffset : null);
+    } catch (err) {
+      if (threadKeyRef.current === key) {
+        setSearchError(err instanceof Error ? err.message : 'Search failed');
+      }
+    } finally {
+      if (threadKeyRef.current === key) setSearchLoadingMore(false);
+    }
+  }
+
+  function jumpToSearchResult(msg: TelegramMessage) {
+    const loaded = messages.some((item) => item.id === msg.id);
+    if (!loaded) return;
+    const el = messagesScrollRef.current?.querySelector(
+      `[data-message-id="${CSS.escape(msg.id)}"]`
+    );
+    if (!(el instanceof HTMLElement)) return;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    setHighlightedMessageId(msg.id);
+    window.setTimeout(() => {
+      setHighlightedMessageId((current) => (current === msg.id ? null : current));
+    }, 2000);
+  }
+
   const handleRefreshMessages = useCallback(async () => {
     if (messagesRefreshing) return;
     setMessagesRefreshing(true);
@@ -1093,10 +1304,52 @@ export function TelegramChatThread({
     historyTranslateQueueRef.current?.enqueue([{ key: cacheKey, text: trimmed }]);
   }, []);
 
+  const clearTypingIdleTimer = useCallback(() => {
+    if (typingIdleTimerRef.current) {
+      clearTimeout(typingIdleTimerRef.current);
+      typingIdleTimerRef.current = null;
+    }
+  }, []);
+
+  const cancelTelegramTyping = useCallback(() => {
+    clearTypingIdleTimer();
+    if (!typingActiveRef.current) return;
+    typingActiveRef.current = false;
+    lastTypingSentAtRef.current = 0;
+    void sendTelegramTyping(creatorId, peerId, false).catch(() => {});
+  }, [clearTypingIdleTimer, creatorId, peerId]);
+
+  const pingTelegramTyping = useCallback(() => {
+    const now = Date.now();
+    if (
+      !typingActiveRef.current ||
+      now - lastTypingSentAtRef.current >= TYPING_REFRESH_MS
+    ) {
+      typingActiveRef.current = true;
+      lastTypingSentAtRef.current = now;
+      void sendTelegramTyping(creatorId, peerId, true).catch(() => {});
+    }
+    clearTypingIdleTimer();
+    typingIdleTimerRef.current = setTimeout(() => {
+      cancelTelegramTyping();
+    }, TYPING_IDLE_MS);
+  }, [cancelTelegramTyping, clearTypingIdleTimer, creatorId, peerId]);
+
+  useEffect(() => {
+    return () => {
+      clearTypingIdleTimer();
+      if (!typingActiveRef.current) return;
+      typingActiveRef.current = false;
+      lastTypingSentAtRef.current = 0;
+      void sendTelegramTyping(creatorId, peerId, false).catch(() => {});
+    };
+  }, [clearTypingIdleTimer, creatorId, peerId]);
+
   async function handleSend() {
     const text = draft.trim();
     const attached = vaultItems;
     if ((!text && attached.length === 0) || sending || translatingOutgoing) return;
+    cancelTelegramTyping();
     setSending(true);
     setError(null);
     const englishDraft =
@@ -1221,6 +1474,44 @@ export function TelegramChatThread({
       setSending(false);
       setTranslatingOutgoing(false);
     }
+  }
+
+  function handleQuickMediaSent(message: TelegramMessage, mediaType: 'sticker' | 'gif') {
+    nearBottomRef.current = true;
+    setMessages((prev) => [...prev, message]);
+    onMarkedRead?.(peerId);
+    if (!user?.id) return;
+    const dashboardMessageId = `telegram:${message.id}`;
+    const chatterName = user.name;
+    setMessageSenders((prev) => ({
+      ...prev,
+      [dashboardMessageId]: chatterName,
+    }));
+    void createMessagingDashboardEntry({
+      id: crypto.randomUUID(),
+      creatorId,
+      creatorName: creator?.displayName,
+      creatorUsername: creator?.username,
+      creatorAvatarUrl: creator?.avatarUrl,
+      chatterId: user.id,
+      chatterName,
+      chatterEmail: user.email,
+      chatId: peerId,
+      fanId: peerId,
+      fanUsername: fan?.nickname?.trim() || fan?.displayName?.trim() || null,
+      maloumMessageId: dashboardMessageId,
+      contentType: 'media',
+      englishMessage: null,
+      germanTranslatedMessage: null,
+      actualSentText: null,
+      mediaCount: 1,
+      pictureCount: 0,
+      videoCount: mediaType === 'gif' ? 1 : 0,
+      mediaJson: [{ type: mediaType }],
+      sentAt: message.date || new Date().toISOString(),
+    }).catch(() => {
+      // Persistence failures are non-blocking for the chatter UI.
+    });
   }
 
   async function handleDeleteMessage(messageId: string) {
@@ -1411,6 +1702,32 @@ export function TelegramChatThread({
           </button>
           <button
             type="button"
+            onClick={() => {
+              setSearchOpen((prev) => {
+                const next = !prev;
+                if (!next) {
+                  setSearchQuery('');
+                  setDebouncedSearchQuery('');
+                  setSearchResults([]);
+                  setSearchError(null);
+                  setSearchNextOffset(null);
+                }
+                return next;
+              });
+            }}
+            className={`p-2 rounded-lg transition-all border ${
+              searchOpen
+                ? 'text-sky-500 bg-sky-500/10 border-sky-500/30'
+                : 'text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 border-transparent hover:border-gray-300 dark:hover:border-zinc-700'
+            }`}
+            title="Search conversation"
+            aria-label="Search conversation"
+            aria-pressed={searchOpen}
+          >
+            <Search className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
             onClick={() => void handleRefreshMessages()}
             disabled={messagesRefreshing}
             className="p-2 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all border border-transparent hover:border-gray-300 dark:hover:border-zinc-700 disabled:opacity-40"
@@ -1454,6 +1771,89 @@ export function TelegramChatThread({
           )}
         </div>
       </div>
+      {searchOpen ? (
+        <div className="relative z-10 shrink-0 border-b border-gray-200 dark:border-zinc-800 bg-white/90 dark:bg-zinc-950/90">
+          <div className="px-4 py-2">
+            <input
+              ref={searchInputRef}
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search messages…"
+              className="w-full rounded-lg bg-gray-50 dark:bg-zinc-800 px-3 py-2 text-sm text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-zinc-500 focus:outline-none"
+            />
+          </div>
+          {debouncedSearchQuery ? (
+            <div
+              className="max-h-56 overflow-y-auto px-3 pb-2"
+              onScroll={(event) => {
+                const el = event.currentTarget;
+                if (el.scrollHeight - el.scrollTop - el.clientHeight < 48) {
+                  void loadMoreSearchResults();
+                }
+              }}
+            >
+              {searchLoading ? (
+                <div className="flex items-center justify-center py-6 text-gray-400">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                </div>
+              ) : searchError ? (
+                <p className="text-xs text-red-400 px-1 py-4 text-center">{searchError}</p>
+              ) : searchResults.length === 0 ? (
+                <p className="text-xs text-gray-400 dark:text-zinc-500 px-1 py-4 text-center">
+                  No messages match that search.
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {[...searchResults].reverse().map((msg) => {
+                    const loaded = messages.some((item) => item.id === msg.id);
+                    return (
+                      <button
+                        key={msg.id}
+                        type="button"
+                        onClick={() => jumpToSearchResult(msg)}
+                        className={`w-full text-left rounded-lg px-2.5 py-2 transition-colors ${
+                          loaded
+                            ? 'hover:bg-gray-100 dark:hover:bg-zinc-800'
+                            : 'cursor-default'
+                        } ${
+                          highlightedMessageId === msg.id
+                            ? 'bg-sky-50 dark:bg-sky-500/10'
+                            : ''
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[11px] font-medium text-gray-600 dark:text-zinc-300 truncate">
+                            {msg.isOutgoing
+                              ? 'You'
+                              : msg.senderName || fanLabel(fan, isGroup ? 'Group' : 'Fan')}
+                          </p>
+                          <p className="text-[10px] text-gray-400 shrink-0">
+                            {formatTime(msg.date, staffTimeZone)}
+                          </p>
+                        </div>
+                        <p className="text-xs text-gray-800 dark:text-zinc-100 line-clamp-2 mt-0.5">
+                          {searchResultPreview(msg)}
+                        </p>
+                        {!loaded ? (
+                          <p className="text-[10px] text-gray-400 mt-0.5">
+                            Not in loaded history
+                          </p>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                  {searchLoadingMore ? (
+                    <div className="flex justify-center py-1 text-gray-400">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div
         ref={messagesScrollRef}
@@ -1514,7 +1914,15 @@ export function TelegramChatThread({
             ? incomingClusterRadius(isClusterStart, isClusterEnd)
             : 'rounded-2xl';
           return (
-            <div key={msg.id}>
+            <div
+              key={msg.id}
+              data-message-id={msg.id}
+              className={
+                highlightedMessageId === msg.id
+                  ? 'rounded-2xl ring-2 ring-sky-400/80 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
+                  : undefined
+              }
+            >
               {isNewDay && dayKey && (
                 <div className="flex justify-center my-3">
                   <span className="text-[11px] font-medium text-gray-500 dark:text-zinc-400 bg-gray-100 dark:bg-zinc-800 rounded-full px-3 py-0.5">
@@ -1665,13 +2073,41 @@ export function TelegramChatThread({
                           />
                         </div>
                       )}
+                      {messageHasSticker(msg) && (
+                        <div className={msgText ? 'mb-2' : undefined}>
+                          <TelegramStickerBubble
+                            creatorId={creatorId}
+                            peerId={peerId}
+                            msg={msg}
+                          />
+                        </div>
+                      )}
+                      {messageHasGif(msg) && (
+                        <button
+                          type="button"
+                          onClick={() => setChatMediaPreview(msg)}
+                          className={msgText ? 'mb-2 block' : 'block'}
+                          aria-label="Open GIF"
+                        >
+                          <TelegramGifBubble
+                            creatorId={creatorId}
+                            peerId={peerId}
+                            msg={msg}
+                          />
+                        </button>
+                      )}
                       {(msgText ||
                         (!messageHasVisualMedia(msg) &&
                           !messageHasPlayableAudio(msg) &&
+                          !messageHasSticker(msg) &&
+                          !messageHasGif(msg) &&
                           (msg.placeholder || '—'))) && (
                         <p className="whitespace-pre-wrap break-words">
                           {msgText ||
-                            (messageHasVisualMedia(msg) || messageHasPlayableAudio(msg)
+                            (messageHasVisualMedia(msg) ||
+                            messageHasPlayableAudio(msg) ||
+                            messageHasSticker(msg) ||
+                            messageHasGif(msg)
                               ? ''
                               : msg.placeholder || '—')}
                         </p>
@@ -1840,6 +2276,18 @@ export function TelegramChatThread({
           >
             <ImageIcon className="w-5 h-5" />
           </button>
+          <TelegramStickerPicker
+            creatorId={creatorId}
+            peerId={peerId}
+            disabled={sending || translatingOutgoing}
+            onSent={(message) => handleQuickMediaSent(message, 'sticker')}
+          />
+          <TelegramGifPicker
+            creatorId={creatorId}
+            peerId={peerId}
+            disabled={sending || translatingOutgoing}
+            onSent={(message) => handleQuickMediaSent(message, 'gif')}
+          />
           <textarea
             value={draft}
             disabled={sending || translatingOutgoing}
@@ -1849,6 +2297,9 @@ export function TelegramChatThread({
               if (!next.trim()) {
                 setSkipOutgoingTranslate(false);
                 setSuggestedEnglish(null);
+                cancelTelegramTyping();
+              } else {
+                pingTelegramTyping();
               }
             }}
             onKeyDown={(e) => {
@@ -1928,7 +2379,11 @@ export function TelegramChatThread({
             chatMediaPreview.id,
             'full'
           )}
-          kind={chatMediaPreview.kind === 'video' ? 'video' : 'picture'}
+          kind={
+            chatMediaPreview.kind === 'video' || chatMediaPreview.kind === 'gif'
+              ? 'video'
+              : 'picture'
+          }
           poster={telegramChatMediaUrl(
             creatorId,
             peerId,

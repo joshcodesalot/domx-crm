@@ -2676,6 +2676,7 @@ export interface TelegramMessage {
   hasMedia?: boolean;
   duration?: number | null;
   fileName?: string | null;
+  stickerSource?: 'static' | 'animated' | 'video' | null;
   senderId?: string | null;
   senderName?: string | null;
   senderUsername?: string | null;
@@ -2810,6 +2811,25 @@ export async function getTelegramMessages(
   );
 }
 
+export async function searchTelegramMessages(
+  creatorId: string,
+  peerId: string,
+  options: { query: string; offset?: number; limit?: number }
+): Promise<{
+  peerId: string;
+  kind?: 'dm' | 'group';
+  messages: TelegramMessage[];
+  nextOffset: number | null;
+  hasMore: boolean;
+}> {
+  const params = new URLSearchParams({ q: options.query });
+  if (options.limit != null) params.set('limit', String(options.limit));
+  if (options.offset != null) params.set('offset', String(options.offset));
+  return request(
+    `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/messages/search?${params.toString()}`
+  );
+}
+
 export async function getTelegramGroupMembers(
   creatorId: string,
   peerId: string
@@ -2845,6 +2865,142 @@ export async function sendTelegramMessage(
       }),
     }
   );
+}
+
+export async function sendTelegramTyping(
+  creatorId: string,
+  peerId: string,
+  active = true
+): Promise<void> {
+  await request(
+    `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/typing`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ active }),
+    }
+  );
+}
+
+export type TelegramStickerSource = 'static' | 'animated' | 'video';
+
+export interface TelegramStickerSet {
+  id: string;
+  shortName: string;
+  title: string;
+  count: number;
+}
+
+export interface TelegramPackSticker {
+  uniqueId: string;
+  fileId: string;
+  emoji: string;
+  sourceType: TelegramStickerSource;
+  width?: number;
+  height?: number;
+}
+
+export async function listTelegramStickerSets(
+  creatorId: string
+): Promise<{ sets: TelegramStickerSet[] }> {
+  return request(`/api/creators/${creatorId}/telegram/stickers/sets`);
+}
+
+export async function listTelegramStickerSet(
+  creatorId: string,
+  shortName: string
+): Promise<{
+  shortName: string;
+  title: string;
+  count: number;
+  stickers: TelegramPackSticker[];
+}> {
+  return request(
+    `/api/creators/${creatorId}/telegram/stickers/sets/${encodeURIComponent(shortName)}`
+  );
+}
+
+export async function sendTelegramSticker(
+  creatorId: string,
+  peerId: string,
+  fileId: string
+): Promise<{ message: TelegramMessage | null }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/stickers`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ fileId }),
+    }
+  );
+}
+
+export function telegramStickerMediaUrl(
+  creatorId: string,
+  uniqueId: string,
+  variant: 'thumb' | 'full' = 'thumb'
+): string {
+  const token = getToken() || '';
+  const params = new URLSearchParams({
+    access_token: token,
+    variant,
+  });
+  return `${API_URL}/api/creators/${creatorId}/telegram/stickers/${encodeURIComponent(uniqueId)}/media?${params.toString()}`;
+}
+
+export interface TelegramGifItem {
+  uniqueId: string;
+  fileId?: string;
+  resultId?: string;
+  queryId?: string;
+  width?: number | null;
+  height?: number | null;
+  duration?: number | null;
+}
+
+export async function listTelegramSavedGifs(
+  creatorId: string
+): Promise<{ gifs: TelegramGifItem[] }> {
+  return request(`/api/creators/${creatorId}/telegram/gifs`);
+}
+
+export async function searchTelegramGifs(
+  creatorId: string,
+  query: string,
+  offset?: string
+): Promise<{
+  queryId: string;
+  nextOffset: string;
+  gifs: TelegramGifItem[];
+}> {
+  const params = new URLSearchParams({ q: query });
+  if (offset) params.set('offset', offset);
+  return request(`/api/creators/${creatorId}/telegram/gifs/search?${params.toString()}`);
+}
+
+export async function sendTelegramGif(
+  creatorId: string,
+  peerId: string,
+  payload: { fileId?: string; queryId?: string; resultId?: string }
+): Promise<{ message: TelegramMessage | null }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/gifs`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }
+  );
+}
+
+export function telegramGifMediaUrl(
+  creatorId: string,
+  uniqueId: string,
+  variant: 'thumb' | 'full' = 'thumb'
+): string {
+  const token = getToken() || '';
+  const params = new URLSearchParams({
+    access_token: token,
+    variant,
+  });
+  return `${API_URL}/api/creators/${creatorId}/telegram/gifs/${encodeURIComponent(uniqueId)}/media?${params.toString()}`;
 }
 
 export function telegramChatMediaUrl(

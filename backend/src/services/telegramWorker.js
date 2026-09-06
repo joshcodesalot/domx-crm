@@ -2,6 +2,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { TelegramClient } = require('@mtcute/node');
+const { Document, Video } = require('@mtcute/core');
+const { randomLong } = require('@mtcute/core/utils.js');
 const sharp = require('sharp');
 const pool = require('../db/pool');
 const { encryptJson, decryptJson } = require('./crypto');
@@ -24,6 +26,31 @@ const fanAvatarInFlight = new Map();
 
 /** @type {Map<string, Promise<{ filePath: string, mimeType: string, kind: string }>>} */
 const mediaInFlight = new Map();
+
+const STICKER_CACHE_TTL_MS = 5 * 60 * 1000;
+const STICKER_SET_SHORT_NAME_RE = /^[A-Za-z0-9_]{1,64}$/;
+
+/** @type {Map<string, { expiresAt: number, sets: object[] }>} */
+const installedStickerSetsCache = new Map();
+
+/** @type {Map<string, { expiresAt: number, raw: object }>} */
+const fullStickerSetCache = new Map();
+
+/** @type {Map<string, string>} creatorId:uniqueId -> shortName */
+const stickerSetByUniqueId = new Map();
+
+const GIF_CACHE_TTL_MS = 5 * 60 * 1000;
+const GIF_SEARCH_BOT_TTL_MS = 30 * 60 * 1000;
+const DEFAULT_GIF_SEARCH_BOT = 'gif';
+
+/** @type {Map<string, { expiresAt: number, gifs: object[] }>} */
+const savedGifsCache = new Map();
+
+/** @type {Map<string, { expiresAt: number, username: string }>} */
+const gifSearchBotCache = new Map();
+
+/** @type {Map<string, { expiresAt: number, fileId: string, raw: object | null, queryId?: string, resultId?: string }>} */
+const gifByUniqueId = new Map();
 
 let mediaDownloadActive = 0;
 /** @type {Array<() => void>} */
@@ -152,7 +179,11 @@ function subscribeUpdates(creatorId, client) {
       messageId,
     });
     const mediaInfo = mediaPlaceholder(msg.media);
-    if (peerId && messageId != null && isVisualMediaKind(mediaInfo?.kind)) {
+    if (
+      peerId &&
+      messageId != null &&
+      (isVisualMediaKind(mediaInfo?.kind) || isStickerKind(mediaInfo?.kind))
+    ) {
       void prewarmChatThumb(creatorId, peerId, messageId);
     }
   };
@@ -278,7 +309,30 @@ function isPlayableAudioKind(kind) {
 }
 
 function isVisualMediaKind(kind) {
-  return kind === 'photo' || kind === 'video';
+  return kind === 'photo' || kind === 'video' || kind === 'gif';
+}
+
+function isChatGifMedia(media) {
+  if (!media || typeof media !== 'object') return false;
+  const type = String(media.type || '').toLowerCase();
+  if (type === 'animation') return true;
+  if (media.isAnimation === true || media.isLegacyGif === true) return true;
+  return mediaMime(media) === 'image/gif';
+}
+
+function isStickerKind(kind) {
+  return kind === 'sticker';
+}
+
+function stickerSourceType(media) {
+  if (!media || typeof media !== 'object') return null;
+  const raw = String(media.sourceType || '').toLowerCase();
+  if (raw === 'static' || raw === 'animated' || raw === 'video') return raw;
+  const mime = mediaMime(media);
+  if (mime === 'application/x-tgsticker') return 'animated';
+  if (mime === 'video/webm' || mime.startsWith('video/')) return 'video';
+  if (String(media.type || '').toLowerCase() === 'sticker') return 'static';
+  return null;
 }
 
 function isChatVideoMedia(media) {
@@ -308,6 +362,7 @@ function isChatAudioMedia(media) {
 function mediaPlaceholder(media) {
   const type = media && typeof media === 'object' ? media.type : null;
   if (type === 'photo') return { kind: 'photo', text: 'Photo' };
+  if (isChatGifMedia(media)) return { kind: 'gif', text: 'GIF' };
   if (isChatVideoMedia(media)) return { kind: 'video', text: 'Video' };
   if (type === 'voice') return { kind: 'voice', text: 'Voice note' };
   if (type === 'audio' || isChatAudioMedia(media)) return { kind: 'audio', text: 'Audio' };
@@ -358,6 +413,7 @@ function serializeMessage(msg) {
     hasMedia: Boolean(mediaInfo),
     duration: mediaDuration(msg.media),
     fileName: fileName || null,
+    stickerSource: mediaInfo?.kind === 'sticker' ? stickerSourceType(msg.media) : null,
     senderId: sender?.id != null ? String(sender.id) : null,
     senderName: sender
       ? sender.displayName || sender.title || sender.firstName || null
@@ -447,6 +503,9 @@ const FULL_CACHE_EXTS = [
   { ext: 'm4a', mimeType: 'audio/mp4', kind: 'audio' },
   { ext: 'wav', mimeType: 'audio/wav', kind: 'audio' },
   { ext: 'weba', mimeType: 'audio/webm', kind: 'audio' },
+  { ext: 'webp', mimeType: 'image/webp', kind: 'sticker' },
+  { ext: 'tgs', mimeType: 'application/x-tgsticker', kind: 'sticker' },
+  { ext: 'gif', mimeType: 'image/gif', kind: 'gif' },
 ];
 
 function cachedFileReady(filePath) {
@@ -551,10 +610,12 @@ function pickMediaFull(media) {
 
 function guessMediaMime(kind, variant, media) {
   if (variant === 'thumb' || kind === 'photo') return 'image/jpeg';
-  if (kind === 'video') {
+  if (kind === 'video' || kind === 'gif') {
     const mime = mediaMime(media);
+    if (kind === 'gif' && mime === 'image/gif') return mime;
     if (mime.startsWith('video/')) return mime;
     const name = mediaFileName(media).toLowerCase();
+    if (name.endsWith('.gif')) return 'image/gif';
     if (name.endsWith('.webm')) return 'video/webm';
     if (name.endsWith('.mov')) return 'video/quicktime';
     return 'video/mp4';
@@ -570,12 +631,22 @@ function guessMediaMime(kind, variant, media) {
     if (name.endsWith('.opus') || name.endsWith('.ogg')) return 'audio/ogg';
     return kind === 'audio' ? 'audio/mpeg' : 'audio/ogg';
   }
+  if (kind === 'sticker') {
+    const mime = mediaMime(media);
+    if (mime === 'application/x-tgsticker') return mime;
+    if (mime.startsWith('video/') || mime === 'image/webp') return mime;
+    const source = stickerSourceType(media);
+    if (source === 'video') return 'video/webm';
+    if (source === 'animated') return 'application/x-tgsticker';
+    return 'image/webp';
+  }
   return 'application/octet-stream';
 }
 
 function fullMediaExt(kind, mimeType) {
   if (kind === 'photo') return 'jpg';
-  if (kind === 'video') {
+  if (kind === 'video' || kind === 'gif') {
+    if (mimeType === 'image/gif') return 'gif';
     if (mimeType === 'video/webm') return 'webm';
     if (mimeType === 'video/quicktime') return 'mov';
     return 'mp4';
@@ -589,6 +660,13 @@ function fullMediaExt(kind, mimeType) {
     if (mimeType === 'audio/webm') return 'weba';
     if (mimeType === 'audio/opus') return 'opus';
     return 'ogg';
+  }
+  if (kind === 'sticker') {
+    if (mimeType === 'video/webm' || (mimeType && mimeType.startsWith('video/'))) {
+      return 'webm';
+    }
+    if (mimeType === 'application/x-tgsticker') return 'tgs';
+    return 'webp';
   }
   return 'bin';
 }
@@ -1485,6 +1563,68 @@ async function listMessages(
   };
 }
 
+function searchNextOffset(result) {
+  const rawNext = result && typeof result === 'object' ? result.next : null;
+  if (typeof rawNext === 'number' && Number.isFinite(rawNext) && rawNext > 0) {
+    return rawNext;
+  }
+  if (rawNext && typeof rawNext === 'object' && rawNext.id != null) {
+    const id = Number(rawNext.id);
+    if (Number.isFinite(id) && id > 0) return id;
+  }
+  return null;
+}
+
+async function searchMessagesInChat(
+  creatorId,
+  peerId,
+  { query, limit = 30, offset } = {}
+) {
+  const client = await getClient(creatorId);
+  const numericId = Number(peerId);
+  if (!Number.isFinite(numericId)) {
+    throw new TelegramWorkerError('Invalid chat id');
+  }
+  const trimmed = String(query || '').trim();
+  if (!trimmed) {
+    throw new TelegramWorkerError('Search query is required', 400);
+  }
+  const clamped = Math.min(Math.max(Number(limit) || 30, 1), 50);
+  const numericOffset = Number(offset);
+  const result = await client.searchMessages({
+    chatId: numericId,
+    query: trimmed,
+    limit: clamped,
+    ...(Number.isFinite(numericOffset) && numericOffset > 0
+      ? { offset: numericOffset }
+      : {}),
+  });
+  const messages = [...result]
+    .map(serializeMessage)
+    .filter(Boolean)
+    .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+  const nextOffset = searchNextOffset(result);
+  let peer = null;
+  try {
+    peer = await client.getChat(numericId);
+  } catch {
+    peer = null;
+  }
+  const kind = peerKind(peer);
+  const withSenders =
+    kind === 'group'
+      ? await attachSenderAvatars(creatorId, client, messages)
+      : messages;
+  scheduleChatThumbPrewarm(creatorId, String(numericId), withSenders);
+  return {
+    peerId: String(numericId),
+    kind,
+    messages: withSenders,
+    nextOffset,
+    hasMore: Boolean(nextOffset) && messages.length > 0,
+  };
+}
+
 function isListedChatMember(member) {
   const status = member?.status;
   if (status === 'creator' || status === 'admin' || status === 'member') return true;
@@ -1628,6 +1768,23 @@ async function sendText(creatorId, peerId, text) {
   const sent = await client.sendText(numericId, trimmed);
   await markPeerRead(client, numericId, { creatorId, force: true });
   return serializeMessage(sent);
+}
+
+async function sendTypingAction(creatorId, peerId, active = true) {
+  const client = await getClient(creatorId);
+  const numericId = Number(peerId);
+  if (!Number.isFinite(numericId)) {
+    throw new TelegramWorkerError('Invalid chat id');
+  }
+  try {
+    if (active) {
+      await client.sendTyping(numericId, 'typing');
+    } else {
+      await client.setTyping({ peerId: numericId, status: 'cancel' });
+    }
+  } catch {
+    // Typing is best-effort
+  }
 }
 
 async function fetchSavedMessages(client, messageIds) {
@@ -2005,6 +2162,7 @@ async function fetchAndCacheMessageMedia(creatorId, peerId, messageId, variant) 
   }
   const media = msg.media;
   const kind =
+    (isChatGifMedia(media) ? 'gif' : null) ||
     (isChatVideoMedia(media) ? 'video' : null) ||
     mediaPlaceholder(media)?.kind ||
     vaultKindFromMedia(media) ||
@@ -2118,7 +2276,13 @@ async function prewarmChatThumb(creatorId, peerId, messageId) {
 
 function scheduleChatThumbPrewarm(creatorId, peerId, messages) {
   const ids = (Array.isArray(messages) ? messages : [])
-    .filter((msg) => msg && msg.hasMedia && msg.id && isVisualMediaKind(msg.kind))
+    .filter(
+      (msg) =>
+        msg &&
+        msg.hasMedia &&
+        msg.id &&
+        (isVisualMediaKind(msg.kind) || isStickerKind(msg.kind))
+    )
     .map((msg) => msg.id);
   if (!ids.length) return;
   void Promise.all(ids.map((id) => prewarmChatThumb(creatorId, peerId, id)));
@@ -2273,6 +2437,643 @@ function isValidUuid(value) {
   );
 }
 
+function normalizeStickerSetShortName(value) {
+  const name = String(value || '').trim();
+  if (!STICKER_SET_SHORT_NAME_RE.test(name)) return '';
+  return name;
+}
+
+function safeStickerUniqueId(value) {
+  return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function rememberStickerSetStickers(creatorId, shortName, raw) {
+  const stickers = raw && typeof raw === 'object' ? raw.stickers : null;
+  if (!Array.isArray(stickers)) return;
+  for (const info of stickers) {
+    const uniqueId = info?.sticker?.uniqueFileId
+      ? String(info.sticker.uniqueFileId)
+      : '';
+    if (uniqueId) {
+      stickerSetByUniqueId.set(`${creatorId}:${uniqueId}`, shortName);
+    }
+  }
+}
+
+function serializePackSticker(info) {
+  const sticker = info?.sticker;
+  if (!sticker) return null;
+  const uniqueId = sticker.uniqueFileId ? String(sticker.uniqueFileId) : '';
+  const fileId = sticker.fileId ? String(sticker.fileId) : '';
+  if (!uniqueId || !fileId) return null;
+  return {
+    uniqueId,
+    fileId,
+    emoji: String(info.emoji || info.alt || sticker.emoji || ''),
+    sourceType: stickerSourceType(sticker) || 'static',
+    width: Number(sticker.width) > 0 ? Math.round(Number(sticker.width)) : 512,
+    height: Number(sticker.height) > 0 ? Math.round(Number(sticker.height)) : 512,
+  };
+}
+
+async function listInstalledStickerSets(creatorId) {
+  const cached = installedStickerSetsCache.get(creatorId);
+  if (cached && cached.expiresAt > Date.now()) return cached.sets;
+  const client = await getClient(creatorId);
+  const raw = await client.getInstalledStickers();
+  const sets = (Array.isArray(raw) ? raw : [])
+    .filter((set) => set && set.type === 'sticker' && !set.isArchived)
+    .map((set) => ({
+      id: String(set.brief?.id || set.shortName || ''),
+      shortName: String(set.shortName || ''),
+      title: String(set.title || set.shortName || 'Stickers'),
+      count: Number(set.count) || 0,
+    }))
+    .filter((set) => set.shortName);
+  installedStickerSetsCache.set(creatorId, {
+    expiresAt: Date.now() + STICKER_CACHE_TTL_MS,
+    sets,
+  });
+  return sets;
+}
+
+async function getFullStickerSet(creatorId, shortName) {
+  const name = normalizeStickerSetShortName(shortName);
+  if (!name) {
+    throw new TelegramWorkerError('Sticker set is required', 400);
+  }
+  const cacheKey = `${creatorId}:${name}`;
+  const cached = fullStickerSetCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.raw;
+  const client = await getClient(creatorId);
+  const raw = await client.getStickerSet(name);
+  if (!raw || raw.type !== 'sticker') {
+    throw new TelegramWorkerError('Sticker set not found', 404);
+  }
+  fullStickerSetCache.set(cacheKey, {
+    expiresAt: Date.now() + STICKER_CACHE_TTL_MS,
+    raw,
+  });
+  rememberStickerSetStickers(creatorId, name, raw);
+  return raw;
+}
+
+async function listStickerSet(creatorId, shortName) {
+  const raw = await getFullStickerSet(creatorId, shortName);
+  return {
+    shortName: String(raw.shortName || shortName),
+    title: String(raw.title || raw.shortName || 'Stickers'),
+    count: Number(raw.count) || 0,
+    stickers: (raw.stickers || []).map(serializePackSticker).filter(Boolean),
+  };
+}
+
+function stickerThumbAbs(creatorId, uniqueId) {
+  return vaultCacheAbs(vaultCacheRel(creatorId, 'stickers', `${uniqueId}_thumb.jpg`));
+}
+
+function findCachedStickerFull(creatorId, uniqueId) {
+  const exts = [
+    { ext: 'webp', mimeType: 'image/webp' },
+    { ext: 'webm', mimeType: 'video/webm' },
+    { ext: 'tgs', mimeType: 'application/x-tgsticker' },
+  ];
+  for (const { ext, mimeType } of exts) {
+    const dest = vaultCacheAbs(
+      vaultCacheRel(creatorId, 'stickers', `${uniqueId}_full.${ext}`)
+    );
+    if (cachedFileReady(dest)) {
+      return { filePath: dest, mimeType, kind: 'sticker' };
+    }
+  }
+  return null;
+}
+
+async function resolvePackSticker(creatorId, uniqueId) {
+  const id = String(uniqueId || '');
+  if (!id) return null;
+  const knownSet = stickerSetByUniqueId.get(`${creatorId}:${id}`);
+  const names = knownSet
+    ? [knownSet]
+    : (await listInstalledStickerSets(creatorId)).map((set) => set.shortName);
+  for (const name of names) {
+    try {
+      const full = await getFullStickerSet(creatorId, name);
+      const found = (full.stickers || []).find(
+        (info) => String(info?.sticker?.uniqueFileId || '') === id
+      );
+      if (found?.sticker) return found.sticker;
+    } catch {
+      // keep looking
+    }
+  }
+  return null;
+}
+
+async function fetchAndCacheStickerMedia(creatorId, uniqueId, variant) {
+  const safeId = safeStickerUniqueId(uniqueId);
+  if (!safeId) {
+    throw new TelegramWorkerError('Invalid sticker id', 400);
+  }
+  const sticker = await resolvePackSticker(creatorId, uniqueId);
+  if (!sticker) {
+    throw new TelegramWorkerError('Sticker not found', 404);
+  }
+  const client = await getClient(creatorId);
+  const wantThumb = variant !== 'full';
+  if (wantThumb) {
+    const dest = stickerThumbAbs(creatorId, safeId);
+    const location = pickMediaThumb(sticker);
+    if (location) {
+      const saved = await downloadLocationToFile(client, location, dest);
+      if (saved && (await ensureJpegThumb(dest))) {
+        return { filePath: dest, mimeType: 'image/jpeg', kind: 'sticker' };
+      }
+    }
+    const savedFull = await downloadLocationToFile(client, sticker, dest);
+    if (savedFull && (await ensureJpegThumb(dest))) {
+      return { filePath: dest, mimeType: 'image/jpeg', kind: 'sticker' };
+    }
+    throw new TelegramWorkerError('Failed to download sticker', 502);
+  }
+  const mimeType = guessMediaMime('sticker', 'full', sticker);
+  const ext = fullMediaExt('sticker', mimeType);
+  const dest = vaultCacheAbs(
+    vaultCacheRel(creatorId, 'stickers', `${safeId}_full.${ext}`)
+  );
+  const saved = await downloadLocationToFile(client, sticker, dest);
+  if (!saved) {
+    throw new TelegramWorkerError('Failed to download sticker', 502);
+  }
+  return { filePath: dest, mimeType, kind: 'sticker' };
+}
+
+async function getCachedStickerMedia(creatorId, uniqueId, variant) {
+  const safeId = safeStickerUniqueId(uniqueId);
+  if (!safeId) {
+    throw new TelegramWorkerError('Invalid sticker id', 400);
+  }
+  const wantThumb = variant !== 'full';
+  if (wantThumb) {
+    const dest = stickerThumbAbs(creatorId, safeId);
+    if (cachedJpegReady(dest)) {
+      return { filePath: dest, mimeType: 'image/jpeg', kind: 'sticker' };
+    }
+  } else {
+    const cached = findCachedStickerFull(creatorId, safeId);
+    if (cached) return cached;
+  }
+
+  const cacheKey = `${creatorId}:sticker:${safeId}:${wantThumb ? 'thumb' : 'full'}`;
+  const pending = mediaInFlight.get(cacheKey);
+  if (pending) return pending;
+
+  const work = (async () => {
+    await acquireMediaDownloadSlot();
+    try {
+      if (wantThumb) {
+        const dest = stickerThumbAbs(creatorId, safeId);
+        if (cachedJpegReady(dest)) {
+          return { filePath: dest, mimeType: 'image/jpeg', kind: 'sticker' };
+        }
+      } else {
+        const cached = findCachedStickerFull(creatorId, safeId);
+        if (cached) return cached;
+      }
+      return await fetchAndCacheStickerMedia(creatorId, uniqueId, variant);
+    } finally {
+      releaseMediaDownloadSlot();
+    }
+  })();
+
+  mediaInFlight.set(cacheKey, work);
+  try {
+    return await work;
+  } finally {
+    mediaInFlight.delete(cacheKey);
+  }
+}
+
+async function sendSticker(creatorId, peerId, fileId) {
+  const client = await getClient(creatorId);
+  const numericPeer = Number(peerId);
+  if (!Number.isFinite(numericPeer)) {
+    throw new TelegramWorkerError('Invalid chat id');
+  }
+  const id = String(fileId || '').trim();
+  if (!id) {
+    throw new TelegramWorkerError('Sticker file id is required', 400);
+  }
+  const sent = await client.sendMedia(numericPeer, {
+    type: 'sticker',
+    file: id,
+  });
+  await markPeerRead(client, numericPeer, { creatorId, force: true });
+  const serialized = serializeMessage(sent);
+  if (serialized) {
+    void prewarmChatThumb(creatorId, String(numericPeer), serialized.id);
+  }
+  return serialized;
+}
+
+function safeGifUniqueId(value) {
+  return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function longToString(value) {
+  if (value == null) return '';
+  return String(value);
+}
+
+function parseTlLong(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  try {
+    return BigInt(raw);
+  } catch {
+    return null;
+  }
+}
+
+function gifDocumentMeta(raw) {
+  const attrs = Array.isArray(raw?.attributes) ? raw.attributes : [];
+  let width = null;
+  let height = null;
+  let duration = null;
+  for (const attr of attrs) {
+    if (!attr || typeof attr !== 'object') continue;
+    if (attr._ === 'documentAttributeVideo' || attr._ === 'documentAttributeImageSize') {
+      const w = Number(attr.w);
+      const h = Number(attr.h);
+      if (w > 0) width = Math.round(w);
+      if (h > 0) height = Math.round(h);
+    }
+    if (attr._ === 'documentAttributeVideo') {
+      const secs = Number(attr.duration);
+      if (Number.isFinite(secs) && secs > 0) duration = Math.round(secs);
+    }
+  }
+  return { width, height, duration };
+}
+
+function wrapGifDocument(raw) {
+  if (!raw || raw._ !== 'document') return null;
+  try {
+    const attrs = Array.isArray(raw.attributes) ? raw.attributes : [];
+    const videoAttr = attrs.find(
+      (attr) =>
+        attr &&
+        (attr._ === 'documentAttributeVideo' || attr._ === 'documentAttributeImageSize')
+    );
+    if (videoAttr) return new Video(raw, videoAttr, null);
+    return new Document(raw);
+  } catch {
+    return null;
+  }
+}
+
+function rememberGifDocument(creatorId, uniqueId, extra = {}) {
+  const id = String(uniqueId || '');
+  if (!creatorId || !id) return;
+  gifByUniqueId.set(`${creatorId}:${id}`, {
+    expiresAt: Date.now() + GIF_CACHE_TTL_MS,
+    fileId: extra.fileId ? String(extra.fileId) : '',
+    raw: extra.raw || null,
+    queryId: extra.queryId ? String(extra.queryId) : undefined,
+    resultId: extra.resultId ? String(extra.resultId) : undefined,
+  });
+}
+
+function serializeGifItem(creatorId, raw, extra = {}) {
+  const doc = wrapGifDocument(raw);
+  if (!doc) return null;
+  const uniqueId = doc.uniqueFileId ? String(doc.uniqueFileId) : '';
+  const fileId = doc.fileId ? String(doc.fileId) : '';
+  if (!uniqueId || !fileId) return null;
+  const meta = gifDocumentMeta(raw);
+  rememberGifDocument(creatorId, uniqueId, {
+    fileId,
+    raw,
+    queryId: extra.queryId,
+    resultId: extra.resultId,
+  });
+  return {
+    uniqueId,
+    fileId,
+    resultId: extra.resultId || undefined,
+    queryId: extra.queryId || undefined,
+    width: meta.width,
+    height: meta.height,
+    duration: meta.duration,
+  };
+}
+
+async function fetchSavedGifs(creatorId) {
+  const cached = savedGifsCache.get(creatorId);
+  if (cached && cached.expiresAt > Date.now()) return cached.gifs;
+  const client = await getClient(creatorId);
+  let raw;
+  try {
+    raw = await client.call({ _: 'messages.getSavedGifs', hash: 0n });
+  } catch (err) {
+    try {
+      raw = await client.call({ _: 'messages.getSavedGifs', hash: 0 });
+    } catch {
+      throw err;
+    }
+  }
+  const docs = Array.isArray(raw?.gifs) ? raw.gifs : [];
+  const gifs = docs
+    .map((doc) => serializeGifItem(creatorId, doc))
+    .filter(Boolean);
+  savedGifsCache.set(creatorId, {
+    expiresAt: Date.now() + GIF_CACHE_TTL_MS,
+    gifs,
+  });
+  return gifs;
+}
+
+async function listSavedGifs(creatorId) {
+  return { gifs: await fetchSavedGifs(creatorId) };
+}
+
+async function resolveGifSearchBot(creatorId, client) {
+  const cached = gifSearchBotCache.get(creatorId);
+  if (cached && cached.expiresAt > Date.now()) return cached.username;
+  let username = DEFAULT_GIF_SEARCH_BOT;
+  try {
+    const config = await client.call({ _: 'help.getConfig' });
+    const fromConfig = String(
+      config?.gifSearchUsername || config?.gif_search_username || ''
+    )
+      .trim()
+      .replace(/^@/, '');
+    if (fromConfig) username = fromConfig;
+  } catch (err) {
+    console.warn('[telegram] GIF search bot lookup failed:', err.message || err);
+  }
+  gifSearchBotCache.set(creatorId, {
+    expiresAt: Date.now() + GIF_SEARCH_BOT_TTL_MS,
+    username,
+  });
+  return username;
+}
+
+function extractInlineGifDocument(result) {
+  if (!result || typeof result !== 'object') return null;
+  if (result.document && result.document._ === 'document') return result.document;
+  if (result.media && result.media._ === 'document') return result.media;
+  return null;
+}
+
+async function searchGifs(creatorId, query, offset) {
+  const q = String(query || '').trim();
+  if (!q) {
+    throw new TelegramWorkerError('Search query is required', 400);
+  }
+  const client = await getClient(creatorId);
+  const botUsername = await resolveGifSearchBot(creatorId, client);
+  const bot = await client.resolveUser(botUsername);
+  let raw;
+  try {
+    raw = await client.call(
+      {
+        _: 'messages.getInlineBotResults',
+        bot,
+        peer: { _: 'inputPeerEmpty' },
+        query: q,
+        offset: String(offset || ''),
+      },
+      { throw503: true }
+    );
+  } catch (err) {
+    throw new TelegramWorkerError(
+      describeError(err) || 'GIF search failed',
+      502
+    );
+  }
+  const queryId = longToString(raw?.queryId);
+  const nextOffset = raw?.nextOffset ? String(raw.nextOffset) : '';
+  const results = Array.isArray(raw?.results) ? raw.results : [];
+  const gifs = [];
+  for (const result of results) {
+    const resultId = String(result?.id || '');
+    if (!resultId) continue;
+    const type = String(result?.type || '').toLowerCase();
+    const rawDoc = extractInlineGifDocument(result);
+    if (!rawDoc) continue;
+    if (type && type !== 'gif' && type !== 'mpeg4_gif' && type !== 'video') {
+      continue;
+    }
+    const item = serializeGifItem(creatorId, rawDoc, { queryId, resultId });
+    if (item) gifs.push(item);
+  }
+  return { queryId, nextOffset, gifs };
+}
+
+function gifThumbAbs(creatorId, uniqueId) {
+  return vaultCacheAbs(vaultCacheRel(creatorId, 'gifs', `${uniqueId}_thumb.jpg`));
+}
+
+function findCachedGifFull(creatorId, uniqueId) {
+  const exts = [
+    { ext: 'mp4', mimeType: 'video/mp4' },
+    { ext: 'webm', mimeType: 'video/webm' },
+    { ext: 'gif', mimeType: 'image/gif' },
+  ];
+  for (const { ext, mimeType } of exts) {
+    const dest = vaultCacheAbs(
+      vaultCacheRel(creatorId, 'gifs', `${uniqueId}_full.${ext}`)
+    );
+    if (cachedFileReady(dest)) {
+      return { filePath: dest, mimeType, kind: 'gif' };
+    }
+  }
+  return null;
+}
+
+async function resolveGifDocument(creatorId, uniqueId) {
+  const id = String(uniqueId || '');
+  if (!id) return null;
+  const cached = gifByUniqueId.get(`${creatorId}:${id}`);
+  if (cached && cached.expiresAt > Date.now() && cached.raw) {
+    return cached.raw;
+  }
+  const saved = await fetchSavedGifs(creatorId);
+  if (saved.some((gif) => gif.uniqueId === id)) {
+    const again = gifByUniqueId.get(`${creatorId}:${id}`);
+    if (again?.raw) return again.raw;
+  }
+  return cached?.raw || null;
+}
+
+async function fetchAndCacheGifMedia(creatorId, uniqueId, variant) {
+  const safeId = safeGifUniqueId(uniqueId);
+  if (!safeId) {
+    throw new TelegramWorkerError('Invalid GIF id', 400);
+  }
+  const raw = await resolveGifDocument(creatorId, uniqueId);
+  const doc = wrapGifDocument(raw);
+  if (!doc) {
+    throw new TelegramWorkerError('GIF not found', 404);
+  }
+  const client = await getClient(creatorId);
+  const wantThumb = variant !== 'full';
+  if (wantThumb) {
+    const dest = gifThumbAbs(creatorId, safeId);
+    const location = pickMediaThumb(doc);
+    if (location) {
+      const saved = await downloadLocationToFile(client, location, dest);
+      if (saved && (await ensureJpegThumb(dest))) {
+        return { filePath: dest, mimeType: 'image/jpeg', kind: 'gif' };
+      }
+    }
+    const savedFull = await downloadLocationToFile(client, doc, dest);
+    if (savedFull && (await ensureJpegThumb(dest))) {
+      return { filePath: dest, mimeType: 'image/jpeg', kind: 'gif' };
+    }
+    throw new TelegramWorkerError('Failed to download GIF', 502);
+  }
+  const mimeType = guessMediaMime('gif', 'full', doc);
+  const ext = fullMediaExt('gif', mimeType);
+  const dest = vaultCacheAbs(vaultCacheRel(creatorId, 'gifs', `${safeId}_full.${ext}`));
+  const saved = await downloadLocationToFile(client, doc, dest);
+  if (!saved) {
+    throw new TelegramWorkerError('Failed to download GIF', 502);
+  }
+  return { filePath: dest, mimeType, kind: 'gif' };
+}
+
+async function getCachedGifMedia(creatorId, uniqueId, variant) {
+  const safeId = safeGifUniqueId(uniqueId);
+  if (!safeId) {
+    throw new TelegramWorkerError('Invalid GIF id', 400);
+  }
+  const wantThumb = variant !== 'full';
+  if (wantThumb) {
+    const dest = gifThumbAbs(creatorId, safeId);
+    if (cachedJpegReady(dest)) {
+      return { filePath: dest, mimeType: 'image/jpeg', kind: 'gif' };
+    }
+  } else {
+    const cached = findCachedGifFull(creatorId, safeId);
+    if (cached) return cached;
+  }
+
+  const cacheKey = `${creatorId}:gif:${safeId}:${wantThumb ? 'thumb' : 'full'}`;
+  const pending = mediaInFlight.get(cacheKey);
+  if (pending) return pending;
+
+  const work = (async () => {
+    await acquireMediaDownloadSlot();
+    try {
+      if (wantThumb) {
+        const dest = gifThumbAbs(creatorId, safeId);
+        if (cachedJpegReady(dest)) {
+          return { filePath: dest, mimeType: 'image/jpeg', kind: 'gif' };
+        }
+      } else {
+        const cached = findCachedGifFull(creatorId, safeId);
+        if (cached) return cached;
+      }
+      return await fetchAndCacheGifMedia(creatorId, uniqueId, variant);
+    } finally {
+      releaseMediaDownloadSlot();
+    }
+  })();
+
+  mediaInFlight.set(cacheKey, work);
+  try {
+    return await work;
+  } finally {
+    mediaInFlight.delete(cacheKey);
+  }
+}
+
+function extractSentMessageId(res) {
+  if (!res || typeof res !== 'object') return null;
+  if (res._ === 'updateShortSentMessage' && res.id != null) {
+    return Number(res.id);
+  }
+  const updates = Array.isArray(res.updates) ? res.updates : [];
+  for (const update of updates) {
+    if (!update || typeof update !== 'object') continue;
+    if (
+      (update._ === 'updateNewMessage' || update._ === 'updateNewChannelMessage') &&
+      update.message &&
+      update.message._ !== 'messageEmpty' &&
+      update.message.id != null
+    ) {
+      return Number(update.message.id);
+    }
+    if (update._ === 'updateMessageID' && update.id != null) {
+      return Number(update.id);
+    }
+  }
+  return null;
+}
+
+async function finishGifSend(client, creatorId, numericPeer, sent) {
+  await markPeerRead(client, numericPeer, { creatorId, force: true });
+  const serialized = serializeMessage(sent);
+  if (serialized) {
+    void prewarmChatThumb(creatorId, String(numericPeer), serialized.id);
+  }
+  return serialized;
+}
+
+async function sendGif(creatorId, peerId, { fileId, queryId, resultId } = {}) {
+  const client = await getClient(creatorId);
+  const numericPeer = Number(peerId);
+  if (!Number.isFinite(numericPeer)) {
+    throw new TelegramWorkerError('Invalid chat id');
+  }
+  const id = String(fileId || '').trim();
+  const inlineQueryId = String(queryId || '').trim();
+  const inlineResultId = String(resultId || '').trim();
+
+  if (id) {
+    const sent = await client.sendMedia(numericPeer, id);
+    return finishGifSend(client, creatorId, numericPeer, sent);
+  }
+
+  if (inlineQueryId && inlineResultId) {
+    const peer = await client.resolvePeer(numericPeer);
+    const parsedQueryId = parseTlLong(inlineQueryId);
+    if (parsedQueryId == null) {
+      throw new TelegramWorkerError('Invalid GIF search result', 400);
+    }
+    const res = await client.call({
+      _: 'messages.sendInlineBotResult',
+      peer,
+      randomId: randomLong(),
+      queryId: parsedQueryId,
+      id: inlineResultId,
+    });
+    try {
+      client.handleClientUpdate(res, true);
+    } catch (err) {
+      console.warn('[telegram] GIF inline update handle failed:', err.message || err);
+    }
+    const sentId = extractSentMessageId(res);
+    if (Number.isFinite(sentId)) {
+      const fetched = await client.getMessages(numericPeer, [sentId]);
+      const found = asMessageList(fetched)[0] || null;
+      if (found) {
+        return finishGifSend(client, creatorId, numericPeer, found);
+      }
+    }
+    const history = await client.getHistory(numericPeer, { limit: 8 });
+    const latest = [...history].find((msg) => msg && msg.isOutgoing);
+    if (latest) {
+      return finishGifSend(client, creatorId, numericPeer, latest);
+    }
+    throw new TelegramWorkerError('Failed to send GIF', 502);
+  }
+
+  throw new TelegramWorkerError('GIF file id or search result is required', 400);
+}
+
 module.exports = {
   TelegramWorkerError,
   describeError,
@@ -2288,10 +3089,20 @@ module.exports = {
   listDialogs,
   listAllDmPeers,
   listMessages,
+  searchMessagesInChat,
   listChatMembers,
   sendText,
+  sendTypingAction,
   sendReaction,
+  sendSticker,
+  sendGif,
   sendVaultToPeer,
+  listInstalledStickerSets,
+  listStickerSet,
+  getCachedStickerMedia,
+  listSavedGifs,
+  searchGifs,
+  getCachedGifMedia,
   uploadVaultMedia,
   deleteSavedVaultMessage,
   getCachedMessageMedia,

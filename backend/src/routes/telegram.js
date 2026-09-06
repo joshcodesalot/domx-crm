@@ -19,10 +19,20 @@ const {
   applyReconnectReady,
   listDialogs,
   listMessages,
+  searchMessagesInChat,
   listChatMembers,
   sendText,
+  sendTypingAction,
   sendReaction,
+  sendSticker,
+  sendGif,
   sendVaultToPeer,
+  listInstalledStickerSets,
+  listStickerSet,
+  getCachedStickerMedia,
+  listSavedGifs,
+  searchGifs,
+  getCachedGifMedia,
   uploadVaultMedia,
   deleteSavedVaultMessage,
   getCachedMessageMedia,
@@ -466,6 +476,49 @@ router.get(
 );
 
 router.get(
+  '/:id/telegram/dialogs/:peerId/messages/search',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, peerId } = req.params;
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (!q) {
+      return res.status(400).json({ error: 'q is required' });
+    }
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+      if (
+        !canSeeTelegramServiceChats(req.user) &&
+        isTelegramServiceDialog({ peerId, kind: 'dm' })
+      ) {
+        return res.status(403).json({ error: 'You do not have access to this chat' });
+      }
+      const offsetRaw = Number(req.query.offset);
+      const result = await searchMessagesInChat(id, peerId, {
+        query: q,
+        limit: Number(req.query.limit) || 30,
+        offset: Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : undefined,
+      });
+      return res.json({
+        peerId: result.peerId,
+        kind: result.kind || 'dm',
+        messages: result.messages.map((msg) => redactMessage(msg, req.user)),
+        nextOffset: result.nextOffset,
+        hasMore: Boolean(result.hasMore),
+      });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Search Telegram messages error:');
+    }
+  }
+);
+
+router.get(
   '/:id/telegram/dialogs/:peerId/members',
   authenticate,
   requirePermission('creators.view'),
@@ -587,6 +640,175 @@ router.post(
       });
     } catch (err) {
       return handleTelegramError(res, err, 'Send Telegram message error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/telegram/dialogs/:peerId/typing',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { id, peerId } = req.params;
+    const active = req.body?.active !== false;
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      await sendTypingAction(id, peerId, active);
+      return res.status(204).end();
+    } catch (err) {
+      return handleTelegramError(res, err, 'Send Telegram typing error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/telegram/stickers/sets',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const sets = await listInstalledStickerSets(creator.id);
+      return res.json({ sets });
+    } catch (err) {
+      return handleTelegramError(res, err, 'List Telegram sticker sets error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/telegram/stickers/sets/:shortName',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const set = await listStickerSet(creator.id, req.params.shortName);
+      return res.json(set);
+    } catch (err) {
+      return handleTelegramError(res, err, 'List Telegram sticker set error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/telegram/stickers/:uniqueId/media',
+  authenticateMedia,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const variant = req.query.variant === 'full' ? 'full' : 'thumb';
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const media = await getCachedStickerMedia(creator.id, req.params.uniqueId, variant);
+      return sendLocalFile(res, media.filePath, media.mimeType);
+    } catch (err) {
+      return handleTelegramError(res, err, 'Get Telegram sticker media error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/telegram/dialogs/:peerId/stickers',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { peerId } = req.params;
+    const fileId = typeof req.body?.fileId === 'string' ? req.body.fileId.trim() : '';
+    if (!fileId) {
+      return res.status(400).json({ error: 'fileId is required' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const message = await sendSticker(creator.id, peerId, fileId);
+      return res.status(201).json({
+        message: redactMessage(message, req.user),
+      });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Send Telegram sticker error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/telegram/gifs',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const result = await listSavedGifs(creator.id);
+      return res.json(result);
+    } catch (err) {
+      return handleTelegramError(res, err, 'List Telegram saved GIFs error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/telegram/gifs/search',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const offset = typeof req.query.offset === 'string' ? req.query.offset : '';
+    if (!q) {
+      return res.status(400).json({ error: 'q is required' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const result = await searchGifs(creator.id, q, offset);
+      return res.json(result);
+    } catch (err) {
+      return handleTelegramError(res, err, 'Search Telegram GIFs error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/telegram/gifs/:uniqueId/media',
+  authenticateMedia,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const variant = req.query.variant === 'full' ? 'full' : 'thumb';
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const media = await getCachedGifMedia(creator.id, req.params.uniqueId, variant);
+      return sendLocalFile(res, media.filePath, media.mimeType);
+    } catch (err) {
+      return handleTelegramError(res, err, 'Get Telegram GIF media error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/telegram/dialogs/:peerId/gifs',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const { peerId } = req.params;
+    const fileId = typeof req.body?.fileId === 'string' ? req.body.fileId.trim() : '';
+    const queryId = typeof req.body?.queryId === 'string' ? req.body.queryId.trim() : '';
+    const resultId = typeof req.body?.resultId === 'string' ? req.body.resultId.trim() : '';
+    if (!fileId && !(queryId && resultId)) {
+      return res.status(400).json({ error: 'fileId or queryId and resultId are required' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const message = await sendGif(creator.id, peerId, { fileId, queryId, resultId });
+      return res.status(201).json({
+        message: redactMessage(message, req.user),
+      });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Send Telegram GIF error:');
     }
   }
 );
