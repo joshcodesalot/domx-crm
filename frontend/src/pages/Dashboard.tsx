@@ -49,7 +49,9 @@ function mergeCurrencyAmounts(
   const map = new Map<string, number>();
   for (const list of lists) {
     for (const item of list || []) {
-      const currency = item.currency === 'USD' ? 'USD' : 'EUR';
+      const raw =
+        typeof item.currency === 'string' ? item.currency.trim().toUpperCase() : '';
+      const currency = /^[A-Z]{3}$/.test(raw) ? raw : 'EUR';
       map.set(currency, (map.get(currency) || 0) + (Number(item.amount) || 0));
     }
   }
@@ -57,6 +59,12 @@ function mergeCurrencyAmounts(
     .map(([currency, amount]) => ({ currency, amount }))
     .sort((a, b) => a.currency.localeCompare(b.currency));
 }
+
+const PLATFORM_LABELS: Record<string, string> = {
+  maloum: 'Maloum',
+  '4based': '4based',
+  telegram: 'Telegram',
+};
 
 function dayTotal(amounts: CurrencyAmount[]): number {
   return amounts.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
@@ -115,12 +123,14 @@ function MetricCard({
   hint,
   to,
   linkLabel,
+  breakdown,
 }: {
   label: string;
   value: string;
   hint?: string;
   to?: string;
   linkLabel?: string;
+  breakdown?: { label: string; value: string }[];
 }) {
   return (
     <div className="p-5 border border-gray-200 dark:border-white/5 rounded-lg bg-gray-50/50 dark:bg-transparent">
@@ -128,6 +138,19 @@ function MetricCard({
         {label}
       </p>
       <p className="text-xl font-semibold text-gray-900 dark:text-gray-100">{value}</p>
+      {breakdown && breakdown.length > 0 ? (
+        <ul className="mt-2 space-y-0.5">
+          {breakdown.map((row) => (
+            <li
+              key={row.label}
+              className="flex justify-between gap-2 text-xs text-gray-500 dark:text-gray-400"
+            >
+              <span>{row.label}</span>
+              <span className="whitespace-nowrap text-right">{row.value}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {to ? (
         <Link
           to={to}
@@ -341,6 +364,17 @@ export default function Dashboard() {
   const totalSalesAmounts = useMemo(
     () => mergeCurrencyAmounts(overview?.tipSales, overview?.ppvSales),
     [overview?.tipSales, overview?.ppvSales]
+  );
+
+  const monthlyPlatformBreakdown = useMemo(
+    () =>
+      (overview?.monthlySalesByPlatform || [])
+        .filter((row) => (row.amounts || []).some((item) => (Number(item.amount) || 0) > 0))
+        .map((row) => ({
+          label: PLATFORM_LABELS[row.platform] || row.platform,
+          value: formatCurrencyAmounts(row.amounts),
+        })),
+    [overview?.monthlySalesByPlatform]
   );
 
   const salesLogsHref = useMemo(() => {
@@ -604,6 +638,7 @@ export default function Dashboard() {
                 label="Monthly Revenue"
                 value={formatCurrencyAmounts(overview?.monthlyRevenue)}
                 hint={`Payout-verified PPVs + tips this calendar month (${overview?.timeZone || viewerTimeZone})`}
+                breakdown={monthlyPlatformBreakdown}
               />
               <MetricCard
                 label="Avg Response Time"

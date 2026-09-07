@@ -915,7 +915,7 @@ export async function getMaloumSentMessages(filters: {
 }
 
 export interface CurrencyAmount {
-  currency: 'EUR' | 'USD';
+  currency: string;
   amount: number;
 }
 
@@ -1012,6 +1012,7 @@ export interface OverviewAnalyticsResponse {
   totalSales: CurrencyAmount[];
   totalRevenue?: CurrencyAmount[];
   monthlyRevenue?: CurrencyAmount[];
+  monthlySalesByPlatform?: { platform: string; amounts: CurrencyAmount[] }[];
   allTimeSales?: CurrencyAmount[];
   tipSales?: CurrencyAmount[];
   ppvSales?: CurrencyAmount[];

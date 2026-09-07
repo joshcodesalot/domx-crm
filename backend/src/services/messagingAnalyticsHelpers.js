@@ -11,6 +11,11 @@ function normalizeCurrency(value) {
   return String(value || 'EUR').toUpperCase() === 'USD' ? 'USD' : 'EUR';
 }
 
+function normalizeNativeCurrency(value) {
+  const code = String(value || '').trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(code) ? code : 'EUR';
+}
+
 function mergeCurrencyAmounts(...lists) {
   const map = new Map();
   for (const list of lists) {
@@ -22,6 +27,49 @@ function mergeCurrencyAmounts(...lists) {
   return Array.from(map.entries())
     .map(([currency, amount]) => ({ currency, amount }))
     .sort((a, b) => a.currency.localeCompare(b.currency));
+}
+
+function mergeNativeCurrencyAmounts(...lists) {
+  const map = new Map();
+  for (const list of lists) {
+    for (const item of list || []) {
+      const amount = Number(item.amount) || 0;
+      if (amount <= 0) continue;
+      const currency = normalizeNativeCurrency(item.currency);
+      map.set(currency, (map.get(currency) || 0) + amount);
+    }
+  }
+  return Array.from(map.entries())
+    .map(([currency, amount]) => ({ currency, amount }))
+    .sort((a, b) => a.currency.localeCompare(b.currency));
+}
+
+const MONTHLY_PLATFORM_ORDER = ['maloum', '4based', 'telegram'];
+
+function canonicalDashboardPlatform(value) {
+  if (value === '4based' || value === 'telegram') return value;
+  return 'maloum';
+}
+
+function monthlySalesByPlatformFromRows(rows) {
+  const byPlatform = new Map();
+  for (const row of rows || []) {
+    const platform = canonicalDashboardPlatform(row.platform);
+    if (!byPlatform.has(platform)) {
+      byPlatform.set(platform, []);
+    }
+    const amount = Number(row.amount) || 0;
+    if (amount > 0) {
+      byPlatform.get(platform).push({
+        currency: normalizeNativeCurrency(row.currency),
+        amount,
+      });
+    }
+  }
+  return MONTHLY_PLATFORM_ORDER.map((platform) => ({
+    platform,
+    amounts: mergeNativeCurrencyAmounts(byPlatform.get(platform) || []),
+  })).filter((row) => row.amounts.length > 0);
 }
 
 function currencyAmountRowsToList(rows) {
@@ -299,7 +347,10 @@ module.exports = {
   BUSINESS_TZ,
   ratePercent,
   normalizeCurrency,
+  normalizeNativeCurrency,
   mergeCurrencyAmounts,
+  mergeNativeCurrencyAmounts,
+  monthlySalesByPlatformFromRows,
   currencyAmountRowsToList,
   sumCurrencyAmounts,
   salesPerMessage,

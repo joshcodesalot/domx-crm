@@ -150,7 +150,7 @@ export function netTakeAmount(
   return Math.abs(Number(priceNet)) * take;
 }
 
-/** Maloum = EUR, 4based = USD. */
+/** Format an ISO 4217 amount. USD uses en-US, EUR uses de-DE; other codes use the runtime locale. */
 export function formatMoney(
   amount: number | null | undefined,
   currency: string = 'EUR'
@@ -159,11 +159,17 @@ export function formatMoney(
     return '--';
   }
 
-  const code = currency.trim().toUpperCase() === 'USD' ? 'USD' : 'EUR';
-  return new Intl.NumberFormat(code === 'USD' ? 'en-US' : 'de-DE', {
-    style: 'currency',
-    currency: code,
-  }).format(amount);
+  const raw = typeof currency === 'string' ? currency.trim().toUpperCase() : '';
+  const code = /^[A-Z]{3}$/.test(raw) ? raw : 'EUR';
+  const locale = code === 'USD' ? 'en-US' : code === 'EUR' ? 'de-DE' : undefined;
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: code,
+    }).format(amount);
+  } catch {
+    return `${Number(amount).toFixed(2)} ${code}`;
+  }
 }
 
 /** @deprecated Prefer formatMoney — kept for Maloum EUR call sites. */

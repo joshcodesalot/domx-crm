@@ -48,6 +48,8 @@ const {
   buildPriceBandsFromRows,
   buildHourOfDayFromRows,
   normalizeCurrency,
+  mergeNativeCurrencyAmounts,
+  monthlySalesByPlatformFromRows,
   ratePercent: helperRatePercent,
 } = require('../services/messagingAnalyticsHelpers');
 const {
@@ -2194,14 +2196,15 @@ router.get(
               [periodStart, periodEnd]
             ),
         pool.query(
-          `SELECT UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
+          `SELECT platform,
+                  UPPER(COALESCE(NULLIF(TRIM(currency), ''), 'EUR')) AS currency,
                   COALESCE(SUM(${NET_SALES_EXPR_UNALIASED}), 0)::float AS amount
            FROM messaging_dashboard_entries
            WHERE ${COUNTED_SALES_FILTER_UNALIASED}
              AND date_trunc('month', "sentAt" AT TIME ZONE '${tz}')
                  = date_trunc('month', NOW() AT TIME ZONE '${tz}')
              ${chatterClause}
-           GROUP BY 1`,
+           GROUP BY 1, 2`,
           selfParams
         ),
         avgResponseQuery,
@@ -2833,7 +2836,12 @@ router.get(
       }
 
       const totalSales = currencyAmountRowsToList(totalSalesResult.rows);
-      const monthlyRevenue = currencyAmountRowsToList(monthlySalesResult.rows);
+      const monthlySalesByPlatform = monthlySalesByPlatformFromRows(
+        monthlySalesResult.rows
+      );
+      const monthlyRevenue = mergeNativeCurrencyAmounts(
+        ...monthlySalesByPlatform.map((row) => row.amounts)
+      );
       const allTimeSales = currencyAmountRowsToList(allTimeSalesResult.rows);
 
       const msgStats = parseExtendedMessageStats(messageStatsResult.rows[0] || {});
@@ -3376,6 +3384,7 @@ router.get(
         totalSales,
         totalRevenue: totalSales,
         monthlyRevenue,
+        monthlySalesByPlatform,
         allTimeSales,
         tipSales: tipSalesMerged,
         ppvSales: ppvSalesMerged,
