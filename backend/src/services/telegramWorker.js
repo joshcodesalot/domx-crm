@@ -396,6 +396,47 @@ function serializeReactions(msg) {
   return out;
 }
 
+function senderDisplayName(sender) {
+  if (!sender || typeof sender !== 'object') return null;
+  return sender.displayName || sender.title || sender.firstName || null;
+}
+
+function parseReplyToId(value) {
+  const id = Number(value);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  return Math.trunc(id);
+}
+
+function sendReplyParams(replyToMessageId) {
+  const id = parseReplyToId(replyToMessageId);
+  if (id == null) return undefined;
+  return { replyTo: id };
+}
+
+function serializeReplyTo(msg) {
+  const info = msg?.replyToMessage;
+  if (!info) return null;
+  const originRaw = info.origin;
+  const origin =
+    originRaw === 'other_chat' || originRaw === 'private' ? originRaw : 'same_chat';
+  const messageIdRaw = parseReplyToId(info.id);
+  const messageId = messageIdRaw != null ? String(messageIdRaw) : null;
+  const quoteText = typeof info.quoteText === 'string' ? info.quoteText : '';
+  if (!messageId && !quoteText && origin !== 'private') return null;
+  const sender = info.sender;
+  const mediaInfo = mediaPlaceholder(info.media);
+  return {
+    messageId,
+    origin,
+    isQuote: Boolean(info.isQuote),
+    quoteText,
+    senderId: sender?.id != null ? String(sender.id) : null,
+    senderName: senderDisplayName(sender),
+    kind: mediaInfo?.kind || null,
+    placeholder: mediaInfo?.text || null,
+  };
+}
+
 function serializeMessage(msg) {
   if (!msg) return null;
   const text = typeof msg.text === 'string' ? msg.text : '';
@@ -415,12 +456,11 @@ function serializeMessage(msg) {
     fileName: fileName || null,
     stickerSource: mediaInfo?.kind === 'sticker' ? stickerSourceType(msg.media) : null,
     senderId: sender?.id != null ? String(sender.id) : null,
-    senderName: sender
-      ? sender.displayName || sender.title || sender.firstName || null
-      : null,
+    senderName: senderDisplayName(sender),
     senderUsername: sender?.username || null,
     senderAvatarUrl: null,
     reactions: serializeReactions(msg),
+    replyTo: serializeReplyTo(msg),
   };
 }
 
@@ -1755,7 +1795,7 @@ async function attachSenderAvatars(creatorId, client, messages) {
   });
 }
 
-async function sendText(creatorId, peerId, text) {
+async function sendText(creatorId, peerId, text, { replyToMessageId } = {}) {
   const client = await getClient(creatorId);
   const numericId = Number(peerId);
   if (!Number.isFinite(numericId)) {
@@ -1765,7 +1805,7 @@ async function sendText(creatorId, peerId, text) {
   if (!trimmed) {
     throw new TelegramWorkerError('Message text is required');
   }
-  const sent = await client.sendText(numericId, trimmed);
+  const sent = await client.sendText(numericId, trimmed, sendReplyParams(replyToMessageId));
   await markPeerRead(client, numericId, { creatorId, force: true });
   return serializeMessage(sent);
 }
@@ -1888,7 +1928,7 @@ async function uploadVaultMedia(creatorId, { filePath, mimeType, fileName, thumb
   }
 }
 
-async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
+async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption, replyToMessageId } = {}) {
   const client = await getClient(creatorId);
   const numericPeer = Number(peerId);
   if (!Number.isFinite(numericPeer)) {
@@ -1903,11 +1943,19 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
   const captionText = typeof caption === 'string' ? caption.trim() : '';
   const sentMessages = [];
   let captionUsed = false;
+  let replyUsed = false;
 
   const takeCaption = () => {
     if (captionUsed || !captionText) return '';
     captionUsed = true;
     return captionText;
+  };
+
+  const takeReplyParams = () => {
+    if (replyUsed) return undefined;
+    const params = sendReplyParams(replyToMessageId);
+    if (params) replyUsed = true;
+    return params;
   };
 
   const pushSent = (sent, savedId) => {
@@ -1921,11 +1969,13 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
 
   const sendOneCopy = async (savedId) => {
     const nextCaption = takeCaption();
+    const replyParams = takeReplyParams();
     const sent = await client.sendCopy({
       fromChatId: 'me',
       message: savedId,
       toChatId: numericPeer,
       caption: nextCaption || undefined,
+      ...(replyParams || {}),
     });
     pushSent(sent, savedId);
   };
@@ -1948,7 +1998,7 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption }) {
       }
       medias.push(input);
     }
-    const sent = await client.sendMediaGroup(numericPeer, medias);
+    const sent = await client.sendMediaGroup(numericPeer, medias, takeReplyParams());
     const sentList = asMessageList(sent);
     for (let i = 0; i < sentList.length; i += 1) {
       pushSent(sentList[i], chunkIds[i]);
@@ -2654,7 +2704,7 @@ async function getCachedStickerMedia(creatorId, uniqueId, variant) {
   }
 }
 
-async function sendSticker(creatorId, peerId, fileId) {
+async function sendSticker(creatorId, peerId, fileId, { replyToMessageId } = {}) {
   const client = await getClient(creatorId);
   const numericPeer = Number(peerId);
   if (!Number.isFinite(numericPeer)) {
@@ -2664,10 +2714,14 @@ async function sendSticker(creatorId, peerId, fileId) {
   if (!id) {
     throw new TelegramWorkerError('Sticker file id is required', 400);
   }
-  const sent = await client.sendMedia(numericPeer, {
-    type: 'sticker',
-    file: id,
-  });
+  const sent = await client.sendMedia(
+    numericPeer,
+    {
+      type: 'sticker',
+      file: id,
+    },
+    sendReplyParams(replyToMessageId)
+  );
   await markPeerRead(client, numericPeer, { creatorId, force: true });
   const serialized = serializeMessage(sent);
   if (serialized) {
@@ -3022,7 +3076,7 @@ async function finishGifSend(client, creatorId, numericPeer, sent) {
   return serialized;
 }
 
-async function sendGif(creatorId, peerId, { fileId, queryId, resultId } = {}) {
+async function sendGif(creatorId, peerId, { fileId, queryId, resultId, replyToMessageId } = {}) {
   const client = await getClient(creatorId);
   const numericPeer = Number(peerId);
   if (!Number.isFinite(numericPeer)) {
@@ -3031,9 +3085,10 @@ async function sendGif(creatorId, peerId, { fileId, queryId, resultId } = {}) {
   const id = String(fileId || '').trim();
   const inlineQueryId = String(queryId || '').trim();
   const inlineResultId = String(resultId || '').trim();
+  const replyParams = sendReplyParams(replyToMessageId);
 
   if (id) {
-    const sent = await client.sendMedia(numericPeer, id);
+    const sent = await client.sendMedia(numericPeer, id, replyParams);
     return finishGifSend(client, creatorId, numericPeer, sent);
   }
 
@@ -3049,6 +3104,9 @@ async function sendGif(creatorId, peerId, { fileId, queryId, resultId } = {}) {
       randomId: randomLong(),
       queryId: parsedQueryId,
       id: inlineResultId,
+      ...(replyParams
+        ? { replyTo: { _: 'inputReplyToMessage', replyToMsgId: replyParams.replyTo } }
+        : {}),
     });
     try {
       client.handleClientUpdate(res, true);

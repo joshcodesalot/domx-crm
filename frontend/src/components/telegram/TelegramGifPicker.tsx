@@ -53,11 +53,13 @@ export default function TelegramGifPicker({
   creatorId,
   peerId,
   disabled,
+  replyToMessageId,
   onSent,
 }: {
   creatorId: string;
   peerId: string;
   disabled?: boolean;
+  replyToMessageId?: string;
   onSent: (message: TelegramMessage) => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -160,6 +162,7 @@ export default function TelegramGifPicker({
         ...(gif.fileId ? { fileId: gif.fileId } : {}),
         ...(gif.queryId ? { queryId: gif.queryId } : {}),
         ...(gif.resultId ? { resultId: gif.resultId } : {}),
+        ...(replyToMessageId ? { replyToMessageId } : {}),
       });
       if (result.message) {
         onSent(result.message);

@@ -73,11 +73,13 @@ export default function TelegramStickerPicker({
   creatorId,
   peerId,
   disabled,
+  replyToMessageId,
   onSent,
 }: {
   creatorId: string;
   peerId: string;
   disabled?: boolean;
+  replyToMessageId?: string;
   onSent: (message: TelegramMessage) => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -167,7 +169,9 @@ export default function TelegramStickerPicker({
     setSendingId(sticker.uniqueId);
     setError(null);
     try {
-      const result = await sendTelegramSticker(creatorId, peerId, sticker.fileId);
+      const result = await sendTelegramSticker(creatorId, peerId, sticker.fileId, {
+        ...(replyToMessageId ? { replyToMessageId } : {}),
+      });
       if (result.message) {
         onSent(result.message);
         setOpen(false);

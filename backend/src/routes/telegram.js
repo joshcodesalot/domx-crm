@@ -82,6 +82,15 @@ function isValidUuid(value) {
   );
 }
 
+function parseReplyToMessageId(value) {
+  if (value == null || value === '') return undefined;
+  const raw = String(value).trim();
+  if (!raw) return undefined;
+  const id = Number(raw);
+  if (!Number.isFinite(id) || id <= 0 || !Number.isInteger(id)) return null;
+  return id;
+}
+
 function handleTelegramError(res, err, logLabel) {
   if (err instanceof TelegramWorkerError) {
     return res.status(err.status || 400).json({ error: err.message });
@@ -568,11 +577,15 @@ router.post(
   requirePermission('creators.view'),
   async (req, res) => {
     const { id, peerId } = req.params;
-    const { text, englishText, vaultIds } = req.body || {};
+    const { text, englishText, vaultIds, replyToMessageId: replyToRaw } = req.body || {};
     const trimmed = typeof text === 'string' ? text.trim() : '';
     const vaultIdList = Array.isArray(vaultIds)
       ? [...new Set(vaultIds.map((value) => String(value || '').trim()).filter(isValidUuid))]
       : [];
+    const replyToMessageId = parseReplyToMessageId(replyToRaw);
+    if (replyToMessageId === null) {
+      return res.status(400).json({ error: 'Invalid replyToMessageId' });
+    }
     if (!trimmed && vaultIdList.length === 0) {
       return res.status(400).json({ error: 'Message text or vault media is required' });
     }
@@ -604,7 +617,7 @@ router.post(
       }
 
       if (vaultIdList.length === 0) {
-        const message = await sendText(id, peerId, trimmed);
+        const message = await sendText(id, peerId, trimmed, { replyToMessageId });
         return res.status(201).json({
           message: redactMessage(message, req.user),
           messages: [redactMessage(message, req.user)],
@@ -625,6 +638,7 @@ router.post(
       const sent = await sendVaultToPeer(id, peerId, {
         itemMessageIds: ordered.map((row) => row.savedMessageId),
         caption: trimmed,
+        replyToMessageId,
       });
       await recordVaultSent({
         creatorId: id,
@@ -718,13 +732,17 @@ router.post(
   async (req, res) => {
     const { peerId } = req.params;
     const fileId = typeof req.body?.fileId === 'string' ? req.body.fileId.trim() : '';
+    const replyToMessageId = parseReplyToMessageId(req.body?.replyToMessageId);
     if (!fileId) {
       return res.status(400).json({ error: 'fileId is required' });
+    }
+    if (replyToMessageId === null) {
+      return res.status(400).json({ error: 'Invalid replyToMessageId' });
     }
     try {
       const creator = await requireTelegramCreator(req, res);
       if (!creator) return undefined;
-      const message = await sendSticker(creator.id, peerId, fileId);
+      const message = await sendSticker(creator.id, peerId, fileId, { replyToMessageId });
       return res.status(201).json({
         message: redactMessage(message, req.user),
       });
@@ -797,13 +815,22 @@ router.post(
     const fileId = typeof req.body?.fileId === 'string' ? req.body.fileId.trim() : '';
     const queryId = typeof req.body?.queryId === 'string' ? req.body.queryId.trim() : '';
     const resultId = typeof req.body?.resultId === 'string' ? req.body.resultId.trim() : '';
+    const replyToMessageId = parseReplyToMessageId(req.body?.replyToMessageId);
     if (!fileId && !(queryId && resultId)) {
       return res.status(400).json({ error: 'fileId or queryId and resultId are required' });
+    }
+    if (replyToMessageId === null) {
+      return res.status(400).json({ error: 'Invalid replyToMessageId' });
     }
     try {
       const creator = await requireTelegramCreator(req, res);
       if (!creator) return undefined;
-      const message = await sendGif(creator.id, peerId, { fileId, queryId, resultId });
+      const message = await sendGif(creator.id, peerId, {
+        fileId,
+        queryId,
+        resultId,
+        replyToMessageId,
+      });
       return res.status(201).json({
         message: redactMessage(message, req.user),
       });

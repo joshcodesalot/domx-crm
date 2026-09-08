@@ -2666,6 +2666,17 @@ export interface TelegramMessageReaction {
   chosen?: boolean;
 }
 
+export interface TelegramReplyTo {
+  messageId: string | null;
+  origin: 'same_chat' | 'other_chat' | 'private';
+  isQuote: boolean;
+  quoteText: string;
+  senderId?: string | null;
+  senderName?: string | null;
+  kind?: string | null;
+  placeholder?: string | null;
+}
+
 export interface TelegramMessage {
   id: string;
   peerId: string;
@@ -2684,6 +2695,7 @@ export interface TelegramMessage {
   senderAvatarUrl?: string | null;
   deleted?: boolean;
   reactions?: TelegramMessageReaction[];
+  replyTo?: TelegramReplyTo | null;
 }
 
 export interface TelegramVaultFolder {
@@ -2849,7 +2861,7 @@ export async function sendTelegramMessage(
   peerId: string,
   text: string,
   englishText?: string | null,
-  options: { vaultIds?: string[] } = {}
+  options: { vaultIds?: string[]; replyToMessageId?: string } = {}
 ): Promise<{
   message: TelegramMessage | null;
   messages?: TelegramMessage[];
@@ -2863,6 +2875,7 @@ export async function sendTelegramMessage(
         text,
         ...(englishText ? { englishText } : {}),
         ...(options.vaultIds?.length ? { vaultIds: options.vaultIds } : {}),
+        ...(options.replyToMessageId ? { replyToMessageId: options.replyToMessageId } : {}),
       }),
     }
   );
@@ -2923,13 +2936,17 @@ export async function listTelegramStickerSet(
 export async function sendTelegramSticker(
   creatorId: string,
   peerId: string,
-  fileId: string
+  fileId: string,
+  options: { replyToMessageId?: string } = {}
 ): Promise<{ message: TelegramMessage | null }> {
   return request(
     `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/stickers`,
     {
       method: 'POST',
-      body: JSON.stringify({ fileId }),
+      body: JSON.stringify({
+        fileId,
+        ...(options.replyToMessageId ? { replyToMessageId: options.replyToMessageId } : {}),
+      }),
     }
   );
 }
@@ -2980,7 +2997,12 @@ export async function searchTelegramGifs(
 export async function sendTelegramGif(
   creatorId: string,
   peerId: string,
-  payload: { fileId?: string; queryId?: string; resultId?: string }
+  payload: {
+    fileId?: string;
+    queryId?: string;
+    resultId?: string;
+    replyToMessageId?: string;
+  }
 ): Promise<{ message: TelegramMessage | null }> {
   return request(
     `/api/creators/${creatorId}/telegram/dialogs/${encodeURIComponent(peerId)}/gifs`,

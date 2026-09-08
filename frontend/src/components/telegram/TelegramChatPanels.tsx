@@ -16,6 +16,7 @@ import {
   PanelRightClose,
   RefreshCw,
   Search,
+  Reply,
   Send,
   Smile,
   Sparkles,
@@ -81,6 +82,7 @@ import {
   type TelegramDialog,
   type TelegramFan,
   type TelegramMessage,
+  type TelegramReplyTo,
   type TelegramVaultItem,
   type TranslateHistoryItem,
 } from '@/lib/api';
@@ -203,6 +205,126 @@ function searchResultPreview(msg: TelegramMessage): string {
   const text = String(msg.text || '').trim();
   if (text) return text;
   return msg.placeholder || 'Message';
+}
+
+function kindPlaceholder(kind?: string | null): string | null {
+  if (!kind || kind === 'text' || kind === 'empty') return null;
+  if (kind === 'photo') return 'Photo';
+  if (kind === 'video') return 'Video';
+  if (kind === 'voice') return 'Voice note';
+  if (kind === 'audio') return 'Audio';
+  if (kind === 'sticker') return 'Sticker';
+  if (kind === 'gif') return 'GIF';
+  if (kind === 'document') return 'File';
+  if (kind === 'media') return 'Media';
+  return null;
+}
+
+function messageSnippet(msg: TelegramMessage): string {
+  const text = String(msg.text || '').trim();
+  if (text) return text;
+  return msg.placeholder || kindPlaceholder(msg.kind) || 'Message';
+}
+
+function messageAuthorName(
+  msg: TelegramMessage,
+  creatorName?: string | null,
+  fanName = 'Fan'
+): string {
+  if (msg.isOutgoing) return creatorName?.trim() || 'You';
+  return msg.senderName?.trim() || fanName;
+}
+
+function replySnippet(
+  replyTo: TelegramReplyTo,
+  original?: TelegramMessage | null
+): string {
+  const quoted = String(replyTo.quoteText || '').trim();
+  if (quoted) return quoted;
+  if (original) return messageSnippet(original);
+  return (
+    replyTo.placeholder ||
+    kindPlaceholder(replyTo.kind) ||
+    'Original message'
+  );
+}
+
+function replyAuthorName(
+  replyTo: TelegramReplyTo,
+  original: TelegramMessage | undefined,
+  creatorName?: string | null,
+  fanName = 'Fan'
+): string {
+  if (original) return messageAuthorName(original, creatorName, fanName);
+  const fromReply = replyTo.senderName?.trim();
+  if (fromReply) return fromReply;
+  return 'Message';
+}
+
+function withLocalReplyTo(
+  message: TelegramMessage,
+  target: TelegramMessage | null | undefined
+): TelegramMessage {
+  if (message.replyTo || !target?.id) return message;
+  return {
+    ...message,
+    replyTo: {
+      messageId: target.id,
+      origin: 'same_chat',
+      isQuote: false,
+      quoteText: '',
+      senderId: target.senderId || null,
+      senderName: target.senderName || null,
+      kind: target.kind || null,
+      placeholder: target.placeholder || null,
+    },
+  };
+}
+
+function TelegramQuotedReply({
+  replyTo,
+  original,
+  outgoing,
+  authorName,
+  onJump,
+}: {
+  replyTo: TelegramReplyTo;
+  original?: TelegramMessage;
+  outgoing: boolean;
+  authorName: string;
+  onJump?: () => void;
+}) {
+  const snippet = replySnippet(replyTo, original);
+  const canJump = Boolean(original && onJump);
+  return (
+    <button
+      type="button"
+      onClick={canJump ? onJump : undefined}
+      className={`mb-2 w-full text-left rounded-lg overflow-hidden ${
+        outgoing
+          ? 'bg-white/15 text-white/90'
+          : 'bg-gray-100 dark:bg-zinc-900/70 text-gray-700 dark:text-zinc-200'
+      } ${canJump ? 'cursor-pointer hover:opacity-90' : 'cursor-default'}`}
+      title={canJump ? 'Jump to original message' : undefined}
+    >
+      <span className="flex min-w-0 items-stretch">
+        <span
+          className={`w-1 shrink-0 ${outgoing ? 'bg-white/80' : 'bg-sky-500'}`}
+          aria-hidden
+        />
+        <span className="min-w-0 px-2 py-1.5">
+          <span
+            className={`block text-[11px] font-semibold truncate ${
+              outgoing ? 'text-white' : 'text-sky-600 dark:text-sky-400'
+            }`}
+          >
+            {authorName}
+          </span>
+          <span className="block text-[12px] truncate opacity-90">{snippet}</span>
+        </span>
+      </span>
+    </button>
+  );
 }
 
 function TelegramStickerBubble({
@@ -822,8 +944,10 @@ export function TelegramChatThread({
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(
     null
   );
+  const [replyTarget, setReplyTarget] = useState<TelegramMessage | null>(null);
   const searchTimerRef = useRef<number | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const loadingOlderRef = useRef(false);
@@ -943,6 +1067,7 @@ export function TelegramChatThread({
     setSearchError(null);
     setSearchNextOffset(null);
     setHighlightedMessageId(null);
+    setReplyTarget(null);
     markedReadOnOpenRef.current = false;
   }, [creatorId, peerId]);
 
@@ -1184,6 +1309,21 @@ export function TelegramChatThread({
     }, 2000);
   }
 
+  function jumpToQuotedMessage(messageId: string | null | undefined) {
+    if (!messageId) return;
+    const original = messages.find((item) => item.id === messageId);
+    if (!original) return;
+    jumpToSearchResult(original);
+  }
+
+  const messagesById = useMemo(() => {
+    const map = new Map<string, TelegramMessage>();
+    for (const msg of messages) {
+      if (msg?.id) map.set(msg.id, msg);
+    }
+    return map;
+  }, [messages]);
+
   const handleRefreshMessages = useCallback(async () => {
     if (messagesRefreshing) return;
     setMessagesRefreshing(true);
@@ -1348,6 +1488,7 @@ export function TelegramChatThread({
   async function handleSend() {
     const text = draft.trim();
     const attached = vaultItems;
+    const replyToMessageId = replyTarget?.id;
     if ((!text && attached.length === 0) || sending || translatingOutgoing) return;
     cancelTelegramTyping();
     setSending(true);
@@ -1382,15 +1523,19 @@ export function TelegramChatThread({
         peerId,
         messageToSend,
         englishDraft,
-        attached.length ? { vaultIds: attached.map((item) => item.id) } : undefined
+        {
+          ...(attached.length ? { vaultIds: attached.map((item) => item.id) } : {}),
+          ...(replyToMessageId ? { replyToMessageId } : {}),
+        }
       );
       setDraft('');
       setVaultItems([]);
+      setReplyTarget(null);
       setSkipOutgoingTranslate(false);
       setSuggestedEnglish(null);
-      const sentMessages = (result.messages || (result.message ? [result.message] : [])).filter(
-        Boolean
-      ) as TelegramMessage[];
+      const sentMessages = (result.messages || (result.message ? [result.message] : []))
+        .filter(Boolean)
+        .map((msg) => withLocalReplyTo(msg as TelegramMessage, replyTarget));
       if (sentMessages.length) {
         nearBottomRef.current = true;
         setMessages((prev) => [...prev, ...sentMessages]);
@@ -1478,7 +1623,8 @@ export function TelegramChatThread({
 
   function handleQuickMediaSent(message: TelegramMessage, mediaType: 'sticker' | 'gif') {
     nearBottomRef.current = true;
-    setMessages((prev) => [...prev, message]);
+    setMessages((prev) => [...prev, withLocalReplyTo(message, replyTarget)]);
+    setReplyTarget(null);
     onMarkedRead?.(peerId);
     if (!user?.id) return;
     const dashboardMessageId = `telegram:${message.id}`;
@@ -1913,6 +2059,9 @@ export function TelegramChatThread({
           const bubbleRadius = showGroupChrome
             ? incomingClusterRadius(isClusterStart, isClusterEnd)
             : 'rounded-2xl';
+          const quotedOriginal = msg.replyTo?.messageId
+            ? messagesById.get(msg.replyTo.messageId)
+            : undefined;
           return (
             <div
               key={msg.id}
@@ -1966,6 +2115,18 @@ export function TelegramChatThread({
                         )}
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReplyTarget(msg);
+                        window.setTimeout(() => draftInputRef.current?.focus(), 0);
+                      }}
+                      className="p-1 rounded-md text-gray-500 dark:text-zinc-500 hover:text-sky-500 hover:bg-sky-500/10 transition-all"
+                      title="Reply"
+                      aria-label="Reply to message"
+                    >
+                      <Reply className="w-3.5 h-3.5" />
+                    </button>
                     <div
                       className="relative"
                       onMouseDown={(event) => event.stopPropagation()}
@@ -2034,6 +2195,24 @@ export function TelegramChatThread({
                             : 'bg-white dark:bg-zinc-800 text-gray-900 dark:text-zinc-100 border border-gray-100 dark:border-white/5'
                       }`}
                     >
+                      {msg.replyTo && (
+                        <TelegramQuotedReply
+                          replyTo={msg.replyTo}
+                          original={quotedOriginal}
+                          outgoing={msg.isOutgoing && !msg.deleted}
+                          authorName={replyAuthorName(
+                            msg.replyTo,
+                            quotedOriginal,
+                            creator?.displayName,
+                            fanLabel(fan, isGroup ? 'Group' : 'Fan')
+                          )}
+                          onJump={
+                            quotedOriginal
+                              ? () => jumpToQuotedMessage(msg.replyTo?.messageId)
+                              : undefined
+                          }
+                        />
+                      )}
                       {messageHasVisualMedia(msg) && (
                         <button
                           type="button"
@@ -2186,6 +2365,34 @@ export function TelegramChatThread({
       </div>
 
       <div className="border-t border-gray-200 dark:border-zinc-800/80 bg-white dark:bg-zinc-950 p-4 shrink-0 relative z-10 shadow-[0_-10px_40px_rgba(0,0,0,0.3)]">
+        {replyTarget && (
+          <div className="flex items-center gap-2 mb-3 px-1 animate-fade-in">
+            <div className="flex-1 min-w-0 flex items-stretch rounded-xl bg-gray-50 dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 overflow-hidden">
+              <span className="w-1 shrink-0 bg-sky-500" aria-hidden />
+              <div className="min-w-0 px-2.5 py-1.5">
+                <p className="text-[11px] font-semibold text-sky-600 dark:text-sky-400 truncate">
+                  {messageAuthorName(
+                    replyTarget,
+                    creator?.displayName,
+                    fanLabel(fan, isGroup ? 'Group' : 'Fan')
+                  )}
+                </p>
+                <p className="text-xs text-gray-500 dark:text-zinc-400 truncate">
+                  {messageSnippet(replyTarget)}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReplyTarget(null)}
+              className="p-1 text-gray-500 dark:text-zinc-500 hover:text-gray-900 dark:hover:text-white shrink-0"
+              aria-label="Cancel reply"
+              title="Cancel reply"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
         {vaultItems.length > 0 && (
           <div className="flex items-center gap-3 mb-3 px-1 animate-fade-in">
             <div className="flex gap-2 max-w-[50%] overflow-x-auto">
@@ -2280,15 +2487,18 @@ export function TelegramChatThread({
             creatorId={creatorId}
             peerId={peerId}
             disabled={sending || translatingOutgoing}
+            replyToMessageId={replyTarget?.id}
             onSent={(message) => handleQuickMediaSent(message, 'sticker')}
           />
           <TelegramGifPicker
             creatorId={creatorId}
             peerId={peerId}
             disabled={sending || translatingOutgoing}
+            replyToMessageId={replyTarget?.id}
             onSent={(message) => handleQuickMediaSent(message, 'gif')}
           />
           <textarea
+            ref={draftInputRef}
             value={draft}
             disabled={sending || translatingOutgoing}
             onChange={(e) => {
