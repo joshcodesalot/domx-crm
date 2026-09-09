@@ -7,6 +7,7 @@ const {
   approveRuleSuggestion,
   rejectRuleSuggestion,
   listApprovedRules,
+  insertApprovedRule,
   updateApprovedRule,
   deactivateApprovedRule,
   loadApprovedRules,
@@ -414,6 +415,36 @@ describe('list, patch, and deactivate approved rules', () => {
       store
     );
     assert.equal(loaded.length, 0);
+  });
+});
+
+describe('insertApprovedRule', () => {
+  it('writes a GLOBAL rule that list and generate context return', async () => {
+    const store = createRuleStore();
+    const rule = await insertApprovedRule(
+      { text: 'Never break character', scope: 'GLOBAL', approvedBy: 'mgr-1' },
+      store
+    );
+    assert.equal(rule.active, true);
+    assert.equal(rule.text, 'Never break character');
+    const listed = await listApprovedRules({}, store);
+    assert.equal(listed.some((item) => item.text === 'Never break character'), true);
+    const loaded = await loadApprovedRules(
+      { creatorId: 'cr-1', platform: 'maloum', platformFanId: 'fan-1' },
+      store
+    );
+    assert.equal(
+      loaded.some((item) => item.text === 'Never break character'),
+      true
+    );
+  });
+
+  it('rejects empty text', async () => {
+    const store = createRuleStore();
+    await assert.rejects(
+      () => insertApprovedRule({ text: '   ', scope: 'GLOBAL' }, store),
+      (err) => err instanceof BrainError && err.status === 400
+    );
   });
 });
 

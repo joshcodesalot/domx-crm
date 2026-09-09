@@ -5767,6 +5767,19 @@ export async function deactivateAiRule(id: string): Promise<{ rule: AiRule }> {
   return request(`/api/ai/rules/${id}`, { method: 'DELETE' });
 }
 
+export async function createAiRule(payload: {
+  text: string;
+  scope: AiRuleScope;
+  creatorId?: string | null;
+  platform?: string | null;
+  platformFanId?: string | null;
+}): Promise<{ rule: AiRule }> {
+  return request('/api/ai/rules', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function approveAiRuleSuggestion(
   id: string,
   payload: { scope?: AiRuleScope; text?: string } = {}
@@ -5911,6 +5924,18 @@ export async function rejectAiSopImport(
 
 export async function getAiSops(): Promise<{ sops: AiSop[] }> {
   return request('/api/ai/sops');
+}
+
+export async function createAiSop(payload: {
+  title: string;
+  body: string;
+  scope: AiSopScope;
+  creatorId?: string | null;
+}): Promise<{ sop: AiSop }> {
+  return request('/api/ai/sops', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getAiSop(id: string): Promise<{ sop: AiSop }> {

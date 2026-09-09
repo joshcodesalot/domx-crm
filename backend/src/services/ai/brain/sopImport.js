@@ -899,6 +899,40 @@ async function listActiveSops(client = pool) {
   return result.rows.map(toSopDto);
 }
 
+async function createSop(input = {}, client = pool) {
+  const title = asText(input.title).trim();
+  const body = asText(input.body).trim().slice(0, MAX_RAW_TEXT);
+  if (!title) {
+    throw new SopImportError(400, 'Title is required', { code: 'invalid_title' });
+  }
+  if (!body) {
+    throw new SopImportError(400, 'Body is required', { code: 'invalid_body' });
+  }
+  if (!isSopScope(input.scope)) {
+    throw new SopImportError(400, 'Invalid scope', { code: 'invalid_scope' });
+  }
+
+  let creatorId = null;
+  if (input.scope === SOP_SCOPES.CREATOR) {
+    creatorId = await resolveCreatorId(input.creatorId, client);
+    if (!creatorId) {
+      throw new SopImportError(400, 'Creator is required', { code: 'invalid_scope' });
+    }
+  }
+
+  const userId = input.user?.id || null;
+  const inserted = await client.query(
+    `INSERT INTO ai_sops (
+       title, body, scope, "creatorId", active, "sourceDraftId", "createdBy",
+       "documentType", "sortOrder", "updatedBy"
+     )
+     VALUES ($1, $2, $3, $4, true, $5, $6, $7, 0, $6)
+     RETURNING *`,
+    [title, body, input.scope, creatorId, null, userId, DOCUMENT_TYPES.SOP]
+  );
+  return toSopDto(inserted.rows[0]);
+}
+
 async function getSopById(id, client = pool) {
   const sopId = String(id || '').trim();
   if (!UUID_RE.test(sopId)) {
@@ -1031,6 +1065,7 @@ module.exports = {
   loadActiveSops,
   listActiveSops,
   getSopById,
+  createSop,
   updateSop,
   deactivateSop,
   deleteSop,

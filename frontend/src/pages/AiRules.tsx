@@ -4,6 +4,8 @@ import { useConfirm } from '@/context/ConfirmDialogContext';
 import {
   approveAiRuleSuggestion,
   approveAiSopImport,
+  createAiRule,
+  createAiSop,
   deactivateAiRule,
   deactivateAiSop,
   deleteAiSop,
@@ -32,6 +34,7 @@ import {
 const SCOPES: AiRuleScope[] = ['CREATOR', 'PLATFORM', 'FAN', 'GLOBAL'];
 const SOP_SCOPES: AiSopScope[] = ['GLOBAL', 'CREATOR'];
 const PLATFORMS = ['maloum', '4based', 'telegram'] as const;
+const MAX_RULE_TEXT = 500;
 const RESOLUTIONS: AiSopOverlapSuggestion[] = [
   'keep_new',
   'keep_existing',
@@ -117,6 +120,31 @@ type SopEdit = {
   creatorId: string;
 };
 
+function emptyRuleDraft(): {
+  text: string;
+  scope: AiRuleScope;
+  creatorId: string;
+  platform: string;
+  platformFanId: string;
+} {
+  return {
+    text: '',
+    scope: 'GLOBAL',
+    creatorId: '',
+    platform: '',
+    platformFanId: '',
+  };
+}
+
+function emptySopDraft(): {
+  title: string;
+  body: string;
+  scope: AiSopScope;
+  creatorId: string;
+} {
+  return { title: '', body: '', scope: 'GLOBAL', creatorId: '' };
+}
+
 export default function AiRules() {
   const confirm = useConfirm();
   const [items, setItems] = useState<AiRuleSuggestion[]>([]);
@@ -133,6 +161,10 @@ export default function AiRules() {
   const [creatorFilter, setCreatorFilter] = useState('');
   const [editing, setEditing] = useState<RuleEdit | null>(null);
   const [sopModal, setSopModal] = useState<SopEdit | null>(null);
+  const [addingRule, setAddingRule] = useState(false);
+  const [addingSop, setAddingSop] = useState(false);
+  const [newRule, setNewRule] = useState(emptyRuleDraft);
+  const [newSop, setNewSop] = useState(emptySopDraft);
   const [rawText, setRawText] = useState('');
   const [importCreatorId, setImportCreatorId] = useState('');
   const [documentType, setDocumentType] = useState<'auto' | AiSopDocumentType>(
@@ -338,6 +370,48 @@ export default function AiRules() {
       await loadLive();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to remove rule');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function submitNewRule() {
+    setBusyId('new-rule');
+    setError(null);
+    try {
+      await createAiRule({
+        text: newRule.text,
+        scope: newRule.scope,
+        creatorId: newRule.creatorId || null,
+        platform: newRule.platform || null,
+        platformFanId: newRule.platformFanId || null,
+      });
+      setNewRule(emptyRuleDraft());
+      setAddingRule(false);
+      await loadLive();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add rule');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function submitNewSop() {
+    setBusyId('new-sop');
+    setError(null);
+    try {
+      const result = await createAiSop({
+        title: newSop.title,
+        body: newSop.body,
+        scope: newSop.scope,
+        creatorId: newSop.creatorId || null,
+      });
+      setNewSop(emptySopDraft());
+      setAddingSop(false);
+      await loadLive();
+      if (result.sop) openSopModal(result.sop);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add SOP');
     } finally {
       setBusyId(null);
     }
@@ -856,7 +930,124 @@ export default function AiRules() {
               </option>
             ))}
           </select>
+          <button
+            type="button"
+            onClick={() => {
+              setAddingRule((open) => !open);
+              setNewRule(emptyRuleDraft());
+            }}
+            className="px-3 py-1.5 text-sm rounded-lg border border-domx-600/40 text-domx-700 dark:text-domx-300 hover:bg-domx-50 dark:hover:bg-domx-950/40"
+          >
+            {addingRule ? 'Cancel' : 'Add rule'}
+          </button>
         </div>
+        {addingRule ? (
+          <div className="rounded-lg border border-gray-200 dark:border-white/10 p-3 mb-3 space-y-2">
+            <textarea
+              value={newRule.text}
+              onChange={(event) =>
+                setNewRule((current) => ({
+                  ...current,
+                  text: event.target.value.slice(0, MAX_RULE_TEXT),
+                }))
+              }
+              rows={3}
+              maxLength={MAX_RULE_TEXT}
+              placeholder="Short hard constraint"
+              className={inputClassName}
+              aria-label="New rule text"
+            />
+            <p className="text-[11px] text-gray-400">
+              {newRule.text.length}/{MAX_RULE_TEXT}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <select
+                value={newRule.scope}
+                onChange={(event) =>
+                  setNewRule((current) => ({
+                    ...current,
+                    scope: event.target.value as AiRuleScope,
+                  }))
+                }
+                className={selectClassName}
+                aria-label="New rule scope"
+              >
+                {SCOPES.map((scope) => (
+                  <option key={scope} value={scope}>
+                    {scope}
+                  </option>
+                ))}
+              </select>
+              {newRule.scope === 'CREATOR' || newRule.scope === 'FAN' ? (
+                <select
+                  value={newRule.creatorId}
+                  onChange={(event) => {
+                    const nextId = event.target.value;
+                    const creator = creators.find((item) => item.id === nextId);
+                    setNewRule((current) => ({
+                      ...current,
+                      creatorId: nextId,
+                      platform: creator?.platform || current.platform,
+                    }));
+                  }}
+                  className={selectClassName}
+                  aria-label="New rule creator"
+                >
+                  <option value="">Select creator</option>
+                  {creators.map((creator) => (
+                    <option key={creator.id} value={creator.id}>
+                      {creator.displayName}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              {newRule.scope === 'PLATFORM' ||
+              newRule.scope === 'CREATOR' ||
+              newRule.scope === 'FAN' ? (
+                <select
+                  value={newRule.platform}
+                  onChange={(event) =>
+                    setNewRule((current) => ({
+                      ...current,
+                      platform: event.target.value,
+                    }))
+                  }
+                  className={selectClassName}
+                  aria-label="New rule platform"
+                >
+                  <option value="">Select platform</option>
+                  {PLATFORMS.map((platform) => (
+                    <option key={platform} value={platform}>
+                      {platform}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              {newRule.scope === 'FAN' ? (
+                <input
+                  value={newRule.platformFanId}
+                  onChange={(event) =>
+                    setNewRule((current) => ({
+                      ...current,
+                      platformFanId: event.target.value,
+                    }))
+                  }
+                  placeholder="Fan id"
+                  className={`${inputClassName} max-w-[14rem]`}
+                  aria-label="New rule fan id"
+                />
+              ) : null}
+              <button
+                type="button"
+                disabled={busyId === 'new-rule' || !newRule.text.trim()}
+                onClick={() => void submitNewRule()}
+                className="px-3 py-1.5 text-sm rounded-lg border border-domx-600/40 text-domx-700 dark:text-domx-300 hover:bg-domx-50 dark:hover:bg-domx-950/40 disabled:opacity-50"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        ) : null}
         {liveLoading && liveRules.length === 0 ? (
           <p className="text-sm text-gray-500">Loading rules…</p>
         ) : liveRules.length === 0 ? (
@@ -1038,11 +1229,103 @@ export default function AiRules() {
       </div>
 
       <div className="rounded-xl border border-gray-200 dark:border-white/10 p-4 mb-6">
-        <h3 className="text-sm font-medium mb-1">Active SOPs</h3>
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+          <h3 className="text-sm font-medium">Active SOPs</h3>
+          <button
+            type="button"
+            onClick={() => {
+              setAddingSop((open) => !open);
+              setNewSop(emptySopDraft());
+            }}
+            className="px-3 py-1.5 text-sm rounded-lg border border-domx-600/40 text-domx-700 dark:text-domx-300 hover:bg-domx-50 dark:hover:bg-domx-950/40"
+          >
+            {addingSop ? 'Cancel' : 'Add SOP'}
+          </button>
+        </div>
         <p className="text-xs text-gray-500 dark:text-zinc-400 mb-3">
           View or edit a guide, or remove it from generate context. Import still
           writes new SOPs only after approve.
         </p>
+        {addingSop ? (
+          <div className="rounded-lg border border-gray-200 dark:border-white/10 p-3 mb-3 space-y-2">
+            <input
+              value={newSop.title}
+              onChange={(event) =>
+                setNewSop((current) => ({
+                  ...current,
+                  title: event.target.value,
+                }))
+              }
+              placeholder="SOP title"
+              className={inputClassName}
+              aria-label="New SOP title"
+            />
+            <div className="flex flex-wrap gap-2">
+              <select
+                value={newSop.scope}
+                onChange={(event) =>
+                  setNewSop((current) => ({
+                    ...current,
+                    scope: event.target.value as AiSopScope,
+                  }))
+                }
+                className={selectClassName}
+                aria-label="New SOP scope"
+              >
+                {SOP_SCOPES.map((scope) => (
+                  <option key={scope} value={scope}>
+                    {scope}
+                  </option>
+                ))}
+              </select>
+              {newSop.scope === 'CREATOR' ? (
+                <select
+                  value={newSop.creatorId}
+                  onChange={(event) =>
+                    setNewSop((current) => ({
+                      ...current,
+                      creatorId: event.target.value,
+                    }))
+                  }
+                  className={selectClassName}
+                  aria-label="New SOP creator"
+                >
+                  <option value="">Select creator</option>
+                  {creators.map((creator) => (
+                    <option key={creator.id} value={creator.id}>
+                      {creator.displayName}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+            </div>
+            <textarea
+              value={newSop.body}
+              onChange={(event) =>
+                setNewSop((current) => ({
+                  ...current,
+                  body: event.target.value,
+                }))
+              }
+              rows={10}
+              placeholder="Playbook body"
+              className={`${inputClassName} font-mono text-xs`}
+              aria-label="New SOP body"
+            />
+            <button
+              type="button"
+              disabled={
+                busyId === 'new-sop' ||
+                !newSop.title.trim() ||
+                !newSop.body.trim()
+              }
+              onClick={() => void submitNewSop()}
+              className="px-3 py-1.5 text-sm rounded-lg border border-domx-600/40 text-domx-700 dark:text-domx-300 hover:bg-domx-50 dark:hover:bg-domx-950/40 disabled:opacity-50"
+            >
+              Save
+            </button>
+          </div>
+        ) : null}
         {liveLoading && liveSops.length === 0 ? (
           <p className="text-sm text-gray-500">Loading SOPs…</p>
         ) : liveSops.length === 0 ? (

@@ -13,6 +13,7 @@ const {
   loadActiveSops,
   listActiveSops,
   getSopById,
+  createSop,
   updateSop,
   deactivateSop,
   deleteSop,
@@ -728,6 +729,63 @@ describe('live SOP get/patch/delete', () => {
         err instanceof SopImportError &&
         err.status === 400 &&
         err.code === 'invalid_scope'
+    );
+  });
+});
+
+describe('createSop', () => {
+  it('writes a GLOBAL SOP that list and generate context return', async () => {
+    const store = createSopStore();
+    const sop = await createSop(
+      {
+        title: 'Manual Playbook',
+        body: 'Stay dominant and unhurried.',
+        scope: 'GLOBAL',
+        user: { id: 'mgr-1' },
+      },
+      store
+    );
+    assert.equal(sop.active, true);
+    assert.equal(sop.title, 'Manual Playbook');
+    assert.equal(sop.documentType, 'sop');
+    const listed = await listActiveSops(store);
+    assert.equal(listed.some((row) => row.title === 'Manual Playbook'), true);
+    assert.equal(
+      listed.some((row) => row.body === 'Stay dominant and unhurried.'),
+      true
+    );
+    const loaded = await loadActiveSops({ creatorId: CREATOR_ID }, store);
+    assert.equal(loaded.some((row) => row.title === 'Manual Playbook'), true);
+    assert.equal(
+      loaded.some((row) => row.body === 'Stay dominant and unhurried.'),
+      true
+    );
+  });
+
+  it('rejects CREATOR without creatorId', async () => {
+    const store = createSopStore();
+    await assert.rejects(
+      () =>
+        createSop(
+          { title: 'Voice', body: 'Creator voice', scope: 'CREATOR' },
+          store
+        ),
+      (err) =>
+        err instanceof SopImportError &&
+        err.status === 400 &&
+        err.code === 'invalid_scope'
+    );
+  });
+
+  it('rejects empty title or body', async () => {
+    const store = createSopStore();
+    await assert.rejects(
+      () => createSop({ title: '  ', body: 'body', scope: 'GLOBAL' }, store),
+      (err) => err instanceof SopImportError && err.status === 400
+    );
+    await assert.rejects(
+      () => createSop({ title: 'Title', body: '  ', scope: 'GLOBAL' }, store),
+      (err) => err instanceof SopImportError && err.status === 400
     );
   });
 });

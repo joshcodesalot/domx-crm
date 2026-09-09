@@ -60,6 +60,7 @@ const {
   listApprovedRules,
   approveRuleSuggestion,
   rejectRuleSuggestion,
+  insertApprovedRule,
   updateApprovedRule,
   deactivateApprovedRule,
 } = require('../services/ai/brain/rules');
@@ -72,6 +73,7 @@ const {
   listActiveSops,
   getSopById,
   updateSop,
+  createSop,
   deleteSop,
 } = require('../services/ai/brain/sopImport');
 
@@ -1059,6 +1061,29 @@ router.get(
   }
 );
 
+router.post(
+  '/rules',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      const rule = await insertApprovedRule({
+        text: req.body?.text,
+        scope: req.body?.scope,
+        creatorId: req.body?.creatorId,
+        platform: req.body?.platform,
+        platformFanId: req.body?.platformFanId,
+        approvedBy: req.user?.id || null,
+      });
+      return res.status(201).json({ rule });
+    } catch (err) {
+      if (sendBrainError(res, err)) return;
+      console.error('Create AI rule error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
 router.patch(
   '/rules/:id',
   authenticate,
@@ -1155,6 +1180,28 @@ router.get(
       return res.json({ sops });
     } catch (err) {
       console.error('List AI SOPs error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/sops',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      const sop = await createSop({
+        title: req.body?.title,
+        body: req.body?.body,
+        scope: req.body?.scope,
+        creatorId: req.body?.creatorId,
+        user: req.user,
+      });
+      return res.status(201).json({ sop });
+    } catch (err) {
+      if (sendSopImportError(res, err)) return;
+      console.error('Create AI SOP error:', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
   }
