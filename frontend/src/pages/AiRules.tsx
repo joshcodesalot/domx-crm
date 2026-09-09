@@ -30,6 +30,7 @@ import {
   type AiSopScope,
   type Creator,
 } from '@/lib/api';
+import { formatCreatorOption } from '@/lib/formatCreator';
 
 const SCOPES: AiRuleScope[] = ['CREATOR', 'PLATFORM', 'FAN', 'GLOBAL'];
 const SOP_SCOPES: AiSopScope[] = ['GLOBAL', 'CREATOR'];
@@ -101,7 +102,8 @@ function formatStamp(value: string | null): string {
 
 function creatorLabel(creators: Creator[], id: string | null): string {
   if (!id) return '—';
-  return creators.find((item) => item.id === id)?.displayName || id;
+  const creator = creators.find((item) => item.id === id);
+  return creator ? formatCreatorOption(creator) : id;
 }
 
 type RuleEdit = {
@@ -532,7 +534,7 @@ export default function AiRules() {
             <option value="">Global (no creator)</option>
             {creators.map((creator) => (
               <option key={creator.id} value={creator.id}>
-                {creator.displayName}
+                {formatCreatorOption(creator)}
               </option>
             ))}
           </select>
@@ -926,7 +928,7 @@ export default function AiRules() {
             <option value="">All creators</option>
             {creators.map((creator) => (
               <option key={creator.id} value={creator.id}>
-                {creator.displayName}
+                {formatCreatorOption(creator)}
               </option>
             ))}
           </select>
@@ -996,7 +998,7 @@ export default function AiRules() {
                   <option value="">Select creator</option>
                   {creators.map((creator) => (
                     <option key={creator.id} value={creator.id}>
-                      {creator.displayName}
+                      {formatCreatorOption(creator)}
                     </option>
                   ))}
                 </select>
@@ -1144,7 +1146,7 @@ export default function AiRules() {
                             <option value="">Select creator</option>
                             {creators.map((creator) => (
                               <option key={creator.id} value={creator.id}>
-                                {creator.displayName}
+                                {formatCreatorOption(creator)}
                               </option>
                             ))}
                           </select>
@@ -1293,7 +1295,7 @@ export default function AiRules() {
                   <option value="">Select creator</option>
                   {creators.map((creator) => (
                     <option key={creator.id} value={creator.id}>
-                      {creator.displayName}
+                      {formatCreatorOption(creator)}
                     </option>
                   ))}
                 </select>
@@ -1539,7 +1541,7 @@ export default function AiRules() {
                     <option value="">Select creator</option>
                     {creators.map((creator) => (
                       <option key={creator.id} value={creator.id}>
-                        {creator.displayName}
+                        {formatCreatorOption(creator)}
                       </option>
                     ))}
                   </select>

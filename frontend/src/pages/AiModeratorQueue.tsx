@@ -24,6 +24,7 @@ import {
   type AiQueueItem,
   type Creator,
 } from '@/lib/api';
+import { formatCreatorOption } from '@/lib/formatCreator';
 import { useAiSuggestionEvents } from '@/hooks/useAiSuggestionEvents';
 
 type DashboardTab = 'all' | AiQueueBucket;
@@ -377,7 +378,7 @@ export default function AiModeratorQueue() {
               <option value="">All creators</option>
               {creatorOptions.map((creator) => (
                 <option key={creator.id} value={creator.id}>
-                  {creator.displayName}
+                  {formatCreatorOption(creator)}
                 </option>
               ))}
             </select>
