@@ -729,7 +729,7 @@ router.post(
 router.post(
   '/suggestions/:id/regenerate',
   authenticate,
-  requirePermission('ai.suggest.use'),
+  requirePermission('ai.suggest.use', 'ai.moderate', 'ai.settings.manage'),
   async (req, res) => {
     try {
       const suggestion = await requireSuggestionAccess(req, res, req.params.id);

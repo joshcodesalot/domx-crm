@@ -9,6 +9,7 @@ import {
   getCreators,
   ignoreAiConversation,
   pauseAiConversation,
+  regenerateAiSuggestion,
   rejectAiSuggestion,
   resumeAiConversation,
   sendFourBasedMessage,
@@ -121,6 +122,16 @@ function draftPreview(item: AiQueueItem): string {
 
 function isTakenOver(item: AiQueueItem): boolean {
   return item.humanTakeover || item.effectiveMode === 'human_takeover';
+}
+
+function statusLabel(item: AiQueueItem): string {
+  if (item.suggestionStale) return 'Stale';
+  return STATUS_LABEL[item.bucket];
+}
+
+function statusClass(item: AiQueueItem): string {
+  if (item.suggestionStale) return 'bg-[#f14c4c] text-white';
+  return STATUS_STYLE[item.bucket];
 }
 
 export function chatterHref(item: AiQueueItem): string | null {
@@ -475,9 +486,9 @@ export default function AiModeratorQueue() {
                         </td>
                         <td className="py-3 px-2">
                           <span
-                            className={`px-2 py-[2px] rounded-full text-[11px] whitespace-nowrap ${STATUS_STYLE[item.bucket]}`}
+                            className={`px-2 py-[2px] rounded-full text-[11px] whitespace-nowrap ${statusClass(item)}`}
                           >
-                            {STATUS_LABEL[item.bucket]}
+                            {statusLabel(item)}
                           </span>
                         </td>
                         <td className="py-3 px-2">
@@ -564,7 +575,20 @@ export default function AiModeratorQueue() {
                                 Pause
                               </button>
                             )}
-                            {item.aiIgnored || !item.suggestion ? null : (
+                            {item.aiIgnored || !item.suggestion ? null : item.suggestionStale ? (
+                              <button
+                                type="button"
+                                className={ghostBtn}
+                                disabled={busy}
+                                onClick={() =>
+                                  void runRowAction(item, () =>
+                                    regenerateAiSuggestion(item.suggestion!.id)
+                                  )
+                                }
+                              >
+                                Regenerate
+                              </button>
+                            ) : (
                               <>
                                 <button
                                   type="button"
@@ -625,8 +649,8 @@ export default function AiModeratorQueue() {
                   >
                     {selected.state}
                   </span>
-                  <span className={`px-2 py-[2px] rounded-full ${STATUS_STYLE[selected.bucket]}`}>
-                    {STATUS_LABEL[selected.bucket]}
+                  <span className={`px-2 py-[2px] rounded-full ${statusClass(selected)}`}>
+                    {statusLabel(selected)}
                   </span>
                 </div>
                 <div className="flex flex-wrap gap-2 mt-3">
@@ -736,9 +760,9 @@ export default function AiModeratorQueue() {
               {selected.suggestion && !selected.aiIgnored ? (
                 <div className="m-4 p-3 bg-white dark:bg-[#1e1e1e] border-l-4 border-[#cca700] rounded-r shrink-0">
                   <div className="text-[11px] text-gray-500 dark:text-[#858585] mb-1 font-bold">
-                    PENDING AI DRAFT
+                    {selected.suggestionStale ? 'STALE AI DRAFT' : 'PENDING AI DRAFT'}
                   </div>
-                  {editing ? (
+                  {editing && !selected.suggestionStale ? (
                     <>
                       <textarea
                         value={editGerman}
@@ -775,24 +799,40 @@ export default function AiModeratorQueue() {
                         {selected.suggestion.reply}
                       </div>
                       <div className="flex gap-2">
-                        <button
-                          type="button"
-                          className="bg-[#0e639c] text-white text-xs px-3 py-1.5 rounded font-bold"
-                          onClick={() =>
-                            void runRowAction(selected, () =>
-                              approveAiSuggestion(selected.suggestion!.id)
-                            )
-                          }
-                        >
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          className="text-xs px-3 py-1.5 rounded border border-gray-200 dark:border-[#3c3c3c]"
-                          onClick={() => setEditing(true)}
-                        >
-                          Edit & send
-                        </button>
+                        {selected.suggestionStale ? (
+                          <button
+                            type="button"
+                            className="bg-[#0e639c] text-white text-xs px-3 py-1.5 rounded font-bold"
+                            onClick={() =>
+                              void runRowAction(selected, () =>
+                                regenerateAiSuggestion(selected.suggestion!.id)
+                              )
+                            }
+                          >
+                            Regenerate
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className="bg-[#0e639c] text-white text-xs px-3 py-1.5 rounded font-bold"
+                              onClick={() =>
+                                void runRowAction(selected, () =>
+                                  approveAiSuggestion(selected.suggestion!.id)
+                                )
+                              }
+                            >
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              className="text-xs px-3 py-1.5 rounded border border-gray-200 dark:border-[#3c3c3c]"
+                              onClick={() => setEditing(true)}
+                            >
+                              Edit & send
+                            </button>
+                          </>
+                        )}
                         <button
                           type="button"
                           className="text-xs px-3 py-1.5 rounded border border-gray-200 dark:border-[#3c3c3c]"

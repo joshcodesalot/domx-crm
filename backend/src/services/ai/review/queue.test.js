@@ -244,6 +244,37 @@ describe('toQueueRow / listQueue state', () => {
     assert.equal(hexOnly.fanLabel, 'Fan');
   });
 
+  it('marks a pending suggestion stale when the live inbound moved', () => {
+    const { items } = buildQueueItems(
+      [
+        sampleRow({
+          revision: 3,
+          lastInboundPlatformMessageId: 'in-2',
+          suggestionRevision: 2,
+          anchorInboundMessageId: 'in-1',
+        }),
+      ],
+      ON_FLAGS
+    );
+    assert.equal(items[0].bucket, QUEUE_BUCKETS.NEEDS_REVIEW);
+    assert.equal(items[0].suggestionStale, true);
+  });
+
+  it('does not mark a matching pending suggestion stale', () => {
+    const { items } = buildQueueItems(
+      [
+        sampleRow({
+          revision: 1,
+          lastInboundPlatformMessageId: 'live-1',
+          suggestionRevision: 1,
+          anchorInboundMessageId: 'live-1',
+        }),
+      ],
+      ON_FLAGS
+    );
+    assert.equal(items[0].suggestionStale, false);
+  });
+
   it('counts ignored separately from paused', () => {
     const { items, counts } = buildQueueItems(
       [
@@ -350,5 +381,26 @@ describe('GET /api/ai/queue permission', () => {
     );
     assert.equal(res.statusCode, 403);
     assert.equal(nextCalled, false);
+  });
+});
+
+describe('POST /api/ai/suggestions/:id/regenerate permission', () => {
+  const mw = requirePermission(
+    'ai.suggest.use',
+    'ai.moderate',
+    'ai.settings.manage'
+  );
+
+  it('allows ai.moderate from the dashboard', () => {
+    const res = mockRes();
+    let nextCalled = false;
+    mw(
+      { user: { role: 'manager', permissions: ['ai.moderate'] } },
+      res,
+      () => {
+        nextCalled = true;
+      }
+    );
+    assert.equal(nextCalled, true);
   });
 });

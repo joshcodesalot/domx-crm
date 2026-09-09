@@ -280,6 +280,8 @@ describe('generateReply helpers', () => {
     assert.match(SYSTEM_PROMPT, /em dash/i);
     assert.match(SYSTEM_PROMPT, /inboundIsLiveSession/);
     assert.match(SYSTEM_PROMPT, /givenName/);
+    assert.match(SYSTEM_PROMPT, /no pet name/i);
+    assert.match(SYSTEM_PROMPT, /braver Junge/);
   });
 
   it('fails closed on timeout', async () => {
@@ -1656,5 +1658,63 @@ describe('quality, time, and names in generate context', () => {
     );
     assert.equal(captured[0].fan.username, 'sugar_daddy99');
     assert.equal(captured[0].fan.givenName, null);
+  });
+
+  it('reloads conversation after backfill so the suggestion uses live revision', async () => {
+    const captured = [];
+    const persist = [];
+    const base = {
+      id: 'conv-1',
+      creatorId: 'cr-1',
+      platform: 'maloum',
+      platformChatId: 'chat-1',
+      lastInboundPlatformMessageId: 'in-1',
+      lastInboundAt: '2026-09-09T12:00:00.000Z',
+      historyBackfilledAt: null,
+    };
+    let loads = 0;
+    const { deps } = createHarness({
+      conversation: { ...base, revision: 1 },
+      maybeBackfillHistory: async () => ({ skipped: false }),
+      persistPendingSuggestion: async (row) => {
+        persist.push(row);
+        return { id: 'sug-1' };
+      },
+    });
+    deps.loadConversation = async () => {
+      loads += 1;
+      if (loads === 1) return { ...base, revision: 1 };
+      return { ...base, revision: 9, lastInboundPlatformMessageId: 'in-1' };
+    };
+    deps.generateReply = async ({ context }) => {
+      captured.push(context);
+      return {
+        output: {
+          schemaVersion: 1,
+          reply: 'hallo',
+          replyEnglish: 'hello',
+          intent: 'rapport',
+          action: 'TEXT_REPLY',
+          suggestedRoute: 'HUMAN_REVIEW',
+          requiresHumanReview: true,
+          flags: [],
+        },
+      };
+    };
+    const result = await processIncomingMessage(
+      {
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        inboundPlatformMessageId: 'in-1',
+      },
+      deps
+    );
+    assert.equal(result.status, 'succeeded');
+    assert.ok(loads >= 2);
+    assert.equal(captured[0].revision, 9);
+    assert.equal(captured[0].anchorInboundMessageId, 'in-1');
+    assert.equal(persist[0].conversation.revision, 9);
+    assert.equal(persist[0].run.revision, 9);
   });
 });

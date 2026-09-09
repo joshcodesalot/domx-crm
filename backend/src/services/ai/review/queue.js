@@ -9,6 +9,7 @@ const {
 } = require('../contracts');
 const { resolveEffectiveAiMode } = require('../flags');
 const { displayFanLabel } = require('../names');
+const { isSuggestionStale } = require('../send/executeApprovedSend');
 
 const INBOUND_PREVIEW_MAX = 140;
 
@@ -103,6 +104,18 @@ function toQueueRow(row, bucket, effectiveMode) {
     lastInboundAt: row.lastInboundAt || null,
     lastMessageAt: row.lastMessageAt || null,
     lastInboundPreview: previewText(row.lastInboundPreview),
+    suggestionStale: row.suggestionId
+      ? isSuggestionStale(
+          {
+            revision: row.suggestionRevision,
+            anchorInboundMessageId: row.anchorInboundMessageId,
+          },
+          {
+            revision: row.revision,
+            lastInboundPlatformMessageId: row.lastInboundPlatformMessageId,
+          }
+        )
+      : false,
     suggestion: row.suggestionId
       ? {
           id: row.suggestionId,
@@ -159,6 +172,8 @@ async function loadQueueRows(
        conv."aiIgnored",
        conv."lastInboundAt",
        conv."lastMessageAt",
+       conv.revision,
+       conv."lastInboundPlatformMessageId",
        COALESCE(st.mode, 'off') AS mode,
        COALESCE(st.paused, false) AS paused,
        inbound."lastInboundPreview",
@@ -167,7 +182,9 @@ async function loadQueueRows(
        s.reply,
        s."replyEnglish",
        s.intent,
-       s."updatedAt" AS "suggestionUpdatedAt"
+       s."updatedAt" AS "suggestionUpdatedAt",
+       s.revision AS "suggestionRevision",
+       s."anchorInboundMessageId"
      FROM ai_conversations conv
      JOIN creators cr ON cr.id = conv."creatorId"
      LEFT JOIN ai_creator_settings st ON st."creatorId" = conv."creatorId"
@@ -183,7 +200,8 @@ async function loadQueueRows(
        LIMIT 1
      ) inbound ON true
      LEFT JOIN LATERAL (
-       SELECT id, status, reply, "replyEnglish", intent, "updatedAt"
+       SELECT id, status, reply, "replyEnglish", intent, "updatedAt",
+              revision, "anchorInboundMessageId"
        FROM ai_suggestions
        WHERE "conversationId" = conv.id AND status = 'pending'
        ORDER BY "createdAt" DESC

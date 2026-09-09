@@ -5686,6 +5686,7 @@ export interface AiQueueItem {
   lastInboundAt: string | null;
   lastMessageAt: string | null;
   lastInboundPreview: string | null;
+  suggestionStale: boolean;
   suggestion: AiQueueSuggestion | null;
 }
 

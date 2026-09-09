@@ -396,7 +396,7 @@ async function runOrchestration(input, trigger, deps) {
     creator: settings,
   });
 
-  const conversation = await d.loadConversation({
+  let conversation = await d.loadConversation({
     creatorId,
     platform,
     platformChatId,
@@ -492,6 +492,12 @@ async function runOrchestration(input, trigger, deps) {
       platformChatId,
     });
     messages = await d.loadMessages(conversation.id);
+    const reloaded = await d.loadConversation({
+      creatorId,
+      platform,
+      platformChatId,
+    });
+    if (reloaded) conversation = reloaded;
   } catch (err) {
     console.error('AI history backfill error:', err);
     messages = loadedMessages;

@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { planIngest, shouldPersistIngest, CONVERSATION_UPSERT_SQL } = require('./ingest');
+const { planIngest, shouldPersistIngest, CONVERSATION_UPSERT_SQL, nextIngestPointers } = require('./ingest');
 const { MODES } = require('./contracts');
 
 describe('shouldPersistIngest', () => {
@@ -125,5 +125,67 @@ describe('planIngest maxMessages', () => {
     }));
     const planned = planIngest({ existingIds: [], messages, maxMessages: 300 });
     assert.equal(planned.toInsert.length, 80);
+  });
+});
+
+describe('nextIngestPointers', () => {
+  const { isSuggestionStale } = require('./send/executeApprovedSend');
+
+  it('counts a live inbound toward revision and last inbound', () => {
+    const next = nextIngestPointers({
+      conversation: {
+        revision: 0,
+        lastInboundPlatformMessageId: null,
+        lastInboundAt: null,
+        lastMessageAt: null,
+      },
+      toInsert: [
+        {
+          direction: 'inbound',
+          platformMessageId: 'live-1',
+          sentAt: '2026-09-09T12:00:00.000Z',
+        },
+      ],
+      inboundCount: 1,
+      source: 'poll',
+    });
+    assert.equal(next.revision, 1);
+    assert.equal(next.lastInboundPlatformMessageId, 'live-1');
+    assert.equal(next.lastInboundAt, '2026-09-09T12:00:00.000Z');
+  });
+
+  it('does not bump revision or last inbound for 20 older backfill messages', () => {
+    const live = {
+      revision: 1,
+      lastInboundPlatformMessageId: 'live-1',
+      lastInboundAt: '2026-09-09T12:00:00.000Z',
+      lastOutboundPlatformMessageId: null,
+      lastMessageAt: '2026-09-09T12:00:00.000Z',
+    };
+    const oldInbounds = Array.from({ length: 20 }, (_, i) => ({
+      direction: 'inbound',
+      platformMessageId: `old-${i + 1}`,
+      sentAt: `2026-08-${String(i + 1).padStart(2, '0')}T12:00:00.000Z`,
+    }));
+    const next = nextIngestPointers({
+      conversation: live,
+      toInsert: oldInbounds,
+      inboundCount: 20,
+      source: 'backfill',
+      skipProcess: true,
+    });
+    assert.equal(next.revision, 1);
+    assert.equal(next.lastInboundPlatformMessageId, 'live-1');
+    assert.equal(next.lastInboundAt, '2026-09-09T12:00:00.000Z');
+    assert.equal(
+      isSuggestionStale(
+        { revision: 1, anchorInboundMessageId: 'live-1' },
+        {
+          revision: next.revision,
+          lastInboundPlatformMessageId: next.lastInboundPlatformMessageId,
+        }
+      ),
+      false
+    );
   });
 });

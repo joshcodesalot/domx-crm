@@ -15,8 +15,21 @@ const RELATED_HINTS = [
   'send',
 ];
 
+const PET_NAME_PHRASES = [
+  'braver junge',
+  'good boy',
+  'baby',
+  'babe',
+  'süsser',
+  'süßer',
+];
+
+const DISTINCTIVE_CLOSERS = ['hoodie', 'sanft lenke', 'sanft lenken'];
+
 const SIMILARITY_THRESHOLD = 0.72;
 const RELATED_THRESHOLD = 0.45;
+const SESSION_WINDOW_MS = 30 * 60 * 1000;
+const SESSION_OUTBOUND_LIMIT = 2;
 
 function asText(value) {
   return typeof value === 'string' ? value : '';
@@ -66,37 +79,125 @@ function isRelatedPitch(a, b) {
   return false;
 }
 
-function trailingCreatorOutbounds(messages) {
-  const recent = [];
+function hasPhrase(haystack, phrase) {
+  return ` ${haystack} `.includes(` ${phrase} `);
+}
+
+function openerSpan(text) {
+  const normalized = normalizeOutboundText(text);
+  if (!normalized) return '';
+  const clause = normalized.split(/[,.]/)[0] || '';
+  return clause.split(' ').filter(Boolean).slice(0, 5).join(' ');
+}
+
+function petNameOpenerHits(text) {
+  const opener = openerSpan(text);
+  const hits = new Set();
+  if (!opener) return hits;
+  for (const phrase of PET_NAME_PHRASES) {
+    if (hasPhrase(opener, phrase)) hits.add(phrase);
+  }
+  return hits;
+}
+
+function sharedPetNameOpener(a, b) {
+  const left = petNameOpenerHits(a);
+  const right = petNameOpenerHits(b);
+  for (const name of left) {
+    if (right.has(name)) return true;
+  }
+  return false;
+}
+
+function distinctiveCloserHits(text) {
+  const normalized = normalizeOutboundText(text);
+  const hits = new Set();
+  if (!normalized) return hits;
+  for (const phrase of DISTINCTIVE_CLOSERS) {
+    if (normalized.includes(phrase)) hits.add(phrase === 'sanft lenken' ? 'sanft lenke' : phrase);
+  }
+  return hits;
+}
+
+function sharedDistinctiveCloser(a, b) {
+  const left = distinctiveCloserHits(a);
+  const right = distinctiveCloserHits(b);
+  for (const phrase of left) {
+    if (right.has(phrase)) return true;
+  }
+  return false;
+}
+
+function trailingEmoji(text) {
+  const trimmed = asText(text).trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/(\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)\s*$/u);
+  return match ? match[1] : null;
+}
+
+function sameTrailingEmoji(a, b) {
+  const left = trailingEmoji(a);
+  const right = trailingEmoji(b);
+  return Boolean(left && right && left === right);
+}
+
+function newestSentAtMs(messages) {
+  let newest = null;
   const list = Array.isArray(messages) ? messages : [];
-  for (let i = list.length - 1; i >= 0; i -= 1) {
+  for (const msg of list) {
+    const t = Date.parse(msg?.sentAt);
+    if (!Number.isFinite(t)) continue;
+    if (newest == null || t > newest) newest = t;
+  }
+  return newest;
+}
+
+function trailingCreatorOutbounds(messages, { limit = SESSION_OUTBOUND_LIMIT } = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const newest = newestSentAtMs(list);
+  const recent = [];
+  for (let i = list.length - 1; i >= 0 && recent.length < limit; i -= 1) {
     const msg = list[i];
     if (!msg || typeof msg !== 'object') continue;
-    if (msg.direction === 'inbound') break;
-    if (msg.direction === 'outbound' && msg.senderRole !== 'system') {
-      recent.push(msg);
+    if (msg.direction !== 'outbound' || msg.senderRole === 'system') continue;
+    const t = Date.parse(msg.sentAt);
+    if (Number.isFinite(t) && newest != null && newest - t > SESSION_WINDOW_MS) {
+      continue;
     }
+    recent.push(msg);
   }
   return recent.reverse();
+}
+
+function isDuplicatePair(draftText, previousText) {
+  const previous = asText(previousText).trim();
+  if (!previous) return false;
+  if (jaccard(draftText, previous) >= SIMILARITY_THRESHOLD) return true;
+  if (isRelatedPitch(draftText, previous)) return true;
+  if (sharedPetNameOpener(draftText, previous)) return true;
+  if (sharedDistinctiveCloser(draftText, previous)) return true;
+  if (
+    sameTrailingEmoji(draftText, previous) &&
+    (sharedPetNameOpener(draftText, previous) ||
+      sharedDistinctiveCloser(draftText, previous) ||
+      jaccard(draftText, previous) >= RELATED_THRESHOLD)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function evaluateOutboundDedupe({ messages, draft, lastUnsentText } = {}) {
   const draftText = asText(draft).trim();
   if (!draftText) return { ok: true, flags: [] };
 
-  if (lastUnsentText && jaccard(draftText, lastUnsentText) >= SIMILARITY_THRESHOLD) {
-    return { ok: false, flags: ['duplicate_outbound'] };
-  }
-  if (lastUnsentText && isRelatedPitch(draftText, lastUnsentText)) {
+  if (isDuplicatePair(draftText, lastUnsentText)) {
     return { ok: false, flags: ['duplicate_outbound'] };
   }
 
   const recent = trailingCreatorOutbounds(messages);
   for (const msg of recent.slice(-2)) {
-    if (jaccard(draftText, msg.text) >= SIMILARITY_THRESHOLD) {
-      return { ok: false, flags: ['duplicate_outbound'] };
-    }
-    if (isRelatedPitch(draftText, msg.text)) {
+    if (isDuplicatePair(draftText, msg.text)) {
       return { ok: false, flags: ['duplicate_outbound'] };
     }
   }
@@ -118,6 +219,7 @@ function evaluateOutboundDedupe({ messages, draft, lastUnsentText } = {}) {
 module.exports = {
   RELATED_HINTS,
   SIMILARITY_THRESHOLD,
+  SESSION_WINDOW_MS,
   normalizeOutboundText,
   jaccard,
   trailingCreatorOutbounds,

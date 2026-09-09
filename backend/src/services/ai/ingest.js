@@ -146,6 +146,50 @@ function shouldReplacePointer(existingAt, incomingAt) {
   return new Date(incomingAt).getTime() >= new Date(existingAt).getTime();
 }
 
+function isBackfillIngest({ source, skipProcess } = {}) {
+  return source === 'backfill' || skipProcess === true;
+}
+
+function nextIngestPointers({
+  conversation,
+  toInsert,
+  inboundCount,
+  source,
+  skipProcess,
+} = {}) {
+  const convo = conversation && typeof conversation === 'object' ? conversation : {};
+  const batch = Array.isArray(toInsert) ? toInsert : [];
+  const inbound = latestByDirection(batch, 'inbound');
+  const outbound = latestByDirection(batch, 'outbound');
+  const newest = latestAny(batch);
+  const backfill = isBackfillIngest({ source, skipProcess });
+
+  return {
+    revision: backfill
+      ? Number(convo.revision || 0)
+      : Number(convo.revision || 0) + Number(inboundCount || 0),
+    lastInboundPlatformMessageId: backfill
+      ? convo.lastInboundPlatformMessageId || null
+      : inbound && shouldReplacePointer(convo.lastInboundAt, inbound.sentAt)
+        ? inbound.platformMessageId
+        : convo.lastInboundPlatformMessageId || null,
+    lastInboundAt: backfill
+      ? convo.lastInboundAt || null
+      : inbound && shouldReplacePointer(convo.lastInboundAt, inbound.sentAt)
+        ? inbound.sentAt
+        : convo.lastInboundAt || null,
+    lastOutboundPlatformMessageId:
+      outbound && shouldReplacePointer(convo.lastMessageAt, outbound.sentAt)
+        ? outbound.platformMessageId
+        : convo.lastOutboundPlatformMessageId || null,
+    lastMessageAt:
+      newest && shouldReplacePointer(convo.lastMessageAt, newest.sentAt)
+        ? newest.sentAt
+        : convo.lastMessageAt || null,
+    inbound,
+  };
+}
+
 async function ingestConversation({
   creatorId,
   platform,
@@ -248,30 +292,13 @@ async function ingestConversation({
       );
     }
 
-    const inbound = latestByDirection(toInsert, 'inbound');
-    const outbound = latestByDirection(toInsert, 'outbound');
-    const newest = latestAny(toInsert);
-
-    const nextRevision = Number(conversation.revision || 0) + inboundCount;
-    const nextInboundId =
-      inbound &&
-      shouldReplacePointer(conversation.lastInboundAt, inbound.sentAt)
-        ? inbound.platformMessageId
-        : conversation.lastInboundPlatformMessageId;
-    const nextInboundAt =
-      inbound &&
-      shouldReplacePointer(conversation.lastInboundAt, inbound.sentAt)
-        ? inbound.sentAt
-        : conversation.lastInboundAt;
-    const nextOutboundId =
-      outbound &&
-      shouldReplacePointer(conversation.lastMessageAt, outbound.sentAt)
-        ? outbound.platformMessageId
-        : conversation.lastOutboundPlatformMessageId;
-    const nextLastMessageAt =
-      newest && shouldReplacePointer(conversation.lastMessageAt, newest.sentAt)
-        ? newest.sentAt
-        : conversation.lastMessageAt;
+    const pointers = nextIngestPointers({
+      conversation,
+      toInsert,
+      inboundCount,
+      source,
+      skipProcess,
+    });
 
     const updated = await client.query(
       `UPDATE ai_conversations
@@ -285,11 +312,11 @@ async function ingestConversation({
        RETURNING id, revision`,
       [
         conversation.id,
-        nextRevision,
-        nextInboundId,
-        nextInboundAt,
-        nextOutboundId,
-        nextLastMessageAt,
+        pointers.revision,
+        pointers.lastInboundPlatformMessageId,
+        pointers.lastInboundAt,
+        pointers.lastOutboundPlatformMessageId,
+        pointers.lastMessageAt,
       ]
     );
 
@@ -324,7 +351,9 @@ async function ingestConversation({
         platform,
         platformChatId,
         inboundPlatformMessageId:
-          inbound?.platformMessageId || nextInboundId || undefined,
+          pointers.inbound?.platformMessageId ||
+          pointers.lastInboundPlatformMessageId ||
+          undefined,
         fanNotes: notes || undefined,
       });
     }
@@ -346,5 +375,8 @@ module.exports = {
   shouldPersistIngest,
   normalizeIngestMessage,
   planIngest,
+  shouldReplacePointer,
+  isBackfillIngest,
+  nextIngestPointers,
   ingestConversation,
 };

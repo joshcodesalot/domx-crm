@@ -210,8 +210,11 @@ function buildConstraints(profile, { inboundIsLive } = {}) {
     'ask at most one question per reply',
     'never use an em dash',
     'do not stack topics (no selfie AND how you lie AND what made you sad)',
-    'never address the fan by username, handle, or platform id',
-    'use givenName only; otherwise boy/babe or no name. never hey {username}',
+    'never address the fan by username, handle, or platform id. never hey {username}',
+    'default is no pet name. givenName only if confirmed. do not make boy the fallback address',
+    'boy / babe / braver Junge / süßer at most rarely; never if the last creator outbound already used one',
+    'never copy the previous outbound opener, closer, or trailing emoji',
+    'if the fan repeats the same beat, advance with one new ask or soft sell; do not reprint the hoodie line',
     inboundIsLive
       ? 'latest inbound is this session: heute/gerade/today/right now are allowed'
       : 'latest inbound is old history: do not use heute/gerade/today/right now; do not resume an old emotional beat. re-engage instead',
