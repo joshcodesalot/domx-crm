@@ -1,9 +1,10 @@
 const express = require('express');
+const { authenticate } = require('../middleware/auth');
 const { translateToGermanFemdom } = require('../services/germanTranslator');
 
 const router = express.Router();
 
-router.post('/', async (req, res) => {
+router.post('/', authenticate, async (req, res) => {
   try {
     const { text, history } = req.body;
 

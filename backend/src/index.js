@@ -28,10 +28,14 @@ const telegramMassMessageRoutes = require('./routes/telegramMassMessages');
 const telegramSextingSessionRoutes = require('./routes/telegramSextingSessions');
 const throneWebhookRoutes = require('./routes/throneWebhook');
 const throneRoutes = require('./routes/throne');
+const aiRoutes = require('./routes/ai');
 const {
   startMaloumTokenRefreshScheduler,
 } = require('./services/maloumTokenRefresh');
 const { startContentScheduleRunner } = require('./services/contentScheduleRunner');
+const {
+  startMaloumInboundPoller,
+} = require('./services/ai/poller/maloumInboundPoller');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -98,6 +102,7 @@ app.use('/api/activity', activityRoutes);
 app.use('/api/scheduled-content', contentScheduleRoutes);
 app.use('/api/telegram-sexting-sessions', telegramSextingSessionRoutes);
 app.use('/api/throne', throneRoutes);
+app.use('/api/ai', aiRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
@@ -126,4 +131,7 @@ app.listen(PORT, () => {
   } = require('./services/fourbasedFanScrapeRunner');
   void resumeFourBasedFanScrapeJobs();
   startContentScheduleRunner();
+  startMaloumInboundPoller();
+  const { startTelegramAlertBot } = require('./services/ai/alerts/telegramAlertBot');
+  startTelegramAlertBot();
 });

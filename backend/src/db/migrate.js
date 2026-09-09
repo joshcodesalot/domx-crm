@@ -20,6 +20,18 @@ const TABLE_MARKERS = {
   '049_throne_notifications.sql': 'throne_notifications',
   '050_telegram_lists_and_mm.sql': 'telegram_lists',
   '051_telegram_global_fan_notes.sql': 'telegram_fan_notes',
+  '053_ai_creator_settings.sql': 'ai_creator_settings',
+  '054_ai_conversations.sql': 'ai_conversations',
+  '055_ai_creator_profiles.sql': 'ai_creator_profiles',
+  '056_ai_runs.sql': 'ai_runs',
+  '057_ai_runs_rejected.sql': 'ai_runs',
+  '058_ai_suggestions.sql': 'ai_suggestions',
+  '059_ai_suggestion_review.sql': 'ai_suggestions',
+  '060_ai_usage.sql': 'ai_usage',
+  '061_ai_fan_memories.sql': 'ai_fan_memories',
+  '062_ai_conversation_summaries.sql': 'ai_conversation_summaries',
+  '063_ai_conversation_state.sql': 'ai_conversation_state_history',
+  '064_ai_brain_rules.sql': 'ai_rules',
 };
 
 async function tableExists(client, tableName) {

@@ -36,6 +36,8 @@ import QuickEmojiBar from '@/components/QuickEmojiBar';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
+import AiSuggestionCard from '@/components/ai/AiSuggestionCard';
+import { useAiThreadSuggestion } from '@/hooks/useAiThreadSuggestion';
 import TelegramFanPanel from '@/components/telegram/TelegramFanPanel';
 import TelegramReactionPicker, {
   applyOptimisticReactions,
@@ -54,6 +56,11 @@ import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
 } from '@/lib/historyTranslateQueue';
+import {
+  ingestLatestPage,
+  latestInboundPlatformMessageId,
+  mapTelegramMessagesForIngest,
+} from '@/lib/aiIngest';
 import {
   addVaultSentIds,
   vaultCacheKey,
@@ -959,6 +966,7 @@ export function TelegramChatThread({
   messageUnsendsRef.current = messageUnsends;
   const threadKeyRef = useRef(`${creatorId}:${peerId}`);
   threadKeyRef.current = `${creatorId}:${peerId}`;
+  const aiIngestSeenIdsRef = useRef<Set<string>>(new Set());
   const historyTranslateQueueRef = useRef<HistoryTranslateQueue | null>(null);
   const historyTranslationsRef = useRef(historyTranslations);
   historyTranslationsRef.current = historyTranslations;
@@ -1042,6 +1050,7 @@ export function TelegramChatThread({
     setMessages([]);
     setMessagesNext(null);
     messagesNextRef.current = null;
+    aiIngestSeenIdsRef.current = new Set();
     loadedOlderRef.current = false;
     loadingOlderRef.current = false;
     setLoadingOlder(false);
@@ -1171,6 +1180,15 @@ export function TelegramChatThread({
             markedReadOnOpenRef.current = true;
             onMarkedReadRef.current?.(peerId);
           }
+          void ingestLatestPage({
+            creatorId,
+            platform: 'telegram',
+            platformChatId: peerId,
+            platformFanId: result.fan?.telegramUserId || peerId,
+            source: 'telegram_poll',
+            seenIds: aiIngestSeenIdsRef.current,
+            messages: mapTelegramMessagesForIngest(incoming),
+          });
         }
       } catch (err) {
         if (!silent && threadKeyRef.current === key) {
@@ -1771,6 +1789,29 @@ export function TelegramChatThread({
         content: m.text.trim(),
       }));
   }, [messages]);
+
+  const latestInboundId = useMemo(
+    () => latestInboundPlatformMessageId(mapTelegramMessagesForIngest(messages)),
+    [messages]
+  );
+  const {
+    suggestion: aiSuggestion,
+    stale: aiSuggestionStale,
+    dismiss: dismissAiSuggestion,
+    busy: aiBusy,
+    actionError: aiActionError,
+    canPause: canPauseAi,
+    canTakeover: canTakeoverAi,
+    reject: rejectAiSuggestion,
+    regenerate: regenerateAiSuggestion,
+    takeover: takeoverAiConversation,
+    pause: pauseAiCreator,
+  } = useAiThreadSuggestion({
+    creatorId,
+    platform: 'telegram',
+    platformChatId: peerId,
+    latestInboundId,
+  });
 
   const getSuggestFanNotes = useCallback(() => {
     const notes = fan?.notes?.trim() || '';
@@ -2442,6 +2483,21 @@ export function TelegramChatThread({
             AI German — won’t re-translate
           </p>
         )}
+
+        {aiSuggestion ? (
+          <AiSuggestionCard
+            suggestion={aiSuggestion}
+            stale={aiSuggestionStale}
+            platform="telegram"
+            busy={aiBusy}
+            error={aiActionError}
+            onDismiss={dismissAiSuggestion}
+            onReject={rejectAiSuggestion}
+            onRegenerate={regenerateAiSuggestion}
+            onTakeover={canTakeoverAi ? takeoverAiConversation : undefined}
+            onPause={canPauseAi ? pauseAiCreator : undefined}
+          />
+        ) : null}
 
         <QuickEmojiBar
           disabled={sending || translatingOutgoing}

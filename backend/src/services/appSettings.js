@@ -1,4 +1,5 @@
 const pool = require('../db/pool');
+const { AI_SETTING_KEYS } = require('./ai/contracts');
 
 const UNSEND_BEFORE_MASS_KEY = 'schedule.unsend_before_mass';
 
@@ -23,9 +24,20 @@ async function ensureAppSettingsTable() {
   `);
   await pool.query(
     `INSERT INTO app_settings (key, value)
-     VALUES ($1, 'true'::jsonb)
+     VALUES
+       ($1, 'true'::jsonb),
+       ($2, 'false'::jsonb),
+       ($3, 'false'::jsonb),
+       ($4, 'false'::jsonb),
+       ($5, 'false'::jsonb)
      ON CONFLICT (key) DO NOTHING`,
-    [UNSEND_BEFORE_MASS_KEY]
+    [
+      UNSEND_BEFORE_MASS_KEY,
+      AI_SETTING_KEYS.enabled,
+      AI_SETTING_KEYS.shadowAllowed,
+      AI_SETTING_KEYS.suggestAllowed,
+      AI_SETTING_KEYS.autoSendAllowed,
+    ]
   );
   appSettingsReady = true;
 }
@@ -53,8 +65,31 @@ async function setUnsendBeforeMass(enabled, userId) {
   return value;
 }
 
+async function getAiFlags() {
+  await ensureAppSettingsTable();
+  const keys = [
+    AI_SETTING_KEYS.enabled,
+    AI_SETTING_KEYS.shadowAllowed,
+    AI_SETTING_KEYS.suggestAllowed,
+    AI_SETTING_KEYS.autoSendAllowed,
+  ];
+  const result = await pool.query(
+    `SELECT key, value FROM app_settings WHERE key = ANY($1::text[])`,
+    [keys]
+  );
+  const byKey = new Map(result.rows.map((row) => [row.key, row.value]));
+  return {
+    enabled: asBoolean(byKey.get(AI_SETTING_KEYS.enabled), false),
+    shadowAllowed: asBoolean(byKey.get(AI_SETTING_KEYS.shadowAllowed), false),
+    suggestAllowed: asBoolean(byKey.get(AI_SETTING_KEYS.suggestAllowed), false),
+    autoSendAllowed: asBoolean(byKey.get(AI_SETTING_KEYS.autoSendAllowed), false),
+  };
+}
+
 module.exports = {
   UNSEND_BEFORE_MASS_KEY,
+  AI_SETTING_KEYS,
   getUnsendBeforeMass,
   setUnsendBeforeMass,
+  getAiFlags,
 };

@@ -5360,3 +5360,303 @@ export async function stopMassUnsendAllPlatform(
   });
 }
 
+export type AiIngestPlatform = 'maloum' | '4based' | 'telegram';
+
+export interface AiIngestMessage {
+  platformMessageId: string;
+  direction: 'inbound' | 'outbound';
+  senderRole: 'fan' | 'creator' | 'system';
+  text: string;
+  hasMedia: boolean;
+  isPpv: boolean;
+  priceNet: number | null;
+  sentAt: string | null;
+}
+
+export interface AiIngestPayload {
+  creatorId: string;
+  platform: AiIngestPlatform;
+  platformChatId: string;
+  platformFanId?: string | null;
+  source?: string;
+  messages: AiIngestMessage[];
+}
+
+export interface AiIngestResult {
+  skipped: boolean;
+  reason?: string;
+  conversationId?: string;
+  inserted?: number;
+  inboundCount?: number;
+  revision?: number;
+}
+
+export async function ingestAiMessages(
+  payload: AiIngestPayload
+): Promise<AiIngestResult> {
+  return request('/api/ai/ingest', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export interface AiCreatorProfile {
+  persona: string;
+  tone: string;
+  languages: string[];
+  biography: string;
+  preferredTerminology: Record<string, string>;
+  prohibitedClaims: string[];
+  salesStyle: string;
+  platformRules: Record<string, unknown>;
+  instructions: string;
+  version: number;
+  updatedBy: string | null;
+  updatedAt: string | null;
+}
+
+export async function getAiCreatorProfile(
+  creatorId: string
+): Promise<AiCreatorProfile> {
+  return request(`/api/ai/creators/${creatorId}/profile`);
+}
+
+export async function putAiCreatorProfile(
+  creatorId: string,
+  profile: Omit<AiCreatorProfile, 'version' | 'updatedBy' | 'updatedAt'>
+): Promise<AiCreatorProfile> {
+  return request(`/api/ai/creators/${creatorId}/profile`, {
+    method: 'PUT',
+    body: JSON.stringify(profile),
+  });
+}
+
+export interface AiSuggestion {
+  id: string;
+  runId: string | null;
+  conversationId: string | null;
+  creatorId: string | null;
+  platform: string | null;
+  platformChatId: string | null;
+  revision: number | null;
+  anchorInboundMessageId: string | null;
+  status: string;
+  reply: string;
+  replyEnglish: string;
+  intent: string | null;
+  action: string | null;
+  route: string | null;
+  output: Record<string, unknown> | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export async function getAiConversationSuggestion(
+  conversationId: string
+): Promise<{ suggestion: AiSuggestion | null }> {
+  return request(`/api/ai/conversations/${conversationId}/suggestion`);
+}
+
+export async function getAiSuggestionByChat(payload: {
+  creatorId: string;
+  platform: AiIngestPlatform;
+  platformChatId: string;
+}): Promise<{ suggestion: AiSuggestion | null }> {
+  const params = new URLSearchParams({
+    creatorId: payload.creatorId,
+    platform: payload.platform,
+    platformChatId: payload.platformChatId,
+  });
+  return request(`/api/ai/suggestion?${params.toString()}`);
+}
+
+export async function patchAiCreatorSettings(
+  creatorId: string,
+  patch: { mode?: string; paused?: boolean }
+): Promise<{
+  mode: string;
+  paused: boolean;
+  effectiveMode: string;
+  takeoverByUserId: string | null;
+  takeoverAt: string | null;
+}> {
+  return request(`/api/ai/creators/${creatorId}/settings`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function approveAiSuggestion(
+  suggestionId: string
+): Promise<{ suggestion: AiSuggestion; messageId: string }> {
+  return request(`/api/ai/suggestions/${suggestionId}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function editSendAiSuggestion(
+  suggestionId: string,
+  payload: { text: string; englishText?: string }
+): Promise<{ suggestion: AiSuggestion; messageId: string }> {
+  return request(`/api/ai/suggestions/${suggestionId}/edit-send`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function rejectAiSuggestion(
+  suggestionId: string
+): Promise<{ suggestion: AiSuggestion }> {
+  return request(`/api/ai/suggestions/${suggestionId}/reject`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function regenerateAiSuggestion(
+  suggestionId: string
+): Promise<{
+  status: string;
+  skipReason?: string | null;
+  id?: string | null;
+}> {
+  return request(`/api/ai/suggestions/${suggestionId}/regenerate`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function takeoverAiConversation(
+  conversationId: string
+): Promise<{ conversation: Record<string, unknown> }> {
+  return request(`/api/ai/conversations/${conversationId}/takeover`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function resumeAiConversation(
+  conversationId: string
+): Promise<{ conversation: Record<string, unknown> }> {
+  return request(`/api/ai/conversations/${conversationId}/resume`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export type AiQueueBucket =
+  | 'needs_review'
+  | 'ai_handling'
+  | 'taken_over'
+  | 'paused';
+
+export interface AiQueueSuggestion {
+  id: string;
+  status: string;
+  reply: string;
+  replyEnglish: string;
+  intent: string | null;
+  updatedAt: string | null;
+}
+
+export interface AiQueueItem {
+  conversationId: string;
+  creatorId: string;
+  creatorName: string;
+  platform: AiIngestPlatform;
+  platformChatId: string;
+  platformFanId: string | null;
+  bucket: AiQueueBucket;
+  mode: string;
+  effectiveMode: string;
+  paused: boolean;
+  humanTakeover: boolean;
+  lastInboundAt: string | null;
+  lastMessageAt: string | null;
+  suggestion: AiQueueSuggestion | null;
+}
+
+export interface AiQueueResponse {
+  items: AiQueueItem[];
+  counts: Record<AiQueueBucket, number>;
+}
+
+export type AiRuleScope = 'GLOBAL' | 'PLATFORM' | 'CREATOR' | 'FAN';
+
+export interface AiRuleSuggestion {
+  id: string;
+  suggestionId: string | null;
+  conversationId: string | null;
+  creatorId: string | null;
+  platform: string | null;
+  platformFanId: string | null;
+  beforeText: string;
+  afterText: string;
+  proposedRule: string;
+  proposedScope: AiRuleScope;
+  status: string;
+  createdBy: string | null;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  createdAt: string | null;
+}
+
+export interface AiRule {
+  id: string;
+  scope: AiRuleScope;
+  creatorId: string | null;
+  platform: string | null;
+  platformFanId: string | null;
+  text: string;
+  sourceSuggestionId: string | null;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  active: boolean;
+  createdAt: string | null;
+}
+
+export async function getAiRuleSuggestions(
+  status = 'pending'
+): Promise<{ suggestions: AiRuleSuggestion[] }> {
+  const params = new URLSearchParams({ status });
+  return request(`/api/ai/rules/suggestions?${params.toString()}`);
+}
+
+export async function getAiRules(): Promise<{ rules: AiRule[] }> {
+  return request('/api/ai/rules');
+}
+
+export async function approveAiRuleSuggestion(
+  id: string,
+  payload: { scope?: AiRuleScope; text?: string } = {}
+): Promise<{ rule: AiRule }> {
+  return request(`/api/ai/rules/suggestions/${id}/approve`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function rejectAiRuleSuggestion(
+  id: string
+): Promise<{ suggestion: AiRuleSuggestion }> {
+  return request(`/api/ai/rules/suggestions/${id}/reject`, {
+    method: 'POST',
+  });
+}
+
+export async function getAiQueue(params: {
+  bucket?: AiQueueBucket | '';
+  creatorId?: string;
+  platform?: AiIngestPlatform | '';
+  limit?: number;
+} = {}): Promise<AiQueueResponse> {
+  const search = new URLSearchParams();
+  if (params.bucket) search.set('bucket', params.bucket);
+  if (params.creatorId) search.set('creatorId', params.creatorId);
+  if (params.platform) search.set('platform', params.platform);
+  if (params.limit != null) search.set('limit', String(params.limit));
+  const qs = search.toString();
+  return request(`/api/ai/queue${qs ? `?${qs}` : ''}`);
+}
+

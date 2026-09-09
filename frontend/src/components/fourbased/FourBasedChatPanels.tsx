@@ -39,6 +39,8 @@ import VaultMediaNoteModal, {
 } from '@/components/VaultMediaNoteModal';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
+import AiSuggestionCard from '@/components/ai/AiSuggestionCard';
+import { useAiThreadSuggestion } from '@/hooks/useAiThreadSuggestion';
 import FourBasedFanPanel, {
   DEFAULT_FAN_NOTES_TEMPLATE,
 } from '@/components/fourbased/FourBasedFanPanel';
@@ -86,6 +88,11 @@ import {
   type MessageUnsendRecord,
   type TranslateHistoryItem,
 } from '@/lib/api';
+import {
+  ingestLatestPage,
+  latestInboundPlatformMessageId,
+  mapFourBasedMessagesForIngest,
+} from '@/lib/aiIngest';
 import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
@@ -1525,6 +1532,9 @@ export function FourBasedChatThread({
   );
   const threadKeyRef = useRef(`${creatorId}:${chatId}`);
   threadKeyRef.current = `${creatorId}:${chatId}`;
+  const chatRef = useRef(chat);
+  chatRef.current = chat;
+  const aiIngestSeenIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const el = threadRootRef.current;
@@ -1616,6 +1626,32 @@ export function FourBasedChatThread({
         content: m.message!.trim(),
       }));
   }, [messages, providerUserId]);
+
+  const latestInboundId = useMemo(
+    () =>
+      latestInboundPlatformMessageId(
+        mapFourBasedMessagesForIngest(messages, providerUserId)
+      ),
+    [messages, providerUserId]
+  );
+  const {
+    suggestion: aiSuggestion,
+    stale: aiSuggestionStale,
+    dismiss: dismissAiSuggestion,
+    busy: aiBusy,
+    actionError: aiActionError,
+    canPause: canPauseAi,
+    canTakeover: canTakeoverAi,
+    reject: rejectAiSuggestion,
+    regenerate: regenerateAiSuggestion,
+    takeover: takeoverAiConversation,
+    pause: pauseAiCreator,
+  } = useAiThreadSuggestion({
+    creatorId,
+    platform: '4based',
+    platformChatId: chatId,
+    latestInboundId,
+  });
 
   const getSuggestFanNotes = useCallback(async () => {
     if (!fan.id) return '';
@@ -1757,6 +1793,25 @@ export function FourBasedChatThread({
         if (result.providerUserId) {
           setProviderUserId(result.providerUserId);
         }
+        if (!append) {
+          const resolvedProviderUserId =
+            result.providerUserId || providerUserId;
+          const currentChat = chatRef.current;
+          void ingestLatestPage({
+            creatorId,
+            platform: '4based',
+            platformChatId: chatId,
+            platformFanId: currentChat
+              ? fanFromChat(currentChat, resolvedProviderUserId).id
+              : null,
+            source: 'fourbased_poll',
+            seenIds: aiIngestSeenIdsRef.current,
+            messages: mapFourBasedMessagesForIngest(
+              chronological,
+              resolvedProviderUserId
+            ),
+          });
+        }
       } catch (err) {
         if (!silent && !append && threadKeyRef.current === key) {
           setMessagesError(
@@ -1843,6 +1898,7 @@ export function FourBasedChatThread({
     setTranslatingMessageKeys(new Set());
     nearBottomRef.current = true;
     preserveScrollRef.current = null;
+    aiIngestSeenIdsRef.current = new Set();
     void loadMessages();
     void loadSenders();
     void getMessageUnsends({
@@ -3288,6 +3344,21 @@ export function FourBasedChatThread({
             AI German — won’t re-translate
           </p>
         )}
+
+        {aiSuggestion ? (
+          <AiSuggestionCard
+            suggestion={aiSuggestion}
+            stale={aiSuggestionStale}
+            platform="4based"
+            busy={aiBusy}
+            error={aiActionError}
+            onDismiss={dismissAiSuggestion}
+            onReject={rejectAiSuggestion}
+            onRegenerate={regenerateAiSuggestion}
+            onTakeover={canTakeoverAi ? takeoverAiConversation : undefined}
+            onPause={canPauseAi ? pauseAiCreator : undefined}
+          />
+        ) : null}
 
         <QuickEmojiBar
           onInsert={(emoji) => setDraft((d) => d + emoji)}

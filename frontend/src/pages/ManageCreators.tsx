@@ -8,6 +8,7 @@ import {
   Trash2,
   Users,
   Globe,
+  Sparkles,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import AddCreatorModal from '@/components/AddCreatorModal';
@@ -16,6 +17,7 @@ import CreatorAvatar from '@/components/CreatorAvatar';
 import EditCreatorProxyModal from '@/components/EditCreatorProxyModal';
 import RemoveCreatorModal from '@/components/RemoveCreatorModal';
 import RenameCreatorModal from '@/components/RenameCreatorModal';
+import AiCreatorProfileModal from '@/components/AiCreatorProfileModal';
 import { useAuth } from '@/context/AuthContext';
 import {
   deleteCreator,
@@ -73,12 +75,14 @@ export default function ManageCreators() {
   const [staffTarget, setStaffTarget] = useState<Creator | null>(null);
   const [renameTarget, setRenameTarget] = useState<Creator | null>(null);
   const [proxyTarget, setProxyTarget] = useState<Creator | null>(null);
+  const [aiProfileTarget, setAiProfileTarget] = useState<Creator | null>(null);
   const [refreshingIconId, setRefreshingIconId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
 
   const canManage = hasPermission('creators.manage');
+  const canManageAi = hasPermission('ai.settings.manage');
 
   const loadCreators = useCallback(async () => {
     const { creators: list } = await getCreators();
@@ -402,6 +406,16 @@ export default function ManageCreators() {
                               className={`w-4 h-4 ${refreshingIconId === creator.id ? 'animate-pulse' : ''}`}
                             />
                           </button>
+                          {canManageAi && (
+                            <button
+                              type="button"
+                              className="p-1.5 text-gray-400 hover:text-violet-500 dark:hover:text-violet-400 rounded-md hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
+                              title="AI profile"
+                              onClick={() => setAiProfileTarget(creator)}
+                            >
+                              <Sparkles className="w-4 h-4" />
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="p-1.5 text-gray-400 hover:text-brand-600 dark:hover:text-brand-400 rounded-md hover:bg-brand-50 dark:hover:bg-brand-900/20 transition-colors"
@@ -467,6 +481,14 @@ export default function ManageCreators() {
           creator={staffTarget}
           onClose={() => setStaffTarget(null)}
           onSaved={loadCreators}
+        />
+      )}
+
+      {aiProfileTarget && (
+        <AiCreatorProfileModal
+          creatorId={aiProfileTarget.id}
+          displayName={aiProfileTarget.displayName}
+          onClose={() => setAiProfileTarget(null)}
         />
       )}
 

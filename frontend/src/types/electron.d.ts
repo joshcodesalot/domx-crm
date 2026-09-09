@@ -67,6 +67,25 @@ export type StaffSyncEvent =
       type: 'moderation:warned';
       matchedKeyword?: string | null;
       message?: string | null;
+    }
+  | {
+      type: 'ai:suggestion';
+      suggestionId: string | null;
+      runId: string | null;
+      creatorId: string | null;
+      platform: string | null;
+      platformChatId: string | null;
+      conversationId: string | null;
+      revision: number | null;
+      anchorInboundMessageId: string | null;
+      status: string;
+      reply: string;
+      replyEnglish: string;
+      intent: string | null;
+      action?: string | null;
+      mediaId?: string | null;
+      price?: number | null;
+      route: string | null;
     };
 
 export type UpdaterStatus =

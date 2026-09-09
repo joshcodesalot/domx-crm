@@ -1,12 +1,6 @@
-const OpenAI = require('openai');
 const { translateToGermanFemdom } = require('./germanTranslator');
-
-const openai = new OpenAI({
-  apiKey: process.env.XAI_API_KEY,
-  baseURL: 'https://api.x.ai/v1',
-});
-
-const XAI_MODEL = process.env.XAI_MODEL || 'grok-4.20-non-reasoning';
+const { createResponse } = require('./ai/providers/xaiClient');
+const { extractJsonObject } = require('./ai/providers/jsonExtract');
 
 const MAX_MESSAGES = 12;
 const VALID_ROLES = new Set(['user', 'assistant']);
@@ -127,34 +121,12 @@ function buildSuggestInput({ messages, fanNotes, fanNickname }) {
   ];
 }
 
-function extractJsonObject(text) {
-  const trimmed = String(text || '').trim();
-  if (!trimmed) return null;
-
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    // fall through
-  }
-
-  const start = trimmed.indexOf('{');
-  const end = trimmed.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) return null;
-
-  try {
-    return JSON.parse(trimmed.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-}
-
 async function draftEnglishSuggestions({ messages, fanNotes, fanNickname }) {
-  const response = await openai.responses.create({
-    model: XAI_MODEL,
+  const response = await createResponse({
     input: buildSuggestInput({ messages, fanNotes, fanNickname }),
   });
 
-  const parsed = extractJsonObject(response.output_text);
+  const parsed = extractJsonObject(response.outputText);
   const rapport =
     typeof parsed?.rapport === 'string' ? parsed.rapport.trim() : '';
   const upsell =

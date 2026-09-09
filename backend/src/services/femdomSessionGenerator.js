@@ -1,11 +1,5 @@
-const OpenAI = require('openai');
+const { createResponse } = require('./ai/providers/xaiClient');
 
-const openai = new OpenAI({
-  apiKey: process.env.XAI_API_KEY,
-  baseURL: 'https://api.x.ai/v1',
-});
-
-const XAI_MODEL = process.env.XAI_MODEL || 'grok-4.20-non-reasoning';
 const DEFAULT_BLOCKS = 20;
 const MIN_BLOCKS = 1;
 const MAX_BLOCKS = 30;
@@ -187,8 +181,7 @@ Additional instructions / fan limits: ${extraInstructions || 'None'}
 Generate the full session now as JSON only.
 `.trim();
 
-  const response = await openai.responses.create({
-    model: XAI_MODEL,
+  const response = await createResponse({
     input: [
       {
         role: 'system',
@@ -201,7 +194,7 @@ Generate the full session now as JSON only.
     ],
   });
 
-  const rawOutput = response.output_text?.trim() || '';
+  const rawOutput = response.outputText?.trim() || '';
   const blocks = normalizeGeneratedBlocks(rawOutput, speakerNames, count);
   return { rawOutput, blocks, numberOfBlocks: count };
 }

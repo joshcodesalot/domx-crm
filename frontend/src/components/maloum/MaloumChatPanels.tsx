@@ -41,6 +41,8 @@ import VaultMediaNoteModal, {
 } from '@/components/VaultMediaNoteModal';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
+import AiSuggestionCard from '@/components/ai/AiSuggestionCard';
+import { useAiThreadSuggestion } from '@/hooks/useAiThreadSuggestion';
 import MaloumFanPanel, {
   DEFAULT_FAN_NOTES_TEMPLATE,
 } from '@/components/maloum/MaloumFanPanel';
@@ -76,6 +78,11 @@ import {
   type MessageUnsendRecord,
   type TranslateHistoryItem,
 } from '@/lib/api';
+import {
+  ingestLatestPage,
+  latestInboundPlatformMessageId,
+  mapMaloumMessagesForIngest,
+} from '@/lib/aiIngest';
 import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
@@ -1237,6 +1244,9 @@ export function MaloumChatThread({
   const vaultMediaNextRef = useRef<number | null>(null);
   const threadKeyRef = useRef(`${creatorId}:${chatId}`);
   threadKeyRef.current = `${creatorId}:${chatId}`;
+  const chatRef = useRef(chat);
+  chatRef.current = chat;
+  const aiIngestSeenIdsRef = useRef<Set<string>>(new Set());
   /** Maloum is EUR-only in the chatter UI. */
   const currency = 'EUR';
 
@@ -1333,6 +1343,21 @@ export function MaloumChatThread({
         if (append || manualTranslateOnlyIdsRef.current.size === 0) {
           messagesNextRef.current = nextCursor;
           setMessagesNext(nextCursor);
+        }
+        if (!append) {
+          void ingestLatestPage({
+            creatorId,
+            platform: 'maloum',
+            platformChatId: chatId,
+            platformFanId:
+              partnerId(chatResult?.chat) || partnerId(chatRef.current),
+            source: 'maloum_poll',
+            seenIds: aiIngestSeenIdsRef.current,
+            messages: mapMaloumMessagesForIngest(
+              chronological,
+              resolvedProviderUserId
+            ),
+          });
         }
       } catch (err) {
         if (!silent && threadKeyRef.current === key) {
@@ -1479,6 +1504,7 @@ export function MaloumChatThread({
     setTranslatingMessageKeys(new Set());
     nearBottomRef.current = true;
     preserveScrollRef.current = null;
+    aiIngestSeenIdsRef.current = new Set();
     void loadMessages();
     void loadSenders();
     void loadUnsends();
@@ -1923,6 +1949,34 @@ export function MaloumChatThread({
         content: messageText(m).trim(),
       }));
   }, [messages, providerUserId]);
+
+  const latestInboundId = useMemo(
+    () =>
+      latestInboundPlatformMessageId(
+        mapMaloumMessagesForIngest(messages, providerUserId)
+      ),
+    [messages, providerUserId]
+  );
+  const {
+    suggestion: aiSuggestion,
+    stale: aiSuggestionStale,
+    dismiss: dismissAiSuggestion,
+    busy: aiBusy,
+    actionError: aiActionError,
+    canPause: canPauseAi,
+    canTakeover: canTakeoverAi,
+    approve: approveAiSuggestion,
+    editSend: editSendAiSuggestion,
+    reject: rejectAiSuggestion,
+    regenerate: regenerateAiSuggestion,
+    takeover: takeoverAiConversation,
+    pause: pauseAiCreator,
+  } = useAiThreadSuggestion({
+    creatorId,
+    platform: 'maloum',
+    platformChatId: chatId,
+    latestInboundId,
+  });
 
   const getSuggestFanNotes = useCallback(() => {
     const notes =
@@ -2820,6 +2874,23 @@ export function MaloumChatThread({
             AI German — won’t re-translate
           </p>
         )}
+
+        {aiSuggestion ? (
+          <AiSuggestionCard
+            suggestion={aiSuggestion}
+            stale={aiSuggestionStale}
+            platform="maloum"
+            busy={aiBusy}
+            error={aiActionError}
+            onDismiss={dismissAiSuggestion}
+            onApprove={approveAiSuggestion}
+            onEditSend={editSendAiSuggestion}
+            onReject={rejectAiSuggestion}
+            onRegenerate={regenerateAiSuggestion}
+            onTakeover={canTakeoverAi ? takeoverAiConversation : undefined}
+            onPause={canPauseAi ? pauseAiCreator : undefined}
+          />
+        ) : null}
 
         <QuickEmojiBar
           onInsert={(emoji) => setDraft((d) => d + emoji)}

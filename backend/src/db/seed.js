@@ -28,6 +28,11 @@ const PERMISSIONS = [
   { slug: 'scripts.manage', name: 'Manage Chat Scripts', category: 'App', description: 'Create, edit, and remove chat scripts and folders (Managers and above)' },
   { slug: 'moderation.manage', name: 'Manage Keyword Rules', category: 'App', description: 'Create, edit, and remove keyword moderation rules (Managers and above)' },
   { slug: 'moderation.review', name: 'Review Moderation Events', category: 'App', description: 'View and resolve keyword moderation review queue (Managers and above)' },
+  { slug: 'ai.settings.manage', name: 'Manage AI Settings', category: 'AI', description: 'View and change per-creator AI chatter mode and pause' },
+  { slug: 'ai.suggest.use', name: 'Use AI Suggestions', category: 'AI', description: 'Request and view AI draft replies' },
+  { slug: 'ai.moderate', name: 'Moderate AI Chatter', category: 'AI', description: 'Watch the AI review queue and take over conversations' },
+  { slug: 'ai.rules.manage', name: 'Manage AI Rules', category: 'AI', description: 'Create and approve global or per-creator AI rules' },
+  { slug: 'ai.autosend.enable', name: 'Enable AI Auto-Send', category: 'AI', description: 'Allow auto-send modes for creators (Managers and above)' },
 ];
 
 const DEFAULT_MATRIX = {
@@ -41,6 +46,11 @@ const DEFAULT_MATRIX = {
     'scripts.manage',
     'moderation.manage',
     'moderation.review',
+    'ai.settings.manage',
+    'ai.suggest.use',
+    'ai.moderate',
+    'ai.rules.manage',
+    'ai.autosend.enable',
   ],
   manager: [
     'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view', 'creators.manage',
@@ -52,6 +62,11 @@ const DEFAULT_MATRIX = {
     'scripts.manage',
     'moderation.manage',
     'moderation.review',
+    'ai.settings.manage',
+    'ai.suggest.use',
+    'ai.moderate',
+    'ai.rules.manage',
+    'ai.autosend.enable',
   ],
   backend: [
     'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view',
@@ -92,7 +107,14 @@ async function seedRolesAndPermissions(db = pool) {
     const roleResult = await db.query('SELECT id FROM roles WHERE slug = $1', [roleSlug]);
     const roleId = roleResult.rows[0].id;
 
-    await db.query('DELETE FROM role_permissions WHERE "roleId" = $1', [roleId]);
+    await db.query(
+      `DELETE FROM role_permissions
+       WHERE "roleId" = $1
+         AND "permissionId" IN (
+           SELECT id FROM permissions WHERE slug = ANY($2::text[])
+         )`,
+      [roleId, permissionSlugs]
+    );
 
     for (const permSlug of permissionSlugs) {
       const permResult = await db.query('SELECT id FROM permissions WHERE slug = $1', [permSlug]);

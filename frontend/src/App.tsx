@@ -48,6 +48,8 @@ const AnalyticsCharts = lazy(() => import('@/pages/AnalyticsCharts'));
 const CreatorAnalytics = lazy(() => import('@/pages/CreatorAnalytics'));
 const AccountSettings = lazy(() => import('@/pages/AccountSettings'));
 const KeywordModeration = lazy(() => import('@/pages/KeywordModeration'));
+const AiModeratorQueue = lazy(() => import('@/pages/AiModeratorQueue'));
+const AiRules = lazy(() => import('@/pages/AiRules'));
 
 function PageFallback() {
   return (
@@ -333,6 +335,20 @@ function AppRoutes() {
                     }
                   >
                     <Route path="/staff/moderation" element={<KeywordModeration />} />
+                  </Route>
+                  <Route
+                    element={
+                      <PermissionRoute
+                        anyOf={['ai.moderate', 'ai.settings.manage']}
+                      />
+                    }
+                  >
+                    <Route path="/ai/queue" element={<AiModeratorQueue />} />
+                  </Route>
+                  <Route
+                    element={<PermissionRoute permission="ai.rules.manage" />}
+                  >
+                    <Route path="/ai/rules" element={<AiRules />} />
                   </Route>
                   <Route element={<PermissionRoute permission="creators.view" />}>
                     <Route path="/chatter" element={null} />

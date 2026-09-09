@@ -1,11 +1,4 @@
-const OpenAI = require('openai');
-
-const openai = new OpenAI({
-  apiKey: process.env.XAI_API_KEY,
-  baseURL: 'https://api.x.ai/v1',
-});
-
-const XAI_MODEL = process.env.XAI_MODEL || 'grok-4.20-non-reasoning';
+const { createResponse } = require('./ai/providers/xaiClient');
 
 const FEMDOM_SYSTEM_PROMPT = `You are a German chat converter for a dominant femdom creator.
 
@@ -172,12 +165,11 @@ function buildTranslationInput(text, history) {
 
 async function translateToGermanFemdom(text, history) {
   const original = String(text || '').trim();
-  const response = await openai.responses.create({
-    model: XAI_MODEL,
+  const response = await createResponse({
     input: buildTranslationInput(text, history),
   });
 
-  const raw = response.output_text?.trim() || '';
+  const raw = response.outputText?.trim() || '';
   if (!raw) return '';
   return stripBilingualWrapper(raw, original);
 }

@@ -3,6 +3,7 @@ import {
   BarChart2,
   Bell,
   CalendarDays,
+  Inbox,
   LayoutGrid,
   LineChart,
   List,
@@ -62,6 +63,8 @@ interface SidebarProps {
     | 'creators'
     | 'staff'
     | 'moderation'
+    | 'aiQueue'
+    | 'aiRules'
     | 'account'
     | 'schedule';
 }
@@ -777,6 +780,27 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             title="Keyword Moderation"
           >
             <ShieldAlert className="w-5 h-5" />
+          </button>
+        )}
+        {(hasPermission('ai.moderate') ||
+          hasPermission('ai.settings.manage')) && (
+          <button
+            type="button"
+            onClick={() => navigate('/ai/queue')}
+            className={navClass('aiQueue')}
+            title="AI Queue"
+          >
+            <Inbox className="w-5 h-5" />
+          </button>
+        )}
+        {hasPermission('ai.rules.manage') && (
+          <button
+            type="button"
+            onClick={() => navigate('/ai/rules')}
+            className={navClass('aiRules')}
+            title="AI Rules"
+          >
+            <Sparkles className="w-5 h-5" />
           </button>
         )}
       </nav>
