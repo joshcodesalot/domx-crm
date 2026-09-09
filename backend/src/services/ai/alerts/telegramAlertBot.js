@@ -29,6 +29,33 @@ let running = false;
 let offset = 0;
 let loopPromise = null;
 
+const ALERT_DRAFT_MAX = 140;
+
+function firstLinePreview(text, max = ALERT_DRAFT_MAX) {
+  const line = String(text || '')
+    .split(/\r?\n/)[0]
+    .trim();
+  if (!line) return '';
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+function formatHandlingAlertTarget({ creatorName, platform, fanLabel } = {}) {
+  const creator = String(creatorName || '').trim() || 'Creator';
+  const plat = String(platform || '').trim() || '—';
+  const fan = String(fanLabel || '').trim() || 'Fan';
+  return `${creator} · ${plat} · ${fan}`;
+}
+
+function formatNeedsReviewAlert(input = {}) {
+  const draft = firstLinePreview(input.replyEnglish || input.reply);
+  const head = `AI needs review · ${formatHandlingAlertTarget(input)}`;
+  return draft ? `${head}\n${draft}` : head;
+}
+
+function formatAutoSendOkAlert(input = {}) {
+  return `AI auto-send ok · ${formatHandlingAlertTarget(input)}`;
+}
+
 function parseTopicId(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
@@ -288,6 +315,10 @@ function stopTelegramAlertBot() {
 module.exports = {
   BOT_API_ORIGIN,
   HELP_TEXT,
+  ALERT_DRAFT_MAX,
+  firstLinePreview,
+  formatNeedsReviewAlert,
+  formatAutoSendOkAlert,
   parseChatEntry,
   parseTopicId,
   readConfig,

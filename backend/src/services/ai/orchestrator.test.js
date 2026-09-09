@@ -1418,6 +1418,111 @@ describe('processIncomingMessage', () => {
     assert.equal(result.status, 'succeeded');
     assert.equal(result.route, ROUTES.AUTO_SEND);
   });
+
+  it('alerts Needs review with the English draft', async () => {
+    const alerts = [];
+    const { deps } = createHarness({
+      mode: MODES.SUGGEST_ONLY,
+      persistPendingSuggestion: persistSuggestion(),
+      creator: {
+        id: 'cr-1',
+        displayName: 'Naomi',
+        platform: 'maloum',
+        connectionStatus: 'connected',
+      },
+      conversation: {
+        id: 'conv-1',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        revision: 2,
+        lastInboundPlatformMessageId: 'in-1',
+        lastInboundAt: '2026-09-09T12:00:00.000Z',
+        historyBackfilledAt: '2026-09-09T00:00:00.000Z',
+        fanUsername: 'Alex',
+      },
+      notifyAlertChats: async (text) => {
+        alerts.push(text);
+        return { sent: 1 };
+      },
+    });
+    const result = await processIncomingMessage(inbound, deps);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.route, ROUTES.HUMAN_REVIEW);
+    assert.equal(alerts.length, 1);
+    assert.match(alerts[0], /AI needs review/);
+    assert.match(alerts[0], /Naomi/);
+    assert.match(alerts[0], /maloum/);
+    assert.match(alerts[0], /Alex/);
+    assert.match(alerts[0], /hello/);
+  });
+
+  it('alerts auto-send success and not Needs review', async () => {
+    const alerts = [];
+    const { deps } = createHarness({
+      autoSendAllowed: true,
+      mode: MODES.AUTO_LOW_RISK,
+      persistPendingSuggestion: persistSuggestion(),
+      creator: {
+        id: 'cr-1',
+        displayName: 'Naomi',
+        platform: 'maloum',
+        connectionStatus: 'connected',
+      },
+      conversation: {
+        id: 'conv-1',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        revision: 2,
+        lastInboundPlatformMessageId: 'in-1',
+        lastInboundAt: '2026-09-09T12:00:00.000Z',
+        historyBackfilledAt: '2026-09-09T00:00:00.000Z',
+        fanUsername: 'Alex',
+      },
+      notifyAlertChats: async (text) => {
+        alerts.push(text);
+        return { sent: 1 };
+      },
+    });
+    const result = await processIncomingMessage(inbound, deps);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.route, ROUTES.AUTO_SEND);
+    assert.equal(alerts.length, 1);
+    assert.match(alerts[0], /AI auto-send ok/);
+    assert.match(alerts[0], /Naomi/);
+    assert.equal(alerts[0].includes('needs review'), false);
+  });
+
+  it('does not alert in shadow mode', async () => {
+    const alerts = [];
+    const { deps } = createHarness({
+      mode: MODES.SHADOW,
+      persistPendingSuggestion: persistSuggestion(),
+      notifyAlertChats: async (text) => {
+        alerts.push(text);
+        return { sent: 1 };
+      },
+    });
+    const result = await processIncomingMessage(inbound, deps);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.route, ROUTES.HUMAN_REVIEW);
+    assert.equal(alerts.length, 0);
+  });
+
+  it('keeps the run succeeded when success notify throws', async () => {
+    const { deps } = createHarness({
+      autoSendAllowed: true,
+      mode: MODES.AUTO_LOW_RISK,
+      persistPendingSuggestion: persistSuggestion(),
+      notifyAlertChats: async () => {
+        throw new Error('telegram down');
+      },
+    });
+    const result = await processIncomingMessage(inbound, deps);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.route, ROUTES.AUTO_SEND);
+  });
 });
 
 describe('processManualSuggest', () => {

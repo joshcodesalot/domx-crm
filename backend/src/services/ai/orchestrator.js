@@ -33,7 +33,12 @@ const { loadApprovedRules } = require('./brain/rules');
 const { loadActiveSops } = require('./brain/sopImport');
 const { canAutoSend } = require('./send/canAutoSend');
 const { executeApprovedSend } = require('./send/executeApprovedSend');
-const { notifyAlertChats } = require('./alerts/telegramAlertBot');
+const { displayFanLabel } = require('./names');
+const {
+  notifyAlertChats,
+  formatNeedsReviewAlert,
+  formatAutoSendOkAlert,
+} = require('./alerts/telegramAlertBot');
 
 const TRIGGERS = {
   INBOUND: 'inbound',
@@ -47,6 +52,20 @@ const RUN_STATUSES = {
   SKIPPED: 'skipped',
   REJECTED: 'rejected',
 };
+
+async function safeNotifyAlertChats(d, text) {
+  try {
+    await d.notifyAlertChats(text);
+  } catch (err) {
+    console.error('AI alert bot notify error:', err);
+  }
+}
+
+function shouldAlertHandling({ effectiveMode, paused, ignored } = {}) {
+  if (ignored || paused) return false;
+  if (effectiveMode === MODES.SHADOW) return false;
+  return true;
+}
 
 function shouldSkipGenerate({ effectiveMode, paused, ignored } = {}) {
   if (ignored) return { skip: true, reason: 'ignored' };
@@ -94,7 +113,7 @@ function applyForcedRoute(output) {
 
 async function defaultLoadCreator(creatorId, client = pool) {
   const result = await client.query(
-    `SELECT id, platform, "connectionStatus"
+    `SELECT id, platform, "connectionStatus", "displayName"
      FROM creators
      WHERE id = $1`,
     [creatorId]
@@ -731,6 +750,23 @@ async function runOrchestration(input, trigger, deps) {
       console.error('AI suggestion persist/emit error:', err);
     }
 
+    const alertContext = {
+      creatorName: creator?.displayName || creatorId,
+      platform,
+      fanLabel: displayFanLabel({
+        fanLabel: conversation?.fanLabel,
+        fanUsername: conversation?.fanUsername,
+        platformFanId: conversation?.platformFanId,
+      }),
+      replyEnglish: finalOutput.replyEnglish,
+      reply: finalOutput.reply,
+    };
+    const alertHandling = shouldAlertHandling({
+      effectiveMode,
+      paused: Boolean(settings.paused || conversation?.aiPaused),
+      ignored: Boolean(conversation?.aiIgnored),
+    });
+
     if (autoSend && suggestion?.id) {
       try {
         await d.executeApprovedSend({
@@ -738,16 +774,18 @@ async function runOrchestration(input, trigger, deps) {
           user: null,
           edited: false,
         });
+        if (alertHandling) {
+          await safeNotifyAlertChats(d, formatAutoSendOkAlert(alertContext));
+        }
       } catch (err) {
         console.error('AI auto-send error:', err);
-        try {
-          await d.notifyAlertChats(
-            `AI auto-send failed creator=${creatorId} chat=${platformChatId} suggestion=${suggestion.id}: ${err?.message || err}`
-          );
-        } catch (notifyErr) {
-          console.error('AI alert bot notify error:', notifyErr);
-        }
+        await safeNotifyAlertChats(
+          d,
+          `AI auto-send failed creator=${creatorId} chat=${platformChatId} suggestion=${suggestion.id}: ${err?.message || err}`
+        );
       }
+    } else if (alertHandling && suggestion && !autoSend) {
+      await safeNotifyAlertChats(d, formatNeedsReviewAlert(alertContext));
     }
 
     setImmediate(() => {

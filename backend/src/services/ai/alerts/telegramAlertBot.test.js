@@ -15,6 +15,8 @@ const {
   parseCommand,
   botMethodUrl,
   notifyAlertChats,
+  formatNeedsReviewAlert,
+  formatAutoSendOkAlert,
   dispatchCommand,
   handleUpdate,
   startTelegramAlertBot,
@@ -326,6 +328,32 @@ describe('handleUpdate', () => {
     const body = JSON.parse(fetchCalls[0].init.body);
     assert.equal(body.chat_id, 111);
     assert.equal(body.message_thread_id, 12);
+  });
+});
+
+describe('handling alert formatters', () => {
+  it('uses the first English line', () => {
+    const text = formatNeedsReviewAlert({
+      creatorName: 'Naomi',
+      platform: 'maloum',
+      fanLabel: 'Alex',
+      replyEnglish: 'hello there\nsecond',
+      reply: 'hallo',
+    });
+    assert.match(text, /AI needs review · Naomi · maloum · Alex/);
+    assert.match(text, /hello there/);
+    assert.equal(text.includes('second'), false);
+  });
+
+  it('formats auto-send success without a draft line', () => {
+    assert.equal(
+      formatAutoSendOkAlert({
+        creatorName: 'Naomi',
+        platform: '4based',
+        fanLabel: 'Alex',
+      }),
+      'AI auto-send ok · Naomi · 4based · Alex'
+    );
   });
 });
 
