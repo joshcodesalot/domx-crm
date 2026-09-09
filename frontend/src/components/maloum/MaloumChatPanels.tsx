@@ -42,7 +42,9 @@ import VaultMediaNoteModal, {
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
 import AiSuggestionCard from '@/components/ai/AiSuggestionCard';
+import AiIgnoreStrip from '@/components/ai/AiIgnoreStrip';
 import { useAiThreadSuggestion } from '@/hooks/useAiThreadSuggestion';
+import { useAiThreadControls } from '@/hooks/useAiThreadControls';
 import MaloumFanPanel, {
   DEFAULT_FAN_NOTES_TEMPLATE,
 } from '@/components/maloum/MaloumFanPanel';
@@ -1977,6 +1979,18 @@ export function MaloumChatThread({
     platformChatId: chatId,
     latestInboundId,
   });
+  const {
+    canIgnore: canIgnoreAi,
+    aiIgnored,
+    busy: aiIgnoreBusy,
+    error: aiIgnoreError,
+    ignore: ignoreAi,
+    unignore: unignoreAi,
+  } = useAiThreadControls({
+    creatorId,
+    platform: 'maloum',
+    platformChatId: chatId,
+  });
 
   const getSuggestFanNotes = useCallback(() => {
     const notes =
@@ -2875,7 +2889,21 @@ export function MaloumChatThread({
           </p>
         )}
 
-        {aiSuggestion ? (
+        {canIgnoreAi ? (
+          <AiIgnoreStrip
+            aiIgnored={aiIgnored}
+            busy={aiIgnoreBusy}
+            error={aiIgnoreError}
+            onIgnore={() => {
+              void ignoreAi().then((ok) => {
+                if (ok) dismissAiSuggestion();
+              });
+            }}
+            onUnignore={() => void unignoreAi()}
+          />
+        ) : null}
+
+        {aiSuggestion && !aiIgnored ? (
           <AiSuggestionCard
             suggestion={aiSuggestion}
             stale={aiSuggestionStale}

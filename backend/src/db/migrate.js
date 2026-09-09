@@ -32,6 +32,9 @@ const TABLE_MARKERS = {
   '062_ai_conversation_summaries.sql': 'ai_conversation_summaries',
   '063_ai_conversation_state.sql': 'ai_conversation_state_history',
   '064_ai_brain_rules.sql': 'ai_rules',
+  '065_ai_sop_import.sql': 'ai_sops',
+  '066_ai_sop_overlap.sql': 'ai_sops',
+  '067_ai_conversation_ignored.sql': 'ai_conversations',
 };
 
 async function tableExists(client, tableName) {

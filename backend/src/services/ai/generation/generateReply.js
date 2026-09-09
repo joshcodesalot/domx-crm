@@ -31,7 +31,7 @@ Return JSON only (no markdown, no explanation) with this exact shape:
 Rules:
 - action may be TEXT_REPLY or SEND_PPV.
 - SEND_PPV only with a mediaId from mediaCandidates. Do not invent mediaId or price.
-- Follow the profile and constraints in the user context.
+- Follow the profile, sops, and constraints in the user context.
 - Never use an em dash.
 - suggestedRoute is a hint only.`.trim();
 

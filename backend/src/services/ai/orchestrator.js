@@ -27,6 +27,7 @@ const {
 const { applyRecommendedState } = require('./stateMachine');
 const { bindPpvFromCandidates, loadMediaCandidates } = require('./mediaCandidates');
 const { loadApprovedRules } = require('./brain/rules');
+const { loadActiveSops } = require('./brain/sopImport');
 const { canAutoSend } = require('./send/canAutoSend');
 const { executeApprovedSend } = require('./send/executeApprovedSend');
 const { notifyAlertChats } = require('./alerts/telegramAlertBot');
@@ -44,7 +45,8 @@ const RUN_STATUSES = {
   REJECTED: 'rejected',
 };
 
-function shouldSkipGenerate({ effectiveMode, paused } = {}) {
+function shouldSkipGenerate({ effectiveMode, paused, ignored } = {}) {
+  if (ignored) return { skip: true, reason: 'ignored' };
   if (paused) return { skip: true, reason: 'paused' };
   if (effectiveMode === MODES.OFF) return { skip: true, reason: 'off' };
   if (effectiveMode === MODES.HUMAN_TAKEOVER) {
@@ -251,6 +253,7 @@ function resolveDeps(deps = {}) {
       deps.applyRecommendedState || applyRecommendedState,
     loadMediaCandidates: deps.loadMediaCandidates || loadMediaCandidates,
     loadApprovedRules: deps.loadApprovedRules || loadApprovedRules,
+    loadActiveSops: deps.loadActiveSops || loadActiveSops,
     canAutoSend: deps.canAutoSend || canAutoSend,
     executeApprovedSend: deps.executeApprovedSend || executeApprovedSend,
     notifyAlertChats: deps.notifyAlertChats || notifyAlertChats,
@@ -369,15 +372,17 @@ async function runOrchestration(input, trigger, deps) {
     global: globalFlags,
     creator: settings,
   });
-  const skip = shouldSkipGenerate({
-    effectiveMode,
-    paused: Boolean(settings.paused),
-  });
 
   const conversation = await d.loadConversation({
     creatorId,
     platform,
     platformChatId,
+  });
+
+  const skip = shouldSkipGenerate({
+    effectiveMode,
+    paused: Boolean(settings.paused || conversation?.aiPaused),
+    ignored: Boolean(conversation?.aiIgnored),
   });
 
   if (skip.skip) {
@@ -422,7 +427,8 @@ async function runOrchestration(input, trigger, deps) {
     if (existing) return toRunDto(existing);
   }
 
-  const [messages, profile, memory, mediaCandidates, approvedRules] = await Promise.all([
+  const [messages, profile, memory, mediaCandidates, approvedRules, activeSops] =
+    await Promise.all([
     d.loadMessages(conversation.id),
     d.getCreatorProfile(creatorId),
     resolveFanMemory(d, { creatorId, platform, conversation, input }),
@@ -444,6 +450,12 @@ async function runOrchestration(input, trigger, deps) {
       })
       .catch((err) => {
         console.error('AI approved rules load error:', err);
+        return [];
+      }),
+    d
+      .loadActiveSops({ creatorId })
+      .catch((err) => {
+        console.error('AI active SOPs load error:', err);
         return [];
       }),
   ]);
@@ -481,6 +493,7 @@ async function runOrchestration(input, trigger, deps) {
     fanMemories: memory.facts,
     mediaCandidates,
     rules: approvedRules,
+    sops: activeSops,
     lastSessionSummary,
     mode: effectiveMode,
   });

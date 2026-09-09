@@ -1,7 +1,13 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { MODES } = require('../contracts');
-const { classifyQueueBucket, QUEUE_BUCKETS } = require('./queue');
+const {
+  classifyQueueBucket,
+  QUEUE_BUCKETS,
+  toQueueRow,
+  buildQueueItems,
+  listQueue,
+} = require('./queue');
 const { requirePermission } = require('../../../middleware/authorize');
 
 function mockRes() {
@@ -20,6 +26,31 @@ function mockRes() {
 }
 
 describe('classifyQueueBucket', () => {
+  it('ignored wins over paused, takeover, and needs_review', () => {
+    assert.equal(
+      classifyQueueBucket({
+        settings: { mode: MODES.SUGGEST_ONLY, paused: true },
+        conversation: {
+          humanTakeover: true,
+          aiPaused: true,
+          aiIgnored: true,
+        },
+        pendingSuggestion: { status: 'pending' },
+        effectiveMode: MODES.SUGGEST_ONLY,
+      }),
+      QUEUE_BUCKETS.IGNORED
+    );
+    assert.notEqual(
+      classifyQueueBucket({
+        settings: { mode: MODES.SUGGEST_ONLY, paused: true },
+        conversation: { aiIgnored: true, aiPaused: true },
+        pendingSuggestion: { status: 'pending' },
+        effectiveMode: MODES.SUGGEST_ONLY,
+      }),
+      QUEUE_BUCKETS.PAUSED
+    );
+  });
+
   it('paused wins over takeover and pending', () => {
     assert.equal(
       classifyQueueBucket({
@@ -129,6 +160,122 @@ describe('classifyQueueBucket', () => {
       }),
       null
     );
+  });
+});
+
+const ON_FLAGS = {
+  enabled: true,
+  shadowAllowed: true,
+  suggestAllowed: true,
+  autoSendAllowed: false,
+};
+
+function sampleRow(overrides = {}) {
+  return {
+    conversationId: 'conv-1',
+    creatorId: 'cr-1',
+    creatorName: 'Naomi',
+    platform: 'maloum',
+    platformChatId: 'chat-1',
+    platformFanId: 'fan-1',
+    state: 'WARMUP',
+    humanTakeover: false,
+    aiPaused: false,
+    aiIgnored: false,
+    lastInboundAt: '2026-09-09T12:00:00.000Z',
+    lastMessageAt: '2026-09-09T12:01:00.000Z',
+    lastInboundPreview: 'hey there',
+    mode: MODES.SUGGEST_ONLY,
+    paused: false,
+    suggestionId: 'sug-1',
+    suggestionStatus: 'pending',
+    reply: 'hallo',
+    replyEnglish: 'hello',
+    intent: 'rapport',
+    suggestionUpdatedAt: '2026-09-09T12:01:00.000Z',
+    ...overrides,
+  };
+}
+
+describe('toQueueRow / listQueue state', () => {
+  it('includes funnel state, preview, and pause sources', () => {
+    const { items } = buildQueueItems([sampleRow()], ON_FLAGS);
+    assert.equal(items.length, 1);
+    assert.equal(items[0].state, 'WARMUP');
+    assert.equal(items[0].lastInboundPreview, 'hey there');
+    assert.equal(items[0].conversationId, 'conv-1');
+    assert.equal(items[0].suggestion.id, 'sug-1');
+    assert.equal(items[0].paused, false);
+    assert.equal(items[0].aiPaused, false);
+    assert.equal(items[0].creatorPaused, false);
+    assert.equal(items[0].humanTakeover, false);
+    assert.equal(items[0].effectiveMode, MODES.SUGGEST_ONLY);
+  });
+
+  it('counts ignored separately from paused', () => {
+    const { items, counts } = buildQueueItems(
+      [
+        sampleRow({
+          conversationId: 'conv-ignored',
+          aiIgnored: true,
+          aiPaused: true,
+          paused: true,
+        }),
+      ],
+      ON_FLAGS
+    );
+    assert.equal(items.length, 1);
+    assert.equal(items[0].bucket, QUEUE_BUCKETS.IGNORED);
+    assert.equal(items[0].aiIgnored, true);
+    assert.equal(counts.ignored, 1);
+    assert.equal(counts.paused, 0);
+  });
+
+  it('defaults missing state to NEW', () => {
+    const row = toQueueRow(
+      sampleRow({ state: null }),
+      QUEUE_BUCKETS.NEEDS_REVIEW,
+      MODES.SUGGEST_ONLY
+    );
+    assert.equal(row.state, 'NEW');
+  });
+
+  it('returns state from listQueue and honors state filter', async () => {
+    const rows = [
+      sampleRow({ conversationId: 'conv-warm', state: 'WARMUP' }),
+      sampleRow({
+        conversationId: 'conv-new',
+        state: 'NEW',
+        platformChatId: 'chat-2',
+      }),
+    ];
+    const result = await listQueue(
+      {
+        bucket: 'needs_review',
+        user: { role: 'manager', permissions: ['creators.manage'] },
+      },
+      {
+        getAiFlags: async () => ON_FLAGS,
+        loadQueueRows: async () => rows,
+      }
+    );
+    assert.equal(result.items.length, 2);
+    assert.equal(result.items[0].state, 'WARMUP');
+
+    const filtered = await listQueue(
+      {
+        bucket: 'needs_review',
+        state: 'NEW',
+        user: { role: 'manager', permissions: ['creators.manage'] },
+      },
+      {
+        getAiFlags: async () => ON_FLAGS,
+        loadQueueRows: async () => rows,
+      }
+    );
+    assert.equal(filtered.items.length, 1);
+    assert.equal(filtered.items[0].conversationId, 'conv-new');
+    assert.equal(filtered.items[0].state, 'NEW');
   });
 });
 

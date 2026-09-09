@@ -40,7 +40,9 @@ import VaultMediaNoteModal, {
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
 import AiSuggestionCard from '@/components/ai/AiSuggestionCard';
+import AiIgnoreStrip from '@/components/ai/AiIgnoreStrip';
 import { useAiThreadSuggestion } from '@/hooks/useAiThreadSuggestion';
+import { useAiThreadControls } from '@/hooks/useAiThreadControls';
 import FourBasedFanPanel, {
   DEFAULT_FAN_NOTES_TEMPLATE,
 } from '@/components/fourbased/FourBasedFanPanel';
@@ -1651,6 +1653,18 @@ export function FourBasedChatThread({
     platform: '4based',
     platformChatId: chatId,
     latestInboundId,
+  });
+  const {
+    canIgnore: canIgnoreAi,
+    aiIgnored,
+    busy: aiIgnoreBusy,
+    error: aiIgnoreError,
+    ignore: ignoreAi,
+    unignore: unignoreAi,
+  } = useAiThreadControls({
+    creatorId,
+    platform: '4based',
+    platformChatId: chatId,
   });
 
   const getSuggestFanNotes = useCallback(async () => {
@@ -3345,7 +3359,21 @@ export function FourBasedChatThread({
           </p>
         )}
 
-        {aiSuggestion ? (
+        {canIgnoreAi ? (
+          <AiIgnoreStrip
+            aiIgnored={aiIgnored}
+            busy={aiIgnoreBusy}
+            error={aiIgnoreError}
+            onIgnore={() => {
+              void ignoreAi().then((ok) => {
+                if (ok) dismissAiSuggestion();
+              });
+            }}
+            onUnignore={() => void unignoreAi()}
+          />
+        ) : null}
+
+        {aiSuggestion && !aiIgnored ? (
           <AiSuggestionCard
             suggestion={aiSuggestion}
             stale={aiSuggestionStale}

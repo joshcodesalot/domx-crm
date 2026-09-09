@@ -7,6 +7,17 @@ const INGEST_PLATFORMS = ['maloum', '4based', 'telegram'];
 const SENDER_ROLES = new Set(['fan', 'creator', 'system']);
 const MAX_INGEST_MESSAGES = 50;
 
+const CONVERSATION_UPSERT_SQL = `
+INSERT INTO ai_conversations (
+  "creatorId", platform, "platformChatId", "platformFanId",
+  "humanTakeover", "aiPaused"
+)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT ("creatorId", platform, "platformChatId") DO UPDATE SET
+  "platformFanId" = COALESCE(EXCLUDED."platformFanId", ai_conversations."platformFanId"),
+  "updatedAt" = NOW()
+RETURNING *`;
+
 function shouldPersistIngest({ globalEnabled, creatorMode } = {}) {
   if (globalEnabled) return true;
   return Boolean(creatorMode) && creatorMode !== MODES.OFF;
@@ -156,20 +167,14 @@ async function ingestConversation({
   try {
     await client.query('BEGIN');
 
-    const upserted = await client.query(
-      `INSERT INTO ai_conversations (
-         "creatorId", platform, "platformChatId", "platformFanId",
-         "humanTakeover", "aiPaused"
-       )
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT ("creatorId", platform, "platformChatId") DO UPDATE SET
-         "platformFanId" = COALESCE(EXCLUDED."platformFanId", ai_conversations."platformFanId"),
-         "humanTakeover" = EXCLUDED."humanTakeover",
-         "aiPaused" = EXCLUDED."aiPaused",
-         "updatedAt" = NOW()
-       RETURNING *`,
-      [creatorId, platform, platformChatId, fanId, humanTakeover, aiPaused]
-    );
+    const upserted = await client.query(CONVERSATION_UPSERT_SQL, [
+      creatorId,
+      platform,
+      platformChatId,
+      fanId,
+      humanTakeover,
+      aiPaused,
+    ]);
     const conversation = upserted.rows[0];
 
     const candidateIds = (Array.isArray(messages) ? messages : [])
@@ -322,6 +327,7 @@ async function ingestConversation({
 module.exports = {
   INGEST_PLATFORMS,
   MAX_INGEST_MESSAGES,
+  CONVERSATION_UPSERT_SQL,
   shouldPersistIngest,
   normalizeIngestMessage,
   planIngest,

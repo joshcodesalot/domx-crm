@@ -40,6 +40,7 @@ describe('buildAiContext', () => {
     assert.equal(dto.conversationState, 'NEW');
     assert.deepEqual(dto.mediaCandidates, []);
     assert.deepEqual(dto.rules, []);
+    assert.deepEqual(dto.sops, []);
   });
 
   it('includes approved rules without secrets', () => {
@@ -52,6 +53,28 @@ describe('buildAiContext', () => {
       ],
     });
     assert.deepEqual(dto.rules, [{ scope: 'CREATOR', text: 'Stay in character' }]);
+    assert.equal(JSON.stringify(dto).includes('SECRET'), false);
+  });
+
+  it('includes truncated SOPs without secrets', () => {
+    const dto = buildAiContext({
+      conversation: { id: 'c1', creatorId: 'cr1', platform: 'maloum' },
+      messages: [message(0)],
+      sops: [
+        {
+          title: 'Tone',
+          body: `${'Be dominant. '.repeat(400)} password should stay in body text`,
+          scope: 'CREATOR',
+          password: 'SECRET',
+        },
+        { title: 'drop', body: 'no scope', scope: 'NOPE' },
+      ],
+    });
+    assert.equal(dto.sops.length, 1);
+    assert.equal(dto.sops[0].title, 'Tone');
+    assert.equal(dto.sops[0].scope, 'CREATOR');
+    assert.ok(dto.sops[0].body.length <= 4000);
+    assert.equal(Object.hasOwn(dto.sops[0], 'password'), false);
     assert.equal(JSON.stringify(dto).includes('SECRET'), false);
   });
 

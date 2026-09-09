@@ -36,6 +36,12 @@ const { startContentScheduleRunner } = require('./services/contentScheduleRunner
 const {
   startMaloumInboundPoller,
 } = require('./services/ai/poller/maloumInboundPoller');
+const {
+  startFourBasedInboundPoller,
+} = require('./services/ai/poller/fourBasedInboundPoller');
+const {
+  startTelegramInboundPoller,
+} = require('./services/ai/poller/telegramInboundPoller');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -132,6 +138,8 @@ app.listen(PORT, () => {
   void resumeFourBasedFanScrapeJobs();
   startContentScheduleRunner();
   startMaloumInboundPoller();
+  startFourBasedInboundPoller();
+  startTelegramInboundPoller();
   const { startTelegramAlertBot } = require('./services/ai/alerts/telegramAlertBot');
   startTelegramAlertBot();
 });

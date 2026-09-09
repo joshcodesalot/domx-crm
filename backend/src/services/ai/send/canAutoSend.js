@@ -2,6 +2,7 @@ const { MODES, OUTPUT_ACTIONS } = require('../contracts');
 const { isSuggestionStale } = require('./executeApprovedSend');
 
 const AUTO_SEND_MIN_CONFIDENCE = 0.7;
+const AUTO_SEND_PLATFORMS = new Set(['maloum', '4based', 'telegram']);
 
 function asConfidence(value) {
   const n = Number(value);
@@ -28,7 +29,7 @@ function canAutoSend({
   if (!globalFlags?.autoSendAllowed) return false;
   if (!isAutoSendMode(settings?.mode)) return false;
   if (!isAutoSendMode(effectiveMode)) return false;
-  if (String(platform || '').trim() !== 'maloum') return false;
+  if (!AUTO_SEND_PLATFORMS.has(String(platform || '').trim())) return false;
   if (!output || typeof output !== 'object' || Array.isArray(output)) return false;
   if (output.action !== OUTPUT_ACTIONS.TEXT_REPLY) return false;
   if (!flagsEmpty(output.flags)) return false;
@@ -39,6 +40,7 @@ function canAutoSend({
 
 module.exports = {
   AUTO_SEND_MIN_CONFIDENCE,
+  AUTO_SEND_PLATFORMS,
   isAutoSendMode,
   canAutoSend,
 };

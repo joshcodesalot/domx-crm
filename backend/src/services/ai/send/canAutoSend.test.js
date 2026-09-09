@@ -143,9 +143,14 @@ describe('canAutoSend', () => {
     );
   });
 
-  it('fails closed off maloum', () => {
-    assert.equal(canAutoSend(base({ platform: '4based' })), false);
-    assert.equal(canAutoSend(base({ platform: 'telegram' })), false);
+  it('passes for maloum, 4based, and telegram TEXT_REPLY', () => {
+    assert.equal(canAutoSend(base({ platform: 'maloum' })), true);
+    assert.equal(canAutoSend(base({ platform: '4based' })), true);
+    assert.equal(canAutoSend(base({ platform: 'telegram' })), true);
+  });
+
+  it('fails closed for unknown platforms', () => {
+    assert.equal(canAutoSend(base({ platform: 'onlyfans' })), false);
   });
 
   it('fails closed when the draft is stale', () => {

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useSearchParams } from 'react-router-dom';
 import { MessageSquare } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
@@ -17,6 +17,12 @@ import telegramIcon from '@/assets/telegram_icon.svg';
 export default function ChatterTelegram() {
   const location = useLocation();
   const pollEnabled = usePollEnabled(location.pathname === '/chatter/telegram');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLinkCreatorId = searchParams.get('creatorId') || '';
+  const deepLinkPeerId = searchParams.get('peerId') || '';
+  const appliedCreatorDeepLinkRef = useRef(false);
+  const consumedPeerIdRef = useRef<string | null>(null);
+  const skipPeerResetRef = useRef(false);
   const {
     creators,
     creatorsLoading,
@@ -48,10 +54,40 @@ export default function ChatterTelegram() {
   }, [creators]);
 
   useEffect(() => {
+    if (skipPeerResetRef.current) {
+      skipPeerResetRef.current = false;
+      return;
+    }
     setSelectedPeerId(null);
     setSelectedDialog(null);
     setClearedPeerId(null);
   }, [selectedCreatorId]);
+
+  const consumePeerDeepLink = useCallback(() => {
+    const current = searchParams.get('peerId') || deepLinkPeerId || '';
+    if (current) consumedPeerIdRef.current = current;
+    if (!searchParams.get('peerId')) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('peerId');
+    setSearchParams(next, { replace: true });
+  }, [deepLinkPeerId, searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (
+      deepLinkCreatorId &&
+      creators.some((creator) => creator.id === deepLinkCreatorId)
+    ) {
+      if (deepLinkPeerId || !appliedCreatorDeepLinkRef.current) {
+        appliedCreatorDeepLinkRef.current = true;
+        skipPeerResetRef.current = true;
+        setSelectedCreatorId(deepLinkCreatorId);
+      }
+    }
+    if (deepLinkPeerId && consumedPeerIdRef.current !== deepLinkPeerId) {
+      setSelectedPeerId(deepLinkPeerId);
+      consumePeerDeepLink();
+    }
+  }, [creators, deepLinkCreatorId, deepLinkPeerId, consumePeerDeepLink]);
 
   useEffect(() => {
     return onSyncEvent((event) => {

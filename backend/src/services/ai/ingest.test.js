@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { planIngest, shouldPersistIngest } = require('./ingest');
+const { planIngest, shouldPersistIngest, CONVERSATION_UPSERT_SQL } = require('./ingest');
 const { MODES } = require('./contracts');
 
 describe('shouldPersistIngest', () => {
@@ -90,5 +90,23 @@ describe('planIngest', () => {
     });
     assert.equal(planned.toInsert.length, 0);
     assert.equal(planned.inboundCount, 0);
+  });
+});
+
+describe('CONVERSATION_UPSERT_SQL', () => {
+  it('does not clobber aiPaused or humanTakeover on conflict', () => {
+    assert.match(CONVERSATION_UPSERT_SQL, /ON CONFLICT/);
+    assert.doesNotMatch(
+      CONVERSATION_UPSERT_SQL,
+      /"aiPaused"\s*=\s*EXCLUDED\."aiPaused"/
+    );
+    assert.doesNotMatch(
+      CONVERSATION_UPSERT_SQL,
+      /"humanTakeover"\s*=\s*EXCLUDED\."humanTakeover"/
+    );
+    assert.doesNotMatch(
+      CONVERSATION_UPSERT_SQL,
+      /"aiIgnored"\s*=\s*EXCLUDED\."aiIgnored"/
+    );
   });
 });

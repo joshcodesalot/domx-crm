@@ -5470,16 +5470,26 @@ export async function getAiSuggestionByChat(payload: {
   return request(`/api/ai/suggestion?${params.toString()}`);
 }
 
-export async function patchAiCreatorSettings(
-  creatorId: string,
-  patch: { mode?: string; paused?: boolean }
-): Promise<{
+export interface AiCreatorSettings {
   mode: string;
   paused: boolean;
   effectiveMode: string;
+  globalEnabled: boolean;
   takeoverByUserId: string | null;
   takeoverAt: string | null;
-}> {
+  updatedAt: string | null;
+}
+
+export async function getAiCreatorSettings(
+  creatorId: string
+): Promise<AiCreatorSettings> {
+  return request(`/api/ai/creators/${creatorId}/settings`);
+}
+
+export async function patchAiCreatorSettings(
+  creatorId: string,
+  patch: { mode?: string; paused?: boolean }
+): Promise<AiCreatorSettings> {
   return request(`/api/ai/creators/${creatorId}/settings`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
@@ -5545,11 +5555,70 @@ export async function resumeAiConversation(
   });
 }
 
+export async function pauseAiConversation(
+  conversationId: string
+): Promise<{ conversation: Record<string, unknown> }> {
+  return request(`/api/ai/conversations/${conversationId}/pause`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export interface AiConversationFlags {
+  conversationId: string;
+  aiIgnored: boolean;
+  aiPaused: boolean;
+  humanTakeover: boolean;
+}
+
+export async function getAiConversationByChat(payload: {
+  creatorId: string;
+  platform: AiIngestPlatform;
+  platformChatId: string;
+}): Promise<{ conversation: AiConversationFlags | null }> {
+  const params = new URLSearchParams({
+    creatorId: payload.creatorId,
+    platform: payload.platform,
+    platformChatId: payload.platformChatId,
+  });
+  return request(`/api/ai/conversation?${params.toString()}`);
+}
+
+export async function ignoreAiConversation(
+  conversationId: string
+): Promise<{ conversation: Record<string, unknown> }> {
+  return request(`/api/ai/conversations/${conversationId}/ignore`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function unignoreAiConversation(
+  conversationId: string
+): Promise<{ conversation: Record<string, unknown> }> {
+  return request(`/api/ai/conversations/${conversationId}/unignore`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function ignoreAiConversationByChat(payload: {
+  creatorId: string;
+  platform: AiIngestPlatform;
+  platformChatId: string;
+}): Promise<{ conversation: Record<string, unknown> }> {
+  return request(`/api/ai/conversations/ignore`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export type AiQueueBucket =
   | 'needs_review'
   | 'ai_handling'
   | 'taken_over'
-  | 'paused';
+  | 'paused'
+  | 'ignored';
 
 export interface AiQueueSuggestion {
   id: string;
@@ -5560,6 +5629,18 @@ export interface AiQueueSuggestion {
   updatedAt: string | null;
 }
 
+export type AiConversationState =
+  | 'NEW'
+  | 'DISCOVERY'
+  | 'KINK_DISCOVERY'
+  | 'WARMUP'
+  | 'INTENSE_WARMUP'
+  | 'SALES_READY'
+  | 'OFFERED'
+  | 'PURCHASED'
+  | 'FULFILLMENT'
+  | 'RETENTION';
+
 export interface AiQueueItem {
   conversationId: string;
   creatorId: string;
@@ -5567,13 +5648,18 @@ export interface AiQueueItem {
   platform: AiIngestPlatform;
   platformChatId: string;
   platformFanId: string | null;
+  state: AiConversationState;
   bucket: AiQueueBucket;
   mode: string;
   effectiveMode: string;
   paused: boolean;
+  creatorPaused: boolean;
+  aiPaused: boolean;
+  aiIgnored: boolean;
   humanTakeover: boolean;
   lastInboundAt: string | null;
   lastMessageAt: string | null;
+  lastInboundPreview: string | null;
   suggestion: AiQueueSuggestion | null;
 }
 
@@ -5645,16 +5731,142 @@ export async function rejectAiRuleSuggestion(
   });
 }
 
+export type AiSopScope = 'GLOBAL' | 'CREATOR';
+export type AiSopDocumentType = 'sop' | 'infosheet';
+export type AiSopOverlapSeverity = 'duplicate' | 'conflict' | 'related';
+export type AiSopOverlapSuggestion =
+  | 'keep_new'
+  | 'keep_existing'
+  | 'merge'
+  | 'human_decide';
+
+export interface AiSop {
+  id: string;
+  title: string;
+  body: string;
+  scope: AiSopScope;
+  documentType?: AiSopDocumentType;
+  creatorId: string | null;
+  active: boolean;
+  sortOrder?: number;
+  sourceDraftId: string | null;
+  createdBy: string | null;
+  updatedBy?: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface AiSopProfilePatch {
+  persona?: string;
+  tone?: string;
+  languages?: string[];
+  biography?: string;
+  preferredTerminology?: Record<string, string>;
+  prohibitedClaims?: string[];
+  salesStyle?: string;
+  instructions?: string;
+}
+
+export interface AiSopProposedJson {
+  documentType?: AiSopDocumentType;
+  sops: {
+    title: string;
+    body: string;
+    scope: AiSopScope;
+    creatorId: string | null;
+  }[];
+  profilePatch: AiSopProfilePatch | null;
+  shortRules: { text: string; scope: AiSopScope }[];
+}
+
+export interface AiSopOverlap {
+  severity: AiSopOverlapSeverity;
+  newItem: string;
+  existingItem: string;
+  existingId: string;
+  summary: string;
+  suggestion: AiSopOverlapSuggestion;
+}
+
+export interface AiSopOverlapJson {
+  overlaps: AiSopOverlap[];
+  error?: string;
+}
+
+export interface AiSopImportDraft {
+  id: string;
+  rawText: string;
+  status: 'pending' | 'approved' | 'rejected' | string;
+  documentType?: AiSopDocumentType;
+  proposedJson: AiSopProposedJson;
+  overlapJson?: AiSopOverlapJson;
+  creatorId: string | null;
+  createdBy: string | null;
+  reviewedBy: string | null;
+  reviewedAt: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export async function importAiSopGuide(payload: {
+  rawText: string;
+  creatorId?: string | null;
+  documentType?: AiSopDocumentType | 'auto';
+}): Promise<{ draft: AiSopImportDraft }> {
+  return request('/api/ai/sops/import', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getAiSopImportDraft(
+  id: string
+): Promise<{ draft: AiSopImportDraft }> {
+  return request(`/api/ai/sops/import/${id}`);
+}
+
+export async function approveAiSopImport(
+  id: string,
+  payload: {
+    proposedJson?: AiSopProposedJson;
+    overlapResolutions?: {
+      existingId: string;
+      newItem: string;
+      suggestion: AiSopOverlapSuggestion;
+    }[];
+  } = {}
+): Promise<{
+  draft: AiSopImportDraft;
+  sops: AiSop[];
+  profile: AiCreatorProfile | null;
+  rules: AiRule[];
+}> {
+  return request(`/api/ai/sops/import/${id}/approve`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function rejectAiSopImport(
+  id: string
+): Promise<{ draft: AiSopImportDraft }> {
+  return request(`/api/ai/sops/import/${id}/reject`, {
+    method: 'POST',
+  });
+}
+
 export async function getAiQueue(params: {
   bucket?: AiQueueBucket | '';
   creatorId?: string;
   platform?: AiIngestPlatform | '';
+  state?: AiConversationState | '';
   limit?: number;
 } = {}): Promise<AiQueueResponse> {
   const search = new URLSearchParams();
   if (params.bucket) search.set('bucket', params.bucket);
   if (params.creatorId) search.set('creatorId', params.creatorId);
   if (params.platform) search.set('platform', params.platform);
+  if (params.state) search.set('state', params.state);
   if (params.limit != null) search.set('limit', String(params.limit));
   const qs = search.toString();
   return request(`/api/ai/queue${qs ? `?${qs}` : ''}`);

@@ -1,7 +1,12 @@
 const { randomUUID } = require('crypto');
 const pool = require('../../../db/pool');
+const fourBasedClient = require('../../fourBasedClient');
 const maloumClient = require('../../maloumClient');
-const { loadMaloumCreator } = require('../../platformCreatorSession');
+const telegramWorker = require('../../telegramWorker');
+const {
+  loadFourBasedCreator,
+  loadMaloumCreator,
+} = require('../../platformCreatorSession');
 const { applyModeration } = require('../../contentModeration');
 const { withConversationLock } = require('../locks');
 const { getAiFlags } = require('../../appSettings');
@@ -45,6 +50,33 @@ function asMessageId(result) {
     if (id != null && String(id).trim()) return String(id).trim();
   }
   return null;
+}
+
+const SENDABLE_PLATFORMS = new Set(['maloum', '4based', 'telegram']);
+
+function isSendablePlatform(platform) {
+  return SENDABLE_PLATFORMS.has(String(platform || '').trim());
+}
+
+function dashboardMaloumMessageId(platform, messageId) {
+  const id = String(messageId || '').trim();
+  if (!id) return id;
+  if (platform === '4based') {
+    return id.startsWith('4based:') ? id : `4based:${id}`;
+  }
+  if (platform === 'telegram') {
+    return id.startsWith('telegram:') ? id : `telegram:${id}`;
+  }
+  return id;
+}
+
+function platformNotSupportedError() {
+  return {
+    kind: 'error',
+    status: 400,
+    message: 'Approve is only available for Maloum, 4based, and Telegram',
+    code: 'platform_not_supported',
+  };
 }
 
 async function defaultLoadConversation(conversationId, client = pool) {
@@ -193,7 +225,7 @@ async function defaultInsertDashboard(entry, client = pool) {
       entry.creatorName,
       entry.creatorUsername,
       entry.creatorAvatarUrl,
-      'maloum',
+      entry.platform || 'maloum',
       entry.chatterId,
       entry.chatterName,
       entry.chatterEmail,
@@ -321,7 +353,13 @@ async function executeApprovedSend(
     updateSuggestionStatus: deps.updateSuggestionStatus || updateSuggestionStatus,
     applyModeration: deps.applyModeration || applyModeration,
     loadMaloumCreator: deps.loadMaloumCreator || loadMaloumCreator,
+    loadFourBasedCreator: deps.loadFourBasedCreator || loadFourBasedCreator,
     sendText: deps.sendText || maloumClient.sendText.bind(maloumClient),
+    sendFourBasedMessage:
+      deps.sendFourBasedMessage ||
+      fourBasedClient.sendMessage.bind(fourBasedClient),
+    sendTelegramText:
+      deps.sendTelegramText || telegramWorker.sendText.bind(telegramWorker),
     sendMedia: deps.sendMedia || maloumClient.sendMedia.bind(maloumClient),
     loadMediaCandidates: deps.loadMediaCandidates || loadMediaCandidates,
     hasVaultSent: deps.hasVaultSent || defaultHasVaultSent,
@@ -363,10 +401,12 @@ async function executeApprovedSend(
   if (suggestion.status !== SUGGESTION_STATUSES.PENDING) {
     throw new ReviewError(409, 'not_pending', { code: 'not_pending' });
   }
-  if (suggestion.platform !== 'maloum') {
-    throw new ReviewError(400, 'Approve is only available for Maloum', {
-      code: 'platform_not_supported',
-    });
+  if (!isSendablePlatform(suggestion.platform)) {
+    throw new ReviewError(
+      400,
+      'Approve is only available for Maloum, 4based, and Telegram',
+      { code: 'platform_not_supported' }
+    );
   }
 
   const [flags, settingsRow] = await Promise.all([
@@ -407,13 +447,8 @@ async function executeApprovedSend(
     if (live.status !== SUGGESTION_STATUSES.PENDING) {
       return { kind: 'error', status: 409, message: 'not_pending', code: 'not_pending' };
     }
-    if (live.platform !== 'maloum') {
-      return {
-        kind: 'error',
-        status: 400,
-        message: 'Approve is only available for Maloum',
-        code: 'platform_not_supported',
-      };
+    if (!isSendablePlatform(live.platform)) {
+      return platformNotSupportedError();
     }
 
     const conversation = await d.loadConversation(live.conversationId, client);
@@ -430,7 +465,12 @@ async function executeApprovedSend(
       return { kind: 'stale', suggestion: stale };
     }
 
-    const loaded = await d.loadMaloumCreator(live.creatorId);
+    let loaded = { creator: { id: live.creatorId } };
+    if (live.platform === 'maloum') {
+      loaded = await d.loadMaloumCreator(live.creatorId);
+    } else if (live.platform === '4based') {
+      loaded = await d.loadFourBasedCreator(live.creatorId);
+    }
     if (loaded?.error) {
       return {
         kind: 'error',
@@ -444,7 +484,7 @@ async function executeApprovedSend(
       englishText: englishDraft,
       userId: user?.id || null,
       creatorId: live.creatorId,
-      platform: 'maloum',
+      platform: live.platform,
       chatId: live.platformChatId,
       creatorName: loaded.creator?.displayName || null,
       chatterName: user?.name || null,
@@ -463,6 +503,14 @@ async function executeApprovedSend(
     const action = suggestionAction(live);
 
     if (action === OUTPUT_ACTIONS.SEND_PPV) {
+      if (live.platform !== 'maloum') {
+        return {
+          kind: 'error',
+          status: 400,
+          message: 'PPV send is only available for Maloum',
+          code: 'platform_not_supported',
+        };
+      }
       const gate = await resolvePpvGate({
         suggestion: live,
         conversation,
@@ -592,7 +640,8 @@ async function executeApprovedSend(
               chatId: live.platformChatId,
               fanId: conversation.platformFanId || null,
               fanUsername: null,
-              maloumMessageId: messageId,
+              platform: live.platform,
+              maloumMessageId: dashboardMaloumMessageId(live.platform, messageId),
               optimisticMessageId,
               englishMessage: englishDraft || null,
               germanTranslatedMessage: germanText,
@@ -618,10 +667,23 @@ async function executeApprovedSend(
     const optimisticMessageId = randomUUID();
     let sentResult;
     try {
-      sentResult = await d.sendText(loaded.creator, live.platformChatId, {
-        text: germanText,
-        optimisticMessageId,
-      });
+      if (live.platform === '4based') {
+        sentResult = await d.sendFourBasedMessage(loaded.creator, live.platformChatId, {
+          message: germanText,
+          localId: optimisticMessageId,
+        });
+      } else if (live.platform === 'telegram') {
+        sentResult = await d.sendTelegramText(
+          live.creatorId,
+          live.platformChatId,
+          germanText
+        );
+      } else {
+        sentResult = await d.sendText(loaded.creator, live.platformChatId, {
+          text: germanText,
+          optimisticMessageId,
+        });
+      }
     } catch (err) {
       const failed = await d.updateSuggestionStatus(
         live.id,
@@ -697,7 +759,8 @@ async function executeApprovedSend(
           chatId: live.platformChatId,
           fanId: conversation.platformFanId || null,
           fanUsername: null,
-          maloumMessageId: messageId,
+          platform: live.platform,
+          maloumMessageId: dashboardMaloumMessageId(live.platform, messageId),
           optimisticMessageId,
           englishMessage: englishDraft || null,
           germanTranslatedMessage: germanText,
@@ -765,5 +828,7 @@ module.exports = {
   isSuggestionStale,
   asMessageId,
   suggestionAction,
+  dashboardMaloumMessageId,
+  isSendablePlatform,
   executeApprovedSend,
 };

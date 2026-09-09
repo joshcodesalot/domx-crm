@@ -1,14 +1,22 @@
 const pool = require('../../../db/pool');
 const { getAiFlags } = require('../../appSettings');
 const { userSeesAllCreators } = require('../../creatorAccess');
-const { MODES, defaultCreatorAiSettings } = require('../contracts');
+const {
+  MODES,
+  CONVERSATION_STATES,
+  CONVERSATION_STATE_VALUES,
+  defaultCreatorAiSettings,
+} = require('../contracts');
 const { resolveEffectiveAiMode } = require('../flags');
+
+const INBOUND_PREVIEW_MAX = 140;
 
 const QUEUE_BUCKETS = {
   PAUSED: 'paused',
   TAKEN_OVER: 'taken_over',
   NEEDS_REVIEW: 'needs_review',
   AI_HANDLING: 'ai_handling',
+  IGNORED: 'ignored',
 };
 
 const QUEUE_BUCKET_VALUES = Object.values(QUEUE_BUCKETS);
@@ -19,6 +27,7 @@ function emptyCounts() {
     [QUEUE_BUCKETS.AI_HANDLING]: 0,
     [QUEUE_BUCKETS.TAKEN_OVER]: 0,
     [QUEUE_BUCKETS.PAUSED]: 0,
+    [QUEUE_BUCKETS.IGNORED]: 0,
   };
 }
 
@@ -28,6 +37,8 @@ function classifyQueueBucket({
   pendingSuggestion,
   effectiveMode,
 } = {}) {
+  if (conversation?.aiIgnored) return QUEUE_BUCKETS.IGNORED;
+
   const paused = Boolean(settings?.paused || conversation?.aiPaused);
   if (paused) return QUEUE_BUCKETS.PAUSED;
 
@@ -55,7 +66,17 @@ function classifyQueueBucket({
   return null;
 }
 
+function previewText(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return null;
+  return text.length > INBOUND_PREVIEW_MAX
+    ? text.slice(0, INBOUND_PREVIEW_MAX)
+    : text;
+}
+
 function toQueueRow(row, bucket, effectiveMode) {
+  const creatorPaused = Boolean(row.paused);
+  const aiPaused = Boolean(row.aiPaused);
   return {
     conversationId: row.conversationId,
     creatorId: row.creatorId,
@@ -63,13 +84,18 @@ function toQueueRow(row, bucket, effectiveMode) {
     platform: row.platform,
     platformChatId: row.platformChatId,
     platformFanId: row.platformFanId || null,
+    state: row.state || CONVERSATION_STATES.NEW,
     bucket,
     mode: row.mode || defaultCreatorAiSettings().mode,
     effectiveMode,
-    paused: Boolean(row.paused || row.aiPaused),
+    paused: creatorPaused || aiPaused,
+    creatorPaused,
+    aiPaused,
+    aiIgnored: Boolean(row.aiIgnored),
     humanTakeover: Boolean(row.humanTakeover),
     lastInboundAt: row.lastInboundAt || null,
     lastMessageAt: row.lastMessageAt || null,
+    lastInboundPreview: previewText(row.lastInboundPreview),
     suggestion: row.suggestionId
       ? {
           id: row.suggestionId,
@@ -114,12 +140,15 @@ async function loadQueueRows(
        conv.platform,
        conv."platformChatId",
        conv."platformFanId",
+       conv.state,
        conv."humanTakeover",
        conv."aiPaused",
+       conv."aiIgnored",
        conv."lastInboundAt",
        conv."lastMessageAt",
        COALESCE(st.mode, 'off') AS mode,
        COALESCE(st.paused, false) AS paused,
+       inbound."lastInboundPreview",
        s.id AS "suggestionId",
        s.status AS "suggestionStatus",
        s.reply,
@@ -129,6 +158,13 @@ async function loadQueueRows(
      FROM ai_conversations conv
      JOIN creators cr ON cr.id = conv."creatorId"
      LEFT JOIN ai_creator_settings st ON st."creatorId" = conv."creatorId"
+     LEFT JOIN LATERAL (
+       SELECT LEFT(text, ${INBOUND_PREVIEW_MAX}) AS "lastInboundPreview"
+       FROM ai_messages
+       WHERE "conversationId" = conv.id AND direction = 'inbound'
+       ORDER BY "sentAt" DESC NULLS LAST, "createdAt" DESC
+       LIMIT 1
+     ) inbound ON true
      LEFT JOIN LATERAL (
        SELECT id, status, reply, "replyEnglish", intent, "updatedAt"
        FROM ai_suggestions
@@ -156,6 +192,7 @@ function buildQueueItems(rows, globalFlags) {
     const conversation = {
       humanTakeover: Boolean(row.humanTakeover),
       aiPaused: Boolean(row.aiPaused),
+      aiIgnored: Boolean(row.aiIgnored),
     };
     const pendingSuggestion = row.suggestionId
       ? { status: row.suggestionStatus || 'pending' }
@@ -179,7 +216,7 @@ function buildQueueItems(rows, globalFlags) {
 }
 
 async function listQueue(
-  { bucket, creatorId, platform, user, limit } = {},
+  { bucket, state, creatorId, platform, user, limit } = {},
   deps = {}
 ) {
   const flags = deps.getAiFlags ? await deps.getAiFlags() : await getAiFlags();
@@ -193,9 +230,12 @@ async function listQueue(
   });
   const { items, counts } = buildQueueItems(rows, flags);
   const max = Math.min(Math.max(Number(limit) || 50, 1), 100);
-  const filtered = QUEUE_BUCKET_VALUES.includes(bucket)
+  let filtered = QUEUE_BUCKET_VALUES.includes(bucket)
     ? items.filter((item) => item.bucket === bucket)
     : items;
+  if (state && CONVERSATION_STATE_VALUES.includes(state)) {
+    filtered = filtered.filter((item) => item.state === state);
+  }
   return {
     items: filtered.slice(0, max),
     counts,
@@ -205,6 +245,7 @@ async function listQueue(
 module.exports = {
   QUEUE_BUCKETS,
   QUEUE_BUCKET_VALUES,
+  INBOUND_PREVIEW_MAX,
   classifyQueueBucket,
   toQueueRow,
   buildQueueItems,

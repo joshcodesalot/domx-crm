@@ -7,6 +7,7 @@ const { getAiFlags } = require('../services/appSettings');
 const {
   isAiMode,
   MODES,
+  CONVERSATION_STATE_VALUES,
   defaultCreatorAiSettings,
 } = require('../services/ai/contracts');
 const { summarizeUsage } = require('../services/ai/usage');
@@ -25,6 +26,11 @@ const {
   emitSuggestionEvent,
   takeoverConversation,
   resumeConversation,
+  pauseConversation,
+  ignoreConversation,
+  unignoreConversation,
+  ignoreConversationByChat,
+  getConversationByChat,
   SUGGESTION_STATUSES,
 } = require('../services/ai/review/suggestionService');
 const { executeApprovedSend, ReviewError } = require('../services/ai/send/executeApprovedSend');
@@ -48,6 +54,13 @@ const {
   approveRuleSuggestion,
   rejectRuleSuggestion,
 } = require('../services/ai/brain/rules');
+const {
+  SopImportError,
+  importSopGuide,
+  getSopImportDraft,
+  approveSopImport,
+  rejectSopImport,
+} = require('../services/ai/brain/sopImport');
 
 const router = express.Router();
 
@@ -73,6 +86,7 @@ function toSettingsPayload(row, globalFlags) {
 
   return {
     ...settings,
+    globalEnabled: Boolean(globalFlags?.enabled),
     effectiveMode: resolveEffectiveAiMode({
       global: globalFlags,
       creator: settings,
@@ -711,6 +725,139 @@ router.post(
   }
 );
 
+router.post(
+  '/conversations/:id/pause',
+  authenticate,
+  requirePermission('ai.moderate', 'ai.settings.manage'),
+  async (req, res) => {
+    try {
+      const conversation = await requireConversationAccess(req, res, req.params.id);
+      if (!conversation) return;
+      const updated = await pauseConversation({
+        conversationId: conversation.id,
+      });
+      return res.json({ conversation: updated });
+    } catch (err) {
+      console.error('AI conversation pause error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/conversation',
+  authenticate,
+  requirePermission('ai.moderate', 'ai.settings.manage'),
+  async (req, res) => {
+    try {
+      const creatorId = String(req.query.creatorId || '').trim();
+      const platform = String(req.query.platform || '').trim();
+      const platformChatId = String(req.query.platformChatId || '').trim();
+      if (!isValidUuid(creatorId)) {
+        return res.status(400).json({ error: 'Invalid creator ID' });
+      }
+      if (!INGEST_PLATFORMS.includes(platform)) {
+        return res.status(400).json({ error: 'Invalid platform' });
+      }
+      if (!platformChatId) {
+        return res.status(400).json({ error: 'platformChatId is required' });
+      }
+      const allowed = await userCanAccessCreator(req.user, creatorId);
+      if (!allowed) {
+        return res.status(403).json({
+          error: 'You do not have access to this creator',
+        });
+      }
+      const conversation = await getConversationByChat({
+        creatorId,
+        platform,
+        platformChatId,
+      });
+      return res.json({ conversation });
+    } catch (err) {
+      console.error('Get AI conversation by chat error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/conversations/ignore',
+  authenticate,
+  requirePermission('ai.moderate', 'ai.settings.manage'),
+  async (req, res) => {
+    try {
+      const creatorId = String(req.body?.creatorId || '').trim();
+      const platform = String(req.body?.platform || '').trim();
+      const platformChatId = String(req.body?.platformChatId || '').trim();
+      if (!isValidUuid(creatorId)) {
+        return res.status(400).json({ error: 'Invalid creator ID' });
+      }
+      if (!INGEST_PLATFORMS.includes(platform)) {
+        return res.status(400).json({ error: 'Invalid platform' });
+      }
+      if (!platformChatId) {
+        return res.status(400).json({ error: 'platformChatId is required' });
+      }
+      const allowed = await userCanAccessCreator(req.user, creatorId);
+      if (!allowed) {
+        return res.status(403).json({
+          error: 'You do not have access to this creator',
+        });
+      }
+      const updated = await ignoreConversationByChat({
+        creatorId,
+        platform,
+        platformChatId,
+        userId: req.user.id,
+      });
+      return res.json({ conversation: updated });
+    } catch (err) {
+      console.error('AI conversation ignore-by-chat error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/conversations/:id/ignore',
+  authenticate,
+  requirePermission('ai.moderate', 'ai.settings.manage'),
+  async (req, res) => {
+    try {
+      const conversation = await requireConversationAccess(req, res, req.params.id);
+      if (!conversation) return;
+      const updated = await ignoreConversation({
+        conversationId: conversation.id,
+        userId: req.user.id,
+      });
+      return res.json({ conversation: updated });
+    } catch (err) {
+      console.error('AI conversation ignore error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/conversations/:id/unignore',
+  authenticate,
+  requirePermission('ai.moderate', 'ai.settings.manage'),
+  async (req, res) => {
+    try {
+      const conversation = await requireConversationAccess(req, res, req.params.id);
+      if (!conversation) return;
+      const updated = await unignoreConversation({
+        conversationId: conversation.id,
+      });
+      return res.json({ conversation: updated });
+    } catch (err) {
+      console.error('AI conversation unignore error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
 router.get(
   '/queue',
   authenticate,
@@ -740,8 +887,14 @@ router.get(
         return res.status(400).json({ error: 'Invalid platform' });
       }
 
+      const state = String(req.query.state || '').trim();
+      if (state && !CONVERSATION_STATE_VALUES.includes(state)) {
+        return res.status(400).json({ error: 'Invalid state' });
+      }
+
       const result = await listQueue({
         bucket: bucket || null,
+        state: state || null,
         creatorId: creatorId || null,
         platform: platform || null,
         user: req.user,
@@ -789,6 +942,14 @@ router.get(
 
 function sendBrainError(res, err) {
   if (!(err instanceof BrainError)) return false;
+  return res.status(err.status).json({
+    error: err.message,
+    code: err.code,
+  });
+}
+
+function sendSopImportError(res, err) {
+  if (!(err instanceof SopImportError)) return false;
   return res.status(err.status).json({
     error: err.message,
     code: err.code,
@@ -863,6 +1024,79 @@ router.post(
     } catch (err) {
       if (sendBrainError(res, err)) return;
       console.error('Reject AI rule suggestion error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/sops/import',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      const draft = await importSopGuide({
+        rawText: req.body?.rawText,
+        creatorId: req.body?.creatorId,
+        documentType: req.body?.documentType,
+        user: req.user,
+      });
+      return res.status(201).json({ draft });
+    } catch (err) {
+      if (sendSopImportError(res, err)) return;
+      console.error('Import SOP guide error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/sops/import/:id',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      const draft = await getSopImportDraft(req.params.id);
+      return res.json({ draft });
+    } catch (err) {
+      if (sendSopImportError(res, err)) return;
+      console.error('Get SOP import draft error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/sops/import/:id/approve',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      const result = await approveSopImport(req.params.id, {
+        proposedJson: req.body?.proposedJson,
+        overlapResolutions: req.body?.overlapResolutions,
+        user: req.user,
+      });
+      return res.json(result);
+    } catch (err) {
+      if (sendSopImportError(res, err)) return;
+      console.error('Approve SOP import error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.post(
+  '/sops/import/:id/reject',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      const draft = await rejectSopImport(req.params.id, { user: req.user });
+      return res.json({ draft });
+    } catch (err) {
+      if (sendSopImportError(res, err)) return;
+      console.error('Reject SOP import error:', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
   }

@@ -89,8 +89,8 @@ function toProfilePayload(row) {
   };
 }
 
-async function getCreatorProfile(creatorId) {
-  const result = await pool.query(
+async function getCreatorProfile(creatorId, client = pool) {
+  const result = await client.query(
     `SELECT "creatorId", persona, tone, languages, biography,
             "preferredTerminology", "prohibitedClaims", "salesStyle",
             "platformRules", instructions, version, "updatedBy", "updatedAt"
@@ -101,15 +101,47 @@ async function getCreatorProfile(creatorId) {
   return toProfilePayload(result.rows[0] || null);
 }
 
-async function upsertCreatorProfile(creatorId, body, userId) {
-  const existing = await pool.query(
+function applyProfilePatch(current, patch) {
+  const next = { ...(current || defaultCreatorAiProfile()) };
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    return next;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'persona')) {
+    next.persona = asString(patch.persona);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'tone')) {
+    next.tone = asString(patch.tone);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'languages')) {
+    next.languages = splitList(patch.languages);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'biography')) {
+    next.biography = asString(patch.biography);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'preferredTerminology')) {
+    next.preferredTerminology = asObject(patch.preferredTerminology, {});
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'salesStyle')) {
+    next.salesStyle = asString(patch.salesStyle);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'instructions')) {
+    next.instructions = asString(patch.instructions);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, 'prohibitedClaims')) {
+    next.prohibitedClaims = splitList(patch.prohibitedClaims);
+  }
+  return next;
+}
+
+async function upsertCreatorProfile(creatorId, body, userId, client = pool) {
+  const existing = await client.query(
     `SELECT version FROM ai_creator_profiles WHERE "creatorId" = $1`,
     [creatorId]
   );
   const normalized = normalizeProfileBody(body);
   const version = nextProfileVersion(existing.rows[0] || null);
 
-  const result = await pool.query(
+  const result = await client.query(
     `INSERT INTO ai_creator_profiles (
        "creatorId", persona, tone, languages, biography,
        "preferredTerminology", "prohibitedClaims", "salesStyle",
@@ -151,10 +183,22 @@ async function upsertCreatorProfile(creatorId, body, userId) {
   return toProfilePayload(result.rows[0]);
 }
 
+async function mergeCreatorProfile(creatorId, patch, userId, client = pool) {
+  const current = await getCreatorProfile(creatorId, client);
+  return upsertCreatorProfile(
+    creatorId,
+    applyProfilePatch(current, patch),
+    userId,
+    client
+  );
+}
+
 module.exports = {
   defaultCreatorAiProfile,
   nextProfileVersion,
   normalizeProfileBody,
+  applyProfilePatch,
   getCreatorProfile,
   upsertCreatorProfile,
+  mergeCreatorProfile,
 };

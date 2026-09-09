@@ -37,7 +37,9 @@ import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
 import AiSuggestionCard from '@/components/ai/AiSuggestionCard';
+import AiIgnoreStrip from '@/components/ai/AiIgnoreStrip';
 import { useAiThreadSuggestion } from '@/hooks/useAiThreadSuggestion';
+import { useAiThreadControls } from '@/hooks/useAiThreadControls';
 import TelegramFanPanel from '@/components/telegram/TelegramFanPanel';
 import TelegramReactionPicker, {
   applyOptimisticReactions,
@@ -1812,6 +1814,18 @@ export function TelegramChatThread({
     platformChatId: peerId,
     latestInboundId,
   });
+  const {
+    canIgnore: canIgnoreAi,
+    aiIgnored,
+    busy: aiIgnoreBusy,
+    error: aiIgnoreError,
+    ignore: ignoreAi,
+    unignore: unignoreAi,
+  } = useAiThreadControls({
+    creatorId,
+    platform: 'telegram',
+    platformChatId: peerId,
+  });
 
   const getSuggestFanNotes = useCallback(() => {
     const notes = fan?.notes?.trim() || '';
@@ -2484,7 +2498,21 @@ export function TelegramChatThread({
           </p>
         )}
 
-        {aiSuggestion ? (
+        {canIgnoreAi ? (
+          <AiIgnoreStrip
+            aiIgnored={aiIgnored}
+            busy={aiIgnoreBusy}
+            error={aiIgnoreError}
+            onIgnore={() => {
+              void ignoreAi().then((ok) => {
+                if (ok) dismissAiSuggestion();
+              });
+            }}
+            onUnignore={() => void unignoreAi()}
+          />
+        ) : null}
+
+        {aiSuggestion && !aiIgnored ? (
           <AiSuggestionCard
             suggestion={aiSuggestion}
             stale={aiSuggestionStale}

@@ -4,6 +4,7 @@ const { normalizeFacts } = require('../memory');
 const { normalizeConversationState } = require('../stateMachine');
 const { normalizeMediaCandidates } = require('../mediaCandidates');
 const { normalizeRules } = require('../brain/rules');
+const { normalizeSopsForContext } = require('../brain/sopImport');
 
 const CONTEXT_SCHEMA_VERSION = 1;
 const CONTEXT_MESSAGE_LIMIT = 20;
@@ -178,6 +179,7 @@ function buildAiContext({
   fanMemories,
   mediaCandidates,
   rules,
+  sops,
   mode,
   lastSessionSummary,
   now,
@@ -211,6 +213,7 @@ function buildAiContext({
         : null,
     mediaCandidates: normalizeMediaCandidates(mediaCandidates),
     rules: normalizeRules(rules),
+    sops: normalizeSopsForContext(sops),
     constraints: buildConstraints(safe),
     profile: safe,
   };

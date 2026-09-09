@@ -150,6 +150,8 @@ function createHarness(options = {}) {
       options.loadMediaCandidates || (async () => options.mediaCandidates || []),
     loadApprovedRules:
       options.loadApprovedRules || (async () => options.rules || []),
+    loadActiveSops:
+      options.loadActiveSops || (async () => options.sops || []),
     executeApprovedSend:
       options.executeApprovedSend ||
       (async (args) => {
@@ -207,6 +209,42 @@ describe('shouldSkipGenerate', () => {
   it('allows suggest_only', () => {
     assert.deepEqual(
       shouldSkipGenerate({ effectiveMode: MODES.SUGGEST_ONLY }),
+      { skip: false, reason: null }
+    );
+  });
+
+  it('skips ignored before paused, off, and takeover', () => {
+    assert.deepEqual(
+      shouldSkipGenerate({
+        effectiveMode: MODES.SUGGEST_ONLY,
+        paused: true,
+        ignored: true,
+      }),
+      { skip: true, reason: 'ignored' }
+    );
+    assert.deepEqual(
+      shouldSkipGenerate({
+        effectiveMode: MODES.OFF,
+        ignored: true,
+      }),
+      { skip: true, reason: 'ignored' }
+    );
+    assert.deepEqual(
+      shouldSkipGenerate({
+        effectiveMode: MODES.HUMAN_TAKEOVER,
+        ignored: true,
+      }),
+      { skip: true, reason: 'ignored' }
+    );
+  });
+
+  it('allows generate after unignore when suggest_only and not paused', () => {
+    assert.deepEqual(
+      shouldSkipGenerate({
+        effectiveMode: MODES.SUGGEST_ONLY,
+        paused: false,
+        ignored: false,
+      }),
       { skip: false, reason: null }
     );
   });
@@ -338,6 +376,94 @@ describe('processIncomingMessage', () => {
     const { deps, provider } = createHarness({
       mode: MODES.SUGGEST_ONLY,
       paused: true,
+    });
+    const result = await processIncomingMessage(
+      {
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        inboundPlatformMessageId: 'in-1',
+      },
+      deps
+    );
+    assert.equal(result.status, 'skipped');
+    assert.equal(result.skipReason, 'paused');
+    assert.equal(provider.calls, 0);
+  });
+
+  it('skips generate when the conversation is ignored', async () => {
+    const { deps, provider, persistCalls } = createHarness({
+      mode: MODES.SUGGEST_ONLY,
+      paused: false,
+      conversation: {
+        id: 'conv-1',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        revision: 2,
+        lastInboundPlatformMessageId: 'in-1',
+        aiIgnored: true,
+        aiPaused: true,
+        humanTakeover: true,
+      },
+    });
+    const result = await processIncomingMessage(
+      {
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        inboundPlatformMessageId: 'in-1',
+      },
+      deps
+    );
+    assert.equal(result.status, 'skipped');
+    assert.equal(result.skipReason, 'ignored');
+    assert.equal(provider.calls, 0);
+    assert.equal(persistCalls.length, 0);
+  });
+
+  it('generates after unignore when suggest_only is not paused', async () => {
+    const { deps, provider } = createHarness({
+      mode: MODES.SUGGEST_ONLY,
+      paused: false,
+      conversation: {
+        id: 'conv-1',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        revision: 2,
+        lastInboundPlatformMessageId: 'in-1',
+        aiIgnored: false,
+        aiPaused: false,
+      },
+    });
+    const result = await processIncomingMessage(
+      {
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        inboundPlatformMessageId: 'in-1',
+      },
+      deps
+    );
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.skipReason, null);
+    assert.ok(provider.calls > 0);
+  });
+
+  it('skips generate when the conversation is aiPaused', async () => {
+    const { deps, provider } = createHarness({
+      mode: MODES.SUGGEST_ONLY,
+      paused: false,
+      conversation: {
+        id: 'conv-1',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        revision: 2,
+        lastInboundPlatformMessageId: 'in-1',
+        aiPaused: true,
+      },
     });
     const result = await processIncomingMessage(
       {
@@ -956,6 +1082,42 @@ describe('processIncomingMessage', () => {
     ]);
   });
 
+  it('loads active SOPs into generate context', async () => {
+    const captured = [];
+    const { deps } = createHarness({
+      sops: [{ title: 'Tone', body: 'Stay dominant.', scope: 'GLOBAL' }],
+    });
+    deps.generateReply = async ({ context }) => {
+      captured.push(context);
+      return {
+        output: {
+          schemaVersion: 1,
+          reply: 'hallo',
+          replyEnglish: 'hello',
+          intent: 'rapport',
+          action: 'TEXT_REPLY',
+          confidence: 0.85,
+          suggestedRoute: 'HUMAN_REVIEW',
+          requiresHumanReview: true,
+          flags: [],
+        },
+      };
+    };
+    const result = await processIncomingMessage(
+      {
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        inboundPlatformMessageId: 'in-sop-1',
+      },
+      deps
+    );
+    assert.equal(result.status, 'succeeded');
+    assert.deepEqual(captured[0].sops, [
+      { title: 'Tone', body: 'Stay dominant.', scope: 'GLOBAL' },
+    ]);
+  });
+
   const inbound = {
     creatorId: 'cr-1',
     platform: 'maloum',
@@ -1130,7 +1292,7 @@ describe('processIncomingMessage', () => {
     assert.equal(autoSendCalls.length, 0);
   });
 
-  it('does not auto-send off maloum', async () => {
+  it('auto-sends TEXT_REPLY on 4based when gates pass', async () => {
     const { deps, autoSendCalls } = createHarness({
       autoSendAllowed: true,
       mode: MODES.AUTO_LOW_RISK,
@@ -1150,8 +1312,8 @@ describe('processIncomingMessage', () => {
       deps
     );
     assert.equal(result.status, 'succeeded');
-    assert.equal(result.route, ROUTES.HUMAN_REVIEW);
-    assert.equal(autoSendCalls.length, 0);
+    assert.equal(result.route, ROUTES.AUTO_SEND);
+    assert.equal(autoSendCalls.length, 1);
   });
 
   it('does not auto-send when the conversation went stale during generate', async () => {
@@ -1259,6 +1421,48 @@ describe('processManualSuggest', () => {
     assert.equal(result.status, 'skipped');
     assert.equal(result.skipReason, 'conversation_missing');
     assert.equal(provider.calls, 0);
+  });
+});
+
+describe('POST /api/ai/conversations ignore permission', () => {
+  const mw = requirePermission('ai.moderate', 'ai.settings.manage');
+
+  it('returns 403 for a chatter with only ai.suggest.use', () => {
+    const res = mockRes();
+    let nextCalled = false;
+    mw(
+      { user: { role: 'chatter', permissions: ['ai.suggest.use'] } },
+      res,
+      () => {
+        nextCalled = true;
+      }
+    );
+    assert.equal(res.statusCode, 403);
+    assert.equal(nextCalled, false);
+  });
+
+  it('allows ai.moderate or ai.settings.manage', () => {
+    const res = mockRes();
+    let nextCalled = false;
+    mw(
+      { user: { role: 'manager', permissions: ['ai.moderate'] } },
+      res,
+      () => {
+        nextCalled = true;
+      }
+    );
+    assert.equal(nextCalled, true);
+
+    const res2 = mockRes();
+    let next2 = false;
+    mw(
+      { user: { role: 'manager', permissions: ['ai.settings.manage'] } },
+      res2,
+      () => {
+        next2 = true;
+      }
+    );
+    assert.equal(next2, true);
   });
 });
 

@@ -212,22 +212,17 @@ async function approveRuleSuggestion(
     throw new BrainError(400, 'Rule text is required');
   }
 
-  const inserted = await client.query(
-    `INSERT INTO ai_rules (
-       scope, "creatorId", platform, "platformFanId", text,
-       "sourceSuggestionId", "approvedBy", "approvedAt", active
-     )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), true)
-     RETURNING *`,
-    [
-      nextScope,
-      fields.creatorId,
-      fields.platform,
-      fields.platformFanId,
-      ruleText.slice(0, MAX_RULE_TEXT),
-      row.id,
-      user?.id || null,
-    ]
+  const inserted = await insertApprovedRule(
+    {
+      scope: nextScope,
+      text: ruleText,
+      creatorId: fields.creatorId,
+      platform: fields.platform,
+      platformFanId: fields.platformFanId,
+      sourceSuggestionId: row.id,
+      approvedBy: user?.id || null,
+    },
+    client
   );
 
   await client.query(
@@ -237,6 +232,48 @@ async function approveRuleSuggestion(
     [row.id, RULE_SUGGESTION_STATUSES.APPROVED, user?.id || null]
   );
 
+  return inserted;
+}
+
+async function insertApprovedRule(
+  {
+    scope,
+    text,
+    creatorId,
+    platform,
+    platformFanId,
+    sourceSuggestionId,
+    approvedBy,
+  } = {},
+  client = pool
+) {
+  if (!isRuleScope(scope)) {
+    throw new BrainError(400, 'Invalid scope', { code: 'invalid_scope' });
+  }
+  const fields = scopeFields(scope, { creatorId, platform, platformFanId });
+  assertScopeKeys(scope, fields);
+  const ruleText = asText(text).trim();
+  if (!ruleText) {
+    throw new BrainError(400, 'Rule text is required');
+  }
+
+  const inserted = await client.query(
+    `INSERT INTO ai_rules (
+       scope, "creatorId", platform, "platformFanId", text,
+       "sourceSuggestionId", "approvedBy", "approvedAt", active
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), true)
+     RETURNING *`,
+    [
+      scope,
+      fields.creatorId,
+      fields.platform,
+      fields.platformFanId,
+      ruleText.slice(0, MAX_RULE_TEXT),
+      sourceSuggestionId || null,
+      approvedBy || null,
+    ]
+  );
   return toRuleDto(inserted.rows[0]);
 }
 
@@ -313,6 +350,7 @@ module.exports = {
   approveRuleSuggestion,
   rejectRuleSuggestion,
   loadApprovedRules,
+  insertApprovedRule,
   toSuggestionDto,
   toRuleDto,
 };

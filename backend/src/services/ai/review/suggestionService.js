@@ -120,10 +120,22 @@ async function insertPendingSuggestion(row, client = pool) {
 async function persistPendingSuggestion(input = {}, deps = {}) {
   const row = buildPendingRow(input);
   if (!row.conversationId) return null;
+  if (input.conversation?.aiIgnored) return null;
+
+  const isIgnored =
+    deps.isConversationIgnored ||
+    (async (conversationId, client = pool) => {
+      const result = await client.query(
+        `SELECT "aiIgnored" FROM ai_conversations WHERE id = $1`,
+        [conversationId]
+      );
+      return Boolean(result.rows[0]?.aiIgnored);
+    });
+  const client = deps.client;
+  if (await isIgnored(row.conversationId, client)) return null;
 
   const doSupersede = deps.supersedePending || supersedePending;
   const doInsert = deps.insertPendingSuggestion || insertPendingSuggestion;
-  const client = deps.client;
 
   await doSupersede(row.conversationId, client);
   return doInsert(row, client);
@@ -273,6 +285,109 @@ async function resumeConversation({ conversationId }, client = pool) {
   return updated.rows[0] || conversation;
 }
 
+async function pauseConversation({ conversationId }, client = pool) {
+  const convo = await client.query(
+    `SELECT id FROM ai_conversations WHERE id = $1`,
+    [conversationId]
+  );
+  const conversation = convo.rows[0];
+  if (!conversation) return null;
+
+  const updated = await client.query(
+    `UPDATE ai_conversations
+     SET "aiPaused" = true, "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [conversationId]
+  );
+  return updated.rows[0] || conversation;
+}
+
+function toConversationFlags(row) {
+  if (!row) return null;
+  return {
+    conversationId: row.id,
+    aiIgnored: Boolean(row.aiIgnored),
+    aiPaused: Boolean(row.aiPaused),
+    humanTakeover: Boolean(row.humanTakeover),
+  };
+}
+
+async function getConversationByChat(
+  { creatorId, platform, platformChatId } = {},
+  client = pool
+) {
+  if (!creatorId || !platform || !platformChatId) return null;
+  const result = await client.query(
+    `SELECT id, "aiIgnored", "aiPaused", "humanTakeover"
+     FROM ai_conversations
+     WHERE "creatorId" = $1 AND platform = $2 AND "platformChatId" = $3`,
+    [creatorId, platform, platformChatId]
+  );
+  return toConversationFlags(result.rows[0] || null);
+}
+
+async function ignoreConversation({ conversationId, userId }, client = pool) {
+  const convo = await client.query(
+    `SELECT id FROM ai_conversations WHERE id = $1`,
+    [conversationId]
+  );
+  const conversation = convo.rows[0];
+  if (!conversation) return null;
+
+  const updated = await client.query(
+    `UPDATE ai_conversations
+     SET "aiIgnored" = true,
+         "ignoredAt" = NOW(),
+         "ignoredByUserId" = $2,
+         "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [conversationId, userId || null]
+  );
+  await supersedePending(conversationId, client);
+  return updated.rows[0] || conversation;
+}
+
+async function unignoreConversation({ conversationId }, client = pool) {
+  const convo = await client.query(
+    `SELECT id FROM ai_conversations WHERE id = $1`,
+    [conversationId]
+  );
+  const conversation = convo.rows[0];
+  if (!conversation) return null;
+
+  const updated = await client.query(
+    `UPDATE ai_conversations
+     SET "aiIgnored" = false,
+         "ignoredAt" = NULL,
+         "ignoredByUserId" = NULL,
+         "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [conversationId]
+  );
+  return updated.rows[0] || conversation;
+}
+
+async function ignoreConversationByChat(
+  { creatorId, platform, platformChatId, userId } = {},
+  client = pool
+) {
+  if (!creatorId || !platform || !platformChatId) return null;
+  const upserted = await client.query(
+    `INSERT INTO ai_conversations ("creatorId", platform, "platformChatId")
+     VALUES ($1, $2, $3)
+     ON CONFLICT ("creatorId", platform, "platformChatId") DO UPDATE SET
+       "updatedAt" = ai_conversations."updatedAt"
+     RETURNING id`,
+    [creatorId, platform, String(platformChatId)]
+  );
+  const id = upserted.rows[0]?.id;
+  if (!id) return null;
+  return ignoreConversation({ conversationId: id, userId }, client);
+}
+
 async function emitSuggestionEvent(suggestion, { mode } = {}, deps = {}) {
   if (!suggestion) return { emitted: false, reason: 'missing' };
   if (mode === MODES.SHADOW) return { emitted: false, reason: 'shadow' };
@@ -299,4 +414,10 @@ module.exports = {
   emitSuggestionEvent,
   takeoverConversation,
   resumeConversation,
+  pauseConversation,
+  ignoreConversation,
+  unignoreConversation,
+  ignoreConversationByChat,
+  getConversationByChat,
+  toConversationFlags,
 };

@@ -57,6 +57,24 @@ function createSendHarness(overrides = {}) {
   };
   sendText.calls = [];
 
+  const sendFourBasedMessage = async (...args) => {
+    sendFourBasedMessage.calls.push(args);
+    if (typeof overrides.sendFourBasedMessage === 'function') {
+      return overrides.sendFourBasedMessage(...args);
+    }
+    return { _id: 'fb-99' };
+  };
+  sendFourBasedMessage.calls = [];
+
+  const sendTelegramText = async (...args) => {
+    sendTelegramText.calls.push(args);
+    if (typeof overrides.sendTelegramText === 'function') {
+      return overrides.sendTelegramText(...args);
+    }
+    return { id: 'tg-99' };
+  };
+  sendTelegramText.calls = [];
+
   const sendMedia = async (...args) => {
     sendMedia.calls.push(args);
     if (typeof overrides.sendMedia === 'function') {
@@ -82,7 +100,12 @@ function createSendHarness(overrides = {}) {
     loadMaloumCreator: async () => ({
       creator: { id: 'cr-1', displayName: 'Naomi', accessToken: 't', proxyUrl: 'http://p' },
     }),
+    loadFourBasedCreator: async () => ({
+      creator: { id: 'cr-1', displayName: 'Naomi', providerUserId: 'me' },
+    }),
     sendText,
+    sendFourBasedMessage,
+    sendTelegramText,
     sendMedia,
     loadMediaCandidates:
       overrides.loadMediaCandidates ||
@@ -128,6 +151,8 @@ function createSendHarness(overrides = {}) {
     deps,
     conversation,
     sendText,
+    sendFourBasedMessage,
+    sendTelegramText,
     sendMedia,
     dashboardInserts,
     vaultSent,
@@ -254,9 +279,9 @@ describe('executeApprovedSend', () => {
     assert.equal(harness.dashboardInserts[0].actualSentText, 'hallo');
   });
 
-  it('rejects non-maloum before calling sendText', async () => {
+  it('rejects unknown platforms before calling sendText', async () => {
     const harness = createSendHarness({
-      suggestion: { platform: '4based' },
+      suggestion: { platform: 'onlyfans' },
     });
     await assert.rejects(
       () =>
@@ -267,6 +292,43 @@ describe('executeApprovedSend', () => {
       (err) => err.status === 400 && err.code === 'platform_not_supported'
     );
     assert.equal(harness.sendText.calls.length, 0);
+    assert.equal(harness.sendFourBasedMessage.calls.length, 0);
+    assert.equal(harness.sendTelegramText.calls.length, 0);
+  });
+
+  it('sends 4based TEXT_REPLY via sendFourBasedMessage', async () => {
+    const harness = createSendHarness({
+      suggestion: { platform: '4based' },
+    });
+    const result = await executeApprovedSend(
+      { suggestionId: 'sug-1', user: harness.user },
+      harness.deps
+    );
+    assert.equal(result.messageId, 'fb-99');
+    assert.equal(harness.sendText.calls.length, 0);
+    assert.equal(harness.sendFourBasedMessage.calls.length, 1);
+    assert.equal(harness.sendFourBasedMessage.calls[0][1], 'chat-1');
+    assert.equal(harness.sendFourBasedMessage.calls[0][2].message, 'hallo');
+    assert.equal(harness.dashboardInserts[0].platform, '4based');
+    assert.equal(harness.dashboardInserts[0].maloumMessageId, '4based:fb-99');
+  });
+
+  it('sends telegram TEXT_REPLY via sendTelegramText', async () => {
+    const harness = createSendHarness({
+      suggestion: { platform: 'telegram' },
+    });
+    const result = await executeApprovedSend(
+      { suggestionId: 'sug-1', user: harness.user },
+      harness.deps
+    );
+    assert.equal(result.messageId, 'tg-99');
+    assert.equal(harness.sendText.calls.length, 0);
+    assert.equal(harness.sendTelegramText.calls.length, 1);
+    assert.equal(harness.sendTelegramText.calls[0][0], 'cr-1');
+    assert.equal(harness.sendTelegramText.calls[0][1], 'chat-1');
+    assert.equal(harness.sendTelegramText.calls[0][2], 'hallo');
+    assert.equal(harness.dashboardInserts[0].platform, 'telegram');
+    assert.equal(harness.dashboardInserts[0].maloumMessageId, 'telegram:tg-99');
   });
 
   it('rejects shadow mode before calling sendText', async () => {
@@ -384,6 +446,27 @@ describe('executeApprovedSend', () => {
     );
     assert.equal(harness.sendMedia.calls.length, 0);
     assert.equal(harness.sendText.calls.length, 0);
+  });
+
+  it('rejects SEND_PPV on 4based and telegram', async () => {
+    for (const platform of ['4based', 'telegram']) {
+      const harness = createSendHarness({
+        suggestion: { platform, ...ppvSuggestion },
+        mediaCandidates: [ppvCandidate],
+      });
+      await assert.rejects(
+        () =>
+          executeApprovedSend(
+            { suggestionId: 'sug-1', user: harness.user },
+            harness.deps
+          ),
+        (err) => err.status === 400 && err.code === 'platform_not_supported'
+      );
+      assert.equal(harness.sendMedia.calls.length, 0);
+      assert.equal(harness.sendText.calls.length, 0);
+      assert.equal(harness.sendFourBasedMessage.calls.length, 0);
+      assert.equal(harness.sendTelegramText.calls.length, 0);
+    }
   });
 
   it('records a rule suggestion when edit-send changes the text', async () => {

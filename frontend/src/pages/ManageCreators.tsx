@@ -17,15 +17,19 @@ import CreatorAvatar from '@/components/CreatorAvatar';
 import EditCreatorProxyModal from '@/components/EditCreatorProxyModal';
 import RemoveCreatorModal from '@/components/RemoveCreatorModal';
 import RenameCreatorModal from '@/components/RenameCreatorModal';
+import AiCreatorModeControl from '@/components/AiCreatorModeControl';
 import AiCreatorProfileModal from '@/components/AiCreatorProfileModal';
 import { useAuth } from '@/context/AuthContext';
 import {
   deleteCreator,
+  getAiCreatorSettings,
   getCreators,
+  patchAiCreatorSettings,
   reconnectFourBasedAccountSaved,
   reconnectMaloumAccountSaved,
   refreshMaloumAvatar,
   verifyMaloumSession,
+  type AiCreatorSettings,
   type Creator,
 } from '@/lib/api';
 import fourBasedIcon from '@/assets/4based_icon.ico';
@@ -80,6 +84,13 @@ export default function ManageCreators() {
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
+  const [aiSettings, setAiSettings] = useState<Record<string, AiCreatorSettings>>(
+    {}
+  );
+  const [aiSettingsErrors, setAiSettingsErrors] = useState<Record<string, string>>(
+    {}
+  );
+  const [aiSavingIds, setAiSavingIds] = useState<Set<string>>(() => new Set());
 
   const canManage = hasPermission('creators.manage');
   const canManageAi = hasPermission('ai.settings.manage');
@@ -87,7 +98,40 @@ export default function ManageCreators() {
   const loadCreators = useCallback(async () => {
     const { creators: list } = await getCreators();
     setCreators(list);
-  }, []);
+    if (!canManageAi) {
+      setAiSettings({});
+      setAiSettingsErrors({});
+      return;
+    }
+
+    const results = await Promise.all(
+      list.map(async (creator) => {
+        try {
+          const settings = await getAiCreatorSettings(creator.id);
+          return { id: creator.id, settings };
+        } catch (err) {
+          return {
+            id: creator.id,
+            error:
+              err instanceof Error ? err.message : 'Failed to load AI settings',
+          };
+        }
+      })
+    );
+
+    const nextSettings: Record<string, AiCreatorSettings> = {};
+    const nextErrors: Record<string, string> = {};
+    for (const row of results) {
+      if ('settings' in row && row.settings) {
+        nextSettings[row.id] = row.settings;
+      }
+      if ('error' in row && row.error) {
+        nextErrors[row.id] = row.error;
+      }
+    }
+    setAiSettings(nextSettings);
+    setAiSettingsErrors(nextErrors);
+  }, [canManageAi]);
 
   useEffect(() => {
     async function load() {
@@ -198,6 +242,39 @@ export default function ManageCreators() {
     }
   }
 
+  async function handleAiSettingsChange(
+    creatorId: string,
+    patch: { mode?: string; paused?: boolean }
+  ) {
+    setAiSavingIds((prev) => {
+      const next = new Set(prev);
+      next.add(creatorId);
+      return next;
+    });
+    setAiSettingsErrors((prev) => {
+      if (!prev[creatorId]) return prev;
+      const next = { ...prev };
+      delete next[creatorId];
+      return next;
+    });
+    try {
+      const updated = await patchAiCreatorSettings(creatorId, patch);
+      setAiSettings((prev) => ({ ...prev, [creatorId]: updated }));
+    } catch (err) {
+      setAiSettingsErrors((prev) => ({
+        ...prev,
+        [creatorId]:
+          err instanceof Error ? err.message : 'Failed to update AI settings',
+      }));
+    } finally {
+      setAiSavingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(creatorId);
+        return next;
+      });
+    }
+  }
+
   async function handleRemoveConfirm() {
     if (!removeTarget) return;
 
@@ -216,7 +293,7 @@ export default function ManageCreators() {
 
   return (
     <AppLayout title="Creators" activePage="creators">
-      <div className="max-w-5xl mx-auto">
+      <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-semibold">Manage Creators</h2>
           <div className="flex items-center gap-2">
@@ -253,7 +330,7 @@ export default function ManageCreators() {
           </div>
         )}
 
-        <div className="border border-gray-200 dark:border-white/10 rounded-xl overflow-hidden">
+        <div className="border border-gray-200 dark:border-white/10 rounded-xl overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/[0.02]">
@@ -407,14 +484,25 @@ export default function ManageCreators() {
                             />
                           </button>
                           {canManageAi && (
-                            <button
-                              type="button"
-                              className="p-1.5 text-gray-400 hover:text-violet-500 dark:hover:text-violet-400 rounded-md hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
-                              title="AI profile"
-                              onClick={() => setAiProfileTarget(creator)}
-                            >
-                              <Sparkles className="w-4 h-4" />
-                            </button>
+                            <>
+                              <AiCreatorModeControl
+                                creatorId={creator.id}
+                                settings={aiSettings[creator.id]}
+                                error={aiSettingsErrors[creator.id] || null}
+                                saving={aiSavingIds.has(creator.id)}
+                                onChange={(patch) =>
+                                  void handleAiSettingsChange(creator.id, patch)
+                                }
+                              />
+                              <button
+                                type="button"
+                                className="p-1.5 text-gray-400 hover:text-violet-500 dark:hover:text-violet-400 rounded-md hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
+                                title="AI profile"
+                                onClick={() => setAiProfileTarget(creator)}
+                              >
+                                <Sparkles className="w-4 h-4" />
+                              </button>
+                            </>
                           )}
                           <button
                             type="button"

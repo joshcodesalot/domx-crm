@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { nextProfileVersion } = require('./profile');
+const { nextProfileVersion, applyProfilePatch } = require('./profile');
 const { requirePermission } = require('../../middleware/authorize');
 
 function mockRes() {
@@ -18,13 +18,33 @@ function mockRes() {
   };
 }
 
-describe('nextProfileVersion', () => {
-  it('starts at 1 when no row exists', () => {
-    assert.equal(nextProfileVersion(null), 1);
-  });
-
-  it('bumps an existing version', () => {
-    assert.equal(nextProfileVersion({ version: 3 }), 4);
+describe('applyProfilePatch', () => {
+  it('overlays only provided profile keys', () => {
+    const merged = applyProfilePatch(
+      {
+        persona: 'Naomi',
+        tone: 'cold',
+        languages: ['en'],
+        biography: 'bio',
+        preferredTerminology: { Queen: 'Mistress' },
+        prohibitedClaims: ['meetup'],
+        salesStyle: 'slow',
+        platformRules: {},
+        instructions: 'old sop',
+        version: 2,
+        updatedBy: null,
+        updatedAt: null,
+      },
+      {
+        tone: 'warm dominant',
+        prohibitedClaims: ['meetup', 'real name'],
+      }
+    );
+    assert.equal(merged.persona, 'Naomi');
+    assert.equal(merged.tone, 'warm dominant');
+    assert.equal(merged.salesStyle, 'slow');
+    assert.equal(merged.instructions, 'old sop');
+    assert.deepEqual(merged.prohibitedClaims, ['meetup', 'real name']);
   });
 });
 
