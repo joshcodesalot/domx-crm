@@ -7,19 +7,59 @@ const {
 const { summarizeUsage } = require('../usage');
 
 const BOT_API_ORIGIN = 'https://api.telegram.org';
-const COMMANDS = new Set(['pause', 'resume', 'takeover', 'release', 'cost']);
+const COMMANDS = new Set([
+  'pause',
+  'resume',
+  'takeover',
+  'release',
+  'cost',
+  'help',
+  'commands',
+]);
+const HELP_TEXT = `AI alert bot commands:
+/help
+/commands
+/cost
+/pause <creatorId>
+/resume <creatorId>
+/takeover <conversationId>
+/release <conversationId>`;
 
 let running = false;
 let offset = 0;
 let loopPromise = null;
 
+function parseTopicId(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+function parseChatEntry(part) {
+  const trimmed = String(part || '').trim();
+  const match = trimmed.match(/^(-?\d+)(?::(\d+))?$/);
+  if (!match) return { chatId: trimmed, topicId: null };
+  return {
+    chatId: match[1],
+    topicId: parseTopicId(match[2]),
+  };
+}
+
 function readConfig(env = process.env) {
   const token = String(env.TELEGRAM_ALERT_BOT_TOKEN || '').trim();
+  const defaultTopicId = parseTopicId(env.TELEGRAM_ALERT_TOPIC_ID);
+  const topicsByChat = {};
   const chatIds = String(env.TELEGRAM_ALERT_CHAT_IDS || '')
     .split(',')
     .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const entry = parseChatEntry(part);
+      if (entry.topicId != null) topicsByChat[entry.chatId] = entry.topicId;
+      return entry.chatId;
+    })
     .filter(Boolean);
-  return { token, chatIds };
+  return { token, chatIds, topicsByChat, defaultTopicId };
 }
 
 function isConfigured(config = readConfig()) {
@@ -32,10 +72,25 @@ function isAllowedChat(chatId, config = readConfig()) {
   return (config.chatIds || []).some((allowed) => String(allowed) === id);
 }
 
+function topicForChat(chatId, config = {}) {
+  const id = String(chatId);
+  const byChat = config.topicsByChat && config.topicsByChat[id];
+  const fromEntry = parseTopicId(byChat);
+  if (fromEntry != null) return fromEntry;
+  return parseTopicId(config.defaultTopicId);
+}
+
+function buildSendPayload(chatId, text, threadId) {
+  const payload = { chat_id: chatId, text };
+  const topic = parseTopicId(threadId);
+  if (topic != null) payload.message_thread_id = topic;
+  return payload;
+}
+
 function parseCommand(text) {
   const trimmed = String(text || '').trim();
   const match = trimmed.match(
-    /^\/(pause|resume|takeover|release|cost)(?:@\S+)?(?:\s+(.+))?$/i
+    /^\/(pause|resume|takeover|release|cost|help|commands)(?:@\S+)?(?:\s+(.+))?$/i
   );
   if (!match) return null;
   return {
@@ -93,6 +148,10 @@ async function dispatchCommand(command, deps = {}) {
   const arg = String(command?.arg || '').trim();
   if (!COMMANDS.has(name)) return 'Unknown command.';
 
+  if (name === 'help' || name === 'commands') {
+    return HELP_TEXT;
+  }
+
   if (name === 'cost') {
     const summarize = deps.summarizeUsage || summarizeUsage;
     const from = new Date();
@@ -140,7 +199,7 @@ async function notifyAlertChats(text, deps = {}) {
       await callBotApi(
         config,
         'sendMessage',
-        { chat_id: chatId, text: message },
+        buildSendPayload(chatId, message, topicForChat(chatId, config)),
         fetchImpl
       );
       sent += 1;
@@ -171,7 +230,7 @@ async function handleUpdate(update, deps = {}) {
   await callBotApi(
     config,
     'sendMessage',
-    { chat_id: chatId, text: reply },
+    buildSendPayload(chatId, reply, msg.message_thread_id),
     fetchImpl
   );
   return { handled: true, command: command.name };
@@ -228,9 +287,14 @@ function stopTelegramAlertBot() {
 
 module.exports = {
   BOT_API_ORIGIN,
+  HELP_TEXT,
+  parseChatEntry,
+  parseTopicId,
   readConfig,
   isConfigured,
   isAllowedChat,
+  topicForChat,
+  buildSendPayload,
   parseCommand,
   botMethodUrl,
   notifyAlertChats,

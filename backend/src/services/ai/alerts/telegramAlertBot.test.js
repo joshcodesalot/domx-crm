@@ -4,9 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const {
   BOT_API_ORIGIN,
+  HELP_TEXT,
+  parseChatEntry,
+  parseTopicId,
   readConfig,
   isConfigured,
   isAllowedChat,
+  topicForChat,
+  buildSendPayload,
   parseCommand,
   botMethodUrl,
   notifyAlertChats,
@@ -65,6 +70,29 @@ describe('readConfig', () => {
     });
     assert.equal(isConfigured(config), true);
     assert.deepEqual(config.chatIds, ['111', '222']);
+    assert.equal(config.defaultTopicId, null);
+  });
+
+  it('parses chat:topic entries and a global topic id', () => {
+    const config = readConfig({
+      TELEGRAM_ALERT_BOT_TOKEN: 'tok',
+      TELEGRAM_ALERT_CHAT_IDS: '-100123:12,123456789',
+      TELEGRAM_ALERT_TOPIC_ID: '9',
+    });
+    assert.deepEqual(config.chatIds, ['-100123', '123456789']);
+    assert.equal(config.topicsByChat['-100123'], 12);
+    assert.equal(config.defaultTopicId, 9);
+    assert.equal(topicForChat('-100123', config), 12);
+    assert.equal(topicForChat('123456789', config), 9);
+  });
+});
+
+describe('parseChatEntry', () => {
+  it('keeps plain ids and optional topics', () => {
+    assert.deepEqual(parseChatEntry('123456789'), { chatId: '123456789', topicId: null });
+    assert.deepEqual(parseChatEntry('-100123:12'), { chatId: '-100123', topicId: 12 });
+    assert.equal(parseTopicId(''), null);
+    assert.equal(parseTopicId('0'), null);
   });
 });
 
@@ -72,6 +100,9 @@ describe('parseCommand', () => {
   it('reads slash commands and args', () => {
     assert.deepEqual(parseCommand('/pause cr-1'), { name: 'pause', arg: 'cr-1' });
     assert.deepEqual(parseCommand('/cost'), { name: 'cost', arg: '' });
+    assert.deepEqual(parseCommand('/help'), { name: 'help', arg: '' });
+    assert.deepEqual(parseCommand('/commands'), { name: 'commands', arg: '' });
+    assert.deepEqual(parseCommand('/help@BotName'), { name: 'help', arg: '' });
     assert.equal(parseCommand('hello'), null);
     assert.equal(parseCommand('/send fan-1 hi'), null);
   });
@@ -82,6 +113,15 @@ describe('isAllowedChat', () => {
     assert.equal(isAllowedChat(111, CONFIG), true);
     assert.equal(isAllowedChat('111', CONFIG), true);
     assert.equal(isAllowedChat(999, CONFIG), false);
+  });
+
+  it('authorizes by chat id, not topic', () => {
+    const config = readConfig({
+      TELEGRAM_ALERT_BOT_TOKEN: 'tok',
+      TELEGRAM_ALERT_CHAT_IDS: '-100123:12',
+    });
+    assert.equal(isAllowedChat(-100123, config), true);
+    assert.equal(isAllowedChat('-100123', config), true);
   });
 });
 
@@ -159,6 +199,25 @@ describe('dispatchCommand', () => {
     );
     assert.equal(reply, 'Today: 3 runs, $1.2500');
   });
+
+  it('returns the same usage list for help and commands', async () => {
+    const help = await dispatchCommand({ name: 'help', arg: '' });
+    const commands = await dispatchCommand({ name: 'commands', arg: '' });
+    assert.equal(help, HELP_TEXT);
+    assert.equal(commands, HELP_TEXT);
+    assert.equal(help, commands);
+    for (const name of [
+      '/help',
+      '/commands',
+      '/cost',
+      '/pause',
+      '/resume',
+      '/takeover',
+      '/release',
+    ]) {
+      assert.equal(help.includes(name), true, `missing ${name}`);
+    }
+  });
 });
 
 describe('handleUpdate', () => {
@@ -166,6 +225,44 @@ describe('handleUpdate', () => {
     const fetchCalls = [];
     const result = await handleUpdate(
       { message: { chat: { id: 999 }, text: '/pause cr-1' } },
+      {
+        config: CONFIG,
+        fetch: async (...args) => {
+          fetchCalls.push(args);
+          return jsonResponse({ ok: true });
+        },
+      }
+    );
+    assert.equal(result.handled, false);
+    assert.equal(result.reason, 'not_allowed');
+    assert.equal(fetchCalls.length, 0);
+  });
+
+  it('replies to /help from an allowed chat', async () => {
+    const fetchCalls = [];
+    const result = await handleUpdate(
+      { message: { chat: { id: 111 }, text: '/help' } },
+      {
+        config: CONFIG,
+        fetch: async (url, init) => {
+          fetchCalls.push({ url, init });
+          return jsonResponse({ ok: true });
+        },
+      }
+    );
+    assert.equal(result.handled, true);
+    assert.equal(result.command, 'help');
+    assert.equal(fetchCalls.length, 1);
+    const body = JSON.parse(fetchCalls[0].init.body);
+    assert.equal(body.chat_id, 111);
+    assert.equal(body.text, HELP_TEXT);
+    assert.equal(Object.prototype.hasOwnProperty.call(body, 'message_thread_id'), false);
+  });
+
+  it('does not reply to /help from a disallowed chat', async () => {
+    const fetchCalls = [];
+    const result = await handleUpdate(
+      { message: { chat: { id: 999 }, text: '/help' } },
       {
         config: CONFIG,
         fetch: async (...args) => {
@@ -203,6 +300,32 @@ describe('handleUpdate', () => {
     const body = JSON.parse(fetchCalls[0].init.body);
     assert.equal(body.chat_id, 111);
     assert.equal(body.text, 'Paused cr-1');
+    assert.equal(Object.prototype.hasOwnProperty.call(body, 'message_thread_id'), false);
+  });
+
+  it('echoes forum message_thread_id on command replies', async () => {
+    const fetchCalls = [];
+    const result = await handleUpdate(
+      {
+        message: {
+          chat: { id: 111 },
+          message_thread_id: 12,
+          text: '/cost',
+        },
+      },
+      {
+        config: CONFIG,
+        summarizeUsage: async () => ({ totals: { runs: 1, costUsd: 0 } }),
+        fetch: async (url, init) => {
+          fetchCalls.push({ url, init });
+          return jsonResponse({ ok: true });
+        },
+      }
+    );
+    assert.equal(result.handled, true);
+    const body = JSON.parse(fetchCalls[0].init.body);
+    assert.equal(body.chat_id, 111);
+    assert.equal(body.message_thread_id, 12);
   });
 });
 
@@ -218,7 +341,55 @@ describe('notifyAlertChats', () => {
     });
     assert.equal(result.sent, 2);
     assert.equal(fetchCalls[0].url.startsWith(BOT_API_ORIGIN), true);
-    assert.equal(JSON.parse(fetchCalls[0].init.body).text, 'boom');
+    const first = JSON.parse(fetchCalls[0].init.body);
+    assert.equal(first.text, 'boom');
+    assert.equal(Object.prototype.hasOwnProperty.call(first, 'message_thread_id'), false);
+  });
+
+  it('includes message_thread_id when a global topic is configured', async () => {
+    const fetchCalls = [];
+    await notifyAlertChats('boom', {
+      config: {
+        token: 'tok',
+        chatIds: ['111'],
+        defaultTopicId: 12,
+      },
+      fetch: async (url, init) => {
+        fetchCalls.push({ url, init });
+        return jsonResponse({ ok: true });
+      },
+    });
+    const body = JSON.parse(fetchCalls[0].init.body);
+    assert.deepEqual(body, { chat_id: '111', text: 'boom', message_thread_id: 12 });
+  });
+
+  it('uses per-chat topic over the global default', async () => {
+    const fetchCalls = [];
+    await notifyAlertChats('boom', {
+      config: {
+        token: 'tok',
+        chatIds: ['-100123', '111'],
+        topicsByChat: { '-100123': 12 },
+        defaultTopicId: 9,
+      },
+      fetch: async (url, init) => {
+        fetchCalls.push({ url, init });
+        return jsonResponse({ ok: true });
+      },
+    });
+    const forum = JSON.parse(fetchCalls[0].init.body);
+    const dm = JSON.parse(fetchCalls[1].init.body);
+    assert.equal(forum.chat_id, '-100123');
+    assert.equal(forum.message_thread_id, 12);
+    assert.equal(dm.chat_id, '111');
+    assert.equal(dm.message_thread_id, 9);
+  });
+
+  it('omits message_thread_id from buildSendPayload when no topic is set', () => {
+    assert.deepEqual(buildSendPayload('123', 'hi', null), {
+      chat_id: '123',
+      text: 'hi',
+    });
   });
 
   it('is a no-op when unconfigured', async () => {
