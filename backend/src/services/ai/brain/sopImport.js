@@ -888,6 +888,35 @@ async function loadActiveSops({ creatorId } = {}, client = pool) {
   }
 }
 
+async function listActiveSops(client = pool) {
+  const result = await client.query(
+    `SELECT id, title, body, scope, "creatorId", active, "updatedAt", "createdAt"
+     FROM ai_sops
+     WHERE active = true
+     ORDER BY "updatedAt" DESC
+     LIMIT 100`
+  );
+  return result.rows.map(toSopDto);
+}
+
+async function deactivateSop(id, client = pool) {
+  const sopId = String(id || '').trim();
+  if (!UUID_RE.test(sopId)) {
+    throw new SopImportError(400, 'Invalid SOP ID', { code: 'invalid_id' });
+  }
+  const updated = await client.query(
+    `UPDATE ai_sops
+     SET active = false, "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [sopId]
+  );
+  if (!updated.rows[0]) {
+    throw new SopImportError(404, 'SOP not found', { code: 'not_found' });
+  }
+  return toSopDto(updated.rows[0]);
+}
+
 module.exports = {
   SOP_SCOPES,
   DOCUMENT_TYPES,
@@ -913,5 +942,7 @@ module.exports = {
   approveSopImport,
   rejectSopImport,
   loadActiveSops,
+  listActiveSops,
+  deactivateSop,
   loadOverlapCatalog,
 };

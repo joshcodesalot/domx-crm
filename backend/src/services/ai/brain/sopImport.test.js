@@ -11,6 +11,7 @@ const {
   approveSopImport,
   rejectSopImport,
   loadActiveSops,
+  deactivateSop,
   MAX_SOP_CONTEXT_BODY,
 } = require('./sopImport');
 
@@ -191,15 +192,26 @@ function createSopStore() {
         return { rows: rules.filter((row) => row.active !== false) };
       }
 
+      if (text.includes('UPDATE ai_sops')) {
+        const row = sops.find((item) => item.id === params[0]);
+        if (!row) return { rows: [] };
+        row.active = false;
+        row.updatedAt = '2026-09-09T12:06:00.000Z';
+        return { rows: [{ ...row }] };
+      }
+
       if (text.includes('FROM ai_sops') && text.includes('active = true')) {
-        const creatorId = params[0];
-        const matched = sops.filter(
-          (row) =>
-            row.active &&
-            (row.scope === 'GLOBAL' ||
-              (row.scope === 'CREATOR' && row.creatorId === creatorId))
-        );
-        return { rows: matched };
+        if (text.includes("scope = 'GLOBAL'") && text.includes('"creatorId" = $1')) {
+          const creatorId = params[0];
+          const matched = sops.filter(
+            (row) =>
+              row.active &&
+              (row.scope === 'GLOBAL' ||
+                (row.scope === 'CREATOR' && row.creatorId === creatorId))
+          );
+          return { rows: matched };
+        }
+        return { rows: sops.filter((row) => row.active !== false) };
       }
 
       return { rows: [] };
@@ -602,6 +614,26 @@ describe('loadActiveSops', () => {
       loaded.some((row) => row.title === 'Other'),
       false
     );
+  });
+
+  it('deactivated SOPs drop out of generate context', async () => {
+    const store = createSopStore();
+    const sopId = '55555555-5555-4555-8555-555555555555';
+    store.sops.push({
+      id: sopId,
+      title: 'Femdom Tone',
+      body: 'Stay dominant and unhurried.',
+      scope: 'GLOBAL',
+      creatorId: null,
+      active: true,
+      updatedAt: '2026-09-09T12:00:00.000Z',
+    });
+    const before = await loadActiveSops({ creatorId: CREATOR_ID }, store);
+    assert.equal(before.some((row) => row.title === 'Femdom Tone'), true);
+    const deactivated = await deactivateSop(sopId, store);
+    assert.equal(deactivated.active, false);
+    const after = await loadActiveSops({ creatorId: CREATOR_ID }, store);
+    assert.equal(after.some((row) => row.title === 'Femdom Tone'), false);
   });
 });
 

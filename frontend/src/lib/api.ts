@@ -5736,8 +5736,35 @@ export async function getAiRuleSuggestions(
   return request(`/api/ai/rules/suggestions?${params.toString()}`);
 }
 
-export async function getAiRules(): Promise<{ rules: AiRule[] }> {
-  return request('/api/ai/rules');
+export async function getAiRules(filters: {
+  scope?: AiRuleScope | '';
+  creatorId?: string;
+} = {}): Promise<{ rules: AiRule[] }> {
+  const params = new URLSearchParams();
+  if (filters.scope) params.set('scope', filters.scope);
+  if (filters.creatorId) params.set('creatorId', filters.creatorId);
+  const qs = params.toString();
+  return request(`/api/ai/rules${qs ? `?${qs}` : ''}`);
+}
+
+export async function patchAiRule(
+  id: string,
+  payload: {
+    text?: string;
+    scope?: AiRuleScope;
+    creatorId?: string | null;
+    platform?: string | null;
+    active?: boolean;
+  }
+): Promise<{ rule: AiRule }> {
+  return request(`/api/ai/rules/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deactivateAiRule(id: string): Promise<{ rule: AiRule }> {
+  return request(`/api/ai/rules/${id}`, { method: 'DELETE' });
 }
 
 export async function approveAiRuleSuggestion(
@@ -5879,6 +5906,17 @@ export async function rejectAiSopImport(
 ): Promise<{ draft: AiSopImportDraft }> {
   return request(`/api/ai/sops/import/${id}/reject`, {
     method: 'POST',
+  });
+}
+
+export async function getAiSops(): Promise<{ sops: AiSop[] }> {
+  return request('/api/ai/sops');
+}
+
+export async function deactivateAiSop(id: string): Promise<{ sop: AiSop }> {
+  return request(`/api/ai/sops/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ active: false }),
   });
 }
 

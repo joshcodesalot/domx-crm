@@ -1,15 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import AppLayout from '@/components/AppLayout';
+import { useConfirm } from '@/context/ConfirmDialogContext';
 import {
   approveAiRuleSuggestion,
   approveAiSopImport,
+  deactivateAiRule,
+  deactivateAiSop,
   getAiRuleSuggestions,
+  getAiRules,
+  getAiSops,
   getCreators,
   importAiSopGuide,
+  patchAiRule,
   rejectAiRuleSuggestion,
   rejectAiSopImport,
+  type AiRule,
   type AiRuleScope,
   type AiRuleSuggestion,
+  type AiSop,
   type AiSopDocumentType,
   type AiSopImportDraft,
   type AiSopOverlap,
@@ -21,6 +29,7 @@ import {
 
 const SCOPES: AiRuleScope[] = ['CREATOR', 'PLATFORM', 'FAN', 'GLOBAL'];
 const SOP_SCOPES: AiSopScope[] = ['GLOBAL', 'CREATOR'];
+const PLATFORMS = ['maloum', '4based', 'telegram'] as const;
 const RESOLUTIONS: AiSopOverlapSuggestion[] = [
   'keep_new',
   'keep_existing',
@@ -73,7 +82,33 @@ function textToTerminology(value: string): Record<string, string> {
   return next;
 }
 
+function formatStamp(value: string | null): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function creatorLabel(creators: Creator[], id: string | null): string {
+  if (!id) return '—';
+  return creators.find((item) => item.id === id)?.displayName || id;
+}
+
+type RuleEdit = {
+  id: string;
+  text: string;
+  scope: AiRuleScope;
+  creatorId: string;
+  platform: string;
+};
+
 export default function AiRules() {
+  const confirm = useConfirm();
   const [items, setItems] = useState<AiRuleSuggestion[]>([]);
   const [scopes, setScopes] = useState<Record<string, AiRuleScope>>({});
   const [loading, setLoading] = useState(false);
@@ -81,6 +116,12 @@ export default function AiRules() {
   const [error, setError] = useState<string | null>(null);
 
   const [creators, setCreators] = useState<Creator[]>([]);
+  const [liveRules, setLiveRules] = useState<AiRule[]>([]);
+  const [liveSops, setLiveSops] = useState<AiSop[]>([]);
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [scopeFilter, setScopeFilter] = useState<AiRuleScope | ''>('');
+  const [creatorFilter, setCreatorFilter] = useState('');
+  const [editing, setEditing] = useState<RuleEdit | null>(null);
   const [rawText, setRawText] = useState('');
   const [importCreatorId, setImportCreatorId] = useState('');
   const [documentType, setDocumentType] = useState<'auto' | AiSopDocumentType>(
@@ -107,9 +148,32 @@ export default function AiRules() {
     }
   }, []);
 
+  const loadLive = useCallback(async () => {
+    setLiveLoading(true);
+    try {
+      const [rulesResult, sopsResult] = await Promise.all([
+        getAiRules({
+          scope: scopeFilter || undefined,
+          creatorId: creatorFilter || undefined,
+        }),
+        getAiSops(),
+      ]);
+      setLiveRules(rulesResult.rules || []);
+      setLiveSops(sopsResult.sops || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load live rules');
+    } finally {
+      setLiveLoading(false);
+    }
+  }, [scopeFilter, creatorFilter]);
+
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void loadLive();
+  }, [loadLive]);
 
   useEffect(() => {
     void getCreators()
@@ -137,6 +201,7 @@ export default function AiRules() {
     try {
       await fn();
       setItems((current) => current.filter((item) => item.id !== id));
+      await loadLive();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Request failed');
     } finally {
@@ -192,6 +257,7 @@ export default function AiRules() {
       setProposed(emptyProposed());
       setResolutions({});
       setRawText('');
+      await loadLive();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to approve import');
     } finally {
@@ -212,6 +278,77 @@ export default function AiRules() {
       setError(err instanceof Error ? err.message : 'Failed to reject import');
     } finally {
       setReviewBusy(false);
+    }
+  }
+
+  function startEdit(rule: AiRule) {
+    setEditing({
+      id: rule.id,
+      text: rule.text,
+      scope: rule.scope,
+      creatorId: rule.creatorId || '',
+      platform: rule.platform || '',
+    });
+  }
+
+  async function saveEdit() {
+    if (!editing) return;
+    setBusyId(editing.id);
+    setError(null);
+    try {
+      await patchAiRule(editing.id, {
+        text: editing.text,
+        scope: editing.scope,
+        creatorId: editing.creatorId || null,
+        platform: editing.platform || null,
+      });
+      setEditing(null);
+      await loadLive();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save rule');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function removeRule(rule: AiRule) {
+    const ok = await confirm({
+      title: 'Remove this rule?',
+      message: `Deactivate “${rule.text.slice(0, 80)}${rule.text.length > 80 ? '…' : ''}”? It will drop out of generate context.`,
+      confirmLabel: 'Remove',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    setBusyId(rule.id);
+    setError(null);
+    try {
+      await deactivateAiRule(rule.id);
+      if (editing?.id === rule.id) setEditing(null);
+      await loadLive();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to remove rule');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function removeSop(sop: AiSop) {
+    const ok = await confirm({
+      title: 'Deactivate this SOP?',
+      message: `Deactivate “${sop.title}”? It will drop out of generate context.`,
+      confirmLabel: 'Deactivate',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    setBusyId(sop.id);
+    setError(null);
+    try {
+      await deactivateAiSop(sop.id);
+      await loadLive();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to deactivate SOP');
+    } finally {
+      setBusyId(null);
     }
   }
 
@@ -619,6 +756,276 @@ export default function AiRules() {
             </div>
           </div>
         ) : null}
+      </div>
+
+      <div className="rounded-xl border border-gray-200 dark:border-white/10 p-4 mb-6">
+        <h3 className="text-sm font-medium mb-1">Active rules</h3>
+        <p className="text-xs text-gray-500 dark:text-zinc-400 mb-3">
+          Live rules used in generate context. Edit text or scope, or remove to
+          deactivate.
+        </p>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <select
+            value={scopeFilter}
+            onChange={(event) =>
+              setScopeFilter(event.target.value as AiRuleScope | '')
+            }
+            className={selectClassName}
+            aria-label="Filter by scope"
+          >
+            <option value="">All scopes</option>
+            {SCOPES.map((scope) => (
+              <option key={scope} value={scope}>
+                {scope}
+              </option>
+            ))}
+          </select>
+          <select
+            value={creatorFilter}
+            onChange={(event) => setCreatorFilter(event.target.value)}
+            className={selectClassName}
+            aria-label="Filter by creator"
+          >
+            <option value="">All creators</option>
+            {creators.map((creator) => (
+              <option key={creator.id} value={creator.id}>
+                {creator.displayName}
+              </option>
+            ))}
+          </select>
+        </div>
+        {liveLoading && liveRules.length === 0 ? (
+          <p className="text-sm text-gray-500">Loading rules…</p>
+        ) : liveRules.length === 0 ? (
+          <p className="text-sm text-gray-500">No active rules.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-gray-400">
+                  <th className="pb-2 pr-3 font-medium">Text</th>
+                  <th className="pb-2 pr-3 font-medium">Scope</th>
+                  <th className="pb-2 pr-3 font-medium">Creator / platform</th>
+                  <th className="pb-2 pr-3 font-medium">Approved</th>
+                  <th className="pb-2 font-medium" />
+                </tr>
+              </thead>
+              <tbody>
+                {liveRules.map((rule) => {
+                  const isEditing = editing?.id === rule.id;
+                  return (
+                    <tr
+                      key={rule.id}
+                      className="border-t border-gray-100 dark:border-white/5 align-top"
+                    >
+                      <td className="py-3 pr-3 min-w-[14rem]">
+                        {isEditing ? (
+                          <textarea
+                            value={editing.text}
+                            onChange={(event) =>
+                              setEditing((current) =>
+                                current
+                                  ? { ...current, text: event.target.value }
+                                  : current
+                              )
+                            }
+                            rows={3}
+                            className={inputClassName}
+                            aria-label="Rule text"
+                          />
+                        ) : (
+                          <p className="whitespace-pre-wrap">{rule.text}</p>
+                        )}
+                      </td>
+                      <td className="py-3 pr-3">
+                        {isEditing ? (
+                          <select
+                            value={editing.scope}
+                            onChange={(event) =>
+                              setEditing((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      scope: event.target.value as AiRuleScope,
+                                    }
+                                  : current
+                              )
+                            }
+                            className={selectClassName}
+                            aria-label="Rule scope"
+                          >
+                            {SCOPES.map((scope) => (
+                              <option key={scope} value={scope}>
+                                {scope}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          rule.scope
+                        )}
+                      </td>
+                      <td className="py-3 pr-3">
+                        {isEditing && editing.scope === 'CREATOR' ? (
+                          <select
+                            value={editing.creatorId}
+                            onChange={(event) => {
+                              const nextId = event.target.value;
+                              const creator = creators.find(
+                                (item) => item.id === nextId
+                              );
+                              setEditing((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      creatorId: nextId,
+                                      platform:
+                                        creator?.platform || current.platform,
+                                    }
+                                  : current
+                              );
+                            }}
+                            className={selectClassName}
+                            aria-label="Rule creator"
+                          >
+                            <option value="">Select creator</option>
+                            {creators.map((creator) => (
+                              <option key={creator.id} value={creator.id}>
+                                {creator.displayName}
+                              </option>
+                            ))}
+                          </select>
+                        ) : isEditing && editing.scope === 'PLATFORM' ? (
+                          <select
+                            value={editing.platform}
+                            onChange={(event) =>
+                              setEditing((current) =>
+                                current
+                                  ? { ...current, platform: event.target.value }
+                                  : current
+                              )
+                            }
+                            className={selectClassName}
+                            aria-label="Rule platform"
+                          >
+                            <option value="">Select platform</option>
+                            {PLATFORMS.map((platform) => (
+                              <option key={platform} value={platform}>
+                                {platform}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span>
+                            {creatorLabel(creators, rule.creatorId)}
+                            {rule.platform ? ` · ${rule.platform}` : ''}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 pr-3 whitespace-nowrap text-xs text-gray-500">
+                        {formatStamp(rule.approvedAt)}
+                      </td>
+                      <td className="py-3">
+                        <div className="flex flex-wrap gap-2 justify-end">
+                          {isEditing ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={busyId === rule.id}
+                                onClick={() => void saveEdit()}
+                                className="px-3 py-1.5 text-sm rounded-lg border border-domx-600/40 text-domx-700 dark:text-domx-300 hover:bg-domx-50 dark:hover:bg-domx-950/40 disabled:opacity-50"
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busyId === rule.id}
+                                onClick={() => setEditing(null)}
+                                className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5 disabled:opacity-50"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={busyId === rule.id}
+                              onClick={() => startEdit(rule)}
+                              className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5 disabled:opacity-50"
+                            >
+                              Edit
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={busyId === rule.id}
+                            onClick={() => void removeRule(rule)}
+                            className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-white/10 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-50"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-gray-200 dark:border-white/10 p-4 mb-6">
+        <h3 className="text-sm font-medium mb-1">Active SOPs</h3>
+        <p className="text-xs text-gray-500 dark:text-zinc-400 mb-3">
+          Deactivate to drop a guide from generate context. Import still writes
+          new SOPs only after approve.
+        </p>
+        {liveLoading && liveSops.length === 0 ? (
+          <p className="text-sm text-gray-500">Loading SOPs…</p>
+        ) : liveSops.length === 0 ? (
+          <p className="text-sm text-gray-500">No active SOPs.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide text-gray-400">
+                  <th className="pb-2 pr-3 font-medium">Title</th>
+                  <th className="pb-2 pr-3 font-medium">Scope</th>
+                  <th className="pb-2 pr-3 font-medium">Creator</th>
+                  <th className="pb-2 pr-3 font-medium">Updated</th>
+                  <th className="pb-2 font-medium" />
+                </tr>
+              </thead>
+              <tbody>
+                {liveSops.map((sop) => (
+                  <tr
+                    key={sop.id}
+                    className="border-t border-gray-100 dark:border-white/5"
+                  >
+                    <td className="py-3 pr-3">{sop.title}</td>
+                    <td className="py-3 pr-3">{sop.scope}</td>
+                    <td className="py-3 pr-3">
+                      {creatorLabel(creators, sop.creatorId)}
+                    </td>
+                    <td className="py-3 pr-3 whitespace-nowrap text-xs text-gray-500">
+                      {formatStamp(sop.updatedAt)}
+                    </td>
+                    <td className="py-3 text-right">
+                      <button
+                        type="button"
+                        disabled={busyId === sop.id}
+                        onClick={() => void removeSop(sop)}
+                        className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-white/10 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-50"
+                      >
+                        Deactivate
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <p className="text-sm text-gray-500 dark:text-zinc-400 mb-4">

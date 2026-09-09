@@ -6,6 +6,9 @@ const {
   maybeSuggestRuleFromEdit,
   approveRuleSuggestion,
   rejectRuleSuggestion,
+  listApprovedRules,
+  updateApprovedRule,
+  deactivateApprovedRule,
   loadApprovedRules,
   BrainError,
 } = require('./rules');
@@ -122,6 +125,38 @@ function createRuleStore() {
           row.reviewedAt = '2026-09-09T12:02:00.000Z';
         }
         return { rows: [] };
+      }
+
+      if (text.includes('SELECT * FROM ai_rules WHERE id')) {
+        return { rows: rules.filter((row) => row.id === params[0]) };
+      }
+
+      if (text.includes('UPDATE ai_rules')) {
+        const row = rules.find((item) => item.id === params[0]);
+        if (!row) return { rows: [] };
+        row.scope = params[1];
+        row.creatorId = params[2];
+        row.platform = params[3];
+        row.platformFanId = params[4];
+        row.text = params[5];
+        row.active = params[6];
+        row.updatedAt = '2026-09-09T12:05:00.000Z';
+        return { rows: [{ ...row }] };
+      }
+
+      if (text.includes('SELECT * FROM ai_rules')) {
+        let matched = rules.filter((row) => row.active !== false);
+        let index = 0;
+        if (text.includes('scope =')) {
+          matched = matched.filter((row) => row.scope === params[index++]);
+        }
+        if (text.includes('"creatorId" =')) {
+          matched = matched.filter((row) => row.creatorId === params[index++]);
+        }
+        matched.sort((a, b) =>
+          String(b.approvedAt || '').localeCompare(String(a.approvedAt || ''))
+        );
+        return { rows: matched.slice(0, 100) };
       }
 
       if (text.includes('FROM ai_rules') && text.includes('active = true')) {
@@ -281,6 +316,104 @@ describe('loadApprovedRules', () => {
       loaded.map((item) => item.text),
       ['fan tone', 'creator tone', 'global tone']
     );
+  });
+});
+
+describe('list, patch, and deactivate approved rules', () => {
+  it('lists active rows and keeps a pg-client first argument working', async () => {
+    const store = createRuleStore();
+    store.rules.push(
+      {
+        id: 'rule-a',
+        scope: 'CREATOR',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformFanId: null,
+        text: 'creator tone',
+        active: true,
+        approvedAt: '2026-09-09T12:02:00.000Z',
+      },
+      {
+        id: 'rule-b',
+        scope: 'GLOBAL',
+        creatorId: null,
+        platform: null,
+        platformFanId: null,
+        text: 'global tone',
+        active: true,
+        approvedAt: '2026-09-09T12:01:00.000Z',
+      },
+      {
+        id: 'rule-off',
+        scope: 'CREATOR',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformFanId: null,
+        text: 'inactive',
+        active: false,
+        approvedAt: '2026-09-09T12:03:00.000Z',
+      }
+    );
+    const listed = await listApprovedRules(store);
+    assert.deepEqual(
+      listed.map((item) => item.text),
+      ['creator tone', 'global tone']
+    );
+    const filtered = await listApprovedRules({ scope: 'CREATOR' }, store);
+    assert.deepEqual(
+      filtered.map((item) => item.text),
+      ['creator tone']
+    );
+  });
+
+  it('patched text is what loadApprovedRules returns', async () => {
+    const store = createRuleStore();
+    store.rules.push({
+      id: 'rule-live',
+      scope: 'CREATOR',
+      creatorId: 'cr-1',
+      platform: 'maloum',
+      platformFanId: null,
+      text: 'old tone',
+      active: true,
+      approvedAt: '2026-09-09T12:01:00.000Z',
+    });
+    const patched = await updateApprovedRule(
+      'rule-live',
+      { text: 'new tone' },
+      store
+    );
+    assert.equal(patched.text, 'new tone');
+    const loaded = await loadApprovedRules(
+      { creatorId: 'cr-1', platform: 'maloum', platformFanId: 'fan-1' },
+      store
+    );
+    assert.deepEqual(
+      loaded.map((item) => item.text),
+      ['new tone']
+    );
+  });
+
+  it('deactivated rules drop out of generate context', async () => {
+    const store = createRuleStore();
+    store.rules.push({
+      id: 'rule-live',
+      scope: 'GLOBAL',
+      creatorId: null,
+      platform: null,
+      platformFanId: null,
+      text: 'global tone',
+      active: true,
+      approvedAt: '2026-09-09T12:01:00.000Z',
+    });
+    await deactivateApprovedRule('rule-live', store);
+    const listed = await listApprovedRules({}, store);
+    assert.equal(listed.length, 0);
+    const loaded = await loadApprovedRules(
+      { creatorId: 'cr-1', platform: 'maloum', platformFanId: 'fan-1' },
+      store
+    );
+    assert.equal(loaded.length, 0);
   });
 });
 

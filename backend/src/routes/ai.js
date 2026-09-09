@@ -60,6 +60,8 @@ const {
   listApprovedRules,
   approveRuleSuggestion,
   rejectRuleSuggestion,
+  updateApprovedRule,
+  deactivateApprovedRule,
 } = require('../services/ai/brain/rules');
 const {
   SopImportError,
@@ -67,6 +69,8 @@ const {
   getSopImportDraft,
   approveSopImport,
   rejectSopImport,
+  listActiveSops,
+  deactivateSop,
 } = require('../services/ai/brain/sopImport');
 
 const router = express.Router();
@@ -1041,10 +1045,57 @@ router.get(
   requirePermission('ai.rules.manage'),
   async (req, res) => {
     try {
-      const rules = await listApprovedRules();
+      const rules = await listApprovedRules({
+        scope: req.query.scope,
+        creatorId: req.query.creatorId,
+      });
       return res.json({ rules });
     } catch (err) {
       console.error('List AI rules error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.patch(
+  '/rules/:id',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      if (!isValidUuid(req.params.id)) {
+        return res.status(400).json({ error: 'Invalid rule ID' });
+      }
+      const rule = await updateApprovedRule(req.params.id, {
+        text: req.body?.text,
+        scope: req.body?.scope,
+        creatorId: req.body?.creatorId,
+        platform: req.body?.platform,
+        active: req.body?.active,
+      });
+      return res.json({ rule });
+    } catch (err) {
+      if (sendBrainError(res, err)) return;
+      console.error('Patch AI rule error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.delete(
+  '/rules/:id',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      if (!isValidUuid(req.params.id)) {
+        return res.status(400).json({ error: 'Invalid rule ID' });
+      }
+      const rule = await deactivateApprovedRule(req.params.id);
+      return res.json({ rule });
+    } catch (err) {
+      if (sendBrainError(res, err)) return;
+      console.error('Deactivate AI rule error:', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -1087,6 +1138,43 @@ router.post(
     } catch (err) {
       if (sendBrainError(res, err)) return;
       console.error('Reject AI rule suggestion error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/sops',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      const sops = await listActiveSops();
+      return res.json({ sops });
+    } catch (err) {
+      console.error('List AI SOPs error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.patch(
+  '/sops/:id',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      if (!isValidUuid(req.params.id)) {
+        return res.status(400).json({ error: 'Invalid SOP ID' });
+      }
+      if (req.body?.active !== false) {
+        return res.status(400).json({ error: 'Only deactivation is supported' });
+      }
+      const sop = await deactivateSop(req.params.id);
+      return res.json({ sop });
+    } catch (err) {
+      if (sendSopImportError(res, err)) return;
+      console.error('Deactivate AI SOP error:', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
   }

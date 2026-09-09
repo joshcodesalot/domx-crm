@@ -116,8 +116,12 @@ function fanLabel(item: AiQueueItem): string {
   return item.fanLabel || item.fanUsername || 'Fan';
 }
 
-function draftPreview(item: AiQueueItem): string {
-  return item.suggestion?.replyEnglish?.trim() || item.suggestion?.reply?.trim() || '';
+function germanDraft(item: AiQueueItem): string {
+  return item.suggestion?.reply?.trim() || '';
+}
+
+function englishDraft(item: AiQueueItem): string {
+  return item.suggestion?.replyEnglish?.trim() || '';
 }
 
 function isTakenOver(item: AiQueueItem): boolean {
@@ -503,16 +507,27 @@ export default function AiModeratorQueue() {
                           </div>
                         </td>
                         <td className="py-3 px-2">
-                          <div
-                            className={`max-w-[150px] truncate text-xs ${
-                              draftPreview(item)
-                                ? 'text-gray-800 dark:text-[#cccccc]'
-                                : 'text-gray-400 dark:text-[#858585]'
-                            }`}
-                            title={draftPreview(item)}
-                          >
-                            {draftPreview(item) || 'No draft pending'}
-                          </div>
+                          {germanDraft(item) ? (
+                            <div
+                              className="max-w-[150px]"
+                              title={[germanDraft(item), englishDraft(item)]
+                                .filter(Boolean)
+                                .join('\n')}
+                            >
+                              <div className="truncate text-xs text-gray-800 dark:text-[#cccccc]">
+                                {germanDraft(item)}
+                              </div>
+                              {englishDraft(item) ? (
+                                <div className="truncate text-[11px] italic text-gray-500 dark:text-[#858585]">
+                                  {englishDraft(item)}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <div className="max-w-[150px] truncate text-xs text-gray-400 dark:text-[#858585]">
+                              No draft pending
+                            </div>
+                          )}
                         </td>
                         <td className="py-3 px-2" onClick={(event) => event.stopPropagation()}>
                           <div className="flex gap-2 flex-wrap">
@@ -795,10 +810,15 @@ export default function AiModeratorQueue() {
                     </>
                   ) : (
                     <>
-                      <div className="text-sm mb-3 whitespace-pre-wrap">
+                      <div className="text-sm whitespace-pre-wrap">
                         {selected.suggestion.reply}
                       </div>
-                      <div className="flex gap-2">
+                      {selected.suggestion.replyEnglish?.trim() ? (
+                        <div className="text-[11px] italic text-gray-500 dark:text-[#858585] mt-1 whitespace-pre-wrap">
+                          {selected.suggestion.replyEnglish}
+                        </div>
+                      ) : null}
+                      <div className="flex gap-2 mt-3">
                         {selected.suggestionStale ? (
                           <button
                             type="button"

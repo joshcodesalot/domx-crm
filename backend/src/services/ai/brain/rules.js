@@ -171,14 +171,90 @@ async function listRuleSuggestions({ status } = {}, client = pool) {
   return result.rows.map(toSuggestionDto);
 }
 
-async function listApprovedRules(client = pool) {
+async function listApprovedRules(options = {}, client = pool) {
+  if (options && typeof options.query === 'function') {
+    client = options;
+    options = {};
+  }
+  const scope = isRuleScope(options.scope) ? options.scope : null;
+  const creatorId = asText(options.creatorId).trim() || null;
+  const params = [];
+  const where = ['active = true'];
+  if (scope) {
+    params.push(scope);
+    where.push(`scope = $${params.length}`);
+  }
+  if (creatorId) {
+    params.push(creatorId);
+    where.push(`"creatorId" = $${params.length}`);
+  }
   const result = await client.query(
     `SELECT * FROM ai_rules
-     WHERE active = true
+     WHERE ${where.join(' AND ')}
      ORDER BY "approvedAt" DESC
-     LIMIT 100`
+     LIMIT 100`,
+    params
   );
   return result.rows.map(toRuleDto);
+}
+
+async function getApprovedRuleById(id, client = pool) {
+  const result = await client.query(`SELECT * FROM ai_rules WHERE id = $1`, [id]);
+  return result.rows[0] || null;
+}
+
+async function updateApprovedRule(id, patch = {}, client = pool) {
+  const row = await getApprovedRuleById(id, client);
+  if (!row) throw new BrainError(404, 'Rule not found');
+
+  const nextScope = patch.scope != null ? patch.scope : row.scope;
+  if (!isRuleScope(nextScope)) {
+    throw new BrainError(400, 'Invalid scope', { code: 'invalid_scope' });
+  }
+  const fields = scopeFields(nextScope, {
+    creatorId: patch.creatorId !== undefined ? patch.creatorId : row.creatorId,
+    platform: patch.platform !== undefined ? patch.platform : row.platform,
+    platformFanId:
+      patch.platformFanId !== undefined ? patch.platformFanId : row.platformFanId,
+  });
+  assertScopeKeys(nextScope, fields);
+
+  let nextText = asText(row.text).trim();
+  if (patch.text != null) {
+    nextText = asText(patch.text).trim();
+    if (!nextText) throw new BrainError(400, 'Rule text is required');
+  }
+  nextText = nextText.slice(0, MAX_RULE_TEXT);
+
+  const nextActive =
+    patch.active == null ? row.active !== false : Boolean(patch.active);
+
+  const updated = await client.query(
+    `UPDATE ai_rules
+     SET scope = $2,
+         "creatorId" = $3,
+         platform = $4,
+         "platformFanId" = $5,
+         text = $6,
+         active = $7,
+         "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [
+      id,
+      nextScope,
+      fields.creatorId,
+      fields.platform,
+      fields.platformFanId,
+      nextText,
+      nextActive,
+    ]
+  );
+  return toRuleDto(updated.rows[0]);
+}
+
+async function deactivateApprovedRule(id, client = pool) {
+  return updateApprovedRule(id, { active: false }, client);
 }
 
 async function getRuleSuggestionById(id, client = pool) {
@@ -351,6 +427,8 @@ module.exports = {
   rejectRuleSuggestion,
   loadApprovedRules,
   insertApprovedRule,
+  updateApprovedRule,
+  deactivateApprovedRule,
   toSuggestionDto,
   toRuleDto,
 };
