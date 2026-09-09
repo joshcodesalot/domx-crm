@@ -6,12 +6,14 @@ import {
   approveAiSopImport,
   deactivateAiRule,
   deactivateAiSop,
+  deleteAiSop,
   getAiRuleSuggestions,
   getAiRules,
   getAiSops,
   getCreators,
   importAiSopGuide,
   patchAiRule,
+  patchAiSop,
   rejectAiRuleSuggestion,
   rejectAiSopImport,
   type AiRule,
@@ -107,6 +109,14 @@ type RuleEdit = {
   platform: string;
 };
 
+type SopEdit = {
+  id: string;
+  title: string;
+  body: string;
+  scope: AiSopScope;
+  creatorId: string;
+};
+
 export default function AiRules() {
   const confirm = useConfirm();
   const [items, setItems] = useState<AiRuleSuggestion[]>([]);
@@ -122,6 +132,7 @@ export default function AiRules() {
   const [scopeFilter, setScopeFilter] = useState<AiRuleScope | ''>('');
   const [creatorFilter, setCreatorFilter] = useState('');
   const [editing, setEditing] = useState<RuleEdit | null>(null);
+  const [sopModal, setSopModal] = useState<SopEdit | null>(null);
   const [rawText, setRawText] = useState('');
   const [importCreatorId, setImportCreatorId] = useState('');
   const [documentType, setDocumentType] = useState<'auto' | AiSopDocumentType>(
@@ -332,11 +343,41 @@ export default function AiRules() {
     }
   }
 
-  async function removeSop(sop: AiSop) {
+  function openSopModal(sop: AiSop) {
+    setSopModal({
+      id: sop.id,
+      title: sop.title,
+      body: sop.body || '',
+      scope: sop.scope,
+      creatorId: sop.creatorId || '',
+    });
+  }
+
+  async function saveSop() {
+    if (!sopModal) return;
+    setBusyId(sopModal.id);
+    setError(null);
+    try {
+      await patchAiSop(sopModal.id, {
+        title: sopModal.title,
+        body: sopModal.body,
+        scope: sopModal.scope,
+        creatorId: sopModal.creatorId || null,
+      });
+      setSopModal(null);
+      await loadLive();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save SOP');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function removeSop(sop: { id: string; title: string }) {
     const ok = await confirm({
-      title: 'Deactivate this SOP?',
-      message: `Deactivate “${sop.title}”? It will drop out of generate context.`,
-      confirmLabel: 'Deactivate',
+      title: 'Remove this SOP?',
+      message: `Remove “${sop.title}”? It will drop out of AI context.`,
+      confirmLabel: 'Remove',
       variant: 'danger',
     });
     if (!ok) return;
@@ -344,9 +385,31 @@ export default function AiRules() {
     setError(null);
     try {
       await deactivateAiSop(sop.id);
+      if (sopModal?.id === sop.id) setSopModal(null);
       await loadLive();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to deactivate SOP');
+      setError(err instanceof Error ? err.message : 'Failed to remove SOP');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function deleteSopPermanently(sop: { id: string; title: string }) {
+    const ok = await confirm({
+      title: 'Delete this SOP permanently?',
+      message: `Delete “${sop.title}” from the database? This cannot be undone.`,
+      confirmLabel: 'Delete permanently',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    setBusyId(sop.id);
+    setError(null);
+    try {
+      await deleteAiSop(sop.id);
+      if (sopModal?.id === sop.id) setSopModal(null);
+      await loadLive();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete SOP');
     } finally {
       setBusyId(null);
     }
@@ -977,8 +1040,8 @@ export default function AiRules() {
       <div className="rounded-xl border border-gray-200 dark:border-white/10 p-4 mb-6">
         <h3 className="text-sm font-medium mb-1">Active SOPs</h3>
         <p className="text-xs text-gray-500 dark:text-zinc-400 mb-3">
-          Deactivate to drop a guide from generate context. Import still writes
-          new SOPs only after approve.
+          View or edit a guide, or remove it from generate context. Import still
+          writes new SOPs only after approve.
         </p>
         {liveLoading && liveSops.length === 0 ? (
           <p className="text-sm text-gray-500">Loading SOPs…</p>
@@ -1000,7 +1063,8 @@ export default function AiRules() {
                 {liveSops.map((sop) => (
                   <tr
                     key={sop.id}
-                    className="border-t border-gray-100 dark:border-white/5"
+                    className="border-t border-gray-100 dark:border-white/5 cursor-pointer hover:bg-gray-50 dark:hover:bg-white/5"
+                    onClick={() => openSopModal(sop)}
                   >
                     <td className="py-3 pr-3">{sop.title}</td>
                     <td className="py-3 pr-3">{sop.scope}</td>
@@ -1010,15 +1074,28 @@ export default function AiRules() {
                     <td className="py-3 pr-3 whitespace-nowrap text-xs text-gray-500">
                       {formatStamp(sop.updatedAt)}
                     </td>
-                    <td className="py-3 text-right">
-                      <button
-                        type="button"
-                        disabled={busyId === sop.id}
-                        onClick={() => void removeSop(sop)}
-                        className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-white/10 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-50"
-                      >
-                        Deactivate
-                      </button>
+                    <td
+                      className="py-3 text-right"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <div className="flex flex-wrap gap-2 justify-end">
+                        <button
+                          type="button"
+                          disabled={busyId === sop.id}
+                          onClick={() => openSopModal(sop)}
+                          className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5 disabled:opacity-50"
+                        >
+                          View
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busyId === sop.id}
+                          onClick={() => void removeSop(sop)}
+                          className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-white/10 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-50"
+                        >
+                          Remove
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1107,6 +1184,144 @@ export default function AiRules() {
           ))}
         </div>
       )}
+
+      {sopModal ? (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 text-gray-900 dark:text-gray-100">
+          <button
+            type="button"
+            aria-label="Close SOP modal"
+            className="absolute inset-0 bg-black/40 dark:bg-black/70"
+            onClick={() => setSopModal(null)}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="sop-modal-title"
+            className="relative bg-white dark:bg-[#111] rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col border border-gray-200 dark:border-white/10 p-6"
+          >
+            <h3 id="sop-modal-title" className="text-lg font-semibold mb-4">
+              SOP
+            </h3>
+            <div className="space-y-3 overflow-y-auto min-h-0 flex-1 pr-1">
+              <label className="block text-xs text-gray-500">
+                Title
+                <input
+                  value={sopModal.title}
+                  onChange={(event) =>
+                    setSopModal((current) =>
+                      current
+                        ? { ...current, title: event.target.value }
+                        : current
+                    )
+                  }
+                  className={`${inputClassName} mt-1`}
+                  aria-label="SOP title"
+                />
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <select
+                  value={sopModal.scope}
+                  onChange={(event) =>
+                    setSopModal((current) =>
+                      current
+                        ? {
+                            ...current,
+                            scope: event.target.value as AiSopScope,
+                          }
+                        : current
+                    )
+                  }
+                  className={selectClassName}
+                  aria-label="SOP scope"
+                >
+                  {SOP_SCOPES.map((scope) => (
+                    <option key={scope} value={scope}>
+                      {scope}
+                    </option>
+                  ))}
+                </select>
+                {sopModal.scope === 'CREATOR' ? (
+                  <select
+                    value={sopModal.creatorId}
+                    onChange={(event) =>
+                      setSopModal((current) =>
+                        current
+                          ? { ...current, creatorId: event.target.value }
+                          : current
+                      )
+                    }
+                    className={selectClassName}
+                    aria-label="SOP creator"
+                  >
+                    <option value="">Select creator</option>
+                    {creators.map((creator) => (
+                      <option key={creator.id} value={creator.id}>
+                        {creator.displayName}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="self-center text-xs text-gray-500">
+                    Global
+                  </span>
+                )}
+              </div>
+              <label className="block text-xs text-gray-500">
+                Body
+                <textarea
+                  value={sopModal.body}
+                  onChange={(event) =>
+                    setSopModal((current) =>
+                      current
+                        ? { ...current, body: event.target.value }
+                        : current
+                    )
+                  }
+                  rows={14}
+                  className={`${inputClassName} mt-1 min-h-[16rem] font-mono text-xs`}
+                  aria-label="SOP body"
+                />
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 mt-4 pt-3 border-t border-gray-100 dark:border-white/10">
+              <button
+                type="button"
+                disabled={busyId === sopModal.id}
+                onClick={() => void deleteSopPermanently(sopModal)}
+                className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-white/10 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-50"
+              >
+                Delete permanently
+              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={busyId === sopModal.id}
+                  onClick={() => void removeSop(sopModal)}
+                  className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-white/10 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:opacity-50"
+                >
+                  Remove
+                </button>
+                <button
+                  type="button"
+                  disabled={busyId === sopModal.id}
+                  onClick={() => setSopModal(null)}
+                  className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={busyId === sopModal.id}
+                  onClick={() => void saveSop()}
+                  className="px-3 py-1.5 text-sm rounded-lg border border-domx-600/40 text-domx-700 dark:text-domx-300 hover:bg-domx-50 dark:hover:bg-domx-950/40 disabled:opacity-50"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </AppLayout>
   );
 }

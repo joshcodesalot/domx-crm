@@ -11,7 +11,11 @@ const {
   approveSopImport,
   rejectSopImport,
   loadActiveSops,
+  listActiveSops,
+  getSopById,
+  updateSop,
   deactivateSop,
+  deleteSop,
   MAX_SOP_CONTEXT_BODY,
 } = require('./sopImport');
 
@@ -192,10 +196,30 @@ function createSopStore() {
         return { rows: rules.filter((row) => row.active !== false) };
       }
 
+      if (text.includes('SELECT * FROM ai_sops WHERE id')) {
+        return { rows: sops.filter((row) => row.id === params[0]) };
+      }
+
+      if (text.includes('DELETE FROM ai_sops')) {
+        const index = sops.findIndex((item) => item.id === params[0]);
+        if (index < 0) return { rows: [] };
+        const [row] = sops.splice(index, 1);
+        return { rows: [row] };
+      }
+
       if (text.includes('UPDATE ai_sops')) {
         const row = sops.find((item) => item.id === params[0]);
         if (!row) return { rows: [] };
-        row.active = false;
+        if (text.includes('title =')) {
+          row.title = params[1];
+          row.body = params[2];
+          row.scope = params[3];
+          row.creatorId = params[4];
+          row.active = params[5];
+          row.updatedBy = params[6];
+        } else {
+          row.active = false;
+        }
         row.updatedAt = '2026-09-09T12:06:00.000Z';
         return { rows: [{ ...row }] };
       }
@@ -634,6 +658,77 @@ describe('loadActiveSops', () => {
     assert.equal(deactivated.active, false);
     const after = await loadActiveSops({ creatorId: CREATOR_ID }, store);
     assert.equal(after.some((row) => row.title === 'Femdom Tone'), false);
+    const listed = await listActiveSops(store);
+    assert.equal(listed.some((row) => row.id === sopId), false);
+  });
+});
+
+describe('live SOP get/patch/delete', () => {
+  const sopId = '55555555-5555-4555-8555-555555555555';
+
+  function seedSop(store, extras = {}) {
+    store.sops.push({
+      id: sopId,
+      title: 'Femdom Tone',
+      body: 'Stay dominant and unhurried.',
+      scope: 'GLOBAL',
+      creatorId: null,
+      active: true,
+      updatedAt: '2026-09-09T12:00:00.000Z',
+      ...extras,
+    });
+  }
+
+  it('GET includes body', async () => {
+    const store = createSopStore();
+    seedSop(store);
+    const listed = await listActiveSops(store);
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].body, 'Stay dominant and unhurried.');
+    const fetched = await getSopById(sopId, store);
+    assert.equal(fetched.body, 'Stay dominant and unhurried.');
+  });
+
+  it('PATCH title and body is what loadActiveSops returns', async () => {
+    const store = createSopStore();
+    seedSop(store);
+    const patched = await updateSop(
+      sopId,
+      { title: 'Updated Tone', body: 'New process body.' },
+      store
+    );
+    assert.equal(patched.title, 'Updated Tone');
+    assert.equal(patched.body, 'New process body.');
+    const loaded = await loadActiveSops({ creatorId: CREATOR_ID }, store);
+    assert.equal(loaded.some((row) => row.body === 'New process body.'), true);
+    assert.equal(
+      loaded.some((row) => row.body === 'Stay dominant and unhurried.'),
+      false
+    );
+  });
+
+  it('hard delete returns 404 on get', async () => {
+    const store = createSopStore();
+    seedSop(store);
+    await deleteSop(sopId, store);
+    await assert.rejects(
+      () => getSopById(sopId, store),
+      (err) => err instanceof SopImportError && err.status === 404
+    );
+    const loaded = await loadActiveSops({ creatorId: CREATOR_ID }, store);
+    assert.equal(loaded.some((row) => row.title === 'Femdom Tone'), false);
+  });
+
+  it('rejects an invalid scope', async () => {
+    const store = createSopStore();
+    seedSop(store);
+    await assert.rejects(
+      () => updateSop(sopId, { scope: 'PLATFORM' }, store),
+      (err) =>
+        err instanceof SopImportError &&
+        err.status === 400 &&
+        err.code === 'invalid_scope'
+    );
   });
 });
 

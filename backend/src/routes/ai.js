@@ -70,7 +70,9 @@ const {
   approveSopImport,
   rejectSopImport,
   listActiveSops,
-  deactivateSop,
+  getSopById,
+  updateSop,
+  deleteSop,
 } = require('../services/ai/brain/sopImport');
 
 const router = express.Router();
@@ -1167,14 +1169,37 @@ router.patch(
       if (!isValidUuid(req.params.id)) {
         return res.status(400).json({ error: 'Invalid SOP ID' });
       }
-      if (req.body?.active !== false) {
-        return res.status(400).json({ error: 'Only deactivation is supported' });
-      }
-      const sop = await deactivateSop(req.params.id);
+      const sop = await updateSop(req.params.id, {
+        title: req.body?.title,
+        body: req.body?.body,
+        scope: req.body?.scope,
+        creatorId: req.body?.creatorId,
+        active: req.body?.active,
+        user: req.user,
+      });
       return res.json({ sop });
     } catch (err) {
       if (sendSopImportError(res, err)) return;
-      console.error('Deactivate AI SOP error:', err);
+      console.error('Patch AI SOP error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.delete(
+  '/sops/:id',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      if (!isValidUuid(req.params.id)) {
+        return res.status(400).json({ error: 'Invalid SOP ID' });
+      }
+      const sop = await deleteSop(req.params.id);
+      return res.json({ sop });
+    } catch (err) {
+      if (sendSopImportError(res, err)) return;
+      console.error('Delete AI SOP error:', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
   }
@@ -1212,6 +1237,22 @@ router.get(
     } catch (err) {
       if (sendSopImportError(res, err)) return;
       console.error('Get SOP import draft error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/sops/:id',
+  authenticate,
+  requirePermission('ai.rules.manage'),
+  async (req, res) => {
+    try {
+      const sop = await getSopById(req.params.id);
+      return res.json({ sop });
+    } catch (err) {
+      if (sendSopImportError(res, err)) return;
+      console.error('Get AI SOP error:', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
   }

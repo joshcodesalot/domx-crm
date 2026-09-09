@@ -5913,11 +5913,32 @@ export async function getAiSops(): Promise<{ sops: AiSop[] }> {
   return request('/api/ai/sops');
 }
 
-export async function deactivateAiSop(id: string): Promise<{ sop: AiSop }> {
+export async function getAiSop(id: string): Promise<{ sop: AiSop }> {
+  return request(`/api/ai/sops/${id}`);
+}
+
+export async function patchAiSop(
+  id: string,
+  payload: {
+    title?: string;
+    body?: string;
+    scope?: AiSopScope;
+    creatorId?: string | null;
+    active?: boolean;
+  }
+): Promise<{ sop: AiSop }> {
   return request(`/api/ai/sops/${id}`, {
     method: 'PATCH',
-    body: JSON.stringify({ active: false }),
+    body: JSON.stringify(payload),
   });
+}
+
+export async function deactivateAiSop(id: string): Promise<{ sop: AiSop }> {
+  return patchAiSop(id, { active: false });
+}
+
+export async function deleteAiSop(id: string): Promise<{ sop: AiSop }> {
+  return request(`/api/ai/sops/${id}`, { method: 'DELETE' });
 }
 
 export async function getAiQueue(params: {

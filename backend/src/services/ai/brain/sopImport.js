@@ -899,22 +899,109 @@ async function listActiveSops(client = pool) {
   return result.rows.map(toSopDto);
 }
 
-async function deactivateSop(id, client = pool) {
+async function getSopById(id, client = pool) {
   const sopId = String(id || '').trim();
   if (!UUID_RE.test(sopId)) {
     throw new SopImportError(400, 'Invalid SOP ID', { code: 'invalid_id' });
   }
-  const updated = await client.query(
-    `UPDATE ai_sops
-     SET active = false, "updatedAt" = NOW()
-     WHERE id = $1
-     RETURNING *`,
-    [sopId]
-  );
-  if (!updated.rows[0]) {
+  const result = await client.query(`SELECT * FROM ai_sops WHERE id = $1`, [sopId]);
+  if (!result.rows[0]) {
     throw new SopImportError(404, 'SOP not found', { code: 'not_found' });
   }
+  return toSopDto(result.rows[0]);
+}
+
+async function updateSop(id, patch = {}, client = pool) {
+  const sopId = String(id || '').trim();
+  if (!UUID_RE.test(sopId)) {
+    throw new SopImportError(400, 'Invalid SOP ID', { code: 'invalid_id' });
+  }
+  const existing = await client.query(`SELECT * FROM ai_sops WHERE id = $1`, [sopId]);
+  const row = existing.rows[0];
+  if (!row) {
+    throw new SopImportError(404, 'SOP not found', { code: 'not_found' });
+  }
+
+  let nextTitle = asText(row.title).trim();
+  if (patch.title != null) {
+    nextTitle = asText(patch.title).trim();
+    if (!nextTitle) {
+      throw new SopImportError(400, 'Title is required', { code: 'invalid_title' });
+    }
+  }
+
+  let nextBody = asText(row.body).trim();
+  if (patch.body != null) {
+    nextBody = asText(patch.body).trim();
+    if (!nextBody) {
+      throw new SopImportError(400, 'Body is required', { code: 'invalid_body' });
+    }
+  }
+  nextBody = nextBody.slice(0, MAX_RAW_TEXT);
+
+  let nextScope = row.scope;
+  if (patch.scope != null) {
+    if (!isSopScope(patch.scope)) {
+      throw new SopImportError(400, 'Invalid scope', { code: 'invalid_scope' });
+    }
+    nextScope = patch.scope;
+  }
+
+  let nextCreatorId = row.creatorId || null;
+  if (nextScope === SOP_SCOPES.GLOBAL) {
+    nextCreatorId = null;
+  } else {
+    const wanted = patch.creatorId !== undefined ? patch.creatorId : nextCreatorId;
+    nextCreatorId = await resolveCreatorId(wanted, client);
+    if (!nextCreatorId) {
+      throw new SopImportError(400, 'Creator is required', { code: 'invalid_scope' });
+    }
+  }
+
+  const nextActive =
+    patch.active == null ? row.active !== false : Boolean(patch.active);
+
+  const updated = await client.query(
+    `UPDATE ai_sops
+     SET title = $2,
+         body = $3,
+         scope = $4,
+         "creatorId" = $5,
+         active = $6,
+         "updatedBy" = $7,
+         "updatedAt" = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [
+      sopId,
+      nextTitle,
+      nextBody,
+      nextScope,
+      nextCreatorId,
+      nextActive,
+      patch.user?.id || null,
+    ]
+  );
   return toSopDto(updated.rows[0]);
+}
+
+async function deactivateSop(id, client = pool) {
+  return updateSop(id, { active: false }, client);
+}
+
+async function deleteSop(id, client = pool) {
+  const sopId = String(id || '').trim();
+  if (!UUID_RE.test(sopId)) {
+    throw new SopImportError(400, 'Invalid SOP ID', { code: 'invalid_id' });
+  }
+  const deleted = await client.query(
+    `DELETE FROM ai_sops WHERE id = $1 RETURNING *`,
+    [sopId]
+  );
+  if (!deleted.rows[0]) {
+    throw new SopImportError(404, 'SOP not found', { code: 'not_found' });
+  }
+  return toSopDto(deleted.rows[0]);
 }
 
 module.exports = {
@@ -943,6 +1030,9 @@ module.exports = {
   rejectSopImport,
   loadActiveSops,
   listActiveSops,
+  getSopById,
+  updateSop,
   deactivateSop,
+  deleteSop,
   loadOverlapCatalog,
 };
