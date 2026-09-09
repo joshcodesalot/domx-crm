@@ -19,17 +19,21 @@ import RemoveCreatorModal from '@/components/RemoveCreatorModal';
 import RenameCreatorModal from '@/components/RenameCreatorModal';
 import AiCreatorModeControl from '@/components/AiCreatorModeControl';
 import AiCreatorProfileModal from '@/components/AiCreatorProfileModal';
+import ToggleSwitch from '@/components/ToggleSwitch';
 import { useAuth } from '@/context/AuthContext';
 import {
   deleteCreator,
   getAiCreatorSettings,
+  getAiFlags,
   getCreators,
   patchAiCreatorSettings,
+  patchAiFlags,
   reconnectFourBasedAccountSaved,
   reconnectMaloumAccountSaved,
   refreshMaloumAvatar,
   verifyMaloumSession,
   type AiCreatorSettings,
+  type AiFlags,
   type Creator,
 } from '@/lib/api';
 import fourBasedIcon from '@/assets/4based_icon.ico';
@@ -91,13 +95,15 @@ export default function ManageCreators() {
     {}
   );
   const [aiSavingIds, setAiSavingIds] = useState<Set<string>>(() => new Set());
+  const [aiFlags, setAiFlags] = useState<AiFlags | null>(null);
+  const [aiFlagsSaving, setAiFlagsSaving] = useState(false);
 
   const canManage = hasPermission('creators.manage');
   const canManageAi = hasPermission('ai.settings.manage');
+  const canEditAutoSend =
+    Boolean(aiFlags?.canEditAutoSend) && hasPermission('ai.autosend.enable');
 
-  const loadCreators = useCallback(async () => {
-    const { creators: list } = await getCreators();
-    setCreators(list);
+  const loadAiSettingsFor = useCallback(async (list: Creator[]) => {
     if (!canManageAi) {
       setAiSettings({});
       setAiSettingsErrors({});
@@ -132,6 +138,21 @@ export default function ManageCreators() {
     setAiSettings(nextSettings);
     setAiSettingsErrors(nextErrors);
   }, [canManageAi]);
+
+  const loadGlobalAiFlags = useCallback(async () => {
+    if (!canManageAi) {
+      setAiFlags(null);
+      return;
+    }
+    const flags = await getAiFlags();
+    setAiFlags(flags);
+  }, [canManageAi]);
+
+  const loadCreators = useCallback(async () => {
+    const { creators: list } = await getCreators();
+    setCreators(list);
+    await Promise.all([loadAiSettingsFor(list), loadGlobalAiFlags()]);
+  }, [loadAiSettingsFor, loadGlobalAiFlags]);
 
   useEffect(() => {
     async function load() {
@@ -275,6 +296,27 @@ export default function ManageCreators() {
     }
   }
 
+  async function handleGlobalAiFlagsChange(patch: {
+    enabled?: boolean;
+    suggestAllowed?: boolean;
+    autoSendAllowed?: boolean;
+  }) {
+    if (!canManageAi || aiFlagsSaving) return;
+    setAiFlagsSaving(true);
+    setError(null);
+    try {
+      const next = await patchAiFlags(patch);
+      setAiFlags(next);
+      await loadAiSettingsFor(creators);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Failed to update global AI flags'
+      );
+    } finally {
+      setAiFlagsSaving(false);
+    }
+  }
+
   async function handleRemoveConfirm() {
     if (!removeTarget) return;
 
@@ -294,9 +336,65 @@ export default function ManageCreators() {
   return (
     <AppLayout title="Creators" activePage="creators">
       <div className="max-w-6xl mx-auto">
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
           <h2 className="text-2xl font-semibold">Manage Creators</h2>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-start justify-end gap-4">
+            {canManageAi && (
+              <div className="flex flex-wrap items-start gap-5 max-w-xl">
+                <div className="flex flex-col gap-1 min-w-[12rem]">
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-semibold text-gray-500 tracking-wider">
+                      GLOBAL AI
+                    </span>
+                    <ToggleSwitch
+                      checked={Boolean(aiFlags?.enabled)}
+                      disabled={aiFlagsSaving || loading || !aiFlags}
+                      onChange={(enabled) => {
+                        const patch: {
+                          enabled: boolean;
+                          suggestAllowed?: boolean;
+                        } = { enabled };
+                        if (enabled && !aiFlags?.suggestAllowed) {
+                          patch.suggestAllowed = true;
+                        }
+                        void handleGlobalAiFlagsChange(patch);
+                      }}
+                      aria-label="Global AI"
+                    />
+                  </label>
+                  <p className="text-[11px] text-gray-500 leading-relaxed">
+                    {aiFlags?.enabled
+                      ? 'AI is allowed. Set each creator’s mode below.'
+                      : 'Global AI is off — creator modes are locked'}
+                  </p>
+                </div>
+                <div className="flex flex-col gap-1 min-w-[14rem]">
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-semibold text-gray-500 tracking-wider">
+                      AUTO-SEND
+                    </span>
+                    <ToggleSwitch
+                      checked={Boolean(aiFlags?.autoSendAllowed)}
+                      disabled={
+                        aiFlagsSaving ||
+                        loading ||
+                        !aiFlags?.enabled ||
+                        !canEditAutoSend
+                      }
+                      onChange={(autoSendAllowed) => {
+                        void handleGlobalAiFlagsChange({ autoSendAllowed });
+                      }}
+                      aria-label="AI auto-send"
+                    />
+                  </label>
+                  <p className="text-[11px] text-gray-500 leading-relaxed">
+                    Required for Auto low-risk. Leave off until you want the AI
+                    to send.
+                  </p>
+                </div>
+              </div>
+            )}
+            <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handleRefresh}
@@ -321,6 +419,7 @@ export default function ManageCreators() {
                 Add Creator
               </button>
             )}
+            </div>
           </div>
         </div>
 

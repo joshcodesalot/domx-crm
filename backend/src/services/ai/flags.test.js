@@ -21,6 +21,16 @@ describe('resolveEffectiveAiMode', () => {
     );
   });
 
+  it('global off wins over creator suggest_only', () => {
+    assert.equal(
+      resolveEffectiveAiMode({
+        global: { ...globalOn, enabled: false },
+        creator: { mode: MODES.SUGGEST_ONLY, paused: false },
+      }),
+      MODES.OFF
+    );
+  });
+
   it('creator off stays off when global is on', () => {
     assert.equal(
       resolveEffectiveAiMode({

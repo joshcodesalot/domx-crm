@@ -3,7 +3,13 @@ const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/authorize');
 const { userCanAccessCreator } = require('../services/creatorAccess');
-const { getAiFlags } = require('../services/appSettings');
+const {
+  getAiFlags,
+  setAiFlags,
+  AiFlagsError,
+  toAiFlagsPayload,
+  assertCanPatchAutoSend,
+} = require('../services/appSettings');
 const {
   isAiMode,
   MODES,
@@ -130,6 +136,43 @@ async function requireAccessibleCreator(req, res) {
 
   return creator;
 }
+
+router.get(
+  '/flags',
+  authenticate,
+  requirePermission('ai.settings.manage'),
+  async (req, res) => {
+    try {
+      const flags = await getAiFlags();
+      return res.json(toAiFlagsPayload(flags, req.user));
+    } catch (err) {
+      console.error('Get AI flags error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.patch(
+  '/flags',
+  authenticate,
+  requirePermission('ai.settings.manage'),
+  async (req, res) => {
+    try {
+      const body = req.body || {};
+      if (!assertCanPatchAutoSend(req.user, body)) {
+        return res.status(403).json({ error: 'Insufficient permissions' });
+      }
+      const flags = await setAiFlags(body, req.user.id);
+      return res.json(toAiFlagsPayload(flags, req.user));
+    } catch (err) {
+      if (err instanceof AiFlagsError) {
+        return res.status(err.status || 400).json({ error: err.message });
+      }
+      console.error('Patch AI flags error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
 
 router.get('/creators/:id/settings', authenticate, async (req, res) => {
   try {

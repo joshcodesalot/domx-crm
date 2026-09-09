@@ -5480,6 +5480,30 @@ export interface AiCreatorSettings {
   updatedAt: string | null;
 }
 
+export interface AiFlags {
+  enabled: boolean;
+  shadowAllowed: boolean;
+  suggestAllowed: boolean;
+  autoSendAllowed: boolean;
+  canEditAutoSend: boolean;
+}
+
+export async function getAiFlags(): Promise<AiFlags> {
+  return request('/api/ai/flags');
+}
+
+export async function patchAiFlags(patch: {
+  enabled?: boolean;
+  shadowAllowed?: boolean;
+  suggestAllowed?: boolean;
+  autoSendAllowed?: boolean;
+}): Promise<AiFlags> {
+  return request('/api/ai/flags', {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
 export async function getAiCreatorSettings(
   creatorId: string
 ): Promise<AiCreatorSettings> {
