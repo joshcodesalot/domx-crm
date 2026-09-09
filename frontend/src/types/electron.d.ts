@@ -69,6 +69,15 @@ export type StaffSyncEvent =
       message?: string | null;
     }
   | {
+      type: 'ai:fan-memory';
+      creatorId: string | null;
+      platform: string | null;
+      platformChatId: string | null;
+      platformFanId: string | null;
+      nickname: string | null;
+      notes: string | null;
+    }
+  | {
       type: 'ai:suggestion';
       suggestionId: string | null;
       runId: string | null;

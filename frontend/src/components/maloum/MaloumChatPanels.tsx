@@ -1557,6 +1557,25 @@ export function MaloumChatThread({
   }, [onSyncEvent, creatorId, chatId, loadMessages, loadSenders]);
 
   useEffect(() => {
+    return onSyncEvent((event) => {
+      if (event.type !== 'ai:fan-memory') return;
+      if (event.creatorId !== creatorId || event.platform !== 'maloum') return;
+      if (String(event.platformChatId || '') !== String(chatId)) return;
+      setChat((prev) => {
+        if (!prev?.chatPartner) return prev;
+        return {
+          ...prev,
+          chatPartner: {
+            ...prev.chatPartner,
+            ...(event.nickname ? { nickname: event.nickname } : {}),
+            ...(event.notes ? { notes: event.notes } : {}),
+          },
+        };
+      });
+    });
+  }, [onSyncEvent, creatorId, chatId]);
+
+  useEffect(() => {
     const el = threadRootRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const applyWidth = (width: number) => {

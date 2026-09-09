@@ -756,9 +756,17 @@ async function runOrchestration(input, trigger, deps) {
         creatorId,
         platform,
         messages,
-      }).catch((err) => {
-        console.error('AI memory extract error:', err);
-      });
+        inboundPlatformMessageId:
+          inboundPlatformMessageId || conversation.lastInboundPlatformMessageId,
+      })
+        .then((result) => {
+          if (result?.skipped) {
+            console.error('AI memory extract skipped:', result.reason);
+          }
+        })
+        .catch((err) => {
+          console.error('AI memory extract error:', err);
+        });
     });
 
     return toRunDto(completed);

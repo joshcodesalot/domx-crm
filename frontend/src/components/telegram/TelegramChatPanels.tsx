@@ -1389,6 +1389,20 @@ export function TelegramChatThread({
     });
   }, [onSyncEvent, creatorId, peerId, loadMessages, loadSenders, pollEnabled]);
 
+  useEffect(() => {
+    return onSyncEvent((event) => {
+      if (event.type !== 'ai:fan-memory') return;
+      if (event.creatorId !== creatorId || event.platform !== 'telegram') return;
+      const fanKey = String(event.platformFanId || event.platformChatId || '');
+      if (fanKey && fanKey !== String(peerId)) return;
+      setFan((prev) => ({
+        ...(prev || ({} as TelegramFan)),
+        ...(event.nickname ? { nickname: event.nickname } : {}),
+        ...(event.notes ? { notes: event.notes } : {}),
+      }));
+    });
+  }, [onSyncEvent, creatorId, peerId]);
+
   const updateNearBottom = useCallback((el: HTMLDivElement) => {
     nearBottomRef.current =
       el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;

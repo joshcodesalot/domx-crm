@@ -217,11 +217,23 @@ export default function MaloumFanPanel({
   }, [remoteNickname, editingNickname]);
 
   useEffect(() => {
-    if (notesStatus === 'dirty' || notesStatus === 'saving') return;
+    const localIsTemplate =
+      !notesDraftRef.current.trim() ||
+      notesDraftRef.current === DEFAULT_FAN_NOTES_TEMPLATE;
+    if ((notesStatus === 'dirty' || notesStatus === 'saving') && !localIsTemplate) {
+      return;
+    }
     if (remoteNotes.trim()) {
+      if (notesTimerRef.current != null) {
+        window.clearTimeout(notesTimerRef.current);
+        notesTimerRef.current = null;
+      }
       setNotesDraft(remoteNotes);
       notesSavedBaselineRef.current = remoteNotes;
-    } else if (!notesDraftRef.current.trim() || notesDraftRef.current === DEFAULT_FAN_NOTES_TEMPLATE) {
+      if (notesStatus === 'dirty' || notesStatus === 'saving') {
+        setNotesStatus('idle');
+      }
+    } else if (localIsTemplate) {
       setNotesDraft(DEFAULT_FAN_NOTES_TEMPLATE);
       notesSavedBaselineRef.current = '';
     }

@@ -154,7 +154,35 @@ export default function TelegramFanPanel({
     setListPickerOpen(false);
     setAllLists([]);
     setListsError(null);
-  }, [fan?.telegramUserId, fan?.nickname, fan?.notes]);
+  }, [fan?.telegramUserId]);
+
+  useEffect(() => {
+    if (editingNickname) return;
+    const nextAlias = fan?.nickname || '';
+    setAlias(nextAlias);
+    setNicknameDraft(nextAlias);
+  }, [fan?.nickname, editingNickname]);
+
+  useEffect(() => {
+    const localIsTemplate =
+      !notesDraftRef.current.trim() ||
+      notesDraftRef.current.trim() === DEFAULT_FAN_NOTES_TEMPLATE.trim();
+    if ((notesStatus === 'dirty' || notesStatus === 'saving') && !localIsTemplate) {
+      return;
+    }
+    const nextNotes = fan?.notes || '';
+    if (!nextNotes.trim()) return;
+    if (notesTimerRef.current != null) {
+      window.clearTimeout(notesTimerRef.current);
+      notesTimerRef.current = null;
+    }
+    setRemoteNotes(nextNotes);
+    notesSavedBaselineRef.current = nextNotes;
+    setNotesDraft(nextNotes);
+    if (notesStatus === 'dirty' || notesStatus === 'saving') {
+      setNotesStatus('idle');
+    }
+  }, [fan?.notes, notesStatus]);
 
   useEffect(() => {
     if (!isGroup || !creatorId || !fanId) {
