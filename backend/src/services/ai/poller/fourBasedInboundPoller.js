@@ -5,6 +5,7 @@ const { getAiFlags } = require('../../appSettings');
 const { MODES } = require('../contracts');
 const { resolveEffectiveAiMode } = require('../flags');
 const { ingestConversation } = require('../ingest');
+const { sanitizeFanUsername } = require('../names');
 
 const POLL_MS = 15_000;
 const PAGE_LIMIT = 15;
@@ -40,6 +41,18 @@ function fourBasedFanId(chat, providerUserId) {
   const otherId = ids.find((id) => String(id || '').trim() && String(id) !== mine);
   if (otherId) return String(otherId);
   return null;
+}
+
+function fourBasedFanUsername(chat, providerUserId) {
+  const mine = String(providerUserId || '');
+  const users = Array.isArray(chat?.users) ? chat.users : [];
+  const otherUser = users.find((user) => {
+    const id = String(user?._id || user?.id || '').trim();
+    return id && id !== mine;
+  });
+  return sanitizeFanUsername(
+    otherUser?.username || otherUser?.name || otherUser?.displayName
+  );
 }
 
 function isUnreadFourBasedChat(chat, providerUserId) {
@@ -169,6 +182,7 @@ async function pollCreator(row, deps) {
       platform: '4based',
       platformChatId: String(chat._id),
       platformFanId: fourBasedFanId(chat, creator.providerUserId || null),
+      fanUsername: fourBasedFanUsername(chat, creator.providerUserId || null),
       source: 'poll',
       messages: mapped,
     });
@@ -247,6 +261,7 @@ module.exports = {
   mapFourBasedMessagesForIngest,
   isUnreadFourBasedChat,
   fourBasedFanId,
+  fourBasedFanUsername,
   nextBackoffMs,
   isBackedOff,
   recordSuccess,

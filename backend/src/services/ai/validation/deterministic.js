@@ -3,9 +3,12 @@ const {
   OUTPUT_SCHEMA_VERSION,
   OUTPUT_ACTIONS,
   OUTPUT_INTENTS,
+  ROUTES,
 } = require('../contracts');
 
 const MAX_REPLY_LENGTH = 2000;
+const SOFT_GERMAN_MAX = 240;
+const EM_DASH_RE = /[\u2013\u2014\u2015]/;
 const INTENT_VALUES = new Set(Object.values(OUTPUT_INTENTS));
 
 function fail(reason, detail) {
@@ -98,6 +101,49 @@ function validateLength(output) {
   return ok();
 }
 
+function latestInboundText(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (list[i]?.direction === 'inbound') {
+      return typeof list[i].text === 'string' ? list[i].text : '';
+    }
+  }
+  return '';
+}
+
+function inboundLooksMultiQuestion(text) {
+  const raw = typeof text === 'string' ? text : '';
+  const marks = (raw.match(/\?/g) || []).length;
+  if (marks >= 2) return true;
+  const clauses = raw
+    .split(/[?.!]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return clauses.length >= 3;
+}
+
+function applyReplyQualityFlags(output, { messages } = {}) {
+  if (!output || typeof output !== 'object' || Array.isArray(output)) {
+    return output;
+  }
+  const flags = new Set(Array.isArray(output.flags) ? output.flags : []);
+  const reply = typeof output.reply === 'string' ? output.reply : '';
+  if (EM_DASH_RE.test(reply) || EM_DASH_RE.test(String(output.replyEnglish || ''))) {
+    flags.add('em_dash');
+  }
+  const inbound = latestInboundText(messages);
+  if (reply.length > SOFT_GERMAN_MAX && !inboundLooksMultiQuestion(inbound)) {
+    flags.add('too_long');
+  }
+  const nextFlags = [...flags];
+  const next = { ...output, flags: nextFlags };
+  if (nextFlags.length) {
+    next.requiresHumanReview = true;
+    next.suggestedRoute = ROUTES.HUMAN_REVIEW;
+  }
+  return next;
+}
+
 function validateConversation(conversation) {
   if (!hasId(conversation)) {
     return fail('conversation_missing');
@@ -170,10 +216,13 @@ async function validateAiOutput({
 
 module.exports = {
   MAX_REPLY_LENGTH,
+  SOFT_GERMAN_MAX,
   validateSchema,
   validateAction,
   validatePpvOffer,
   validateLength,
+  applyReplyQualityFlags,
+  inboundLooksMultiQuestion,
   validateConversation,
   validateCreator,
   validateConnected,

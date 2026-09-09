@@ -6,7 +6,10 @@ const { resolveEffectiveAiMode } = require('./flags');
 const { MODES, ROUTES, defaultCreatorAiSettings } = require('./contracts');
 const { withConversationLock } = require('./locks');
 const { generateReply, unwrapGenerated } = require('./generation/generateReply');
-const { validateAiOutput } = require('./validation/deterministic');
+const { validateAiOutput, applyReplyQualityFlags } = require('./validation/deterministic');
+const { evaluateOutboundDedupe } = require('./generation/outboundDedupe');
+const { maybeBackfillHistory } = require('./history/backfill');
+const { extractAndSyncFanMemory } = require('./memory/extract');
 const { criticReply, shouldCritic, mergeCriticFlags } = require('./validation/critic');
 const { applyModeration } = require('../contentModeration');
 const {
@@ -135,6 +138,22 @@ async function defaultLoadMessages(conversationId, client = pool) {
   return result.rows.slice().reverse();
 }
 
+async function defaultLoadLastUnsentText(
+  { creatorId, platform, platformChatId },
+  client = pool
+) {
+  const result = await client.query(
+    `SELECT "originalText"
+     FROM message_unsends
+     WHERE "creatorId" = $1 AND platform = $2 AND "chatId" = $3
+     ORDER BY "unsentAt" DESC
+     LIMIT 1`,
+    [creatorId, platform, String(platformChatId)]
+  );
+  const text = result.rows[0]?.originalText;
+  return typeof text === 'string' && text.trim() ? text : null;
+}
+
 async function defaultFindInboundRun(
   conversationId,
   inboundPlatformMessageId,
@@ -227,6 +246,10 @@ function resolveDeps(deps = {}) {
     loadCreatorSettings: deps.loadCreatorSettings || defaultLoadCreatorSettings,
     loadConversation: deps.loadConversation || defaultLoadConversation,
     loadMessages: deps.loadMessages || defaultLoadMessages,
+    loadLastUnsentText: deps.loadLastUnsentText || defaultLoadLastUnsentText,
+    maybeBackfillHistory: deps.maybeBackfillHistory || maybeBackfillHistory,
+    extractAndSyncFanMemory:
+      deps.extractAndSyncFanMemory || extractAndSyncFanMemory,
     getCreatorProfile: deps.getCreatorProfile || getCreatorProfile,
     findInboundRun: deps.findInboundRun || defaultFindInboundRun,
     insertRun: deps.insertRun || defaultInsertRun,
@@ -427,7 +450,7 @@ async function runOrchestration(input, trigger, deps) {
     if (existing) return toRunDto(existing);
   }
 
-  const [messages, profile, memory, mediaCandidates, approvedRules, activeSops] =
+  const [loadedMessages, profile, memory, mediaCandidates, approvedRules, activeSops] =
     await Promise.all([
     d.loadMessages(conversation.id),
     d.getCreatorProfile(creatorId),
@@ -460,6 +483,20 @@ async function runOrchestration(input, trigger, deps) {
       }),
   ]);
 
+  let messages = loadedMessages;
+  try {
+    await d.maybeBackfillHistory({
+      conversation,
+      creatorId,
+      platform,
+      platformChatId,
+    });
+    messages = await d.loadMessages(conversation.id);
+  } catch (err) {
+    console.error('AI history backfill error:', err);
+    messages = loadedMessages;
+  }
+
   const fanNotes =
     (typeof input.fanNotes === 'string' && input.fanNotes.trim()) ||
     memory.sourceNotes ||
@@ -490,12 +527,14 @@ async function runOrchestration(input, trigger, deps) {
     profile,
     fanNotes,
     fanNickname,
+    fanUsername: conversation.fanUsername || input.fanUsername || null,
     fanMemories: memory.facts,
     mediaCandidates,
     rules: approvedRules,
     sops: activeSops,
     lastSessionSummary,
     mode: effectiveMode,
+    now: new Date().toISOString(),
   });
 
   const pending = await writeRunUnderLock(d, lockKey, {
@@ -603,6 +642,31 @@ async function runOrchestration(input, trigger, deps) {
       };
     }
 
+    finalOutput = applyReplyQualityFlags(finalOutput, { messages: context.messages });
+    let lastUnsentText = null;
+    try {
+      lastUnsentText = await d.loadLastUnsentText({
+        creatorId,
+        platform,
+        platformChatId,
+      });
+    } catch (err) {
+      console.error('AI unsend lookup error:', err);
+    }
+    const dedupe = evaluateOutboundDedupe({
+      messages: context.messages,
+      draft: finalOutput.reply,
+      lastUnsentText,
+    });
+    if (!dedupe.ok) {
+      finalOutput = {
+        ...finalOutput,
+        flags: [...new Set([...(finalOutput.flags || []), ...dedupe.flags])],
+        requiresHumanReview: true,
+        suggestedRoute: ROUTES.HUMAN_REVIEW,
+      };
+    }
+
     let liveConversation = conversation;
     try {
       const reloaded = await d.loadConversation({
@@ -679,6 +743,17 @@ async function runOrchestration(input, trigger, deps) {
         }
       }
     }
+
+    setImmediate(() => {
+      d.extractAndSyncFanMemory({
+        conversation,
+        creatorId,
+        platform,
+        messages,
+      }).catch((err) => {
+        console.error('AI memory extract error:', err);
+      });
+    });
 
     return toRunDto(completed);
   } catch (err) {

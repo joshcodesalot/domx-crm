@@ -5672,6 +5672,8 @@ export interface AiQueueItem {
   platform: AiIngestPlatform;
   platformChatId: string;
   platformFanId: string | null;
+  fanUsername: string | null;
+  fanLabel: string;
   state: AiConversationState;
   bucket: AiQueueBucket;
   mode: string;
@@ -5894,5 +5896,28 @@ export async function getAiQueue(params: {
   if (params.limit != null) search.set('limit', String(params.limit));
   const qs = search.toString();
   return request(`/api/ai/queue${qs ? `?${qs}` : ''}`);
+}
+
+export interface AiConversationMessage {
+  platformMessageId: string | null;
+  direction: 'inbound' | 'outbound';
+  senderRole: 'fan' | 'creator' | 'system';
+  text: string;
+  hasMedia: boolean;
+  isPpv: boolean;
+  priceNet: number | null;
+  sentAt: string | null;
+}
+
+export async function getAiConversationMessages(
+  conversationId: string,
+  limit = 20
+): Promise<{ messages: AiConversationMessage[] }> {
+  const search = new URLSearchParams();
+  if (limit != null) search.set('limit', String(limit));
+  const qs = search.toString();
+  return request(
+    `/api/ai/conversations/${conversationId}/messages${qs ? `?${qs}` : ''}`
+  );
 }
 

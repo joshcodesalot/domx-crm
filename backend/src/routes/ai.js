@@ -42,6 +42,7 @@ const {
 const { executeApprovedSend, ReviewError } = require('../services/ai/send/executeApprovedSend');
 const {
   listQueue,
+  listConversationMessages,
   QUEUE_BUCKET_VALUES,
 } = require('../services/ai/review/queue');
 const {
@@ -561,6 +562,25 @@ router.get(
       return res.json({ suggestion: toSuggestionDto(row) });
     } catch (err) {
       console.error('Get AI conversation suggestion error:', err);
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/conversations/:id/messages',
+  authenticate,
+  requirePermission('ai.moderate', 'ai.settings.manage'),
+  async (req, res) => {
+    try {
+      const conversation = await requireConversationAccess(req, res, req.params.id);
+      if (!conversation) return;
+      const messages = await listConversationMessages(conversation.id, {
+        limit: req.query.limit,
+      });
+      return res.json({ messages });
+    } catch (err) {
+      console.error('Get AI conversation messages error:', err);
       return res.status(500).json({ error: 'Internal server error' });
     }
   }

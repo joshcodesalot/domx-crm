@@ -336,6 +336,24 @@ function throwReview(result) {
   });
 }
 
+async function maybeMarkReadAfterSend(d, { platform, creatorId, platformChatId }) {
+  try {
+    if (platform === 'maloum') {
+      const loaded = await d.loadMaloumCreator(creatorId);
+      if (loaded?.creator) {
+        await d.markMaloumRead(loaded.creator, platformChatId);
+      }
+    } else if (platform === '4based') {
+      const loaded = await d.loadFourBasedCreator(creatorId);
+      if (loaded?.creator) {
+        await d.markFourBasedReceived(loaded.creator, platformChatId);
+      }
+    }
+  } catch (err) {
+    console.error('AI mark-read error:', err);
+  }
+}
+
 async function executeApprovedSend(
   {
     suggestionId,
@@ -361,6 +379,11 @@ async function executeApprovedSend(
     sendTelegramText:
       deps.sendTelegramText || telegramWorker.sendText.bind(telegramWorker),
     sendMedia: deps.sendMedia || maloumClient.sendMedia.bind(maloumClient),
+    markMaloumRead:
+      deps.markMaloumRead || maloumClient.markRead.bind(maloumClient),
+    markFourBasedReceived:
+      deps.markFourBasedReceived ||
+      fourBasedClient.markReceived.bind(fourBasedClient),
     loadMediaCandidates: deps.loadMediaCandidates || loadMediaCandidates,
     hasVaultSent: deps.hasVaultSent || defaultHasVaultSent,
     hasPurchasedMedia: deps.hasPurchasedMedia || defaultHasPurchasedMedia,
@@ -799,6 +822,14 @@ async function executeApprovedSend(
   }
   if (locked.kind === 'error') {
     throwReview(locked);
+  }
+
+  if (locked.kind === 'ok') {
+    await maybeMarkReadAfterSend(d, {
+      platform: suggestion.platform,
+      creatorId: suggestion.creatorId,
+      platformChatId: suggestion.platformChatId,
+    });
   }
 
   if (edited && originalReply !== germanText) {

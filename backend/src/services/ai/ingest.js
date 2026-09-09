@@ -3,18 +3,22 @@ const { getAiFlags } = require('../appSettings');
 const { MODES } = require('./contracts');
 const { maybeCopySourceNotes } = require('./memory');
 
+const { sanitizeFanUsername } = require('./names');
+
 const INGEST_PLATFORMS = ['maloum', '4based', 'telegram'];
 const SENDER_ROLES = new Set(['fan', 'creator', 'system']);
 const MAX_INGEST_MESSAGES = 50;
+const MAX_BACKFILL_MESSAGES = 300;
 
 const CONVERSATION_UPSERT_SQL = `
 INSERT INTO ai_conversations (
   "creatorId", platform, "platformChatId", "platformFanId",
-  "humanTakeover", "aiPaused"
+  "fanUsername", "humanTakeover", "aiPaused"
 )
-VALUES ($1, $2, $3, $4, $5, $6)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT ("creatorId", platform, "platformChatId") DO UPDATE SET
   "platformFanId" = COALESCE(EXCLUDED."platformFanId", ai_conversations."platformFanId"),
+  "fanUsername" = COALESCE(EXCLUDED."fanUsername", ai_conversations."fanUsername"),
   "updatedAt" = NOW()
 RETURNING *`;
 
@@ -92,13 +96,17 @@ function normalizeIngestMessage(raw, source = 'poll') {
   };
 }
 
-function planIngest({ existingIds, messages, source } = {}) {
+function planIngest({ existingIds, messages, source, maxMessages } = {}) {
   const known = new Set(
     (existingIds || []).map((id) => String(id || '').trim()).filter(Boolean)
   );
   const seenInBatch = new Set();
   const toInsert = [];
   let inboundCount = 0;
+  const cap = Math.min(
+    Math.max(Number(maxMessages) || MAX_INGEST_MESSAGES, 1),
+    MAX_BACKFILL_MESSAGES
+  );
 
   for (const raw of Array.isArray(messages) ? messages : []) {
     const msg = normalizeIngestMessage(raw, source);
@@ -109,7 +117,7 @@ function planIngest({ existingIds, messages, source } = {}) {
     seenInBatch.add(msg.platformMessageId);
     toInsert.push(msg);
     if (msg.direction === 'inbound') inboundCount += 1;
-    if (toInsert.length >= MAX_INGEST_MESSAGES) break;
+    if (toInsert.length >= cap) break;
   }
 
   return { toInsert, inboundCount };
@@ -143,9 +151,12 @@ async function ingestConversation({
   platform,
   platformChatId,
   platformFanId,
+  fanUsername,
   fanNotes,
   source,
   messages,
+  skipProcess = false,
+  maxMessages,
 } = {}) {
   const [flags, settings] = await Promise.all([
     getAiFlags(),
@@ -162,6 +173,7 @@ async function ingestConversation({
     platformFanId == null || platformFanId === ''
       ? null
       : String(platformFanId);
+  const username = sanitizeFanUsername(fanUsername);
 
   const client = await pool.connect();
   try {
@@ -172,6 +184,7 @@ async function ingestConversation({
       platform,
       platformChatId,
       fanId,
+      username,
       humanTakeover,
       aiPaused,
     ]);
@@ -197,6 +210,7 @@ async function ingestConversation({
       existingIds,
       messages,
       source,
+      maxMessages,
     });
 
     if (toInsert.length > 0) {
@@ -304,7 +318,7 @@ async function ingestConversation({
       revision: updated.rows[0].revision,
     };
 
-    if (inboundCount > 0) {
+    if (inboundCount > 0 && !skipProcess) {
       scheduleIncomingProcess({
         creatorId,
         platform,
@@ -327,6 +341,7 @@ async function ingestConversation({
 module.exports = {
   INGEST_PLATFORMS,
   MAX_INGEST_MESSAGES,
+  MAX_BACKFILL_MESSAGES,
   CONVERSATION_UPSERT_SQL,
   shouldPersistIngest,
   normalizeIngestMessage,

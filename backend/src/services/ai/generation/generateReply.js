@@ -32,7 +32,13 @@ Rules:
 - action may be TEXT_REPLY or SEND_PPV.
 - SEND_PPV only with a mediaId from mediaCandidates. Do not invent mediaId or price.
 - Follow the profile, sops, and constraints in the user context.
+- Keep the German reply to 1-2 sentences, about 240 characters, unless the latest inbound asked several questions.
+- Ask at most one question. Do not stack topics (no selfie AND how you lie AND what made you sad).
 - Never use an em dash.
+- Never address the fan by username, handle, or id. Use fan.givenName only; otherwise boy/babe or no name. Never "hey {username}".
+- Each message has sentAt and relativeAge. nowBerlin is Europe/Berlin.
+- Use heute / gerade / today / right now only if inboundIsLiveSession is true (latest inbound is this session, last few hours). Older emotion is history.
+- If sessionGapHours is large, re-engage. Do not resume a days-old beat.
 - suggestedRoute is a hint only.`.trim();
 
 function asText(value) {

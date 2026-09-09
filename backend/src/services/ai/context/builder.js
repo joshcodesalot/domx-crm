@@ -5,9 +5,16 @@ const { normalizeConversationState } = require('../stateMachine');
 const { normalizeMediaCandidates } = require('../mediaCandidates');
 const { normalizeRules } = require('../brain/rules');
 const { normalizeSopsForContext } = require('../brain/sopImport');
+const { resolveGivenName, sanitizeFanUsername } = require('../names');
+const {
+  BUSINESS_TZ,
+  calendarDateString,
+  calendarTimeString,
+} = require('../../businessTimezone');
 
 const CONTEXT_SCHEMA_VERSION = 1;
 const CONTEXT_MESSAGE_LIMIT = 20;
+const LIVE_SESSION_HOURS = 6;
 
 const SECRET_KEYS = new Set([
   'encryptedloginpassword',
@@ -57,6 +64,35 @@ function parseTimeMs(value) {
   return Number.isNaN(ms) ? null : ms;
 }
 
+function formatRelativeAge(sentAt, now) {
+  const thenMs = parseTimeMs(sentAt);
+  if (thenMs == null) return null;
+  const nowMs = parseTimeMs(now) || Date.now();
+  const diffMs = Math.max(0, nowMs - thenMs);
+  const minutes = Math.round(diffMs / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
+function inboundIsLiveSession(gapHours) {
+  return gapHours != null && Number(gapHours) < LIVE_SESSION_HOURS;
+}
+
+function nowBerlin(now) {
+  const date = now ? new Date(now) : new Date();
+  const safe = Number.isNaN(date.getTime()) ? new Date() : date;
+  return {
+    timezone: BUSINESS_TZ,
+    date: calendarDateString(safe, BUSINESS_TZ),
+    time: calendarTimeString(safe, BUSINESS_TZ),
+    iso: safe.toISOString(),
+  };
+}
+
 function normalizeMessage(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const text = asText(raw.text);
@@ -91,6 +127,13 @@ function normalizeMessage(raw) {
     priceNet,
     sentAt,
   };
+}
+
+function withRelativeAge(messages, now) {
+  return messages.map((msg) => ({
+    ...msg,
+    relativeAge: formatRelativeAge(msg.sentAt, now),
+  }));
 }
 
 function pickMessages(messages) {
@@ -158,11 +201,20 @@ function safeProfile(profile) {
   };
 }
 
-function buildConstraints(profile) {
+function buildConstraints(profile, { inboundIsLive } = {}) {
   const constraints = [
     `${OUTPUT_ACTIONS.TEXT_REPLY} or ${OUTPUT_ACTIONS.SEND_PPV}`,
     `${OUTPUT_ACTIONS.SEND_PPV} only with a mediaId from mediaCandidates`,
     'do not invent price',
+    'reply in 1-2 sentences, about 240 characters of German, unless the latest inbound asked several questions',
+    'ask at most one question per reply',
+    'never use an em dash',
+    'do not stack topics (no selfie AND how you lie AND what made you sad)',
+    'never address the fan by username, handle, or platform id',
+    'use givenName only; otherwise boy/babe or no name. never hey {username}',
+    inboundIsLive
+      ? 'latest inbound is this session: heute/gerade/today/right now are allowed'
+      : 'latest inbound is old history: do not use heute/gerade/today/right now; do not resume an old emotional beat. re-engage instead',
   ];
   for (const claim of profile.prohibitedClaims) {
     constraints.push(`do not claim: ${claim}`);
@@ -176,6 +228,7 @@ function buildAiContext({
   profile,
   fanNotes,
   fanNickname,
+  fanUsername,
   fanMemories,
   mediaCandidates,
   rules,
@@ -186,7 +239,23 @@ function buildAiContext({
 } = {}) {
   const convo = conversation && typeof conversation === 'object' ? conversation : {};
   const safe = safeProfile(profile);
-  const capped = pickMessages(messages);
+  const clock = now || new Date().toISOString();
+  const capped = withRelativeAge(pickMessages(messages), clock);
+  const gapHours = sessionGapHours(convo, capped, clock);
+  const liveSession = inboundIsLiveSession(gapHours);
+  const memories = normalizeFacts(fanMemories);
+  const username =
+    sanitizeFanUsername(fanUsername) ||
+    sanitizeFanUsername(convo.fanUsername) ||
+    null;
+  const nickname = asText(fanNickname).trim() || null;
+  const notes = asText(fanNotes).trim() || null;
+  const givenName = resolveGivenName({
+    nickname,
+    notes,
+    memories,
+    username,
+  });
 
   const dto = {
     schemaVersion: CONTEXT_SCHEMA_VERSION,
@@ -201,12 +270,16 @@ function buildAiContext({
     conversationState: normalizeConversationState(convo.state),
     messages: capped,
     fan: {
-      nickname: asText(fanNickname).trim() || null,
-      notes: asText(fanNotes).trim() || null,
+      username,
+      givenName,
+      nickname,
+      notes,
       platformFanId: convo.platformFanId || null,
-      memories: normalizeFacts(fanMemories),
+      memories,
     },
-    sessionGapHours: sessionGapHours(convo, capped, now),
+    sessionGapHours: gapHours,
+    inboundIsLiveSession: liveSession,
+    nowBerlin: nowBerlin(clock),
     lastSessionSummary:
       typeof lastSessionSummary === 'string' && lastSessionSummary.trim()
         ? lastSessionSummary.trim()
@@ -214,7 +287,7 @@ function buildAiContext({
     mediaCandidates: normalizeMediaCandidates(mediaCandidates),
     rules: normalizeRules(rules),
     sops: normalizeSopsForContext(sops),
-    constraints: buildConstraints(safe),
+    constraints: buildConstraints(safe, { inboundIsLive: liveSession }),
     profile: safe,
   };
 
@@ -224,5 +297,10 @@ function buildAiContext({
 module.exports = {
   CONTEXT_SCHEMA_VERSION,
   CONTEXT_MESSAGE_LIMIT,
+  LIVE_SESSION_HOURS,
+  formatRelativeAge,
+  inboundIsLiveSession,
+  nowBerlin,
+  buildConstraints,
   buildAiContext,
 };

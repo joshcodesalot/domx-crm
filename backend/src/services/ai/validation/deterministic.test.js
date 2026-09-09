@@ -2,10 +2,13 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   MAX_REPLY_LENGTH,
+  SOFT_GERMAN_MAX,
   validateSchema,
   validateAction,
   validatePpvOffer,
   validateLength,
+  applyReplyQualityFlags,
+  inboundLooksMultiQuestion,
   validateConversation,
   validateCreator,
   validateConnected,
@@ -151,6 +154,33 @@ describe('validateLength', () => {
       ).reason,
       'length'
     );
+  });
+});
+
+describe('applyReplyQualityFlags', () => {
+  it('flags a long German reply unless inbound asked several questions', () => {
+    const longReply = 'x'.repeat(SOFT_GERMAN_MAX + 1);
+    const flagged = applyReplyQualityFlags(validOutput({ reply: longReply }), {
+      messages: [{ direction: 'inbound', text: 'hey' }],
+    });
+    assert.ok(flagged.flags.includes('too_long'));
+    assert.equal(flagged.requiresHumanReview, true);
+
+    const allowed = applyReplyQualityFlags(validOutput({ reply: longReply }), {
+      messages: [
+        { direction: 'inbound', text: 'Wie gehts? Was machst du? Wo bist du?' },
+      ],
+    });
+    assert.equal(allowed.flags.includes('too_long'), false);
+    assert.equal(inboundLooksMultiQuestion('Wie gehts? Was machst du?'), true);
+  });
+
+  it('flags em dashes without failing the hard length cap', () => {
+    const flagged = applyReplyQualityFlags(
+      validOutput({ reply: 'hey — babe' })
+    );
+    assert.ok(flagged.flags.includes('em_dash'));
+    assert.equal(validateLength(validOutput({ reply: 'hey — babe' })).ok, true);
   });
 });
 

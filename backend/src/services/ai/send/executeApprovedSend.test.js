@@ -84,6 +84,22 @@ function createSendHarness(overrides = {}) {
   };
   sendMedia.calls = [];
 
+  const markMaloumRead = async (...args) => {
+    markMaloumRead.calls.push(args);
+    if (typeof overrides.markMaloumRead === 'function') {
+      return overrides.markMaloumRead(...args);
+    }
+  };
+  markMaloumRead.calls = [];
+
+  const markFourBasedReceived = async (...args) => {
+    markFourBasedReceived.calls.push(args);
+    if (typeof overrides.markFourBasedReceived === 'function') {
+      return overrides.markFourBasedReceived(...args);
+    }
+  };
+  markFourBasedReceived.calls = [];
+
   const dashboardInserts = [];
   const vaultSent = [];
   const scriptSends = [];
@@ -128,6 +144,8 @@ function createSendHarness(overrides = {}) {
         return { status: 'pending' };
       }),
     emitSuggestionEvent: async () => ({ emitted: true }),
+    markMaloumRead,
+    markFourBasedReceived,
     withConversationLock: async (_db, _key, fn) => fn({}),
     loadCreatorRow: async () => ({
       displayName: 'Naomi',
@@ -154,6 +172,8 @@ function createSendHarness(overrides = {}) {
     sendFourBasedMessage,
     sendTelegramText,
     sendMedia,
+    markMaloumRead,
+    markFourBasedReceived,
     dashboardInserts,
     vaultSent,
     scriptSends,
@@ -221,6 +241,7 @@ describe('executeApprovedSend', () => {
         err.code === 'stale'
     );
     assert.equal(harness.sendText.calls.length, 0);
+    assert.equal(harness.markMaloumRead.calls.length, 0);
     assert.equal(harness.getCurrent().status, 'stale');
     assert.equal(harness.dashboardInserts.length, 0);
   });
@@ -255,6 +276,8 @@ describe('executeApprovedSend', () => {
     assert.equal(harness.sendText.calls.length, 1);
     assert.equal(harness.sendText.calls[0][1], 'chat-1');
     assert.equal(harness.sendText.calls[0][2].text, 'hallo');
+    assert.equal(harness.markMaloumRead.calls.length, 1);
+    assert.equal(harness.markMaloumRead.calls[0][1], 'chat-1');
     assert.equal(harness.dashboardInserts.length, 1);
     assert.equal(harness.dashboardInserts[0].maloumMessageId, 'msg-99');
     assert.equal(harness.dashboardInserts[0].actualSentText, 'hallo');
@@ -309,6 +332,8 @@ describe('executeApprovedSend', () => {
     assert.equal(harness.sendFourBasedMessage.calls.length, 1);
     assert.equal(harness.sendFourBasedMessage.calls[0][1], 'chat-1');
     assert.equal(harness.sendFourBasedMessage.calls[0][2].message, 'hallo');
+    assert.equal(harness.markFourBasedReceived.calls.length, 1);
+    assert.equal(harness.markMaloumRead.calls.length, 0);
     assert.equal(harness.dashboardInserts[0].platform, '4based');
     assert.equal(harness.dashboardInserts[0].maloumMessageId, '4based:fb-99');
   });
@@ -511,6 +536,24 @@ describe('executeApprovedSend', () => {
     );
     assert.equal(result.messageId, 'msg-99');
     assert.equal(result.suggestion.status, 'sent');
+  });
+
+  it('does not mark read when send fails', async () => {
+    const harness = createSendHarness({
+      sendText: async () => {
+        throw new Error('network down');
+      },
+    });
+    await assert.rejects(
+      () =>
+        executeApprovedSend(
+          { suggestionId: 'sug-1', user: harness.user },
+          harness.deps
+        ),
+      (err) => err.status === 502 && err.code === 'send_failed'
+    );
+    assert.equal(harness.markMaloumRead.calls.length, 0);
+    assert.equal(harness.markFourBasedReceived.calls.length, 0);
   });
 });
 

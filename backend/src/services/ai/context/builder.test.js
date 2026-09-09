@@ -144,6 +144,8 @@ describe('buildAiContext', () => {
     assert.equal(dto.fan.nickname, 'Alex');
     assert.equal(dto.fan.notes, 'lives nearby');
     assert.equal(dto.fan.platformFanId, 'fan-1');
+    assert.equal(dto.fan.givenName, 'Alex');
+    assert.equal(dto.fan.username, null);
     assert.deepEqual(dto.fan.memories, [
       { kind: 'preference', text: 'likes voice notes' },
       { kind: 'boundary', text: 'no calls' },
@@ -189,5 +191,75 @@ describe('buildAiContext', () => {
     assert.equal(Object.hasOwn(dto, 'encryptedLoginPassword'), false);
     assert.equal(Object.hasOwn(dto.profile, 'proxy'), false);
     assert.equal(dto.profile.persona, 'Naomi');
+  });
+
+  it('adds sentAt, relativeAge, nowBerlin, and live-session constraints', () => {
+    const now = '2026-09-09T12:00:00.000Z';
+    const dto = buildAiContext({
+      conversation: {
+        id: 'c1',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        lastInboundAt: '2026-09-09T10:00:00.000Z',
+      },
+      messages: [
+        {
+          platformMessageId: 'm0',
+          direction: 'inbound',
+          senderRole: 'fan',
+          text: 'hey',
+          sentAt: '2026-09-09T10:00:00.000Z',
+        },
+      ],
+      now,
+    });
+    assert.equal(dto.messages[0].sentAt, '2026-09-09T10:00:00.000Z');
+    assert.equal(dto.messages[0].relativeAge, '2h ago');
+    assert.equal(dto.nowBerlin.timezone, 'Europe/Berlin');
+    assert.equal(dto.inboundIsLiveSession, true);
+    assert.ok(dto.constraints.some((rule) => rule.includes('heute')));
+  });
+
+  it('does not treat username as givenName', () => {
+    const dto = buildAiContext({
+      conversation: {
+        id: 'c1',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformFanId: 'abc123abc123abc123abc123',
+        fanUsername: 'sugar_daddy99',
+      },
+      messages: [message(0)],
+      fanUsername: 'sugar_daddy99',
+      fanNickname: 'sugar_daddy99',
+    });
+    assert.equal(dto.fan.username, 'sugar_daddy99');
+    assert.equal(dto.fan.givenName, null);
+    assert.ok(dto.constraints.some((rule) => rule.includes('never address the fan by username')));
+  });
+
+  it('marks old inbound as history instead of live heute', () => {
+    const dto = buildAiContext({
+      conversation: {
+        id: 'c1',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        lastInboundAt: '2026-08-15T12:00:00.000Z',
+      },
+      messages: [
+        {
+          platformMessageId: 'sad-1',
+          direction: 'inbound',
+          senderRole: 'fan',
+          text: 'Nein bin ganz traurig',
+          sentAt: '2026-08-15T12:00:00.000Z',
+        },
+      ],
+      now: '2026-09-09T12:00:00.000Z',
+    });
+    assert.equal(dto.messages[0].relativeAge, '25d ago');
+    assert.equal(dto.inboundIsLiveSession, false);
+    assert.ok(dto.sessionGapHours > 24);
+    assert.ok(dto.constraints.some((rule) => rule.includes('do not use heute')));
   });
 });

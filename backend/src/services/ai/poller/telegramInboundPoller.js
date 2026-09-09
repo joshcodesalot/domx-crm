@@ -4,6 +4,7 @@ const { getAiFlags } = require('../../appSettings');
 const { MODES } = require('../contracts');
 const { resolveEffectiveAiMode } = require('../flags');
 const { ingestConversation } = require('../ingest');
+const { sanitizeFanUsername } = require('../names');
 
 const POLL_MS = 15_000;
 const PAGE_LIMIT = 15;
@@ -104,6 +105,10 @@ async function defaultLoadEligibleRows(client = pool) {
   return result.rows;
 }
 
+function telegramFanUsername(dialog) {
+  return sanitizeFanUsername(dialog?.username || dialog?.user?.username);
+}
+
 function isUnreadDialog(dialog) {
   return Boolean(dialog && dialog.peerId && Number(dialog.unreadCount) > 0);
 }
@@ -128,6 +133,7 @@ async function pollCreator(row, deps) {
       platform: 'telegram',
       platformChatId: peerId,
       platformFanId: peerId,
+      fanUsername: telegramFanUsername(dialog),
       source: 'poll',
       messages: mapped,
     });
@@ -206,6 +212,7 @@ module.exports = {
   BACKOFF_CAP_MS,
   selectEligibleCreators,
   mapTelegramMessagesForIngest,
+  telegramFanUsername,
   nextBackoffMs,
   isBackedOff,
   recordSuccess,

@@ -5,6 +5,7 @@ const { getAiFlags } = require('../../appSettings');
 const { MODES } = require('../contracts');
 const { resolveEffectiveAiMode } = require('../flags');
 const { ingestConversation } = require('../ingest');
+const { sanitizeFanUsername } = require('../names');
 
 const POLL_MS = 15_000;
 const PAGE_LIMIT = 15;
@@ -40,6 +41,10 @@ function maloumPriceNet(msg) {
   const fallback = msg?.content?.priceNet;
   if (typeof fallback === 'number' && Number.isFinite(fallback)) return fallback;
   return null;
+}
+
+function maloumFanUsername(chat) {
+  return sanitizeFanUsername(chat?.chatPartner?.username);
 }
 
 function mapMaloumMessagesForIngest(messages, providerUserId) {
@@ -150,6 +155,7 @@ async function pollCreator(row, deps) {
       platform: 'maloum',
       platformChatId: String(chat._id),
       platformFanId: chat.chatPartner?._id ? String(chat.chatPartner._id) : null,
+      fanUsername: maloumFanUsername(chat),
       source: 'poll',
       messages: mapped,
     });
@@ -226,6 +232,7 @@ module.exports = {
   BACKOFF_CAP_MS,
   selectEligibleCreators,
   mapMaloumMessagesForIngest,
+  maloumFanUsername,
   nextBackoffMs,
   isBackedOff,
   recordSuccess,

@@ -1519,7 +1519,7 @@ async function markPeerRead(client, peerId, { creatorId, force = false } = {}) {
 async function listMessages(
   creatorId,
   peerId,
-  { limit = 50, offsetId, offsetDate } = {}
+  { limit = 50, offsetId, offsetDate, markRead = true } = {}
 ) {
   const client = await getClient(creatorId);
   const numericId = Number(peerId);
@@ -1571,7 +1571,7 @@ async function listMessages(
     await upsertFanProfile(creatorId, peer);
     void cachePeerAvatar(creatorId, client, peer).catch(() => undefined);
   }
-  if (!hasOffset) {
+  if (!hasOffset && markRead !== false) {
     await markPeerRead(client, numericId, { creatorId });
   }
   const profiles = await loadProfiles(creatorId, [String(numericId)]);

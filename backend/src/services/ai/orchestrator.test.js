@@ -8,10 +8,12 @@ const {
 const { MODES, ROUTES } = require('./contracts');
 const { emptyMemory } = require('./memory');
 const { conversationLockKey } = require('./locks');
+const { formatRelativeAge } = require('./context/builder');
 const {
   generateReply,
   normalizeGeneratedOutput,
   withTimeout,
+  SYSTEM_PROMPT,
 } = require('./generation/generateReply');
 const { requirePermission } = require('../../middleware/authorize');
 
@@ -57,6 +59,7 @@ function createHarness(options = {}) {
           revision: 2,
           lastInboundPlatformMessageId: 'in-1',
           lastInboundAt: '2026-09-09T12:00:00.000Z',
+          historyBackfilledAt: '2026-09-09T00:00:00.000Z',
         }
       : options.conversation;
 
@@ -162,6 +165,10 @@ function createHarness(options = {}) {
         };
       }),
     notifyAlertChats: options.notifyAlertChats || (async () => ({ sent: 0 })),
+    maybeBackfillHistory:
+      options.maybeBackfillHistory || (async () => ({ skipped: true })),
+    extractAndSyncFanMemory: options.extractAndSyncFanMemory || (async () => null),
+    loadLastUnsentText: options.loadLastUnsentText || (async () => null),
     findInboundRun: async (conversationId, inboundId) =>
       runs.find(
         (row) =>
@@ -268,6 +275,13 @@ describe('conversationLockKey', () => {
 });
 
 describe('generateReply helpers', () => {
+  it('asks for short time-aware replies and bans em dashes', () => {
+    assert.match(SYSTEM_PROMPT, /240 characters/);
+    assert.match(SYSTEM_PROMPT, /em dash/i);
+    assert.match(SYSTEM_PROMPT, /inboundIsLiveSession/);
+    assert.match(SYSTEM_PROMPT, /givenName/);
+  });
+
   it('fails closed on timeout', async () => {
     await assert.rejects(
       () =>
@@ -1492,5 +1506,155 @@ describe('POST /api/ai/suggest permission', () => {
       nextCalled = true;
     });
     assert.equal(nextCalled, true);
+  });
+});
+
+describe('quality, time, and names in generate context', () => {
+  it('passes relativeAge and does not treat old sadness as live', async () => {
+    const captured = [];
+    const { deps } = createHarness({
+      conversation: {
+        id: 'conv-1',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        revision: 2,
+        lastInboundPlatformMessageId: 'sad-1',
+        lastInboundAt: '2026-08-15T12:00:00.000Z',
+        historyBackfilledAt: '2026-09-09T00:00:00.000Z',
+      },
+      messages: [
+        {
+          platformMessageId: 'sad-1',
+          direction: 'inbound',
+          senderRole: 'fan',
+          text: 'Nein bin ganz traurig',
+          sentAt: '2026-08-15T12:00:00.000Z',
+        },
+      ],
+    });
+    deps.generateReply = async ({ context }) => {
+      captured.push(context);
+      return {
+        output: {
+          schemaVersion: 1,
+          reply: 'hey boy, whats up',
+          replyEnglish: 'hey boy, whats up',
+          intent: 'rapport',
+          action: 'TEXT_REPLY',
+          suggestedRoute: 'HUMAN_REVIEW',
+          requiresHumanReview: true,
+          flags: [],
+        },
+      };
+    };
+    const result = await processIncomingMessage(
+      {
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        inboundPlatformMessageId: 'sad-1',
+      },
+      deps
+    );
+    assert.equal(result.status, 'succeeded');
+    assert.equal(
+      captured[0].messages[0].relativeAge,
+      formatRelativeAge('2026-08-15T12:00:00.000Z', captured[0].nowBerlin.iso)
+    );
+    assert.equal(captured[0].inboundIsLiveSession, false);
+    assert.ok(captured[0].constraints.some((rule) => rule.includes('do not use heute')));
+    assert.equal(JSON.stringify(captured[0]).includes('heute'), true);
+    assert.equal(captured[0].constraints.join(' ').includes('what makes you sad today'), false);
+  });
+
+  it('flags a matcha/selfie follow-up as duplicate_outbound', async () => {
+    const { deps } = createHarness({
+      messages: [
+        {
+          platformMessageId: 'in-1',
+          direction: 'inbound',
+          senderRole: 'fan',
+          text: 'hey',
+          sentAt: '2026-09-09T11:47:00.000Z',
+        },
+        {
+          platformMessageId: 'out-1',
+          direction: 'outbound',
+          senderRole: 'creator',
+          text: 'Schick mir ein Selfie mit deinem Matcha',
+          sentAt: '2026-09-09T11:48:00.000Z',
+        },
+      ],
+    });
+    deps.generateReply = async () => ({
+      output: {
+        schemaVersion: 1,
+        reply: 'Mach ein Selfie mit dem Matcha, baby',
+        replyEnglish: 'Take a selfie with the matcha baby',
+        intent: 'rapport',
+        action: 'TEXT_REPLY',
+        suggestedRoute: 'AUTO_SEND',
+        requiresHumanReview: false,
+        flags: [],
+        confidence: 0.9,
+      },
+    });
+    const result = await processIncomingMessage(
+      {
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        inboundPlatformMessageId: 'in-1',
+      },
+      deps
+    );
+    assert.equal(result.status, 'succeeded');
+    assert.ok(result.output.flags.includes('duplicate_outbound'));
+    assert.equal(result.route, ROUTES.HUMAN_REVIEW);
+  });
+
+  it('does not put username on fan.givenName', async () => {
+    const captured = [];
+    const { deps } = createHarness({
+      conversation: {
+        id: 'conv-1',
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        platformFanId: 'abc123abc123abc123abc123',
+        fanUsername: 'sugar_daddy99',
+        revision: 2,
+        lastInboundPlatformMessageId: 'in-1',
+        lastInboundAt: '2026-09-09T12:00:00.000Z',
+        historyBackfilledAt: '2026-09-09T00:00:00.000Z',
+      },
+    });
+    deps.generateReply = async ({ context }) => {
+      captured.push(context);
+      return {
+        output: {
+          schemaVersion: 1,
+          reply: 'hallo',
+          replyEnglish: 'hello',
+          intent: 'rapport',
+          action: 'TEXT_REPLY',
+          suggestedRoute: 'HUMAN_REVIEW',
+          requiresHumanReview: true,
+          flags: [],
+        },
+      };
+    };
+    await processIncomingMessage(
+      {
+        creatorId: 'cr-1',
+        platform: 'maloum',
+        platformChatId: 'chat-1',
+        inboundPlatformMessageId: 'in-1',
+      },
+      deps
+    );
+    assert.equal(captured[0].fan.username, 'sugar_daddy99');
+    assert.equal(captured[0].fan.givenName, null);
   });
 });

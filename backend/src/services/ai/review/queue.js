@@ -8,6 +8,7 @@ const {
   defaultCreatorAiSettings,
 } = require('../contracts');
 const { resolveEffectiveAiMode } = require('../flags');
+const { displayFanLabel } = require('../names');
 
 const INBOUND_PREVIEW_MAX = 140;
 
@@ -84,6 +85,12 @@ function toQueueRow(row, bucket, effectiveMode) {
     platform: row.platform,
     platformChatId: row.platformChatId,
     platformFanId: row.platformFanId || null,
+    fanUsername: row.fanUsername || null,
+    fanLabel: displayFanLabel({
+      nickname: row.fanNickname,
+      fanLabel: row.fanLabel,
+      fanUsername: row.fanUsername,
+    }),
     state: row.state || CONVERSATION_STATES.NEW,
     bucket,
     mode: row.mode || defaultCreatorAiSettings().mode,
@@ -140,6 +147,12 @@ async function loadQueueRows(
        conv.platform,
        conv."platformChatId",
        conv."platformFanId",
+       conv."fanUsername",
+       COALESCE(
+         NULLIF(TRIM(mem.nickname), ''),
+         NULLIF(TRIM(conv."fanUsername"), '')
+       ) AS "fanLabel",
+       mem.nickname AS "fanNickname",
        conv.state,
        conv."humanTakeover",
        conv."aiPaused",
@@ -158,6 +171,10 @@ async function loadQueueRows(
      FROM ai_conversations conv
      JOIN creators cr ON cr.id = conv."creatorId"
      LEFT JOIN ai_creator_settings st ON st."creatorId" = conv."creatorId"
+     LEFT JOIN ai_fan_memories mem
+       ON mem."creatorId" = conv."creatorId"
+      AND mem.platform = conv.platform
+      AND mem."platformFanId" = conv."platformFanId"
      LEFT JOIN LATERAL (
        SELECT LEFT(text, ${INBOUND_PREVIEW_MAX}) AS "lastInboundPreview"
        FROM ai_messages
@@ -242,6 +259,20 @@ async function listQueue(
   };
 }
 
+async function listConversationMessages(conversationId, { limit } = {}, client = pool) {
+  const max = Math.min(Math.max(Number(limit) || 20, 1), 50);
+  const result = await client.query(
+    `SELECT "platformMessageId", direction, "senderRole", text,
+            "hasMedia", "isPpv", "priceNet", "sentAt"
+     FROM ai_messages
+     WHERE "conversationId" = $1
+     ORDER BY "sentAt" DESC NULLS LAST, "createdAt" DESC
+     LIMIT $2`,
+    [conversationId, max]
+  );
+  return result.rows.slice().reverse();
+}
+
 module.exports = {
   QUEUE_BUCKETS,
   QUEUE_BUCKET_VALUES,
@@ -251,4 +282,5 @@ module.exports = {
   buildQueueItems,
   emptyCounts,
   listQueue,
+  listConversationMessages,
 };

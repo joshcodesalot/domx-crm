@@ -108,5 +108,22 @@ describe('CONVERSATION_UPSERT_SQL', () => {
       CONVERSATION_UPSERT_SQL,
       /"aiIgnored"\s*=\s*EXCLUDED\."aiIgnored"/
     );
+    assert.match(
+      CONVERSATION_UPSERT_SQL,
+      /"fanUsername"\s*=\s*COALESCE\(EXCLUDED\."fanUsername"/
+    );
+  });
+});
+
+describe('planIngest maxMessages', () => {
+  it('can ingest more than 50 messages for backfill', () => {
+    const messages = Array.from({ length: 80 }, (_, i) => ({
+      platformMessageId: `m${i}`,
+      direction: i % 2 === 0 ? 'inbound' : 'outbound',
+      senderRole: i % 2 === 0 ? 'fan' : 'creator',
+      text: `msg ${i}`,
+    }));
+    const planned = planIngest({ existingIds: [], messages, maxMessages: 300 });
+    assert.equal(planned.toInsert.length, 80);
   });
 });

@@ -178,6 +178,9 @@ function sampleRow(overrides = {}) {
     platform: 'maloum',
     platformChatId: 'chat-1',
     platformFanId: 'fan-1',
+    fanUsername: 'sugar_daddy99',
+    fanLabel: 'sugar_daddy99',
+    fanNickname: null,
     state: 'WARMUP',
     humanTakeover: false,
     aiPaused: false,
@@ -210,6 +213,35 @@ describe('toQueueRow / listQueue state', () => {
     assert.equal(items[0].creatorPaused, false);
     assert.equal(items[0].humanTakeover, false);
     assert.equal(items[0].effectiveMode, MODES.SUGGEST_ONLY);
+    assert.equal(items[0].fanLabel, 'sugar_daddy99');
+    assert.equal(items[0].fanUsername, 'sugar_daddy99');
+  });
+
+  it('prefers nickname over username and never uses a hex platformFanId', () => {
+    const nick = buildQueueItems(
+      [
+        sampleRow({
+          fanNickname: 'Alex',
+          fanUsername: 'sugar_daddy99',
+          fanLabel: 'sugar_daddy99',
+          platformFanId: 'abc123abc123abc123abc123',
+        }),
+      ],
+      ON_FLAGS
+    );
+    assert.equal(nick.items[0].fanLabel, 'Alex');
+
+    const hexOnly = toQueueRow(
+      sampleRow({
+        fanNickname: null,
+        fanUsername: 'abc123abc123abc123abc123',
+        fanLabel: 'abc123abc123abc123abc123',
+        platformFanId: 'abc123abc123abc123abc123',
+      }),
+      QUEUE_BUCKETS.NEEDS_REVIEW,
+      MODES.SUGGEST_ONLY
+    );
+    assert.equal(hexOnly.fanLabel, 'Fan');
   });
 
   it('counts ignored separately from paused', () => {
