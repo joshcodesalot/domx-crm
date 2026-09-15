@@ -1,6 +1,9 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { evaluateOutboundDedupe } = require('./outboundDedupe');
+const {
+  evaluateOutboundDedupe,
+  buildDedupeRetryConstraint,
+} = require('./outboundDedupe');
 
 describe('evaluateOutboundDedupe', () => {
   it('flags a matcha/selfie pair 13 minutes apart as duplicate', () => {
@@ -99,5 +102,24 @@ describe('evaluateOutboundDedupe', () => {
     });
     assert.equal(result.ok, false);
     assert.ok(result.flags.includes('duplicate_outbound'));
+  });
+});
+
+describe('buildDedupeRetryConstraint', () => {
+  it('includes the previous outbound and last unsent text', () => {
+    const constraint = buildDedupeRetryConstraint({
+      messages: [
+        {
+          direction: 'outbound',
+          senderRole: 'creator',
+          text: 'braver Junge, knie hin.',
+          sentAt: '2026-09-09T12:00:00.000Z',
+        },
+      ],
+      lastUnsentText: 'hoodie closer',
+    });
+    assert.match(constraint, /HARD: do not repeat the previous outbound/);
+    assert.match(constraint, /braver Junge, knie hin/);
+    assert.match(constraint, /hoodie closer/);
   });
 });

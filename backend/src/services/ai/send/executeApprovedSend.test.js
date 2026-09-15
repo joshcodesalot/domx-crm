@@ -100,6 +100,72 @@ function createSendHarness(overrides = {}) {
   };
   markFourBasedReceived.calls = [];
 
+  const markTelegramRead = async (...args) => {
+    markTelegramRead.calls.push(args);
+    if (typeof overrides.markTelegramRead === 'function') {
+      return overrides.markTelegramRead(...args);
+    }
+  };
+  markTelegramRead.calls = [];
+
+  const ingestCalls = [];
+  const ingestConversation =
+    overrides.ingestConversation ||
+    (async (payload) => {
+      ingestCalls.push(payload);
+    });
+
+  const answeredInbound = conversation.lastInboundPlatformMessageId || 'in-1';
+  const listTelegramMessages = async (...args) => {
+    listTelegramMessages.calls.push(args);
+    if (typeof overrides.listTelegramMessages === 'function') {
+      return overrides.listTelegramMessages(...args);
+    }
+    return {
+      messages: [
+        {
+          id: answeredInbound,
+          isOutgoing: false,
+          text: 'hey',
+          date: '2026-09-09T12:00:00.000Z',
+        },
+      ],
+    };
+  };
+  listTelegramMessages.calls = [];
+
+  const getMaloumMessages = async (...args) => {
+    getMaloumMessages.calls.push(args);
+    if (typeof overrides.getMaloumMessages === 'function') {
+      return overrides.getMaloumMessages(...args);
+    }
+    return [
+      {
+        _id: answeredInbound,
+        senderId: 'fan',
+        content: { type: 'text', text: 'hey' },
+        sentAt: '2026-09-09T12:00:00.000Z',
+      },
+    ];
+  };
+  getMaloumMessages.calls = [];
+
+  const getFourBasedMessages = async (...args) => {
+    getFourBasedMessages.calls.push(args);
+    if (typeof overrides.getFourBasedMessages === 'function') {
+      return overrides.getFourBasedMessages(...args);
+    }
+    return [
+      {
+        _id: answeredInbound,
+        user_id: 'fan',
+        message: 'hey',
+        created_at: '2026-09-09T12:00:00.000Z',
+      },
+    ];
+  };
+  getFourBasedMessages.calls = [];
+
   const dashboardInserts = [];
   const vaultSent = [];
   const scriptSends = [];
@@ -146,6 +212,11 @@ function createSendHarness(overrides = {}) {
     emitSuggestionEvent: async () => ({ emitted: true }),
     markMaloumRead,
     markFourBasedReceived,
+    markTelegramRead,
+    listTelegramMessages,
+    getMaloumMessages,
+    getFourBasedMessages,
+    ingestConversation,
     withConversationLock: async (_db, _key, fn) => fn({}),
     loadCreatorRow: async () => ({
       displayName: 'Naomi',
@@ -163,7 +234,21 @@ function createSendHarness(overrides = {}) {
       overrides.settings === undefined
         ? { mode: MODES.SUGGEST_ONLY, paused: false }
         : overrides.settings,
+    confirmDelayMs: overrides.confirmDelayMs == null ? 0 : overrides.confirmDelayMs,
+    sleep: overrides.sleep || (async () => {}),
   };
+
+  if (overrides.getChat) deps.getChat = overrides.getChat;
+  if (overrides.createChat) deps.createChat = overrides.createChat;
+  if (overrides.getChatByUser) deps.getChatByUser = overrides.getChatByUser;
+  if (overrides.createChatByUser) deps.createChatByUser = overrides.createChatByUser;
+  if (overrides.resolvePlatformChat) {
+    deps.resolvePlatformChat = overrides.resolvePlatformChat;
+  }
+  if (overrides.persistResolvedChatId) {
+    deps.persistResolvedChatId = overrides.persistResolvedChatId;
+  }
+  if (overrides.ingestAfterSend) deps.ingestAfterSend = overrides.ingestAfterSend;
 
   return {
     deps,
@@ -174,6 +259,11 @@ function createSendHarness(overrides = {}) {
     sendMedia,
     markMaloumRead,
     markFourBasedReceived,
+    markTelegramRead,
+    listTelegramMessages,
+    getMaloumMessages,
+    getFourBasedMessages,
+    ingestCalls,
     dashboardInserts,
     vaultSent,
     scriptSends,
@@ -352,8 +442,56 @@ describe('executeApprovedSend', () => {
     assert.equal(harness.sendTelegramText.calls[0][0], 'cr-1');
     assert.equal(harness.sendTelegramText.calls[0][1], 'chat-1');
     assert.equal(harness.sendTelegramText.calls[0][2], 'hallo');
+    assert.deepEqual(harness.sendTelegramText.calls[0][3], { markRead: false });
+    assert.equal(harness.markTelegramRead.calls.length, 1);
+    assert.equal(harness.ingestCalls[0].source, 'post_send');
     assert.equal(harness.dashboardInserts[0].platform, 'telegram');
     assert.equal(harness.dashboardInserts[0].maloumMessageId, 'telegram:tg-99');
+  });
+
+  it('does not mark read when a newer inbound exists after send', async () => {
+    const harness = createSendHarness({
+      suggestion: { platform: 'telegram' },
+      listTelegramMessages: async () => ({
+        messages: [
+          {
+            id: 'in-1',
+            isOutgoing: false,
+            text: 'hey',
+            date: '2026-09-09T12:00:00.000Z',
+          },
+          {
+            id: 'in-2',
+            isOutgoing: false,
+            text: 'and another thing',
+            date: '2026-09-09T12:00:05.000Z',
+          },
+        ],
+      }),
+    });
+    await executeApprovedSend(
+      { suggestionId: 'sug-1', user: harness.user },
+      harness.deps
+    );
+    assert.deepEqual(harness.sendTelegramText.calls[0][3], { markRead: false });
+    assert.equal(harness.markTelegramRead.calls.length, 0);
+    assert.equal(harness.markMaloumRead.calls.length, 0);
+    assert.equal(harness.ingestCalls[0].source, 'post_send');
+    assert.equal(harness.ingestCalls[0].skipProcess, false);
+    assert.ok(
+      harness.ingestCalls[0].messages.some((msg) => msg.platformMessageId === 'in-2')
+    );
+  });
+
+  it('marks read only when the latest inbound is still the one we answered', async () => {
+    const harness = createSendHarness();
+    await executeApprovedSend(
+      { suggestionId: 'sug-1', user: harness.user },
+      harness.deps
+    );
+    assert.equal(harness.markMaloumRead.calls.length, 1);
+    assert.equal(harness.ingestCalls[0].source, 'post_send');
+    assert.equal(harness.ingestCalls[0].skipProcess, false);
   });
 
   it('rejects shadow mode before calling sendText', async () => {
@@ -554,6 +692,141 @@ describe('executeApprovedSend', () => {
     );
     assert.equal(harness.markMaloumRead.calls.length, 0);
     assert.equal(harness.markFourBasedReceived.calls.length, 0);
+    assert.equal(harness.markTelegramRead.calls.length, 0);
+    assert.equal(harness.ingestCalls.length, 1);
+    assert.equal(harness.ingestCalls[0].source, 'post_send');
+    assert.equal(harness.ingestCalls[0].skipProcess, false);
+  });
+
+  it('retries Maloum send once after chat-not-found createChat', async () => {
+    const createCalls = [];
+    const persisted = [];
+    const harness = createSendHarness({
+      getChat: async () => {
+        const err = new Error('Chat cannot be found');
+        err.status = 404;
+        throw err;
+      },
+      createChat: async (_creator, fanId) => {
+        createCalls.push(fanId);
+        return { _id: 'chat-real' };
+      },
+      persistResolvedChatId: async ({ conversation, suggestion, newChatId }) => {
+        persisted.push(newChatId);
+        conversation.platformChatId = newChatId;
+        if (suggestion) suggestion.platformChatId = newChatId;
+        return { conversation, suggestion, platformChatId: newChatId };
+      },
+      sendText: async (_creator, chatId) => {
+        if (chatId === 'chat-1') {
+          const err = new Error('Chat cannot be found');
+          err.status = 404;
+          throw err;
+        }
+        return { _id: 'msg-resolved' };
+      },
+    });
+    const result = await executeApprovedSend(
+      { suggestionId: 'sug-1', user: harness.user },
+      harness.deps
+    );
+    assert.equal(result.messageId, 'msg-resolved');
+    assert.equal(result.suggestion.status, 'sent');
+    assert.deepEqual(createCalls, ['fan-1']);
+    assert.deepEqual(persisted, ['chat-real']);
+    assert.equal(harness.sendText.calls.length, 2);
+    assert.equal(harness.sendText.calls[0][1], 'chat-1');
+    assert.equal(harness.sendText.calls[1][1], 'chat-real');
+    assert.equal(harness.getCurrent().platformChatId, 'chat-real');
+  });
+
+  it('retries send against the merged conversation after unique chat-id conflict', async () => {
+    const harness = createSendHarness({
+      resolvePlatformChat: async () => ({
+        platformChatId: 'chat-existing',
+        source: 'createChat',
+      }),
+      persistResolvedChatId: async ({ conversation, suggestion }) => {
+        const merged = {
+          ...conversation,
+          id: 'conv-existing',
+          platformChatId: 'chat-existing',
+        };
+        if (suggestion) suggestion.platformChatId = 'chat-existing';
+        if (suggestion) suggestion.conversationId = merged.id;
+        return {
+          conversation: merged,
+          suggestion,
+          platformChatId: 'chat-existing',
+        };
+      },
+      sendText: async (_creator, chatId) => {
+        if (chatId === 'chat-1') {
+          const err = new Error('Chat cannot be found');
+          err.status = 404;
+          throw err;
+        }
+        return { _id: 'msg-merged' };
+      },
+    });
+    const result = await executeApprovedSend(
+      { suggestionId: 'sug-1', user: harness.user },
+      harness.deps
+    );
+    assert.equal(result.messageId, 'msg-merged');
+    assert.equal(harness.sendText.calls[1][1], 'chat-existing');
+    assert.equal(result.suggestion.platformChatId, 'chat-existing');
+  });
+
+  it('retries a failed suggestion that never got a platform message id', async () => {
+    const harness = createSendHarness({
+      suggestion: { status: 'failed', sentPlatformMessageId: null },
+    });
+    const result = await executeApprovedSend(
+      { suggestionId: 'sug-1', user: harness.user },
+      harness.deps
+    );
+    assert.equal(result.messageId, 'msg-99');
+    assert.equal(result.suggestion.status, 'sent');
+    assert.equal(harness.sendText.calls.length, 1);
+  });
+
+  it('does not send again when the suggestion is already SENT', async () => {
+    const harness = createSendHarness({
+      suggestion: { status: 'sent', sentPlatformMessageId: 'msg-1' },
+    });
+    await assert.rejects(
+      () =>
+        executeApprovedSend(
+          { suggestionId: 'sug-1', user: harness.user },
+          harness.deps
+        ),
+      (err) => err.status === 409 && err.code === 'not_pending'
+    );
+    assert.equal(harness.sendText.calls.length, 0);
+  });
+
+  it('skips mark-read on send_failed ingest', async () => {
+    const afterSend = [];
+    const harness = createSendHarness({
+      sendText: async () => {
+        throw new Error('network down');
+      },
+      ingestAfterSend: async (payload) => {
+        afterSend.push(payload);
+      },
+    });
+    await assert.rejects(
+      () =>
+        executeApprovedSend(
+          { suggestionId: 'sug-1', user: harness.user },
+          harness.deps
+        ),
+      (err) => err.status === 502 && err.code === 'send_failed'
+    );
+    assert.equal(afterSend.length, 1);
+    assert.equal(afterSend[0].skipMarkRead, true);
+    assert.equal(harness.markMaloumRead.calls.length, 0);
   });
 });
 

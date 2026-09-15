@@ -19,6 +19,7 @@ import {
   type CreatorSeriesDay,
   type CurrencyAmount,
 } from '@/lib/api';
+import { formatPlatformLabel } from '@/lib/formatCreator';
 import { formatMoney, formatResponseTime } from '@/lib/messagingDashboardFormat';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import maloumIcon from '@/assets/maloum_icon.png';
@@ -369,11 +370,7 @@ export default function CreatorAnalytics() {
             </div>
             <div className="flex items-center gap-2">
               <PlatformIcon
-                platform={
-                  selectedPlatform === 'maloum' || selectedPlatform === '4based'
-                    ? selectedPlatform
-                    : null
-                }
+                platform={selectedPlatform}
                 className="w-4 h-4"
               />
               <select
@@ -383,12 +380,15 @@ export default function CreatorAnalytics() {
                 className="rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-sm disabled:opacity-50"
               >
                 <option value="">All creators</option>
-                {creators.map((creator) => (
-                  <option key={creator.id} value={creator.id}>
-                    {creator.platform === '4based' ? '4based · ' : 'Maloum · '}
-                    {creator.displayName}
-                  </option>
-                ))}
+                {creators.map((creator) => {
+                  const platformLabel = formatPlatformLabel(creator.platform);
+                  return (
+                    <option key={creator.id} value={creator.id}>
+                      {platformLabel ? `${platformLabel} · ` : ''}
+                      {creator.displayName}
+                    </option>
+                  );
+                })}
               </select>
             </div>
             <button
@@ -441,7 +441,9 @@ export default function CreatorAnalytics() {
                       ? '4based provision sum for this calendar month'
                       : selectedPlatform === 'maloum'
                         ? 'Maloum available for next payout'
-                        : 'Select a creator to load the payout-site total'
+                        : selectedPlatform === 'telegram'
+                          ? 'Telegram has no payout-site total'
+                          : 'Select a creator to load the payout-site total'
                 }
               />
               <MetricCard

@@ -36,6 +36,7 @@ const TABLE_MARKERS = {
   '066_ai_sop_overlap.sql': 'ai_sops',
   '067_ai_conversation_ignored.sql': 'ai_conversations',
   '068_ai_fan_username_backfill.sql': 'ai_conversations',
+  '069_maloum_proxy_pool.sql': 'maloum_proxy_pool',
 };
 
 async function tableExists(client, tableName) {

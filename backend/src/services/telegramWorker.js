@@ -178,6 +178,12 @@ function subscribeUpdates(creatorId, client) {
       peerId,
       messageId,
     });
+    try {
+      const { scheduleLiveTelegramIngest } = require('../ai/poller/telegramLiveIngest');
+      scheduleLiveTelegramIngest(creatorId, msg);
+    } catch (err) {
+      console.error('AI telegram live ingest hook error:', err?.message || err);
+    }
     const mediaInfo = mediaPlaceholder(msg.media);
     if (
       peerId &&
@@ -1795,7 +1801,16 @@ async function attachSenderAvatars(creatorId, client, messages) {
   });
 }
 
-async function sendText(creatorId, peerId, text, { replyToMessageId } = {}) {
+async function markChatRead(creatorId, peerId) {
+  const client = await getClient(creatorId);
+  const numericId = Number(peerId);
+  if (!Number.isFinite(numericId)) {
+    throw new TelegramWorkerError('Invalid chat id');
+  }
+  await markPeerRead(client, numericId, { creatorId, force: true });
+}
+
+async function sendText(creatorId, peerId, text, { replyToMessageId, markRead = true } = {}) {
   const client = await getClient(creatorId);
   const numericId = Number(peerId);
   if (!Number.isFinite(numericId)) {
@@ -1806,7 +1821,9 @@ async function sendText(creatorId, peerId, text, { replyToMessageId } = {}) {
     throw new TelegramWorkerError('Message text is required');
   }
   const sent = await client.sendText(numericId, trimmed, sendReplyParams(replyToMessageId));
-  await markPeerRead(client, numericId, { creatorId, force: true });
+  if (markRead !== false) {
+    await markPeerRead(client, numericId, { creatorId, force: true });
+  }
   return serializeMessage(sent);
 }
 
@@ -3147,6 +3164,7 @@ module.exports = {
   listDialogs,
   listAllDmPeers,
   listMessages,
+  markChatRead,
   searchMessagesInChat,
   listChatMembers,
   sendText,

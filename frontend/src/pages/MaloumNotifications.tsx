@@ -46,13 +46,14 @@ function NotificationIcon({ type }: { type?: string }) {
 
 export default function MaloumNotifications() {
   const pollEnabled = usePollEnabled(true);
+  const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
   const { creators, creatorsLoading, badgesByCreatorId, refreshBadges } =
     useCreatorLive({
       platform: 'maloum',
       wantBadges: true,
       pollEnabled,
+      badgeScope: selectedCreatorId ? [selectedCreatorId] : [],
     });
-  const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
 
   const [notifications, setNotifications] = useState<MaloumNotification[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);

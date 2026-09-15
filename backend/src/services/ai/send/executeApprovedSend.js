@@ -20,6 +20,13 @@ const {
 } = require('../review/suggestionService');
 const { findCandidate, loadMediaCandidates } = require('../mediaCandidates');
 const { maybeSuggestRuleFromEdit } = require('../brain/rules');
+const { ingestConversation } = require('../ingest');
+const { ingestAfterSend } = require('./postSendIngest');
+const {
+  isChatNotFoundError,
+  resolvePlatformChat,
+  persistResolvedChatId,
+} = require('./resolvePlatformChat');
 
 class ReviewError extends Error {
   constructor(status, message, extras = {}) {
@@ -336,21 +343,123 @@ function throwReview(result) {
   });
 }
 
-async function maybeMarkReadAfterSend(d, { platform, creatorId, platformChatId }) {
+function isRetryableFailedSuggestion(suggestion) {
+  return (
+    suggestion?.status === SUGGESTION_STATUSES.FAILED &&
+    !suggestion.sentPlatformMessageId
+  );
+}
+
+function isSendableSuggestion(suggestion) {
+  if (!suggestion) return false;
+  if (suggestion.status === SUGGESTION_STATUSES.PENDING) return true;
+  return isRetryableFailedSuggestion(suggestion);
+}
+
+async function maybeIngestAfterSend(d, { suggestion, conversation, skipMarkRead = false }) {
   try {
-    if (platform === 'maloum') {
-      const loaded = await d.loadMaloumCreator(creatorId);
-      if (loaded?.creator) {
-        await d.markMaloumRead(loaded.creator, platformChatId);
-      }
-    } else if (platform === '4based') {
-      const loaded = await d.loadFourBasedCreator(creatorId);
-      if (loaded?.creator) {
-        await d.markFourBasedReceived(loaded.creator, platformChatId);
-      }
-    }
+    await d.ingestAfterSend(
+      {
+        platform: suggestion.platform,
+        creatorId: suggestion.creatorId,
+        platformChatId: suggestion.platformChatId || conversation?.platformChatId,
+        platformFanId: conversation?.platformFanId || null,
+        fanUsername: conversation?.fanUsername || null,
+        answeredInboundId:
+          suggestion.anchorInboundMessageId ||
+          conversation?.lastInboundPlatformMessageId ||
+          null,
+        skipMarkRead,
+      },
+      d
+    );
   } catch (err) {
-    console.error('AI mark-read error:', err);
+    console.error('AI post-send ingest error:', err);
+  }
+}
+
+async function resolveAndPersistChat(d, { live, conversation, loaded, client }) {
+  const resolved = await d.resolvePlatformChat(
+    {
+      platform: live.platform,
+      creator: loaded?.creator,
+      platformChatId: live.platformChatId || conversation.platformChatId,
+      platformFanId: conversation.platformFanId,
+    },
+    d
+  );
+  const newId = resolved?.platformChatId || null;
+  if (!newId) return { live, conversation, platformChatId: null };
+  const persisted = await d.persistResolvedChatId({
+    conversation,
+    suggestion: live,
+    newChatId: newId,
+    client,
+  });
+  const nextLive = persisted.suggestion || live;
+  const nextConvo = persisted.conversation || conversation;
+  if (nextLive) nextLive.platformChatId = persisted.platformChatId || newId;
+  if (nextConvo) nextConvo.platformChatId = persisted.platformChatId || newId;
+  return {
+    live: nextLive,
+    conversation: nextConvo,
+    platformChatId: persisted.platformChatId || newId,
+  };
+}
+
+async function sendTextOnce(d, { live, loaded, germanText, optimisticMessageId }) {
+  if (live.platform === '4based') {
+    return d.sendFourBasedMessage(loaded.creator, live.platformChatId, {
+      message: germanText,
+      localId: optimisticMessageId,
+    });
+  }
+  if (live.platform === 'telegram') {
+    return d.sendTelegramText(live.creatorId, live.platformChatId, germanText, {
+      markRead: false,
+    });
+  }
+  return d.sendText(loaded.creator, live.platformChatId, {
+    text: germanText,
+    optimisticMessageId,
+  });
+}
+
+async function sendMediaOnce(d, { live, loaded, germanText, optimisticMessageId, gate }) {
+  return d.sendMedia(loaded.creator, live.platformChatId, {
+    media: [{ mediaId: gate.mediaId, type: gate.candidate.type || 'picture' }],
+    text: germanText,
+    priceNet: gate.price,
+    optimisticMessageId,
+  });
+}
+
+async function sendWithChatResolve(
+  d,
+  { live, conversation, loaded, client, sendOnce }
+) {
+  try {
+    return {
+      result: await sendOnce(live),
+      live,
+      conversation,
+    };
+  } catch (err) {
+    if (!isChatNotFoundError(err) || live.platform === 'telegram') {
+      throw err;
+    }
+    const resolved = await resolveAndPersistChat(d, {
+      live,
+      conversation,
+      loaded,
+      client,
+    });
+    if (!resolved.platformChatId) throw err;
+    return {
+      result: await sendOnce(resolved.live),
+      live: resolved.live,
+      conversation: resolved.conversation,
+    };
   }
 }
 
@@ -384,6 +493,27 @@ async function executeApprovedSend(
     markFourBasedReceived:
       deps.markFourBasedReceived ||
       fourBasedClient.markReceived.bind(fourBasedClient),
+    markTelegramRead:
+      deps.markTelegramRead || telegramWorker.markChatRead.bind(telegramWorker),
+    listTelegramMessages:
+      deps.listTelegramMessages ||
+      telegramWorker.listMessages.bind(telegramWorker),
+    getMaloumMessages:
+      deps.getMaloumMessages || maloumClient.getMessages.bind(maloumClient),
+    getFourBasedMessages:
+      deps.getFourBasedMessages ||
+      fourBasedClient.getMessages.bind(fourBasedClient),
+    ingestConversation: deps.ingestConversation || ingestConversation,
+    ingestAfterSend: deps.ingestAfterSend || ingestAfterSend,
+    resolvePlatformChat: deps.resolvePlatformChat || resolvePlatformChat,
+    persistResolvedChatId: deps.persistResolvedChatId || persistResolvedChatId,
+    getChat: deps.getChat || maloumClient.getChat.bind(maloumClient),
+    createChat: deps.createChat || maloumClient.createChat.bind(maloumClient),
+    getChatByUser:
+      deps.getChatByUser || fourBasedClient.getChatByUser.bind(fourBasedClient),
+    createChatByUser:
+      deps.createChatByUser ||
+      fourBasedClient.createChatByUser.bind(fourBasedClient),
     loadMediaCandidates: deps.loadMediaCandidates || loadMediaCandidates,
     hasVaultSent: deps.hasVaultSent || defaultHasVaultSent,
     hasPurchasedMedia: deps.hasPurchasedMedia || defaultHasPurchasedMedia,
@@ -415,13 +545,15 @@ async function executeApprovedSend(
         );
         return result.rows[0] || null;
       }),
+    confirmDelayMs: deps.confirmDelayMs,
+    sleep: deps.sleep,
   };
 
   const suggestion = await d.getSuggestionById(suggestionId);
   if (!suggestion) {
     throw new ReviewError(404, 'Suggestion not found');
   }
-  if (suggestion.status !== SUGGESTION_STATUSES.PENDING) {
+  if (!isSendableSuggestion(suggestion)) {
     throw new ReviewError(409, 'not_pending', { code: 'not_pending' });
   }
   if (!isSendablePlatform(suggestion.platform)) {
@@ -463,21 +595,22 @@ async function executeApprovedSend(
   };
 
   const locked = await d.withConversationLock(d.pool, lockKey, async (client) => {
-    const live = await d.getSuggestionById(suggestionId, client);
+    let live = await d.getSuggestionById(suggestionId, client);
     if (!live) {
       return { kind: 'error', status: 404, message: 'Suggestion not found' };
     }
-    if (live.status !== SUGGESTION_STATUSES.PENDING) {
+    if (!isSendableSuggestion(live)) {
       return { kind: 'error', status: 409, message: 'not_pending', code: 'not_pending' };
     }
     if (!isSendablePlatform(live.platform)) {
       return platformNotSupportedError();
     }
 
-    const conversation = await d.loadConversation(live.conversationId, client);
-    if (!conversation) {
+    const conversationRow = await d.loadConversation(live.conversationId, client);
+    if (!conversationRow) {
       return { kind: 'error', status: 404, message: 'Conversation not found' };
     }
+    let conversation = conversationRow;
 
     if (isSuggestionStale(live, conversation)) {
       const stale = await d.updateSuggestionStatus(
@@ -545,12 +678,23 @@ async function executeApprovedSend(
       const optimisticMessageId = randomUUID();
       let sentResult;
       try {
-        sentResult = await d.sendMedia(loaded.creator, live.platformChatId, {
-          media: [{ mediaId: gate.mediaId, type: gate.candidate.type || 'picture' }],
-          text: germanText,
-          priceNet: gate.price,
-          optimisticMessageId,
+        const sent = await sendWithChatResolve(d, {
+          live,
+          conversation,
+          loaded,
+          client,
+          sendOnce: (nextLive) =>
+            sendMediaOnce(d, {
+              live: nextLive,
+              loaded,
+              germanText,
+              optimisticMessageId,
+              gate,
+            }),
         });
+        sentResult = sent.result;
+        live = sent.live;
+        conversation = sent.conversation;
       } catch (err) {
         const failed = await d.updateSuggestionStatus(
           live.id,
@@ -564,6 +708,7 @@ async function executeApprovedSend(
           kind: 'send_failed',
           message: err?.message || 'Send failed',
           suggestion: failed,
+          conversation,
         };
       }
 
@@ -690,23 +835,22 @@ async function executeApprovedSend(
     const optimisticMessageId = randomUUID();
     let sentResult;
     try {
-      if (live.platform === '4based') {
-        sentResult = await d.sendFourBasedMessage(loaded.creator, live.platformChatId, {
-          message: germanText,
-          localId: optimisticMessageId,
-        });
-      } else if (live.platform === 'telegram') {
-        sentResult = await d.sendTelegramText(
-          live.creatorId,
-          live.platformChatId,
-          germanText
-        );
-      } else {
-        sentResult = await d.sendText(loaded.creator, live.platformChatId, {
-          text: germanText,
-          optimisticMessageId,
-        });
-      }
+      const sent = await sendWithChatResolve(d, {
+        live,
+        conversation,
+        loaded,
+        client,
+        sendOnce: (nextLive) =>
+          sendTextOnce(d, {
+            live: nextLive,
+            loaded,
+            germanText,
+            optimisticMessageId,
+          }),
+      });
+      sentResult = sent.result;
+      live = sent.live;
+      conversation = sent.conversation;
     } catch (err) {
       const failed = await d.updateSuggestionStatus(
         live.id,
@@ -720,6 +864,7 @@ async function executeApprovedSend(
         kind: 'send_failed',
         message: err?.message || 'Send failed',
         suggestion: failed,
+        conversation,
       };
     }
 
@@ -815,6 +960,11 @@ async function executeApprovedSend(
     if (locked.suggestion) {
       await d.emitSuggestionEvent(locked.suggestion, { mode: null });
     }
+    await maybeIngestAfterSend(d, {
+      suggestion: locked.suggestion || suggestion,
+      conversation: locked.conversation,
+      skipMarkRead: true,
+    });
     throw new ReviewError(502, locked.message, {
       code: 'send_failed',
       suggestion: locked.suggestion,
@@ -825,10 +975,9 @@ async function executeApprovedSend(
   }
 
   if (locked.kind === 'ok') {
-    await maybeMarkReadAfterSend(d, {
-      platform: suggestion.platform,
-      creatorId: suggestion.creatorId,
-      platformChatId: suggestion.platformChatId,
+    await maybeIngestAfterSend(d, {
+      suggestion: locked.suggestion || suggestion,
+      conversation: locked.conversation,
     });
   }
 
@@ -861,5 +1010,7 @@ module.exports = {
   suggestionAction,
   dashboardMaloumMessageId,
   isSendablePlatform,
+  isRetryableFailedSuggestion,
+  isSendableSuggestion,
   executeApprovedSend,
 };

@@ -216,6 +216,20 @@ function evaluateOutboundDedupe({ messages, draft, lastUnsentText } = {}) {
   return { ok: true, flags: [] };
 }
 
+function buildDedupeRetryConstraint({ messages, lastUnsentText } = {}) {
+  const previous = trailingCreatorOutbounds(messages)
+    .map((msg) => asText(msg.text).trim())
+    .filter(Boolean)
+    .slice(-2);
+  const unsent = asText(lastUnsentText).trim();
+  if (unsent) previous.push(unsent);
+  const unique = [...new Set(previous)];
+  const base =
+    'HARD: do not repeat the previous outbound, opener, closer, or trailing emoji';
+  if (!unique.length) return base;
+  return `${base}. Do not reuse: ${unique.join(' | ')}`;
+}
+
 module.exports = {
   RELATED_HINTS,
   SIMILARITY_THRESHOLD,
@@ -224,4 +238,5 @@ module.exports = {
   jaccard,
   trailingCreatorOutbounds,
   evaluateOutboundDedupe,
+  buildDedupeRetryConstraint,
 };

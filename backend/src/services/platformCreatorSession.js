@@ -119,6 +119,18 @@ async function loadMaloumCreator(creatorId) {
       proxyUrl = null;
     }
   }
+  try {
+    const { resolveProxyForCreator, MaloumPoolError } = require('./maloumProxyPool');
+    const fromPool = await resolveProxyForCreator(row.id, proxyUrl);
+    if (fromPool) {
+      proxyUrl = fromPool;
+    }
+  } catch (err) {
+    if (err?.name === 'MaloumPoolError') {
+      return { error: { status: err.status || 403, message: err.message } };
+    }
+    console.warn('[loadMaloumCreator] pool resolve failed:', err?.message || err);
+  }
   const providerUserId = row.providerUserId || null;
 
   if (!accessToken) {

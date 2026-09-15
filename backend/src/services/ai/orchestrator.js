@@ -7,7 +7,10 @@ const { MODES, ROUTES, defaultCreatorAiSettings } = require('./contracts');
 const { withConversationLock } = require('./locks');
 const { generateReply, unwrapGenerated } = require('./generation/generateReply');
 const { validateAiOutput, applyReplyQualityFlags } = require('./validation/deterministic');
-const { evaluateOutboundDedupe } = require('./generation/outboundDedupe');
+const {
+  evaluateOutboundDedupe,
+  buildDedupeRetryConstraint,
+} = require('./generation/outboundDedupe');
 const { maybeBackfillHistory } = require('./history/backfill');
 const { extractAndSyncFanMemory } = require('./memory/extract');
 const { criticReply, shouldCritic, mergeCriticFlags } = require('./validation/critic');
@@ -15,6 +18,7 @@ const { applyModeration } = require('../contentModeration');
 const {
   persistPendingSuggestion,
   emitSuggestionEvent,
+  getLatestSuggestionForRun,
 } = require('./review/suggestionService');
 const { normalizeUsage, sumUsage, upsertAiUsage } = require('./usage');
 const {
@@ -32,7 +36,10 @@ const { bindPpvFromCandidates, loadMediaCandidates } = require('./mediaCandidate
 const { loadApprovedRules } = require('./brain/rules');
 const { loadActiveSops } = require('./brain/sopImport');
 const { canAutoSend } = require('./send/canAutoSend');
-const { executeApprovedSend } = require('./send/executeApprovedSend');
+const {
+  executeApprovedSend,
+  isRetryableFailedSuggestion,
+} = require('./send/executeApprovedSend');
 const { displayFanLabel } = require('./names');
 const {
   notifyAlertChats,
@@ -52,6 +59,12 @@ const RUN_STATUSES = {
   SKIPPED: 'skipped',
   REJECTED: 'rejected',
 };
+
+const failedSendRetried = new Set();
+
+function resetFailedSendRetries() {
+  failedSendRetried.clear();
+}
 
 async function safeNotifyAlertChats(d, text) {
   try {
@@ -298,6 +311,8 @@ function resolveDeps(deps = {}) {
     loadActiveSops: deps.loadActiveSops || loadActiveSops,
     canAutoSend: deps.canAutoSend || canAutoSend,
     executeApprovedSend: deps.executeApprovedSend || executeApprovedSend,
+    getLatestSuggestionForRun:
+      deps.getLatestSuggestionForRun || getLatestSuggestionForRun,
     notifyAlertChats: deps.notifyAlertChats || notifyAlertChats,
     provider: deps.provider || null,
   };
@@ -395,6 +410,144 @@ async function completeRunUnderLock(d, key, id, patch) {
   );
 }
 
+async function maybeRetryFailedAutoSend(d, {
+  existing,
+  creatorId,
+  platform,
+  platformChatId,
+}) {
+  if (!existing?.id) return;
+  let suggestion = null;
+  try {
+    suggestion = await d.getLatestSuggestionForRun(existing.id);
+  } catch (err) {
+    console.error('AI failed-send lookup error:', err);
+    return;
+  }
+  if (!isRetryableFailedSuggestion(suggestion)) return;
+  if (failedSendRetried.has(suggestion.id)) return;
+  failedSendRetried.add(suggestion.id);
+  try {
+    await d.executeApprovedSend({
+      suggestionId: suggestion.id,
+      user: null,
+      edited: false,
+    });
+  } catch (err) {
+    console.error('AI auto-send retry error:', err);
+    await safeNotifyAlertChats(
+      d,
+      `AI auto-send failed creator=${creatorId} chat=${platformChatId} suggestion=${suggestion.id}: ${err?.message || err}`
+    );
+  }
+}
+
+function withDedupeFlags(output, flags) {
+  return {
+    ...output,
+    flags: [...new Set([...(output.flags || []), ...(flags || [])])],
+    requiresHumanReview: true,
+    suggestedRoute: ROUTES.HUMAN_REVIEW,
+  };
+}
+
+function buildDedupeRetryContext(context, lastUnsentText) {
+  return {
+    ...context,
+    constraints: [
+      ...(Array.isArray(context?.constraints) ? context.constraints : []),
+      buildDedupeRetryConstraint({
+        messages: context?.messages,
+        lastUnsentText,
+      }),
+    ],
+  };
+}
+
+async function maybeRetryDuplicateOutbound(d, {
+  context,
+  finalOutput,
+  lastUnsentText,
+  mediaCandidates,
+  conversation,
+  creator,
+  creatorId,
+  platform,
+  platformChatId,
+  requestedByUserId,
+  combinedUsage,
+}) {
+  const retryContext = buildDedupeRetryContext(context, lastUnsentText);
+  const generated = await d.generateReply({
+    context: retryContext,
+    provider: d.provider || undefined,
+  });
+  const unwrapped = unwrapGenerated(generated);
+  let usage = sumUsage(combinedUsage, unwrapped.usage) || combinedUsage;
+  const bound = bindPpvFromCandidates(unwrapped.output, mediaCandidates);
+  const output = applyForcedRoute(bound);
+  const validation = await d.validateAiOutput({
+    output,
+    conversation,
+    creator,
+    mediaCandidates,
+    applyModeration: d.applyModeration,
+    moderationContext: {
+      creatorId,
+      platform,
+      chatId: platformChatId,
+      userId: requestedByUserId || null,
+    },
+  });
+  if (!validation.ok) {
+    return {
+      output: withDedupeFlags(finalOutput, ['duplicate_outbound']),
+      usage,
+    };
+  }
+
+  let retryOutput = { ...output, critic: { ran: false } };
+  if (d.shouldCritic(output)) {
+    try {
+      const criticized = await d.criticReply({
+        context: retryContext,
+        output,
+        provider: d.provider || undefined,
+      });
+      usage = sumUsage(usage, criticized.usage) || usage;
+      if (!criticized.ok) {
+        return {
+          output: withDedupeFlags(finalOutput, ['duplicate_outbound']),
+          usage,
+        };
+      }
+      retryOutput = {
+        ...output,
+        flags: mergeCriticFlags(output.flags, criticized.flags),
+        critic: { ran: true, ok: true },
+      };
+    } catch {
+      return {
+        output: withDedupeFlags(finalOutput, ['duplicate_outbound']),
+        usage,
+      };
+    }
+  }
+
+  const quality = applyReplyQualityFlags(retryOutput, {
+    messages: context.messages,
+  });
+  const dedupe = evaluateOutboundDedupe({
+    messages: context.messages,
+    draft: quality.reply,
+    lastUnsentText,
+  });
+  if (!dedupe.ok) {
+    return { output: withDedupeFlags(quality, dedupe.flags), usage };
+  }
+  return { output: quality, usage };
+}
+
 async function runOrchestration(input, trigger, deps) {
   const d = resolveDeps(deps);
   const creatorId = String(input.creatorId || '').trim();
@@ -466,7 +619,15 @@ async function runOrchestration(input, trigger, deps) {
 
   if (trigger === TRIGGERS.INBOUND && inboundId) {
     const existing = await d.findInboundRun(conversation.id, inboundId);
-    if (existing) return toRunDto(existing);
+    if (existing) {
+      await maybeRetryFailedAutoSend(d, {
+        existing,
+        creatorId,
+        platform,
+        platformChatId,
+      });
+      return toRunDto(existing);
+    }
   }
 
   const [loadedMessages, profile, memory, mediaCandidates, approvedRules, activeSops] =
@@ -684,12 +845,26 @@ async function runOrchestration(input, trigger, deps) {
       lastUnsentText,
     });
     if (!dedupe.ok) {
-      finalOutput = {
-        ...finalOutput,
-        flags: [...new Set([...(finalOutput.flags || []), ...dedupe.flags])],
-        requiresHumanReview: true,
-        suggestedRoute: ROUTES.HUMAN_REVIEW,
-      };
+      try {
+        const retried = await maybeRetryDuplicateOutbound(d, {
+          context,
+          finalOutput,
+          lastUnsentText,
+          mediaCandidates,
+          conversation,
+          creator,
+          creatorId,
+          platform,
+          platformChatId,
+          requestedByUserId: input.requestedByUserId,
+          combinedUsage,
+        });
+        finalOutput = retried.output;
+        combinedUsage = retried.usage;
+      } catch (err) {
+        console.error('AI dedupe retry error:', err);
+        finalOutput = withDedupeFlags(finalOutput, dedupe.flags);
+      }
     }
 
     let liveConversation = conversation;
@@ -840,4 +1015,5 @@ module.exports = {
   toRunDto,
   processIncomingMessage,
   processManualSuggest,
+  resetFailedSendRetries,
 };

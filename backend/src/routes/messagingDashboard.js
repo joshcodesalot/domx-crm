@@ -50,6 +50,7 @@ const {
   normalizeCurrency,
   mergeNativeCurrencyAmounts,
   monthlySalesByPlatformFromRows,
+  normalizeAnalyticsPlatform,
   ratePercent: helperRatePercent,
 } = require('../services/messagingAnalyticsHelpers');
 const {
@@ -2897,12 +2898,8 @@ router.get(
 
       const salesByPlatformMap = new Map();
       for (const row of salesByPlatformResult.rows) {
-        const platform =
-          row.platform === '4based'
-            ? '4based'
-            : row.platform === 'telegram'
-              ? 'telegram'
-              : 'maloum';
+        const platform = normalizeAnalyticsPlatform(row.platform);
+        if (!platform) continue;
         if (!salesByPlatformMap.has(platform)) {
           salesByPlatformMap.set(platform, []);
         }
@@ -2937,7 +2934,7 @@ router.get(
           creatorAvatarUrl: isDeletedCreator
             ? null
             : row.creatorAvatarUrl || null,
-          platform: row.platform === '4based' ? '4based' : row.platform === 'maloum' ? 'maloum' : null,
+          platform: normalizeAnalyticsPlatform(row.platform),
           ...stats,
           totalSales: [],
           tipSales: [],
@@ -4320,12 +4317,8 @@ router.get(
           platformByCreator.set(creatorKey, new Map());
         }
         const byPlatform = platformByCreator.get(creatorKey);
-        const platform =
-          row.platform === '4based'
-            ? '4based'
-            : row.platform === 'telegram'
-              ? 'telegram'
-              : 'maloum';
+        const platform = normalizeAnalyticsPlatform(row.platform);
+        if (!platform) continue;
         if (!byPlatform.has(platform)) byPlatform.set(platform, []);
         const amount = Number(row.amount) || 0;
         if (amount > 0) {
@@ -4383,12 +4376,7 @@ router.get(
           creatorAvatarUrl: isDeletedCreator
             ? null
             : row.creatorAvatarUrl || null,
-          platform:
-            row.platform === '4based'
-              ? '4based'
-              : row.platform === 'maloum'
-                ? 'maloum'
-                : null,
+          platform: normalizeAnalyticsPlatform(row.platform),
           ...stats,
           totalSales,
           tipSales,

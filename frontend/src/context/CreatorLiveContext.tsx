@@ -25,7 +25,21 @@ import { runWithConcurrency } from '@/lib/runWithConcurrency';
 export type CreatorBadgeCounts = { messages: number; notifications: number };
 
 const CREATOR_POLL_MS = 15_000;
-const BADGE_POLL_MS = 15_000;
+const FOCUS_BADGE_POLL_MS = 15_000;
+const ALL_BADGE_POLL_MS = 60_000;
+const MALOUM_BADGE_CONCURRENCY = 1;
+const OTHER_BADGE_CONCURRENCY = 3;
+
+type BadgeNeedEntry = {
+  all: boolean;
+  creatorIds: string[];
+};
+
+type BadgeNeedSpec = {
+  enabled: boolean;
+  all?: boolean;
+  creatorIds?: string[];
+};
 
 type CreatorLiveContextValue = {
   creators: Creator[];
@@ -36,8 +50,34 @@ type CreatorLiveContextValue = {
   refreshCreators: (opts?: { silent?: boolean }) => Promise<void>;
   refreshBadges: (creatorIds?: string[]) => Promise<void>;
   refreshThroneUnread: () => Promise<void>;
-  registerBadgeNeed: (key: string, enabled: boolean) => void;
+  registerBadgeNeed: (key: string, spec: BadgeNeedSpec) => void;
 };
+
+function badgeNeedEqual(
+  prev: BadgeNeedEntry | undefined,
+  next: BadgeNeedEntry
+): boolean {
+  if (!prev) return false;
+  if (prev.all !== next.all) return false;
+  if (prev.creatorIds.length !== next.creatorIds.length) return false;
+  return prev.creatorIds.every((id, index) => id === next.creatorIds[index]);
+}
+
+export function collectBadgePollPlan(
+  creators: Creator[],
+  needs: Iterable<BadgeNeedEntry>
+): { wantAll: boolean; focusIds: string[] } {
+  let wantAll = false;
+  const known = new Set(creators.map((creator) => creator.id));
+  const focus = new Set<string>();
+  for (const need of needs) {
+    if (need.all) wantAll = true;
+    for (const id of need.creatorIds) {
+      if (known.has(id)) focus.add(id);
+    }
+  }
+  return { wantAll, focusIds: [...focus] };
+}
 
 const CreatorLiveContext = createContext<CreatorLiveContextValue | null>(null);
 
@@ -87,9 +127,14 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
     Record<string, CreatorBadgeCounts>
   >({});
   const [badgeNeeds, setBadgeNeeds] = useState(0);
+  const [badgeNeedsVersion, setBadgeNeedsVersion] = useState(0);
   const [throneUnread, setThroneUnread] = useState(0);
   const creatorsRef = useRef<Creator[]>([]);
-  const badgeNeedsRef = useRef(new Map<string, boolean>());
+  const badgeNeedsRef = useRef(new Map<string, BadgeNeedEntry>());
+  const badgePollPlanRef = useRef<{ wantAll: boolean; focusIds: string[] }>({
+    wantAll: false,
+    focusIds: [],
+  });
   const refreshCreatorsRef = useRef<(opts?: { silent?: boolean }) => Promise<void>>(
     async () => undefined
   );
@@ -102,18 +147,42 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
     creatorsRef.current = creators;
   }, [creators]);
 
-  const registerBadgeNeed = useCallback((key: string, enabled: boolean) => {
-    const prev = badgeNeedsRef.current.get(key) === true;
-    if (enabled) badgeNeedsRef.current.set(key, true);
-    else badgeNeedsRef.current.delete(key);
-    const next = badgeNeedsRef.current.get(key) === true;
-    if (prev === next && enabled === prev) {
-      const count = badgeNeedsRef.current.size;
-      setBadgeNeeds((current) => (current === count ? current : count));
+  const registerBadgeNeed = useCallback((key: string, spec: BadgeNeedSpec) => {
+    if (!spec.enabled) {
+      if (!badgeNeedsRef.current.has(key)) {
+        setBadgeNeeds((current) =>
+          current === badgeNeedsRef.current.size ? current : badgeNeedsRef.current.size
+        );
+        return;
+      }
+      badgeNeedsRef.current.delete(key);
+      setBadgeNeeds(badgeNeedsRef.current.size);
+      setBadgeNeedsVersion((version) => version + 1);
       return;
     }
+
+    const next: BadgeNeedEntry = {
+      all: spec.all === true,
+      creatorIds: Array.from(new Set((spec.creatorIds || []).filter(Boolean))),
+    };
+    const prev = badgeNeedsRef.current.get(key);
+    if (badgeNeedEqual(prev, next)) {
+      setBadgeNeeds((current) =>
+        current === badgeNeedsRef.current.size ? current : badgeNeedsRef.current.size
+      );
+      return;
+    }
+    badgeNeedsRef.current.set(key, next);
     setBadgeNeeds(badgeNeedsRef.current.size);
+    setBadgeNeedsVersion((version) => version + 1);
   }, []);
+
+  useEffect(() => {
+    badgePollPlanRef.current = collectBadgePollPlan(
+      creators,
+      badgeNeedsRef.current.values()
+    );
+  }, [creators, badgeNeeds, badgeNeedsVersion]);
 
   const refreshCreators = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = opts?.silent === true;
@@ -147,8 +216,16 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
         : creatorsRef.current.map((creator) => creator.id);
     if (ids.length === 0) return;
     const byId = new Map(creatorsRef.current.map((creator) => [creator.id, creator]));
+    const maloumIds: string[] = [];
+    const otherIds: string[] = [];
+    for (const id of ids) {
+      const creator = byId.get(id);
+      if (!creator) continue;
+      if (creator.platform === 'maloum') maloumIds.push(id);
+      else otherIds.push(id);
+    }
     const updates: Record<string, CreatorBadgeCounts> = {};
-    await runWithConcurrency(ids, 3, async (id) => {
+    const fetchOne = async (id: string) => {
       const creator = byId.get(id);
       if (!creator) return;
       try {
@@ -172,7 +249,11 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
           err instanceof Error ? err.message : err
         );
       }
-    });
+    };
+    await Promise.all([
+      runWithConcurrency(maloumIds, MALOUM_BADGE_CONCURRENCY, fetchOne),
+      runWithConcurrency(otherIds, OTHER_BADGE_CONCURRENCY, fetchOne),
+    ]);
     if (Object.keys(updates).length === 0) return;
     setBadgesByCreatorId((prev) => {
       const next = { ...prev, ...updates };
@@ -219,14 +300,44 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isAuthenticated || !documentVisible || badgeNeeds === 0) return;
-    void refreshBadges();
-    void refreshThroneUnread();
-    const timer = window.setInterval(() => {
+    const plan = badgePollPlanRef.current;
+    if (plan.focusIds.length > 0) {
+      void refreshBadges(plan.focusIds);
+    }
+    if (plan.wantAll) {
       void refreshBadges();
+    }
+    void refreshThroneUnread();
+
+    const focusTimer =
+      plan.focusIds.length > 0
+        ? window.setInterval(() => {
+            const ids = badgePollPlanRef.current.focusIds;
+            if (ids.length > 0) void refreshBadges(ids);
+          }, FOCUS_BADGE_POLL_MS)
+        : null;
+    const allTimer = plan.wantAll
+      ? window.setInterval(() => {
+          if (badgePollPlanRef.current.wantAll) void refreshBadges();
+        }, ALL_BADGE_POLL_MS)
+      : null;
+    const throneTimer = window.setInterval(() => {
       void refreshThroneUnread();
-    }, BADGE_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [isAuthenticated, documentVisible, badgeNeeds, refreshBadges, refreshThroneUnread]);
+    }, FOCUS_BADGE_POLL_MS);
+
+    return () => {
+      if (focusTimer) window.clearInterval(focusTimer);
+      if (allTimer) window.clearInterval(allTimer);
+      window.clearInterval(throneTimer);
+    };
+  }, [
+    isAuthenticated,
+    documentVisible,
+    badgeNeeds,
+    badgeNeedsVersion,
+    refreshBadges,
+    refreshThroneUnread,
+  ]);
 
   const wasVisibleRef = useRef(documentVisible);
   useEffect(() => {
@@ -235,7 +346,13 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
     if (!justVisible || !isAuthenticated) return;
     void refreshCreatorsRef.current({ silent: true });
     if (badgeNeedsRef.current.size > 0) {
-      void refreshBadgesRef.current();
+      const plan = badgePollPlanRef.current;
+      if (plan.focusIds.length > 0) {
+        void refreshBadgesRef.current(plan.focusIds);
+      }
+      if (plan.wantAll) {
+        void refreshBadgesRef.current();
+      }
       void refreshThroneUnreadRef.current();
     }
   }, [documentVisible, isAuthenticated]);
@@ -288,6 +405,8 @@ export function useCreatorLive(opts?: {
   platform?: 'maloum' | '4based' | 'telegram';
   wantBadges?: boolean;
   pollEnabled?: boolean;
+  badgeScope?: 'all' | string[];
+  pollAllBadges?: boolean;
 }) {
   const ctx = useContext(CreatorLiveContext);
   if (!ctx) {
@@ -298,11 +417,23 @@ export function useCreatorLive(opts?: {
   ).current;
   const wantBadges = opts?.wantBadges === true;
   const pollEnabled = opts?.pollEnabled !== false;
+  const badgeScope = opts?.badgeScope;
+  const focusedIds = Array.isArray(badgeScope) ? badgeScope : [];
+  const pollAllBadges =
+    opts?.pollAllBadges === true ||
+    badgeScope === 'all' ||
+    (wantBadges && badgeScope === undefined);
+  const focusKey = focusedIds.join(',');
 
   useEffect(() => {
-    ctx.registerBadgeNeed(subscriberKey, wantBadges && pollEnabled);
-    return () => ctx.registerBadgeNeed(subscriberKey, false);
-  }, [ctx, subscriberKey, wantBadges, pollEnabled]);
+    const enabled = wantBadges && pollEnabled;
+    ctx.registerBadgeNeed(subscriberKey, {
+      enabled,
+      all: enabled && pollAllBadges,
+      creatorIds: enabled ? focusedIds : [],
+    });
+    return () => ctx.registerBadgeNeed(subscriberKey, { enabled: false });
+  }, [ctx, subscriberKey, wantBadges, pollEnabled, pollAllBadges, focusKey]);
 
   const creators = useMemo(() => {
     if (!opts?.platform) return ctx.creators;

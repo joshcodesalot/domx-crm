@@ -93,6 +93,79 @@ function parseProxyParts(proxyUrl) {
 }
 
 /**
+ * Parse one proxy line:
+ * - host:port:user:pass (Decodo)
+ * - user:pass@host:port
+ * - http://user:pass@host:port
+ * - host:port
+ */
+function parseLooseProxyLine(line) {
+  if (!line || typeof line !== 'string') {
+    return null;
+  }
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) {
+    return null;
+  }
+
+  if (trimmed.includes('@') || /^https?:\/\//i.test(trimmed)) {
+    const parts = parseProxyParts(trimmed);
+    if (!parts) {
+      return null;
+    }
+    const proxyUrl = buildProxyUrl(
+      parts.hostPort,
+      parts.username,
+      parts.password
+    );
+    return proxyUrl ? { proxyUrl, hostPort: parts.hostPort } : null;
+  }
+
+  const firstColon = trimmed.indexOf(':');
+  if (firstColon <= 0) {
+    return null;
+  }
+  const host = trimmed.slice(0, firstColon).trim();
+  const afterHost = trimmed.slice(firstColon + 1);
+  const secondColon = afterHost.indexOf(':');
+  if (secondColon === -1) {
+    const built = buildProxyUrl(trimmed, '', '');
+    if (!built) return null;
+    const parts = parseProxyParts(built);
+    return parts ? { proxyUrl: built, hostPort: parts.hostPort } : null;
+  }
+
+  const port = afterHost.slice(0, secondColon).trim();
+  if (!/^\d{1,5}$/.test(port)) {
+    return null;
+  }
+  const userAndPass = afterHost.slice(secondColon + 1);
+  const userColon = userAndPass.indexOf(':');
+  const username =
+    userColon === -1 ? userAndPass : userAndPass.slice(0, userColon);
+  const password = userColon === -1 ? '' : userAndPass.slice(userColon + 1);
+  const hostPort = formatHostPort(host, port);
+  const proxyUrl = buildProxyUrl(hostPort, username, password);
+  if (!proxyUrl) {
+    return null;
+  }
+  return { proxyUrl, hostPort };
+}
+
+function parseProxyLines(text) {
+  const raw = typeof text === 'string' ? text : '';
+  const seen = new Set();
+  const items = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const parsed = parseLooseProxyLine(line);
+    if (!parsed || seen.has(parsed.hostPort)) continue;
+    seen.add(parsed.hostPort);
+    items.push(parsed);
+  }
+  return items;
+}
+
+/**
  * Read an explicit custom proxy from a request body.
  * Accepts either `proxyUrl` or `{ proxyHost, proxyUsername, proxyPassword }`.
  * Empty fields mean "not provided" (use stored / env fallback).
@@ -126,7 +199,10 @@ function customProxyFromBody(body) {
 module.exports = {
   InvalidProxyError,
   parseHostPort,
+  formatHostPort,
   buildProxyUrl,
   parseProxyParts,
+  parseLooseProxyLine,
+  parseProxyLines,
   customProxyFromBody,
 };

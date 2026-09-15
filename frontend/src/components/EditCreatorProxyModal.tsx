@@ -27,6 +27,7 @@ export default function EditCreatorProxyModal({
   const [envLabel, setEnvLabel] = useState(
     creator.platform === '4based' ? 'FOURBASED_PROXY_URL' : 'MALOUM_PROXY_URL'
   );
+  const [poolActive, setPoolActive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +44,7 @@ export default function EditCreatorProxyModal({
         setProxyHost(data.proxyHost || '');
         setProxyUsername(data.proxyUsername || '');
         setEnvLabel(data.envLabel);
+        setPoolActive(Boolean(data.poolActive));
       } catch (err) {
         if (!cancelled) {
           setError(
@@ -102,9 +104,10 @@ export default function EditCreatorProxyModal({
           <div className="flex-1 min-w-0">
             <h3 className="text-lg font-semibold">Account proxy</h3>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Set a proxy for {creator.displayName}. Leave the address blank to
-              use {envLabel} from the server (.env).
-              {creator.platform === 'maloum'
+              {poolActive && creator.platform === 'maloum'
+                ? 'A Maloum proxy pool is active on Manage Creators. This per-account proxy is unused until the pool is cleared.'
+                : `Set a proxy for ${creator.displayName}. Leave the address blank to use ${envLabel} from the server (.env).`}
+              {creator.platform === 'maloum' && !poolActive
                 ? ' Changing a Maloum proxy may require reconnecting so Cloudflare clearance matches the new IP.'
                 : ''}
             </p>
@@ -118,7 +121,11 @@ export default function EditCreatorProxyModal({
             <p className="text-xs text-gray-400 mb-3">
               Currently using:{' '}
               <span className="font-medium text-gray-600 dark:text-gray-300">
-                {hasCustomProxy ? 'Custom proxy' : `.env (${envLabel})`}
+                {poolActive && creator.platform === 'maloum'
+                  ? 'Maloum proxy pool'
+                  : hasCustomProxy
+                    ? 'Custom proxy'
+                    : `.env (${envLabel})`}
               </span>
             </p>
             <CreatorProxyFields

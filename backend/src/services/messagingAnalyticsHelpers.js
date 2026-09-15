@@ -46,15 +46,20 @@ function mergeNativeCurrencyAmounts(...lists) {
 
 const MONTHLY_PLATFORM_ORDER = ['maloum', '4based', 'telegram'];
 
+function normalizeAnalyticsPlatform(value) {
+  if (value === '4based' || value === 'telegram' || value === 'maloum') return value;
+  return null;
+}
+
 function canonicalDashboardPlatform(value) {
-  if (value === '4based' || value === 'telegram') return value;
-  return 'maloum';
+  return normalizeAnalyticsPlatform(value);
 }
 
 function monthlySalesByPlatformFromRows(rows) {
   const byPlatform = new Map();
   for (const row of rows || []) {
     const platform = canonicalDashboardPlatform(row.platform);
+    if (!platform) continue;
     if (!byPlatform.has(platform)) {
       byPlatform.set(platform, []);
     }
@@ -350,6 +355,7 @@ module.exports = {
   normalizeNativeCurrency,
   mergeCurrencyAmounts,
   mergeNativeCurrencyAmounts,
+  normalizeAnalyticsPlatform,
   monthlySalesByPlatformFromRows,
   currencyAmountRowsToList,
   sumCurrencyAmounts,

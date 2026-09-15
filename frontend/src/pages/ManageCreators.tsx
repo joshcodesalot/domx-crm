@@ -32,9 +32,12 @@ import {
   reconnectMaloumAccountSaved,
   refreshMaloumAvatar,
   verifyMaloumSession,
+  getMaloumProxyPool,
+  updateMaloumProxyPool,
   type AiCreatorSettings,
   type AiFlags,
   type Creator,
+  type MaloumProxyPoolEntry,
 } from '@/lib/api';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import maloumIcon from '@/assets/maloum_icon.png';
@@ -97,6 +100,12 @@ export default function ManageCreators() {
   const [aiSavingIds, setAiSavingIds] = useState<Set<string>>(() => new Set());
   const [aiFlags, setAiFlags] = useState<AiFlags | null>(null);
   const [aiFlagsSaving, setAiFlagsSaving] = useState(false);
+  const [proxyPoolEntries, setProxyPoolEntries] = useState<
+    MaloumProxyPoolEntry[]
+  >([]);
+  const [proxyPoolText, setProxyPoolText] = useState('');
+  const [proxyPoolSaving, setProxyPoolSaving] = useState(false);
+  const [proxyPoolError, setProxyPoolError] = useState<string | null>(null);
 
   const canManage = hasPermission('creators.manage');
   const canManageAi = hasPermission('ai.settings.manage');
@@ -148,11 +157,24 @@ export default function ManageCreators() {
     setAiFlags(flags);
   }, [canManageAi]);
 
+  const loadProxyPool = useCallback(async () => {
+    if (!canManage) {
+      setProxyPoolEntries([]);
+      return;
+    }
+    const data = await getMaloumProxyPool();
+    setProxyPoolEntries(data.entries);
+  }, [canManage]);
+
   const loadCreators = useCallback(async () => {
     const { creators: list } = await getCreators();
     setCreators(list);
-    await Promise.all([loadAiSettingsFor(list), loadGlobalAiFlags()]);
-  }, [loadAiSettingsFor, loadGlobalAiFlags]);
+    await Promise.all([
+      loadAiSettingsFor(list),
+      loadGlobalAiFlags(),
+      loadProxyPool(),
+    ]);
+  }, [loadAiSettingsFor, loadGlobalAiFlags, loadProxyPool]);
 
   useEffect(() => {
     async function load() {
@@ -317,6 +339,23 @@ export default function ManageCreators() {
     }
   }
 
+  async function handleSaveProxyPool() {
+    if (!canManage || proxyPoolSaving) return;
+    setProxyPoolSaving(true);
+    setProxyPoolError(null);
+    try {
+      const data = await updateMaloumProxyPool(proxyPoolText);
+      setProxyPoolEntries(data.entries);
+      setProxyPoolText('');
+    } catch (err) {
+      setProxyPoolError(
+        err instanceof Error ? err.message : 'Failed to save Maloum proxy pool'
+      );
+    } finally {
+      setProxyPoolSaving(false);
+    }
+  }
+
   async function handleRemoveConfirm() {
     if (!removeTarget) return;
 
@@ -426,6 +465,68 @@ export default function ManageCreators() {
         {error && (
           <div className="mb-4 p-3 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/30 rounded-lg">
             {error}
+          </div>
+        )}
+
+        {canManage && (
+          <div className="mb-6 border border-gray-200 dark:border-white/10 rounded-xl p-4">
+            <h3 className="text-sm font-semibold mb-1">Maloum proxy pool</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+              Shared list for all Maloum accounts. Each account gets a sticky
+              unused IP. Cloudflare bans cool that IP for 45 minutes and the
+              account moves to the next free proxy. One per line:{' '}
+              <code className="text-[11px]">host:port:user:pass</code>
+            </p>
+            <textarea
+              value={proxyPoolText}
+              onChange={(e) => setProxyPoolText(e.target.value)}
+              rows={4}
+              placeholder="isp.decodo.com:10005:user:pass"
+              className="w-full px-3 py-2 text-sm font-mono border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-white/5 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500"
+              disabled={proxyPoolSaving}
+            />
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[11px] text-gray-400">
+                Paste the full list to replace. Save an empty box to clear the
+                pool.
+              </p>
+              <button
+                type="button"
+                onClick={() => void handleSaveProxyPool()}
+                disabled={proxyPoolSaving}
+                className="px-3 py-1.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-500 rounded-lg disabled:opacity-50"
+              >
+                {proxyPoolSaving ? 'Saving…' : 'Save pool'}
+              </button>
+            </div>
+            {proxyPoolError && (
+              <p className="mt-2 text-sm text-red-600 dark:text-red-400">
+                {proxyPoolError}
+              </p>
+            )}
+            {proxyPoolEntries.length > 0 && (
+              <ul className="mt-3 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                {proxyPoolEntries.map((entry) => (
+                  <li key={entry.id} className="flex flex-wrap gap-x-3 gap-y-0.5">
+                    <span className="font-mono">{entry.hostPort}</span>
+                    <span>
+                      {entry.banned
+                        ? `banned until ${
+                            entry.bannedUntil
+                              ? new Date(entry.bannedUntil).toLocaleTimeString()
+                              : '?'
+                          }`
+                        : 'ok'}
+                    </span>
+                    <span>
+                      {entry.assignedCreatorName
+                        ? `→ ${entry.assignedCreatorName}`
+                        : 'unassigned'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
 

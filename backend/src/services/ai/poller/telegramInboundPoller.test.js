@@ -7,6 +7,7 @@ const {
   resetPollerBackoff,
   stopTelegramInboundPoller,
   tick,
+  isBackedOff,
   DIALOG_LIMIT,
 } = require('./telegramInboundPoller');
 const { isTelegramServiceDialog } = require('../../telegramWorker');
@@ -90,16 +91,20 @@ describe('tick', () => {
           { peerId: '222', unreadCount: 0, displayName: 'Quiet' },
         ];
       },
-      listMessages: async (_id, peerId) => ({
-        messages: [
-          {
-            id: 'm1',
-            isOutgoing: false,
-            text: 'hi',
-            date: '2026-09-09T00:00:00.000Z',
-          },
-        ],
-      }),
+      listMessages: async (_id, peerId, opts) => {
+        listed.push({ peerId, opts });
+        return {
+          messages: [
+            {
+              id: 'm1',
+              isOutgoing: false,
+              text: 'hi',
+              date: '2026-09-09T00:00:00.000Z',
+            },
+          ],
+        };
+      },
+      listRecentConversations: async () => [],
       ingestConversation: async (payload) => {
         ingest.push(payload);
       },
@@ -107,6 +112,10 @@ describe('tick', () => {
     });
     assert.equal(result.polled, 1);
     assert.deepEqual(listed[0], { limit: DIALOG_LIMIT });
+    assert.deepEqual(listed[1], {
+      peerId: '111',
+      opts: { limit: 15, markRead: false },
+    });
     assert.equal(ingest.length, 1);
     assert.equal(ingest[0].platform, 'telegram');
     assert.equal(ingest[0].platformChatId, '111');
@@ -126,6 +135,7 @@ describe('tick', () => {
         messageCalls += 1;
         return { messages: [] };
       },
+      listRecentConversations: async () => [],
       ingestConversation: async (payload) => {
         ingest.push(payload);
       },
@@ -149,6 +159,7 @@ describe('tick', () => {
         messageCalls += 1;
         return { messages: [] };
       },
+      listRecentConversations: async () => [],
       ingestConversation: async (payload) => {
         ingest.push(payload);
       },
@@ -156,5 +167,88 @@ describe('tick', () => {
     });
     assert.equal(messageCalls, 0);
     assert.equal(ingest.length, 0);
+  });
+
+  it('re-checks recently active unread-0 chats with markRead false', async () => {
+    const ingest = [];
+    const messageOpts = [];
+    await tick({
+      getAiFlags: async () => ON_FLAGS,
+      loadEligibleRows: async () => [ELIGIBLE_ROW],
+      listDialogs: async () => [{ peerId: '222', unreadCount: 0 }],
+      listMessages: async (_id, peerId, opts) => {
+        messageOpts.push({ peerId, opts });
+        return {
+          messages: [
+            {
+              id: 'm2',
+              isOutgoing: false,
+              text: 'follow up',
+              date: '2026-09-09T00:02:00.000Z',
+            },
+          ],
+        };
+      },
+      listRecentConversations: async ({ skipChatIds }) => {
+        assert.deepEqual(skipChatIds, []);
+        return [
+          {
+            platformChatId: '333',
+            platformFanId: '333',
+            fanUsername: 'fastfan',
+          },
+        ];
+      },
+      ingestConversation: async (payload) => {
+        ingest.push(payload);
+      },
+      isTelegramServiceDialog,
+    });
+    assert.equal(messageOpts.length, 1);
+    assert.equal(messageOpts[0].peerId, '333');
+    assert.deepEqual(messageOpts[0].opts, { limit: 15, markRead: false });
+    assert.equal(ingest.length, 1);
+    assert.equal(ingest[0].source, 'recent_active');
+    assert.equal(ingest[0].platformChatId, '333');
+    assert.equal(ingest[0].messages[0].platformMessageId, 'm2');
+  });
+
+  it('keeps polling other chats when one listMessages throws', async () => {
+    const ingest = [];
+    const now = 5_000;
+    const result = await tick({
+      getAiFlags: async () => ON_FLAGS,
+      loadEligibleRows: async () => [ELIGIBLE_ROW],
+      listDialogs: async () => [
+        { peerId: 'dead', unreadCount: 1 },
+        { peerId: 'alive', unreadCount: 1 },
+      ],
+      listMessages: async (_id, peerId, opts) => {
+        assert.equal(opts.markRead, false);
+        if (peerId === 'dead') {
+          throw new Error('PEER_ID_INVALID');
+        }
+        return {
+          messages: [
+            {
+              id: 'm1',
+              isOutgoing: false,
+              text: 'hi',
+              date: '2026-09-09T00:00:00.000Z',
+            },
+          ],
+        };
+      },
+      listRecentConversations: async () => [],
+      ingestConversation: async (payload) => {
+        ingest.push(payload);
+      },
+      isTelegramServiceDialog,
+      now: () => now,
+    });
+    assert.equal(result.polled, 1);
+    assert.equal(isBackedOff('cr-1', now + 1), false);
+    assert.equal(ingest.length, 1);
+    assert.equal(ingest[0].platformChatId, 'alive');
   });
 });

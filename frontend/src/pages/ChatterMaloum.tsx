@@ -8,11 +8,6 @@ import { usePollEnabled } from '@/hooks/useDocumentVisible';
 export default function ChatterMaloum() {
   const location = useLocation();
   const pollEnabled = usePollEnabled(location.pathname === '/chatter');
-  const { creators, creatorsLoading, badgesByCreatorId } = useCreatorLive({
-    platform: 'maloum',
-    wantBadges: true,
-    pollEnabled,
-  });
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkCreatorId = searchParams.get('creatorId') || '';
   const deepLinkChatId = searchParams.get('chatId') || '';
@@ -22,6 +17,12 @@ export default function ChatterMaloum() {
     () => searchParams.get('chatId') || null
   );
   const [selectedCreatorId, setSelectedCreatorId] = useState<string | null>(null);
+  const { creators, creatorsLoading, badgesByCreatorId } = useCreatorLive({
+    platform: 'maloum',
+    wantBadges: true,
+    pollEnabled,
+    badgeScope: selectedCreatorId ? [selectedCreatorId] : [],
+  });
 
   useEffect(() => {
     setSelectedCreatorId((prev) => {
