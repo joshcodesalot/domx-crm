@@ -5,8 +5,7 @@ const { requestJson, MaloumApiError } = require('./maloumClient');
 const PROXY = 'http://user:pass@127.0.0.1:9';
 
 function jsonResponse(body, { status = 200, contentType = 'application/json' } = {}) {
-  const text =
-    typeof body === 'string' ? body : JSON.stringify(body);
+  const text = typeof body === 'string' ? body : JSON.stringify(body);
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -27,49 +26,65 @@ function cfHtmlResponse() {
 function deps(overrides = {}) {
   return {
     createDispatcher: () => ({}),
-    resolveCfBypassBaseUrl: () => 'http://127.0.0.1:8000',
-    tryRequestJsonViaCfBypass: async () => {
-      throw new Error('bypass should not be called');
-    },
+    resolveCfBypassBaseUrl: () => 'http://127.0.0.1:5002',
+    ensureClearance: async () => ({
+      cookieHeader: 'cf_clearance=cached',
+      userAgent: 'UA-cached',
+    }),
     ...overrides,
   };
 }
 
 describe('requestJson CF routing', () => {
-  it('fallback: undici success does not call bypass', async () => {
-    let bypassCalls = 0;
+  it('attaches cached Cookie and User-Agent on undici success', async () => {
+    let mintCalls = 0;
+    let seenHeaders;
     const result = await requestJson(
-      { path: '/chats/unread-count', proxyUrl: PROXY, cfBypass: 'fallback' },
+      { path: '/chats/unread-count', proxyUrl: PROXY, cfBypass: 'never' },
       deps({
-        fetch: async () => jsonResponse({ unread: 2 }),
-        tryRequestJsonViaCfBypass: async () => {
-          bypassCalls += 1;
-          return { status: 200, data: { unread: 99 }, text: '{}' };
+        ensureClearance: async (_url, { force } = {}) => {
+          mintCalls += 1;
+          assert.equal(force, false);
+          return { cookieHeader: 'cf_clearance=x', userAgent: 'UA-1' };
+        },
+        fetch: async (_url, opts) => {
+          seenHeaders = opts.headers;
+          return jsonResponse({ unread: 2 });
         },
       })
     );
-    assert.equal(bypassCalls, 0);
+    assert.equal(mintCalls, 1);
+    assert.equal(seenHeaders.cookie, 'cf_clearance=x');
+    assert.equal(seenHeaders['user-agent'], 'UA-1');
     assert.deepEqual(result.data, { unread: 2 });
   });
 
-  it('fallback: undici Cloudflare HTML retries via bypass', async () => {
-    let bypassCalls = 0;
+  it('CF 403 remints and retries undici once', async () => {
+    const cookies = [];
+    let mintForce = [];
     const result = await requestJson(
       { path: '/chats', proxyUrl: PROXY, cfBypass: 'fallback' },
       deps({
-        fetch: async () => cfHtmlResponse(),
-        tryRequestJsonViaCfBypass: async () => {
-          bypassCalls += 1;
-          return { status: 200, data: { data: [] }, text: '{"data":[]}' };
+        ensureClearance: async (_url, { force } = {}) => {
+          mintForce.push(Boolean(force));
+          return {
+            cookieHeader: force ? 'cf_clearance=new' : 'cf_clearance=old',
+            userAgent: 'UA-1',
+          };
+        },
+        fetch: async (_url, opts) => {
+          cookies.push(opts.headers.cookie);
+          if (cookies.length === 1) return cfHtmlResponse();
+          return jsonResponse({ data: [] });
         },
       })
     );
-    assert.equal(bypassCalls, 1);
+    assert.deepEqual(mintForce, [false, true]);
+    assert.deepEqual(cookies, ['cf_clearance=old', 'cf_clearance=new']);
     assert.deepEqual(result.data, { data: [] });
   });
 
-  it('never: undici Cloudflare HTML throws and does not call bypass', async () => {
-    let bypassCalls = 0;
+  it('never: second CF 403 after remint throws', async () => {
     await assert.rejects(
       () =>
         requestJson(
@@ -80,10 +95,6 @@ describe('requestJson CF routing', () => {
           },
           deps({
             fetch: async () => cfHtmlResponse(),
-            tryRequestJsonViaCfBypass: async () => {
-              bypassCalls += 1;
-              return { status: 200, data: {}, text: '{}' };
-            },
           })
         ),
       (err) => {
@@ -93,6 +104,5 @@ describe('requestJson CF routing', () => {
         return true;
       }
     );
-    assert.equal(bypassCalls, 0);
   });
 });
