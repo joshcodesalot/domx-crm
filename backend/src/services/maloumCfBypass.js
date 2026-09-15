@@ -1,35 +1,35 @@
 /**
- * Maloum Cloudflare clearance via Unflare (cookie mint, not a request mirror).
- * @see https://github.com/iamyegor/Unflare
+ * Maloum API via CloudflareBypassForScraping mirror mode (same-host Docker).
+ * @see https://github.com/sarperavci/CloudflareBypassForScraping
  */
 
 const { fetch: undiciFetch } = require('undici');
-const { parseHostPort, parseProxyParts } = require('./proxyUrl');
 
 const {
   MaloumApiError,
+  WrongPasswordError,
   resolveMaloumProxyUrl,
+  extractSessionTokens,
   parseJsonSafe,
+  isCloudflareBlocked,
+  MALOUM_CLIENT_TIMEZONE,
+  MALOUM_ACCEPT_LANGUAGE,
+  USER_AGENT,
+  API_BASE,
   APP_ORIGIN,
 } = require('./maloumClient');
 
-const DEFAULT_BYPASS_URL = 'http://127.0.0.1:5002';
+const DEFAULT_BYPASS_URL = 'http://127.0.0.1:8000';
 const BYPASS_TIMEOUT_MS = 120_000;
-const SCRAPE_TIMEOUT_MS = 60_000;
 const PROXY_SWITCH_PAUSE_MS = 400;
-const CACHE_SKEW_MS = 60_000;
-const DEFAULT_TTL_MS = 25 * 60 * 1000;
-const APP_CLEARANCE_URL = `${APP_ORIGIN}/login`;
 
 let fetchImpl = undiciFetch;
 let bypassQueue = Promise.resolve();
 let lastBypassProxy = null;
-const clearanceByHostPort = new Map();
 
 function resetBypassQueueForTests({ fetch } = {}) {
   bypassQueue = Promise.resolve();
   lastBypassProxy = null;
-  clearanceByHostPort.clear();
   fetchImpl = fetch || undiciFetch;
 }
 
@@ -42,8 +42,24 @@ function enqueueBypass(task) {
   return run;
 }
 
+function defaultApiHeaders({ accessToken, timezone } = {}) {
+  const headers = {
+    accept: 'application/json',
+    'content-type': 'application/json',
+    'user-agent': USER_AGENT,
+    origin: APP_ORIGIN,
+    referer: `${APP_ORIGIN}/`,
+    'accept-language': MALOUM_ACCEPT_LANGUAGE,
+    'x-timezone': timezone || MALOUM_CLIENT_TIMEZONE,
+  };
+  if (accessToken) {
+    headers.authorization = `Bearer ${accessToken}`;
+  }
+  return headers;
+}
+
 /**
- * Resolve Unflare base URL. Empty / 0 / false disables. Unset → localhost:5002.
+ * Resolve bypass base URL. Empty / 0 / false disables. Unset → localhost:8000.
  */
 function resolveCfBypassBaseUrl() {
   const raw = process.env.MALOUM_CF_BYPASS_URL;
@@ -55,6 +71,14 @@ function resolveCfBypassBaseUrl() {
     return null;
   }
   return trimmed.replace(/\/+$/, '');
+}
+
+function apiHostname() {
+  try {
+    return new URL(API_BASE).hostname;
+  } catch {
+    return 'api.maloum.com';
+  }
 }
 
 function isBypassUnavailable(err) {
@@ -73,142 +97,51 @@ function isBypassUnavailable(err) {
 function bypassUnavailableError(base, err) {
   const detail = err?.cause?.message || err?.message || 'unreachable';
   const unavailable = new MaloumApiError(
-    `Maloum Unflare unreachable at ${base} (${detail}). Is unflare running on :5002?`,
+    `Maloum CF bypass unreachable at ${base} (${detail}). Is cloudflare-bypass running?`,
     503
   );
   unavailable.code = 'CF_BYPASS_UNAVAILABLE';
   return unavailable;
 }
 
-function unflareProxyFromUrl(proxyUrl) {
-  const resolved = resolveMaloumProxyUrl(proxyUrl);
-  const parts = parseProxyParts(resolved);
-  if (!parts) {
-    return null;
-  }
-  const hp = parseHostPort(parts.hostPort);
-  if (!hp) {
-    return null;
-  }
-  const proxy = {
-    host: hp.host,
-    port: Number(hp.port),
-  };
-  if (parts.username) {
-    proxy.username = parts.username;
-  }
-  if (parts.password) {
-    proxy.password = parts.password;
-  }
-  return { hostPort: parts.hostPort, proxy };
-}
-
-function cookieHeaderFromList(cookies) {
-  if (!Array.isArray(cookies)) {
-    return '';
-  }
-  return cookies
-    .filter((row) => row && row.name && row.value != null)
-    .map((row) => `${row.name}=${row.value}`)
-    .join('; ');
-}
-
-function expiresAtFromCookies(cookies, now = Date.now()) {
-  const clearance = (Array.isArray(cookies) ? cookies : []).find(
-    (row) => row && row.name === 'cf_clearance'
-  );
-  const raw = clearance?.expires;
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 1e10) {
-    return raw - CACHE_SKEW_MS;
-  }
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 1e9) {
-    return raw * 1000 - CACHE_SKEW_MS;
-  }
-  return now + DEFAULT_TTL_MS;
-}
-
-function unflareCookiesToPlaywright(cookies) {
-  if (!Array.isArray(cookies)) {
-    return [];
-  }
-  return cookies
-    .filter((row) => row && row.name && row.value != null)
-    .map((row) => ({
-      name: String(row.name),
-      value: String(row.value),
-      domain: row.domain || '.maloum.com',
-      path: row.path || '/',
-      httpOnly: row.httpOnly != null ? Boolean(row.httpOnly) : row.name === 'cf_clearance',
-      secure: row.secure != null ? Boolean(row.secure) : true,
-      sameSite: row.sameSite || 'None',
-      expires:
-        typeof row.expires === 'number' && Number.isFinite(row.expires)
-          ? row.expires > 1e10
-            ? Math.floor(row.expires / 1000)
-            : row.expires
-          : Math.floor(Date.now() / 1000) + 29 * 60,
-    }));
-}
-
-function cachedClearance(hostPort, now = Date.now()) {
-  const row = clearanceByHostPort.get(hostPort);
-  if (!row) {
-    return null;
-  }
-  if (row.expiresAt && row.expiresAt <= now) {
-    clearanceByHostPort.delete(hostPort);
-    return null;
-  }
-  return row;
-}
-
-function storeClearance(hostPort, parsed) {
-  const cookies = Array.isArray(parsed?.cookies) ? parsed.cookies : [];
-  const userAgent =
-    (typeof parsed?.headers?.['user-agent'] === 'string' &&
-      parsed.headers['user-agent'].trim()) ||
-    (typeof parsed?.headers?.['User-Agent'] === 'string' &&
-      parsed.headers['User-Agent'].trim()) ||
-    (typeof parsed?.user_agent === 'string' && parsed.user_agent.trim()) ||
-    null;
-  const cookieHeader = cookieHeaderFromList(cookies);
-  const row = {
-    cookieHeader,
-    userAgent,
-    cookies: unflareCookiesToPlaywright(cookies),
-    expiresAt: expiresAtFromCookies(cookies),
-  };
-  clearanceByHostPort.set(hostPort, row);
-  return row;
-}
-
-async function scrapeClearance(proxyUrl) {
+async function executeMirrorMaloumRequest({
+  method = 'GET',
+  path,
+  proxyUrl,
+  headers = {},
+  body,
+}) {
   const base = resolveCfBypassBaseUrl();
   if (!base) {
-    throw bypassUnavailableError('(disabled)', new Error('Unflare disabled'));
+    throw bypassUnavailableError('(disabled)', new Error('CF bypass disabled'));
   }
 
-  const parsedProxy = unflareProxyFromUrl(proxyUrl);
-  if (!parsedProxy) {
-    throw new MaloumApiError('Maloum proxy URL is invalid', 400);
+  if (!path || typeof path !== 'string') {
+    throw new MaloumApiError('Maloum CF bypass path is required', 400);
   }
 
-  if (lastBypassProxy && lastBypassProxy !== parsedProxy.hostPort) {
+  const resolvedProxy = resolveMaloumProxyUrl(proxyUrl);
+  if (lastBypassProxy && lastBypassProxy !== resolvedProxy) {
     await new Promise((resolve) => setTimeout(resolve, PROXY_SWITCH_PAUSE_MS));
   }
-  lastBypassProxy = parsedProxy.hostPort;
+  lastBypassProxy = resolvedProxy;
+
+  const pathPart = path.startsWith('/') ? path : `/${path}`;
+  const url = `${base}${pathPart}`;
+
+  const mirrorHeaders = {
+    ...headers,
+    'x-hostname': apiHostname(),
+    'x-proxy': resolvedProxy,
+  };
 
   let response;
   try {
-    response = await fetchImpl(`${base}/scrape`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        url: APP_CLEARANCE_URL,
-        timeout: SCRAPE_TIMEOUT_MS,
-        method: 'GET',
-        proxy: parsedProxy.proxy,
-      }),
+    response = await fetchImpl(url, {
+      method,
+      headers: mirrorHeaders,
+      body,
+      // Local loopback — do not route DomX→bypass through MALOUM_PROXY_URL
       signal: AbortSignal.timeout(BYPASS_TIMEOUT_MS),
     });
   } catch (err) {
@@ -216,84 +149,185 @@ async function scrapeClearance(proxyUrl) {
       throw bypassUnavailableError(base, err);
     }
     throw new MaloumApiError(
-      `Maloum Unflare request failed (${err?.message || 'error'})`,
+      `Maloum CF bypass request failed (${err?.message || 'error'})`,
       502
     );
   }
 
   const text = await response.text();
+  const contentType = response.headers.get('content-type') || '';
   const parsed = parseJsonSafe(text);
-  if (!response.ok || parsed?.code === 'error' || !parsed) {
-    const message =
-      parsed?.message ||
-      `Unflare scrape failed (${response.status})`;
-    throw new MaloumApiError(message, response.status >= 400 ? response.status : 502);
-  }
+  const ok = response.status >= 200 && response.status < 300;
 
-  const stored = storeClearance(parsedProxy.hostPort, parsed);
-  console.log(
-    `[maloumCfBypass] minted ${stored.cookies.length} clearance cookie(s) for ${parsedProxy.hostPort}`
-  );
-  return stored;
+  return {
+    status: response.status,
+    ok,
+    text,
+    contentType,
+    parsed,
+  };
 }
 
 /**
- * Return cached Unflare clearance for this proxy, or mint one.
- * Serialized so one Chromium is not multiplexed across IPs.
+ * Mirror any Maloum API request through the CF bypass service.
+ * Serialized so one Chromium session is not multiplexed across proxies.
+ * Returns { status, ok, text, contentType, parsed }.
  */
-function ensureClearance(proxyUrl, { force = false } = {}) {
-  const parsedProxy = unflareProxyFromUrl(proxyUrl);
-  if (!parsedProxy) {
-    return Promise.reject(new MaloumApiError('Maloum proxy URL is invalid', 400));
-  }
-  if (!force) {
-    const hit = cachedClearance(parsedProxy.hostPort);
-    if (hit) {
-      return Promise.resolve(hit);
-    }
-  }
-  if (!resolveCfBypassBaseUrl()) {
-    return Promise.resolve(null);
-  }
-  return enqueueBypass(() => {
-    if (!force) {
-      const hit = cachedClearance(parsedProxy.hostPort);
-      if (hit) {
-        return hit;
-      }
-    }
-    return scrapeClearance(proxyUrl);
-  });
+function mirrorMaloumRequest(opts) {
+  return enqueueBypass(() => executeMirrorMaloumRequest(opts));
 }
 
 /**
- * Fetch Cloudflare clearance cookies for Electron after login.
- * Soft-fails to empty cookies if Unflare is down.
+ * Mirror POST /user-management/login through the CF bypass service.
+ * Returns the same session token object as extractSessionTokens().
+ */
+async function loginViaCfBypass({ usernameOrEmail, password, proxyUrl }) {
+  if (!usernameOrEmail || !password) {
+    throw new MaloumApiError('Email/username and password are required', 400);
+  }
+
+  const identifier = String(usernameOrEmail).trim();
+  const mirrored = await mirrorMaloumRequest({
+    method: 'POST',
+    path: '/user-management/login',
+    proxyUrl,
+    headers: defaultApiHeaders({ timezone: MALOUM_CLIENT_TIMEZONE }),
+    body: JSON.stringify({
+      usernameOrEmail: identifier,
+      password: String(password),
+    }),
+  });
+
+  if (mirrored.status === 401) {
+    throw new WrongPasswordError('Password not correct');
+  }
+
+  if (isCloudflareBlocked(mirrored.status, mirrored.text, mirrored.contentType)) {
+    console.warn(
+      '[maloumCfBypass] still Cloudflare-blocked after mirror login:',
+      mirrored.status,
+      mirrored.contentType,
+      mirrored.text.slice(0, 200)
+    );
+    throw new MaloumApiError(
+      'Maloum blocked this request (Cloudflare/proxy). Rotate MALOUM_PROXY_URL and retry.',
+      403
+    );
+  }
+
+  if (!mirrored.ok) {
+    console.warn(
+      '[maloumCfBypass] login failed:',
+      mirrored.status,
+      mirrored.contentType,
+      mirrored.text.slice(0, 200)
+    );
+    throw new MaloumApiError(
+      mirrored.parsed?.message ||
+        mirrored.parsed?.error ||
+        `Login failed (${mirrored.status})`,
+      mirrored.status,
+      mirrored.parsed
+    );
+  }
+
+  const session = extractSessionTokens(mirrored.parsed);
+  if (!session?.access_token || !session?.refresh_token) {
+    throw new MaloumApiError(
+      'Login response missing access or refresh token',
+      502,
+      mirrored.parsed
+    );
+  }
+
+  return session;
+}
+
+const APP_CLEARANCE_URL = `${APP_ORIGIN}/login`;
+
+/**
+ * Convert bypass /cookies map into Playwright-shaped cookie objects for Electron.
+ */
+function clearanceMapToPlaywrightCookies(cookieMap) {
+  if (!cookieMap || typeof cookieMap !== 'object') {
+    return [];
+  }
+
+  const cookies = [];
+  for (const [name, value] of Object.entries(cookieMap)) {
+    if (!name || value === undefined || value === null) continue;
+    cookies.push({
+      name: String(name),
+      value: String(value),
+      domain: '.maloum.com',
+      path: '/',
+      httpOnly: name === 'cf_clearance',
+      secure: true,
+      sameSite: 'None',
+      expires: Math.floor(Date.now() / 1000) + 29 * 60,
+    });
+  }
+  return cookies;
+}
+
+/**
+ * Fetch Cloudflare clearance cookies for app.maloum.com through the bypass + proxy.
+ * Returns { cookies, userAgent } or empty cookies on soft failure.
  */
 async function fetchAppClearanceCookies(proxyUrl) {
-  if (!resolveCfBypassBaseUrl()) {
+  const base = resolveCfBypassBaseUrl();
+  if (!base) {
     return { cookies: [], userAgent: null };
   }
+
+  const resolvedProxy = resolveMaloumProxyUrl(proxyUrl);
+  const url = new URL(`${base}/cookies`);
+  url.searchParams.set('url', APP_CLEARANCE_URL);
+  url.searchParams.set('proxy', resolvedProxy);
+
+  let response;
   try {
-    const row = await ensureClearance(proxyUrl);
-    if (!row) {
-      return { cookies: [], userAgent: null };
-    }
-    return { cookies: row.cookies, userAgent: row.userAgent };
+    response = await fetchImpl(url.toString(), {
+      method: 'GET',
+      signal: AbortSignal.timeout(BYPASS_TIMEOUT_MS),
+    });
   } catch (err) {
     console.warn(
       '[maloumCfBypass] clearance cookie fetch failed:',
-      err?.message || err
+      err?.cause?.message || err?.message || err
     );
     return { cookies: [], userAgent: null };
   }
+
+  const text = await response.text();
+  const parsed = parseJsonSafe(text);
+  if (!response.ok || !parsed) {
+    console.warn(
+      '[maloumCfBypass] clearance cookie fetch bad response:',
+      response.status,
+      text.slice(0, 200)
+    );
+    return { cookies: [], userAgent: null };
+  }
+
+  const cookies = clearanceMapToPlaywrightCookies(parsed.cookies);
+  const userAgent =
+    typeof parsed.user_agent === 'string' && parsed.user_agent.trim()
+      ? parsed.user_agent.trim()
+      : null;
+
+  console.log(
+    `[maloumCfBypass] captured ${cookies.length} clearance cookie(s) for app.maloum.com`
+  );
+
+  return { cookies, userAgent };
 }
 
 module.exports = {
   resolveCfBypassBaseUrl,
-  ensureClearance,
+  mirrorMaloumRequest,
+  loginViaCfBypass,
   fetchAppClearanceCookies,
-  unflareProxyFromUrl,
   resetBypassQueueForTests,
   DEFAULT_BYPASS_URL,
   PROXY_SWITCH_PAUSE_MS,
