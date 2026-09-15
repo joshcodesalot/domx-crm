@@ -275,19 +275,6 @@ async function fetchOnce({
   return { response, text, responseContentType, parsed };
 }
 
-async function defaultRotatePoolProxy(creatorId, currentProxyUrl) {
-  const { rotatePoolProxy, MaloumPoolError } = require('./maloumProxyPool');
-  try {
-    return await rotatePoolProxy(creatorId, currentProxyUrl);
-  } catch (err) {
-    if (err?.name === 'MaloumPoolError' || err instanceof MaloumPoolError) {
-      throw new MaloumApiError(err.message, err.status || 403);
-    }
-    console.warn('[maloumClient] pool rotate failed:', err?.message || err);
-    return null;
-  }
-}
-
 async function requestJson(
   {
     method = 'GET',
@@ -326,7 +313,6 @@ async function requestJson(
   const resolveBypass =
     deps.resolveCfBypassBaseUrl ||
     (() => require('./maloumCfBypass').resolveCfBypassBaseUrl());
-  const rotateProxy = deps.rotatePoolProxy || defaultRotatePoolProxy;
 
   async function viaUndici(url) {
     return fetchOnce({
@@ -357,9 +343,8 @@ async function requestJson(
     );
   }
 
-  let currentProxy = proxyUrl;
-  let { response, text, responseContentType, parsed } = await viaUndici(
-    currentProxy
+  const { response, text, responseContentType, parsed } = await viaUndici(
+    proxyUrl
   );
 
   if (
@@ -371,7 +356,7 @@ async function requestJson(
         const viaBypass = await tryBypass({
           method,
           path,
-          proxyUrl: currentProxy,
+          proxyUrl,
           headers,
           requestBody,
           prefer: false,
@@ -383,34 +368,6 @@ async function requestJson(
         if (!(err instanceof MaloumApiError && err.status === 403)) {
           throw err;
         }
-      }
-    }
-
-    const nextProxy =
-      creatorId || deps.rotatePoolProxy
-        ? await rotateProxy(creatorId, currentProxy)
-        : null;
-    if (nextProxy && nextProxy !== currentProxy) {
-      currentProxy = nextProxy;
-      ({ response, text, responseContentType, parsed } = await viaUndici(
-        currentProxy
-      ));
-      if (
-        response.ok ||
-        !isCloudflareBlocked(response.status, text, responseContentType)
-      ) {
-        if (!response.ok) {
-          const message =
-            parsed?.message ||
-            parsed?.error ||
-            `Maloum request failed (${response.status})`;
-          throw new MaloumApiError(message, response.status, parsed);
-        }
-        return {
-          status: response.status,
-          data: parsed !== null ? parsed : text,
-          text,
-        };
       }
     }
 
@@ -1529,45 +1486,6 @@ async function fetchCurrentUser({ accessToken, proxyUrl, timezone, creatorId = n
 /**
  * After primary login path fails Cloudflare: CF bypass (if not already tried), then Playwright.
  */
-async function resolveLoginProxy(creatorId, proxyUrl) {
-  const { resolveProxyForCreator, MaloumPoolError } = require('./maloumProxyPool');
-  try {
-    const fromPool = await resolveProxyForCreator(creatorId || null, proxyUrl || null);
-    if (fromPool) {
-      return resolveMaloumProxyUrl(fromPool);
-    }
-  } catch (err) {
-    if (err?.name === 'MaloumPoolError' || err instanceof MaloumPoolError) {
-      throw new MaloumApiError(err.message, err.status || 403);
-    }
-    console.warn('[maloumClient] pool resolve for login failed:', err?.message || err);
-  }
-  return resolveMaloumProxyUrl(proxyUrl);
-}
-
-function isCloudflareLoginError(err) {
-  return (
-    err instanceof MaloumApiError &&
-    err.status === 403 &&
-    /Cloudflare|Rotate MALOUM_PROXY/i.test(err.message || '')
-  );
-}
-
-async function rotateLoginProxy(creatorId, currentProxyUrl) {
-  try {
-    const next = await defaultRotatePoolProxy(creatorId, currentProxyUrl);
-    if (next && next !== currentProxyUrl) {
-      return resolveMaloumProxyUrl(next);
-    }
-  } catch (err) {
-    if (err?.name === 'MaloumPoolError') {
-      throw new MaloumApiError(err.message, err.status || 403);
-    }
-    throw err;
-  }
-  return null;
-}
-
 async function loginAfterCloudflareBlock({
   usernameOrEmail,
   password,
@@ -1625,7 +1543,7 @@ async function login({
     throw new MaloumApiError('Email/username and password are required', 400);
   }
 
-  let resolvedProxy = await resolveLoginProxy(creatorId, proxyUrl);
+  const resolvedProxy = resolveMaloumProxyUrl(proxyUrl);
   const timezone = MALOUM_CLIENT_TIMEZONE;
   const identifier = String(usernameOrEmail).trim();
 
@@ -1655,14 +1573,6 @@ async function login({
           '[maloumClient] CF bypass unavailable for login; falling back to undici:',
           err.message
         );
-      } else if (isCloudflareLoginError(err)) {
-        const nextProxy = await rotateLoginProxy(creatorId, resolvedProxy);
-        if (nextProxy) {
-          resolvedProxy = nextProxy;
-          session = await tryBypassLogin(resolvedProxy);
-        } else {
-          throw err;
-        }
       } else {
         throw err;
       }
@@ -1710,29 +1620,12 @@ async function login({
         contentType,
         text.slice(0, 200)
       );
-      try {
         session = await loginAfterCloudflareBlock({
           usernameOrEmail: identifier,
           password,
           proxyUrl: resolvedProxy,
           skipBypass: Boolean(bypassBase),
         });
-      } catch (err) {
-        if (!isCloudflareLoginError(err)) {
-          throw err;
-        }
-        const nextProxy = await rotateLoginProxy(creatorId, resolvedProxy);
-        if (!nextProxy) {
-          throw err;
-        }
-        resolvedProxy = nextProxy;
-        session = await loginAfterCloudflareBlock({
-          usernameOrEmail: identifier,
-          password,
-          proxyUrl: resolvedProxy,
-          skipBypass: false,
-        });
-      }
     } else {
       console.warn(
         '[maloumClient] login failed:',

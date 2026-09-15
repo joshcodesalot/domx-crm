@@ -430,60 +430,6 @@ router.get('/', authenticate, requirePermission('creators.view'), async (req, re
   }
 });
 
-router.get(
-  '/maloum-proxy-pool',
-  authenticate,
-  requirePermission('creators.manage'),
-  async (_req, res) => {
-    try {
-      const maloumProxyPool = require('../services/maloumProxyPool');
-      const entries = await maloumProxyPool.listPoolPublic();
-      return res.json({
-        active: entries.length > 0,
-        entries,
-      });
-    } catch (err) {
-      console.error('Get Maloum proxy pool error:', err);
-      return res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-);
-
-router.put(
-  '/maloum-proxy-pool',
-  authenticate,
-  requirePermission('creators.manage'),
-  async (req, res) => {
-    const text = typeof req.body?.text === 'string' ? req.body.text : '';
-    try {
-      const maloumProxyPool = require('../services/maloumProxyPool');
-      const { InvalidProxyError } = require('../services/proxyUrl');
-      const parsed = maloumProxyPool.parseProxyLines(text);
-      const nonempty = text
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line && !line.startsWith('#'));
-      if (nonempty.length > 0 && parsed.length === 0) {
-        return res.status(400).json({
-          error:
-            'No valid proxies. Use host:port:user:pass or http://user:pass@host:port, one per line.',
-        });
-      }
-      const entries = await maloumProxyPool.replacePoolFromText(text);
-      return res.json({
-        active: entries.length > 0,
-        entries,
-      });
-    } catch (err) {
-      if (err instanceof InvalidProxyError) {
-        return res.status(400).json({ error: err.message });
-      }
-      console.error('Update Maloum proxy pool error:', err);
-      return res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-);
-
 function parseMassUnsendPlatform(req) {
   const platform = String(req.body?.platform || req.query?.platform || '').trim();
   if (platform !== '4based' && platform !== 'maloum') return null;
@@ -1843,16 +1789,11 @@ router.get(
       const envLabel =
         row.platform === '4based' ? 'FOURBASED_PROXY_URL' : 'MALOUM_PROXY_URL';
 
-      const maloumProxyPool = require('../services/maloumProxyPool');
-      const poolActive =
-        row.platform === 'maloum' ? await maloumProxyPool.hasPoolEntries() : false;
-
       return res.json({
         hasCustomProxy: Boolean(stored),
         proxyHost: parts?.hostPort || null,
         proxyUsername: parts?.username || null,
         envLabel,
-        poolActive,
       });
     } catch (err) {
       console.error('Get creator proxy error:', err);

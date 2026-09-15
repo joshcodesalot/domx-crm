@@ -95,34 +95,4 @@ describe('requestJson CF routing', () => {
     );
     assert.equal(bypassCalls, 0);
   });
-
-  it('CF 403 with creatorId rotates and retries undici once', async () => {
-    const seen = [];
-    let rotateCalls = 0;
-    const result = await requestJson(
-      {
-        path: '/chats/unread-count',
-        proxyUrl: PROXY,
-        creatorId: 'cr-1',
-        cfBypass: 'never',
-      },
-      deps({
-        resolveCfBypassBaseUrl: () => null,
-        fetch: async (url, opts) => {
-          seen.push(opts.dispatcher);
-          if (seen.length === 1) return cfHtmlResponse();
-          return jsonResponse({ unread: 4 });
-        },
-        rotatePoolProxy: async (creatorId, current) => {
-          rotateCalls += 1;
-          assert.equal(creatorId, 'cr-1');
-          assert.equal(current, PROXY);
-          return 'http://user:pass@127.0.0.1:10';
-        },
-      })
-    );
-    assert.equal(rotateCalls, 1);
-    assert.equal(seen.length, 2);
-    assert.deepEqual(result.data, { unread: 4 });
-  });
 });

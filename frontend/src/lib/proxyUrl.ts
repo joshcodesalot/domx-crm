@@ -69,3 +69,61 @@ export function buildProxyUrl(
 export function isValidProxyHostPort(hostPort: string): boolean {
   return parseHostPort(hostPort) !== null;
 }
+
+export function parseLooseProxyLine(
+  line: string
+): { hostPort: string; username: string; password: string } | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) {
+    return null;
+  }
+
+  if (trimmed.includes('@') || /^https?:\/\//i.test(trimmed)) {
+    try {
+      const parsed = new URL(
+        /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
+      );
+      const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+      const hostPort = formatHostPort(parsed.hostname, port);
+      if (!parseHostPort(hostPort)) {
+        return null;
+      }
+      return {
+        hostPort,
+        username: parsed.username ? decodeURIComponent(parsed.username) : '',
+        password: parsed.password ? decodeURIComponent(parsed.password) : '',
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  const firstColon = trimmed.indexOf(':');
+  if (firstColon <= 0) {
+    return null;
+  }
+  const host = trimmed.slice(0, firstColon).trim();
+  const afterHost = trimmed.slice(firstColon + 1);
+  const secondColon = afterHost.indexOf(':');
+  if (secondColon === -1) {
+    if (!parseHostPort(trimmed)) {
+      return null;
+    }
+    return { hostPort: trimmed, username: '', password: '' };
+  }
+
+  const port = afterHost.slice(0, secondColon).trim();
+  if (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
+    return null;
+  }
+  const userAndPass = afterHost.slice(secondColon + 1);
+  const userColon = userAndPass.indexOf(':');
+  const username =
+    userColon === -1 ? userAndPass : userAndPass.slice(0, userColon);
+  const password = userColon === -1 ? '' : userAndPass.slice(userColon + 1);
+  const hostPort = formatHostPort(host, port);
+  if (!parseHostPort(hostPort)) {
+    return null;
+  }
+  return { hostPort, username, password };
+}

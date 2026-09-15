@@ -796,40 +796,12 @@ export interface CreatorProxyResponse {
   proxyHost: string | null;
   proxyUsername: string | null;
   envLabel: string;
-  poolActive?: boolean;
-}
-
-export interface MaloumProxyPoolEntry {
-  id: string;
-  hostPort: string;
-  bannedUntil: string | null;
-  banned: boolean;
-  assignedCreatorId: string | null;
-  assignedCreatorName: string | null;
-}
-
-export interface MaloumProxyPoolResponse {
-  active: boolean;
-  entries: MaloumProxyPoolEntry[];
 }
 
 export async function getCreatorProxy(
   creatorId: string
 ): Promise<CreatorProxyResponse> {
   return request<CreatorProxyResponse>(`/api/creators/${creatorId}/proxy`);
-}
-
-export async function getMaloumProxyPool(): Promise<MaloumProxyPoolResponse> {
-  return request<MaloumProxyPoolResponse>('/api/creators/maloum-proxy-pool');
-}
-
-export async function updateMaloumProxyPool(
-  text: string
-): Promise<MaloumProxyPoolResponse> {
-  return request<MaloumProxyPoolResponse>('/api/creators/maloum-proxy-pool', {
-    method: 'PUT',
-    body: JSON.stringify({ text }),
-  });
 }
 
 export async function updateCreatorProxy(
