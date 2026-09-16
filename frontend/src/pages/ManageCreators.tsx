@@ -151,10 +151,7 @@ export default function ManageCreators() {
   const loadCreators = useCallback(async () => {
     const { creators: list } = await getCreators();
     setCreators(list);
-    await Promise.all([
-      loadAiSettingsFor(list),
-      loadGlobalAiFlags(),
-    ]);
+    await Promise.all([loadAiSettingsFor(list), loadGlobalAiFlags()]);
   }, [loadAiSettingsFor, loadGlobalAiFlags]);
 
   useEffect(() => {

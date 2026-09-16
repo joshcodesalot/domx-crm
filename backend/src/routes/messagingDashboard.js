@@ -50,7 +50,6 @@ const {
   normalizeCurrency,
   mergeNativeCurrencyAmounts,
   monthlySalesByPlatformFromRows,
-  normalizeAnalyticsPlatform,
   ratePercent: helperRatePercent,
 } = require('../services/messagingAnalyticsHelpers');
 const {
@@ -2898,8 +2897,12 @@ router.get(
 
       const salesByPlatformMap = new Map();
       for (const row of salesByPlatformResult.rows) {
-        const platform = normalizeAnalyticsPlatform(row.platform);
-        if (!platform) continue;
+        const platform =
+          row.platform === '4based'
+            ? '4based'
+            : row.platform === 'telegram'
+              ? 'telegram'
+              : 'maloum';
         if (!salesByPlatformMap.has(platform)) {
           salesByPlatformMap.set(platform, []);
         }
@@ -2934,7 +2937,7 @@ router.get(
           creatorAvatarUrl: isDeletedCreator
             ? null
             : row.creatorAvatarUrl || null,
-          platform: normalizeAnalyticsPlatform(row.platform),
+          platform: row.platform === '4based' ? '4based' : row.platform === 'maloum' ? 'maloum' : null,
           ...stats,
           totalSales: [],
           tipSales: [],
@@ -4317,8 +4320,12 @@ router.get(
           platformByCreator.set(creatorKey, new Map());
         }
         const byPlatform = platformByCreator.get(creatorKey);
-        const platform = normalizeAnalyticsPlatform(row.platform);
-        if (!platform) continue;
+        const platform =
+          row.platform === '4based'
+            ? '4based'
+            : row.platform === 'telegram'
+              ? 'telegram'
+              : 'maloum';
         if (!byPlatform.has(platform)) byPlatform.set(platform, []);
         const amount = Number(row.amount) || 0;
         if (amount > 0) {
@@ -4376,7 +4383,12 @@ router.get(
           creatorAvatarUrl: isDeletedCreator
             ? null
             : row.creatorAvatarUrl || null,
-          platform: normalizeAnalyticsPlatform(row.platform),
+          platform:
+            row.platform === '4based'
+              ? '4based'
+              : row.platform === 'maloum'
+                ? 'maloum'
+                : null,
           ...stats,
           totalSales,
           tipSales,

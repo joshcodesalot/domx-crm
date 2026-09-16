@@ -1930,11 +1930,7 @@ router.delete('/:id', authenticate, requirePermission('creators.manage'), async 
 
     const creator = creatorResult.rows[0];
     const creatorPlatform =
-      creator.platform === '4based'
-        ? '4based'
-        : creator.platform === 'telegram'
-          ? 'telegram'
-          : 'maloum';
+      creator.platform === '4based' ? '4based' : 'maloum';
 
     const assignedStaff = await client.query(
       `SELECT "userId" FROM creator_staff_assignments WHERE "creatorId" = $1`,
@@ -2986,7 +2982,17 @@ router.post(
       }
 
       const storedProxy = decryptStoredProxy(result.rows[0].encryptedProxy);
-      const resolvedProxy = customProxy.provided ? customProxy.proxyUrl : storedProxy;
+      let resolvedProxy;
+      try {
+        resolvedProxy = maloumClient.resolveMaloumProxyUrl(
+          customProxy.provided ? customProxy.proxyUrl : storedProxy
+        );
+      } catch (err) {
+        if (err instanceof maloumClient.MaloumApiError) {
+          return res.status(err.status || 400).json({ error: err.message });
+        }
+        throw err;
+      }
 
       let loginResult;
       try {
@@ -2994,7 +3000,6 @@ router.post(
           usernameOrEmail: email.trim(),
           password,
           proxyUrl: resolvedProxy,
-          creatorId: id,
         });
       } catch (err) {
         if (err instanceof maloumClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
@@ -3145,14 +3150,22 @@ router.post(
       const storedProxy = creator.encryptedProxy
         ? decryptSecret(creator.encryptedProxy)
         : null;
+      let resolvedProxy;
+      try {
+        resolvedProxy = maloumClient.resolveMaloumProxyUrl(storedProxy);
+      } catch (err) {
+        if (err instanceof maloumClient.MaloumApiError) {
+          return res.status(err.status || 400).json({ error: err.message });
+        }
+        throw err;
+      }
 
       let loginResult;
       try {
         loginResult = await maloumClient.login({
           usernameOrEmail: creator.loginEmail.trim(),
           password: loginPassword,
-          proxyUrl: storedProxy,
-          creatorId: creator.id,
+          proxyUrl: resolvedProxy,
         });
       } catch (err) {
         if (err instanceof maloumClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
@@ -5207,7 +5220,7 @@ router.get(
       }
 
       const unread = await maloumClient.getUnreadCount(loaded.creator);
-      res.json({ unread });
+      res.json({ unread: typeof unread === 'number' ? unread : Number(unread) || 0 });
     } catch (err) {
       return handleMaloumError(res, err, 'Get Maloum unread count error:');
     }
@@ -5240,9 +5253,12 @@ router.get(
         maloumClient.getNotificationsUnreadCount(loaded.creator),
       ]);
 
+      const toCount = (value) =>
+        typeof value === 'number' ? value : Number(value) || 0;
+
       res.json({
-        messages: messagesUnread,
-        notifications: notificationsUnread,
+        messages: toCount(messagesUnread),
+        notifications: toCount(notificationsUnread),
       });
 
       const creator = loaded.creator;

@@ -1,14 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Globe } from 'lucide-react';
+import CreatorProxyFields from '@/components/CreatorProxyFields';
 import {
   getCreatorProxy,
   updateCreatorProxy,
   type Creator,
 } from '@/lib/api';
-import { parseLooseProxyLine } from '@/lib/proxyUrl';
-
-const inputClassName =
-  'w-full px-3 py-2 text-sm font-mono border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-white/5 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-brand-500';
+import { isValidProxyHostPort } from '@/lib/proxyUrl';
 
 interface EditCreatorProxyModalProps {
   creator: Creator;
@@ -21,7 +19,11 @@ export default function EditCreatorProxyModal({
   onClose,
   onSaved,
 }: EditCreatorProxyModalProps) {
-  const [proxyLine, setProxyLine] = useState('');
+  const [proxyHost, setProxyHost] = useState('');
+  const [proxyUsername, setProxyUsername] = useState('');
+  const [proxyPassword, setProxyPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [hasCustomProxy, setHasCustomProxy] = useState(false);
   const [envLabel, setEnvLabel] = useState(
     creator.platform === '4based' ? 'FOURBASED_PROXY_URL' : 'MALOUM_PROXY_URL'
   );
@@ -37,12 +39,10 @@ export default function EditCreatorProxyModal({
       try {
         const data = await getCreatorProxy(creator.id);
         if (cancelled) return;
+        setHasCustomProxy(data.hasCustomProxy);
+        setProxyHost(data.proxyHost || '');
+        setProxyUsername(data.proxyUsername || '');
         setEnvLabel(data.envLabel);
-        if (data.proxyHost && data.proxyUsername) {
-          setProxyLine(`${data.proxyHost}:${data.proxyUsername}`);
-        } else {
-          setProxyLine(data.proxyHost || '');
-        }
       } catch (err) {
         if (!cancelled) {
           setError(
@@ -62,31 +62,9 @@ export default function EditCreatorProxyModal({
   }, [creator.id]);
 
   async function handleSave() {
-    const line = proxyLine.trim();
-    if (!line) {
-      setSaving(true);
-      setError(null);
-      try {
-        await updateCreatorProxy(creator.id, {
-          proxyHost: '',
-          proxyUsername: '',
-          proxyPassword: '',
-        });
-        onSaved();
-        onClose();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to save proxy');
-      } finally {
-        setSaving(false);
-      }
-      return;
-    }
-
-    const parsed = parseLooseProxyLine(line);
-    if (!parsed) {
-      setError(
-        'Use host:port:user:pass (for example isp.decodo.com:10001:user:pass).'
-      );
+    const host = proxyHost.trim();
+    if (host && !isValidProxyHostPort(host)) {
+      setError('Proxy address is invalid. Use host:port (for example 1.2.3.4:8080).');
       return;
     }
 
@@ -94,9 +72,9 @@ export default function EditCreatorProxyModal({
     setError(null);
     try {
       await updateCreatorProxy(creator.id, {
-        proxyHost: parsed.hostPort,
-        proxyUsername: parsed.username,
-        proxyPassword: parsed.password,
+        proxyHost: host,
+        proxyUsername: proxyUsername.trim(),
+        proxyPassword,
       });
       onSaved();
       onClose();
@@ -124,7 +102,11 @@ export default function EditCreatorProxyModal({
           <div className="flex-1 min-w-0">
             <h3 className="text-lg font-semibold">Account proxy</h3>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Leave blank to use {envLabel} from .env.
+              Set a proxy for {creator.displayName}. Leave the address blank to
+              use {envLabel} from the server (.env).
+              {creator.platform === 'maloum'
+                ? ' Changing a Maloum proxy may require reconnecting so Cloudflare clearance matches the new IP.'
+                : ''}
             </p>
           </div>
         </div>
@@ -133,26 +115,31 @@ export default function EditCreatorProxyModal({
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">Loading…</p>
         ) : (
           <div className="mb-4">
-            <label className="block text-sm font-medium mb-1.5">
-              Proxy{' '}
-              <span className="text-gray-400 font-normal">(optional)</span>
-            </label>
-            <input
-              type="text"
-              value={proxyLine}
-              onChange={(e) => setProxyLine(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !saving && !loading) void handleSave();
-              }}
-              placeholder="isp.decodo.com:10001:user:pass"
-              className={inputClassName}
-              disabled={saving}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-              host:port:user:pass
+            <p className="text-xs text-gray-400 mb-3">
+              Currently using:{' '}
+              <span className="font-medium text-gray-600 dark:text-gray-300">
+                {hasCustomProxy ? 'Custom proxy' : `.env (${envLabel})`}
+              </span>
             </p>
+            <CreatorProxyFields
+              proxyHost={proxyHost}
+              proxyUsername={proxyUsername}
+              proxyPassword={proxyPassword}
+              showPassword={showPassword}
+              envLabel={envLabel}
+              disabled={saving}
+              passwordPlaceholder={
+                hasCustomProxy ? 'Leave blank to keep existing' : 'Optional'
+              }
+              helperText={`Empty Address:Port saves as .env fallback (${envLabel}).`}
+              onHostChange={setProxyHost}
+              onUsernameChange={setProxyUsername}
+              onPasswordChange={setProxyPassword}
+              onToggleShowPassword={() => setShowPassword((v) => !v)}
+              onEnter={() => {
+                if (!saving && !loading) void handleSave();
+              }}
+            />
           </div>
         )}
 

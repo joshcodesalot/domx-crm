@@ -6,13 +6,6 @@ const { MODES } = require('../contracts');
 const { resolveEffectiveAiMode } = require('../flags');
 const { ingestConversation } = require('../ingest');
 const { sanitizeFanUsername } = require('../names');
-const { listRecentActiveConversations } = require('./recentActiveSafety');
-const {
-  isChatNotFoundError,
-  resolvePlatformChat,
-  isDeadChatSkipped,
-  markDeadChat,
-} = require('../send/resolvePlatformChat');
 
 const POLL_MS = 15_000;
 const PAGE_LIMIT = 15;
@@ -161,66 +154,6 @@ async function defaultLoadEligibleRows(client = pool) {
   return result.rows;
 }
 
-async function ingestFourBasedChat(row, deps, creator, { chatId, platformFanId, fanUsername, source }) {
-  const messagesPayload = await deps.getMessages(creator, chatId, {
-    limit: PAGE_LIMIT,
-  });
-  const mapped = mapFourBasedMessagesForIngest(
-    normalizeList(messagesPayload),
-    creator.providerUserId || null
-  );
-  if (mapped.length === 0) return;
-  await deps.ingestConversation({
-    creatorId: row.id,
-    platform: '4based',
-    platformChatId: String(chatId),
-    platformFanId: platformFanId || null,
-    fanUsername: fanUsername || null,
-    source,
-    messages: mapped,
-  });
-}
-
-async function safeIngestFourBasedChat(row, deps, creator, args) {
-  const chatId = String(args.chatId || '');
-  const now = deps.now ? deps.now() : Date.now();
-  if (isDeadChatSkipped(row.id, chatId, now)) return;
-  try {
-    await ingestFourBasedChat(row, deps, creator, args);
-  } catch (err) {
-    if (isChatNotFoundError(err) && args.platformFanId) {
-      try {
-        const resolve = deps.resolvePlatformChat || resolvePlatformChat;
-        const resolved = await resolve(
-          {
-            platform: '4based',
-            creator,
-            platformChatId: chatId,
-            platformFanId: args.platformFanId,
-          },
-          deps
-        );
-        if (resolved?.platformChatId && resolved.platformChatId !== chatId) {
-          await ingestFourBasedChat(row, deps, creator, {
-            ...args,
-            chatId: resolved.platformChatId,
-          });
-          return;
-        }
-      } catch (resolveErr) {
-        console.error(
-          'AI 4based chat resolve error:',
-          row.id,
-          chatId,
-          resolveErr?.message || resolveErr
-        );
-      }
-    }
-    if (isChatNotFoundError(err)) markDeadChat(row.id, chatId, now);
-    console.error('AI 4based chat ingest error:', row.id, chatId, err?.message || err);
-  }
-}
-
 async function pollCreator(row, deps) {
   const loaded = await deps.loadFourBasedCreator(row.id);
   if (loaded?.error || !loaded?.creator) {
@@ -235,37 +168,24 @@ async function pollCreator(row, deps) {
     isUnreadFourBasedChat(chat, creator.providerUserId || null)
   );
 
-  const fetched = new Set();
   for (const chat of chats) {
-    const chatId = String(chat._id);
-    fetched.add(chatId);
-    await safeIngestFourBasedChat(row, deps, creator, {
-      chatId,
+    const messagesPayload = await deps.getMessages(creator, chat._id, {
+      limit: PAGE_LIMIT,
+    });
+    const mapped = mapFourBasedMessagesForIngest(
+      normalizeList(messagesPayload),
+      creator.providerUserId || null
+    );
+    if (mapped.length === 0) continue;
+    await deps.ingestConversation({
+      creatorId: row.id,
+      platform: '4based',
+      platformChatId: String(chat._id),
       platformFanId: fourBasedFanId(chat, creator.providerUserId || null),
       fanUsername: fourBasedFanUsername(chat, creator.providerUserId || null),
       source: 'poll',
+      messages: mapped,
     });
-  }
-
-  try {
-    const recent = await deps.listRecentConversations({
-      creatorId: row.id,
-      platform: '4based',
-      skipChatIds: [...fetched],
-    });
-    for (const convo of Array.isArray(recent) ? recent : []) {
-      const chatId = String(convo.platformChatId || '').trim();
-      if (!chatId || fetched.has(chatId)) continue;
-      fetched.add(chatId);
-      await safeIngestFourBasedChat(row, deps, creator, {
-        chatId,
-        platformFanId: convo.platformFanId || null,
-        fanUsername: convo.fanUsername || null,
-        source: 'recent_active',
-      });
-    }
-  } catch (err) {
-    console.error('AI 4based recent-active poll error:', row.id, err?.message || err);
   }
 }
 
@@ -278,15 +198,7 @@ async function tick(deps = {}) {
     loadFourBasedCreator: deps.loadFourBasedCreator || loadFourBasedCreator,
     listChats: deps.listChats || fourBasedClient.listChats.bind(fourBasedClient),
     getMessages: deps.getMessages || fourBasedClient.getMessages.bind(fourBasedClient),
-    getChatByUser:
-      deps.getChatByUser || fourBasedClient.getChatByUser.bind(fourBasedClient),
-    createChatByUser:
-      deps.createChatByUser ||
-      fourBasedClient.createChatByUser.bind(fourBasedClient),
-    resolvePlatformChat: deps.resolvePlatformChat || resolvePlatformChat,
     ingestConversation: deps.ingestConversation || ingestConversation,
-    listRecentConversations:
-      deps.listRecentConversations || listRecentActiveConversations,
     now: deps.now || Date.now,
   };
 

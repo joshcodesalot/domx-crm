@@ -74,7 +74,6 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   const navigate = useNavigate();
   const { creators, badgesByCreatorId, throneUnread } = useCreatorLive({
     wantBadges: true,
-    badgeScope: 'all',
   });
   const unreadTotals = useMemo(() => {
     const totals = {

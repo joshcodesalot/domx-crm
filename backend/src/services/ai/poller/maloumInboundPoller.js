@@ -6,13 +6,6 @@ const { MODES } = require('../contracts');
 const { resolveEffectiveAiMode } = require('../flags');
 const { ingestConversation } = require('../ingest');
 const { sanitizeFanUsername } = require('../names');
-const { listRecentActiveConversations } = require('./recentActiveSafety');
-const {
-  isChatNotFoundError,
-  resolvePlatformChat,
-  isDeadChatSkipped,
-  markDeadChat,
-} = require('../send/resolvePlatformChat');
 
 const POLL_MS = 15_000;
 const PAGE_LIMIT = 15;
@@ -134,66 +127,6 @@ async function defaultLoadEligibleRows(client = pool) {
   return result.rows;
 }
 
-async function ingestMaloumChat(row, deps, creator, { chatId, platformFanId, fanUsername, source }) {
-  const messagesPayload = await deps.getMessages(creator, chatId, {
-    limit: PAGE_LIMIT,
-  });
-  const mapped = mapMaloumMessagesForIngest(
-    normalizeList(messagesPayload),
-    creator.providerUserId || null
-  );
-  if (mapped.length === 0) return;
-  await deps.ingestConversation({
-    creatorId: row.id,
-    platform: 'maloum',
-    platformChatId: String(chatId),
-    platformFanId: platformFanId || null,
-    fanUsername: fanUsername || null,
-    source,
-    messages: mapped,
-  });
-}
-
-async function safeIngestMaloumChat(row, deps, creator, args) {
-  const chatId = String(args.chatId || '');
-  const now = deps.now ? deps.now() : Date.now();
-  if (isDeadChatSkipped(row.id, chatId, now)) return;
-  try {
-    await ingestMaloumChat(row, deps, creator, args);
-  } catch (err) {
-    if (isChatNotFoundError(err) && args.platformFanId) {
-      try {
-        const resolve = deps.resolvePlatformChat || resolvePlatformChat;
-        const resolved = await resolve(
-          {
-            platform: 'maloum',
-            creator,
-            platformChatId: chatId,
-            platformFanId: args.platformFanId,
-          },
-          deps
-        );
-        if (resolved?.platformChatId && resolved.platformChatId !== chatId) {
-          await ingestMaloumChat(row, deps, creator, {
-            ...args,
-            chatId: resolved.platformChatId,
-          });
-          return;
-        }
-      } catch (resolveErr) {
-        console.error(
-          'AI Maloum chat resolve error:',
-          row.id,
-          chatId,
-          resolveErr?.message || resolveErr
-        );
-      }
-    }
-    if (isChatNotFoundError(err)) markDeadChat(row.id, chatId, now);
-    console.error('AI Maloum chat ingest error:', row.id, chatId, err?.message || err);
-  }
-}
-
 async function pollCreator(row, deps) {
   const loaded = await deps.loadMaloumCreator(row.id);
   if (loaded?.error || !loaded?.creator) {
@@ -208,37 +141,24 @@ async function pollCreator(row, deps) {
     (chat) => chat && chat.unreadMessages === true && chat._id
   );
 
-  const fetched = new Set();
   for (const chat of chats) {
-    const chatId = String(chat._id);
-    fetched.add(chatId);
-    await safeIngestMaloumChat(row, deps, creator, {
-      chatId,
+    const messagesPayload = await deps.getMessages(creator, chat._id, {
+      limit: PAGE_LIMIT,
+    });
+    const mapped = mapMaloumMessagesForIngest(
+      normalizeList(messagesPayload),
+      creator.providerUserId || null
+    );
+    if (mapped.length === 0) continue;
+    await deps.ingestConversation({
+      creatorId: row.id,
+      platform: 'maloum',
+      platformChatId: String(chat._id),
       platformFanId: chat.chatPartner?._id ? String(chat.chatPartner._id) : null,
       fanUsername: maloumFanUsername(chat),
       source: 'poll',
+      messages: mapped,
     });
-  }
-
-  try {
-    const recent = await deps.listRecentConversations({
-      creatorId: row.id,
-      platform: 'maloum',
-      skipChatIds: [...fetched],
-    });
-    for (const convo of Array.isArray(recent) ? recent : []) {
-      const chatId = String(convo.platformChatId || '').trim();
-      if (!chatId || fetched.has(chatId)) continue;
-      fetched.add(chatId);
-      await safeIngestMaloumChat(row, deps, creator, {
-        chatId,
-        platformFanId: convo.platformFanId || null,
-        fanUsername: convo.fanUsername || null,
-        source: 'recent_active',
-      });
-    }
-  } catch (err) {
-    console.error('AI Maloum recent-active poll error:', row.id, err?.message || err);
   }
 }
 
@@ -251,12 +171,7 @@ async function tick(deps = {}) {
     loadMaloumCreator: deps.loadMaloumCreator || loadMaloumCreator,
     listChats: deps.listChats || maloumClient.listChats.bind(maloumClient),
     getMessages: deps.getMessages || maloumClient.getMessages.bind(maloumClient),
-    createChat: deps.createChat || maloumClient.createChat.bind(maloumClient),
-    getChat: deps.getChat || maloumClient.getChat.bind(maloumClient),
-    resolvePlatformChat: deps.resolvePlatformChat || resolvePlatformChat,
     ingestConversation: deps.ingestConversation || ingestConversation,
-    listRecentConversations:
-      deps.listRecentConversations || listRecentActiveConversations,
     now: deps.now || Date.now,
   };
 

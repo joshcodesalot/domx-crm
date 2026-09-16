@@ -5,7 +5,6 @@ const { MODES } = require('../contracts');
 const { resolveEffectiveAiMode } = require('../flags');
 const { ingestConversation } = require('../ingest');
 const { sanitizeFanUsername } = require('../names');
-const { listRecentActiveConversations } = require('./recentActiveSafety');
 
 const POLL_MS = 15_000;
 const PAGE_LIMIT = 15;
@@ -114,37 +113,6 @@ function isUnreadDialog(dialog) {
   return Boolean(dialog && dialog.peerId && Number(dialog.unreadCount) > 0);
 }
 
-async function ingestTelegramChat(row, deps, { peerId, platformFanId, fanUsername, source }) {
-  const messagesPayload = await deps.listMessages(row.id, peerId, {
-    limit: PAGE_LIMIT,
-    markRead: false,
-  });
-  const mapped = mapTelegramMessagesForIngest(normalizeMessages(messagesPayload));
-  if (mapped.length === 0) return;
-  await deps.ingestConversation({
-    creatorId: row.id,
-    platform: 'telegram',
-    platformChatId: peerId,
-    platformFanId: platformFanId || peerId,
-    fanUsername: fanUsername || null,
-    source,
-    messages: mapped,
-  });
-}
-
-async function safeIngestTelegramChat(row, deps, args) {
-  try {
-    await ingestTelegramChat(row, deps, args);
-  } catch (err) {
-    console.error(
-      'AI Telegram chat ingest error:',
-      row.id,
-      args.peerId,
-      err?.message || err
-    );
-  }
-}
-
 async function pollCreator(row, deps) {
   const dialogs = await deps.listDialogs(row.id, { limit: DIALOG_LIMIT });
   const unread = (Array.isArray(dialogs) ? dialogs : []).filter((dialog) => {
@@ -153,37 +121,22 @@ async function pollCreator(row, deps) {
     return true;
   });
 
-  const fetched = new Set();
   for (const dialog of unread) {
     const peerId = String(dialog.peerId);
-    fetched.add(peerId);
-    await safeIngestTelegramChat(row, deps, {
-      peerId,
+    const messagesPayload = await deps.listMessages(row.id, peerId, {
+      limit: PAGE_LIMIT,
+    });
+    const mapped = mapTelegramMessagesForIngest(normalizeMessages(messagesPayload));
+    if (mapped.length === 0) continue;
+    await deps.ingestConversation({
+      creatorId: row.id,
+      platform: 'telegram',
+      platformChatId: peerId,
       platformFanId: peerId,
       fanUsername: telegramFanUsername(dialog),
       source: 'poll',
+      messages: mapped,
     });
-  }
-
-  try {
-    const recent = await deps.listRecentConversations({
-      creatorId: row.id,
-      platform: 'telegram',
-      skipChatIds: [...fetched],
-    });
-    for (const convo of Array.isArray(recent) ? recent : []) {
-      const peerId = String(convo.platformChatId || '').trim();
-      if (!peerId || fetched.has(peerId)) continue;
-      fetched.add(peerId);
-      await safeIngestTelegramChat(row, deps, {
-        peerId,
-        platformFanId: convo.platformFanId || peerId,
-        fanUsername: convo.fanUsername || null,
-        source: 'recent_active',
-      });
-    }
-  } catch (err) {
-    console.error('AI Telegram recent-active poll error:', row.id, err?.message || err);
   }
 }
 
@@ -196,8 +149,6 @@ async function tick(deps = {}) {
     listDialogs: deps.listDialogs || telegramWorker.listDialogs.bind(telegramWorker),
     listMessages: deps.listMessages || telegramWorker.listMessages.bind(telegramWorker),
     ingestConversation: deps.ingestConversation || ingestConversation,
-    listRecentConversations:
-      deps.listRecentConversations || listRecentActiveConversations,
     isTelegramServiceDialog:
       deps.isTelegramServiceDialog || telegramWorker.isTelegramServiceDialog,
     now: deps.now || Date.now,

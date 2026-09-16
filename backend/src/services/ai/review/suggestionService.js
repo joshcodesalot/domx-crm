@@ -147,18 +147,6 @@ async function getSuggestionById(id, client = pool) {
   return result.rows[0] || null;
 }
 
-async function getLatestSuggestionForRun(runId, client = pool) {
-  if (!runId) return null;
-  const result = await client.query(
-    `SELECT * FROM ai_suggestions
-     WHERE "runId" = $1
-     ORDER BY "createdAt" DESC
-     LIMIT 1`,
-    [runId]
-  );
-  return result.rows[0] || null;
-}
-
 async function updateSuggestionStatus(id, patch, client = pool) {
   const result = await client.query(
     `UPDATE ai_suggestions
@@ -419,7 +407,6 @@ module.exports = {
   supersedePending,
   persistPendingSuggestion,
   getSuggestionById,
-  getLatestSuggestionForRun,
   updateSuggestionStatus,
   getPendingSuggestion,
   getPendingSuggestionByChat,

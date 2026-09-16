@@ -21,26 +21,6 @@ const {
 
 const DEFAULT_BYPASS_URL = 'http://127.0.0.1:8000';
 const BYPASS_TIMEOUT_MS = 120_000;
-const PROXY_SWITCH_PAUSE_MS = 400;
-
-let fetchImpl = undiciFetch;
-let bypassQueue = Promise.resolve();
-let lastBypassProxy = null;
-
-function resetBypassQueueForTests({ fetch } = {}) {
-  bypassQueue = Promise.resolve();
-  lastBypassProxy = null;
-  fetchImpl = fetch || undiciFetch;
-}
-
-function enqueueBypass(task) {
-  const run = bypassQueue.then(task, task);
-  bypassQueue = run.then(
-    () => undefined,
-    () => undefined
-  );
-  return run;
-}
 
 function defaultApiHeaders({ accessToken, timezone } = {}) {
   const headers = {
@@ -104,7 +84,11 @@ function bypassUnavailableError(base, err) {
   return unavailable;
 }
 
-async function executeMirrorMaloumRequest({
+/**
+ * Mirror any Maloum API request through the CF bypass service.
+ * Returns { status, ok, text, contentType, parsed }.
+ */
+async function mirrorMaloumRequest({
   method = 'GET',
   path,
   proxyUrl,
@@ -121,11 +105,6 @@ async function executeMirrorMaloumRequest({
   }
 
   const resolvedProxy = resolveMaloumProxyUrl(proxyUrl);
-  if (lastBypassProxy && lastBypassProxy !== resolvedProxy) {
-    await new Promise((resolve) => setTimeout(resolve, PROXY_SWITCH_PAUSE_MS));
-  }
-  lastBypassProxy = resolvedProxy;
-
   const pathPart = path.startsWith('/') ? path : `/${path}`;
   const url = `${base}${pathPart}`;
 
@@ -137,7 +116,7 @@ async function executeMirrorMaloumRequest({
 
   let response;
   try {
-    response = await fetchImpl(url, {
+    response = await undiciFetch(url, {
       method,
       headers: mirrorHeaders,
       body,
@@ -166,15 +145,6 @@ async function executeMirrorMaloumRequest({
     contentType,
     parsed,
   };
-}
-
-/**
- * Mirror any Maloum API request through the CF bypass service.
- * Serialized so one Chromium session is not multiplexed across proxies.
- * Returns { status, ok, text, contentType, parsed }.
- */
-function mirrorMaloumRequest(opts) {
-  return enqueueBypass(() => executeMirrorMaloumRequest(opts));
 }
 
 /**
@@ -287,7 +257,7 @@ async function fetchAppClearanceCookies(proxyUrl) {
 
   let response;
   try {
-    response = await fetchImpl(url.toString(), {
+    response = await undiciFetch(url.toString(), {
       method: 'GET',
       signal: AbortSignal.timeout(BYPASS_TIMEOUT_MS),
     });
@@ -328,7 +298,5 @@ module.exports = {
   mirrorMaloumRequest,
   loginViaCfBypass,
   fetchAppClearanceCookies,
-  resetBypassQueueForTests,
   DEFAULT_BYPASS_URL,
-  PROXY_SWITCH_PAUSE_MS,
 };

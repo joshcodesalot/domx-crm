@@ -51,16 +51,6 @@ function isOpenableCreator(creator: Creator): boolean {
 export default function MessagePro() {
   const location = useLocation();
   const pagePollEnabled = usePollEnabled(location.pathname === '/message-pro');
-  const [workspaces, setWorkspaces] = useState<CreatorWorkspace[]>([]);
-  const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
-  const focusedBadgeIds = useMemo(() => {
-    const ids = new Set<string>();
-    if (activeAccountId) ids.add(activeAccountId);
-    for (const workspace of workspaces) {
-      if (workspace.fanTabs.length > 0) ids.add(workspace.creator.id);
-    }
-    return [...ids];
-  }, [activeAccountId, workspaces]);
   const {
     creators,
     creatorsLoading: loading,
@@ -70,9 +60,9 @@ export default function MessagePro() {
     platform: 'maloum',
     wantBadges: true,
     pollEnabled: pagePollEnabled,
-    pollAllBadges: true,
-    badgeScope: focusedBadgeIds,
   });
+  const [workspaces, setWorkspaces] = useState<CreatorWorkspace[]>([]);
+  const [activeAccountId, setActiveAccountId] = useState<string | null>(null);
   const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
     readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
   );

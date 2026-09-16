@@ -16,7 +16,6 @@ const {
   BACKOFF_STEPS_MS,
   BACKOFF_CAP_MS,
 } = require('./fourBasedInboundPoller');
-const { resetDeadChatSkips } = require('../send/resolvePlatformChat');
 
 const ON_FLAGS = {
   enabled: true,
@@ -178,7 +177,6 @@ describe('backoff helpers', () => {
 describe('tick', () => {
   beforeEach(() => {
     resetPollerBackoff();
-    resetDeadChatSkips();
     stopFourBasedInboundPoller();
   });
 
@@ -209,7 +207,6 @@ describe('tick', () => {
           created_at: '2026-09-09T00:00:00.000Z',
         },
       ],
-      listRecentConversations: async () => [],
       ingestConversation: async (payload) => {
         ingest.push(payload);
       },
@@ -238,89 +235,12 @@ describe('tick', () => {
         getMessagesCalls += 1;
         return [];
       },
-      listRecentConversations: async () => [],
       ingestConversation: async (payload) => {
         ingest.push(payload);
       },
     });
     assert.equal(getMessagesCalls, 0);
     assert.equal(ingest.length, 0);
-  });
-
-  it('re-checks recently active unread-0 chats without mark-read', async () => {
-    const ingest = [];
-    const fetched = [];
-    await tick({
-      getAiFlags: async () => ON_FLAGS,
-      loadEligibleRows: async () => [ELIGIBLE_ROW],
-      loadFourBasedCreator: async () => ({
-        creator: { id: 'cr-1', providerUserId: 'me' },
-      }),
-      listChats: async () => [{ _id: 'chat-1', unread_message_count: 0 }],
-      getMessages: async (_creator, chatId) => {
-        fetched.push(chatId);
-        return [
-          {
-            _id: 'm2',
-            user_id: 'fan-2',
-            message: 'follow up',
-            created_at: '2026-09-09T00:02:00.000Z',
-          },
-        ];
-      },
-      listRecentConversations: async ({ skipChatIds }) => {
-        assert.deepEqual(skipChatIds, []);
-        return [{ platformChatId: 'chat-2', platformFanId: 'fan-2' }];
-      },
-      ingestConversation: async (payload) => {
-        ingest.push(payload);
-      },
-    });
-    assert.deepEqual(fetched, ['chat-2']);
-    assert.equal(ingest.length, 1);
-    assert.equal(ingest[0].source, 'recent_active');
-    assert.equal(ingest[0].platformChatId, 'chat-2');
-  });
-
-  it('keeps polling other chats when one chat 404s', async () => {
-    const ingest = [];
-    const now = 5_000;
-    const result = await tick({
-      getAiFlags: async () => ON_FLAGS,
-      loadEligibleRows: async () => [ELIGIBLE_ROW],
-      loadFourBasedCreator: async () => ({
-        creator: { id: 'cr-1', providerUserId: 'me' },
-      }),
-      listChats: async () => [
-        { _id: 'dead', unread_message_count: 1, user_ids: ['me', 'fan-dead'] },
-        { _id: 'alive', unread_message_count: 1, user_ids: ['me', 'fan-alive'] },
-      ],
-      getMessages: async (_creator, chatId) => {
-        if (chatId === 'dead') {
-          const err = new Error('Chat cannot be found');
-          err.status = 404;
-          throw err;
-        }
-        return [
-          {
-            _id: 'm1',
-            user_id: 'fan-alive',
-            message: 'hi',
-            created_at: '2026-09-09T00:00:00.000Z',
-          },
-        ];
-      },
-      resolvePlatformChat: async () => ({ platformChatId: null, source: null }),
-      listRecentConversations: async () => [],
-      ingestConversation: async (payload) => {
-        ingest.push(payload);
-      },
-      now: () => now,
-    });
-    assert.equal(result.polled, 1);
-    assert.equal(isBackedOff('cr-1', now + 1), false);
-    assert.equal(ingest.length, 1);
-    assert.equal(ingest[0].platformChatId, 'alive');
   });
 
   it('skips when creator mode is off', async () => {

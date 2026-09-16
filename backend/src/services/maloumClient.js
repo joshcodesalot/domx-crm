@@ -238,59 +238,16 @@ function displayNameFromUser(user, fallback) {
   );
 }
 
-const CF_BYPASS_MODES = new Set(['fallback', 'never', 'always']);
-
-function cloudflareBlockedError() {
-  return new MaloumApiError(
-    'Maloum blocked this request (Cloudflare/proxy). Rotate MALOUM_PROXY_URL and retry.',
-    403
-  );
-}
-
-async function fetchOnce({
-  fetchFn,
-  makeDispatcher,
-  proxyUrl,
-  method,
+async function requestJson({
+  method = 'GET',
   path,
-  headers,
-  requestBody,
+  proxyUrl,
+  accessToken,
+  body,
+  timezone,
+  contentType,
+  rawBody,
 }) {
-  const dispatcher = makeDispatcher(proxyUrl);
-  let response;
-  try {
-    response = await fetchFn(`${API_BASE}${path}`, {
-      method,
-      headers,
-      body: requestBody,
-      dispatcher,
-    });
-  } catch (err) {
-    throw proxyFailureError(err);
-  }
-
-  const text = await response.text();
-  const responseContentType = response.headers.get('content-type') || '';
-  const parsed = parseJsonSafe(text);
-  return { response, text, responseContentType, parsed };
-}
-
-async function requestJson(
-  {
-    method = 'GET',
-    path,
-    proxyUrl,
-    accessToken,
-    body,
-    timezone,
-    contentType,
-    rawBody,
-    cfBypass = 'fallback',
-    creatorId = null,
-  } = {},
-  deps = {}
-) {
-  const mode = CF_BYPASS_MODES.has(cfBypass) ? cfBypass : 'fallback';
   const headers = baseHeaders({ accessToken, timezone });
 
   let requestBody;
@@ -307,27 +264,9 @@ async function requestJson(
     delete headers['content-type'];
   }
 
-  const fetchFn = deps.fetch || undiciFetch;
-  const makeDispatcher = deps.createDispatcher || createDispatcher;
-  const tryBypass = deps.tryRequestJsonViaCfBypass || tryRequestJsonViaCfBypass;
-  const resolveBypass =
-    deps.resolveCfBypassBaseUrl ||
-    (() => require('./maloumCfBypass').resolveCfBypassBaseUrl());
-
-  async function viaUndici(url) {
-    return fetchOnce({
-      fetchFn,
-      makeDispatcher,
-      proxyUrl: url,
-      method,
-      path,
-      headers,
-      requestBody,
-    });
-  }
-
-  if (mode === 'always' && resolveBypass()) {
-    const viaBypass = await tryBypass({
+  const { resolveCfBypassBaseUrl } = require('./maloumCfBypass');
+  if (resolveCfBypassBaseUrl()) {
+    const viaBypass = await tryRequestJsonViaCfBypass({
       method,
       path,
       proxyUrl,
@@ -343,35 +282,31 @@ async function requestJson(
     );
   }
 
-  const { response, text, responseContentType, parsed } = await viaUndici(
-    proxyUrl
-  );
+  const dispatcher = createDispatcher(proxyUrl);
+  let response;
+  try {
+    response = await undiciFetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      body: requestBody,
+      dispatcher,
+    });
+  } catch (err) {
+    throw proxyFailureError(err);
+  }
+
+  const text = await response.text();
+  const responseContentType = response.headers.get('content-type') || '';
+  const parsed = parseJsonSafe(text);
 
   if (
     !response.ok &&
     isCloudflareBlocked(response.status, text, responseContentType)
   ) {
-    if (mode === 'fallback' && resolveBypass()) {
-      try {
-        const viaBypass = await tryBypass({
-          method,
-          path,
-          proxyUrl,
-          headers,
-          requestBody,
-          prefer: false,
-        });
-        if (viaBypass) {
-          return viaBypass;
-        }
-      } catch (err) {
-        if (!(err instanceof MaloumApiError && err.status === 403)) {
-          throw err;
-        }
-      }
-    }
-
-    throw cloudflareBlockedError();
+    throw new MaloumApiError(
+      'Maloum blocked this request (Cloudflare/proxy). Rotate MALOUM_PROXY_URL and retry.',
+      403
+    );
   }
 
   if (!response.ok) {
@@ -435,7 +370,10 @@ async function tryRequestJsonViaCfBypass({
   }
 
   if (isCloudflareBlocked(mirrored.status, mirrored.text, mirrored.contentType)) {
-    throw cloudflareBlockedError();
+    throw new MaloumApiError(
+      'Maloum blocked this request (Cloudflare/proxy). Rotate MALOUM_PROXY_URL and retry.',
+      403
+    );
   }
 
   if (!mirrored.ok) {
@@ -473,7 +411,6 @@ function authContext(creator) {
     proxyUrl: resolveMaloumProxyUrl(proxyUrl),
     timezone: MALOUM_CLIENT_TIMEZONE,
     providerUserId: creator.providerUserId || null,
-    creatorId: creator.id || null,
   };
 }
 
@@ -491,20 +428,19 @@ async function listChats(
   creator,
   { limit = 15, next, filter, lastMessageSender, listIds } = {}
 ) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
     path: `/chats${buildQuery({ limit, next, filter, lastMessageSender, listIds })}`,
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function getChat(creator, chatId) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!chatId) {
     throw new MaloumApiError('chatId is required', 400);
   }
@@ -514,13 +450,12 @@ async function getChat(creator, chatId) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function createChat(creator, member2) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!member2) {
     throw new MaloumApiError('member2 is required', 400);
   }
@@ -530,27 +465,25 @@ async function createChat(creator, member2) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     body: { member2: String(member2) },
   });
   return result.data;
 }
 
 async function listTopCreators(creator, { limit = 15, next } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
     path: `/top-creators${buildQuery({ limit, next })}`,
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function getUserProfile(creator, username) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!username) {
     throw new MaloumApiError('username is required', 400);
   }
@@ -560,13 +493,12 @@ async function getUserProfile(creator, username) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function listUserPosts(creator, username, { limit = 15, next } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!username) {
     throw new MaloumApiError('username is required', 400);
   }
@@ -579,13 +511,12 @@ async function listUserPosts(creator, username, { limit = 15, next } = {}) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function listPostComments(creator, postId, { limit = 15, next } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!postId) {
     throw new MaloumApiError('postId is required', 400);
   }
@@ -595,33 +526,30 @@ async function listPostComments(creator, postId, { limit = 15, next } = {}) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function listMyPosts(creator, { limit = 15, next } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
     path: `/posts/me${buildQuery({ limit, next })}`,
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function listCategories(creator) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
     path: '/categories',
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
@@ -630,7 +558,7 @@ async function createPost(
   creator,
   { caption, categories, public: isPublic = true, mediaIds } = {}
 ) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const ids = Array.isArray(mediaIds)
     ? mediaIds.map((id) => String(id || '').trim()).filter(Boolean)
     : [];
@@ -653,7 +581,6 @@ async function createPost(
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     body: {
       caption: text,
       categories: cats,
@@ -665,7 +592,7 @@ async function createPost(
 }
 
 async function deletePost(creator, postId) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!postId) {
     throw new MaloumApiError('postId is required', 400);
   }
@@ -675,13 +602,12 @@ async function deletePost(creator, postId) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function generateUploadUrl(creator, { width, height, folderId } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const folder = typeof folderId === 'string' ? folderId.trim() : '';
   if (!folder) {
     throw new MaloumApiError('folderId is required', 400);
@@ -697,7 +623,6 @@ async function generateUploadUrl(creator, { width, height, folderId } = {}) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     body: {
       width: Math.round(w),
       height: Math.round(h),
@@ -760,7 +685,7 @@ async function uploadToSignedUrl(proxyUrl, uploadUrl, buffer, contentType) {
 }
 
 async function createChatList(creator, name, { tag } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const trimmed = typeof name === 'string' ? name.trim() : '';
   if (!trimmed) {
     throw new MaloumApiError('name is required', 400);
@@ -776,14 +701,13 @@ async function createChatList(creator, name, { tag } = {}) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     body,
   });
   return result.data;
 }
 
 async function deleteChatList(creator, listId) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!listId) {
     throw new MaloumApiError('listId is required', 400);
   }
@@ -793,13 +717,12 @@ async function deleteChatList(creator, listId) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function getMessages(creator, chatId, { limit = 15, next } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!chatId) {
     throw new MaloumApiError('chatId is required', 400);
   }
@@ -809,13 +732,12 @@ async function getMessages(creator, chatId, { limit = 15, next } = {}) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function markRead(creator, chatId) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!chatId) {
     throw new MaloumApiError('chatId is required', 400);
   }
@@ -825,71 +747,44 @@ async function markRead(creator, chatId) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     contentType: 'application/x-www-form-urlencoded',
     rawBody: '',
   });
   return result.data;
 }
 
-function asFiniteCount(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return Math.max(0, value);
-  }
-  if (typeof value === 'string' && value.trim()) {
-    const n = Number(value);
-    if (Number.isFinite(n)) return Math.max(0, n);
-  }
-  return null;
-}
-
-function normalizeUnreadCount(value) {
-  const direct = asFiniteCount(value);
-  if (direct !== null) return direct;
-  if (!value || typeof value !== 'object') return 0;
-  const nested = value.unread ?? value.unreadCount ?? value.count ?? value.data;
-  const fromNested = asFiniteCount(nested);
-  return fromNested !== null ? fromNested : 0;
-}
-
 async function getUnreadCount(creator) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
     path: '/chats/unread-count',
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
-    cfBypass: 'fallback',
   });
-  return normalizeUnreadCount(result.data);
+  return result.data;
 }
 
 async function getNotificationsUnreadCount(creator) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
     path: '/notifications/unread-count',
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
-    cfBypass: 'fallback',
   });
-  return normalizeUnreadCount(result.data);
+  return result.data;
 }
 
-async function listNotifications(creator, { limit = 15, next, cfBypass } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+async function listNotifications(creator, { limit = 15, next } = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
     path: `/notifications${buildQuery({ limit, next })}`,
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
-    cfBypass,
   });
   return result.data;
 }
@@ -900,11 +795,7 @@ async function listRecentNotifications(creator, { pages = 3, limit = 15 } = {}) 
   const maxPages = Math.min(Math.max(Number(pages) || 3, 1), 8);
   const pageLimit = Math.min(Math.max(Number(limit) || 15, 1), 50);
   for (let i = 0; i < maxPages; i += 1) {
-    const payload = await listNotifications(creator, {
-      limit: pageLimit,
-      next,
-      cfBypass: 'never',
-    });
+    const payload = await listNotifications(creator, { limit: pageLimit, next });
     const list = normalizeListData(payload);
     all.push(...list);
     next = payload?.next || null;
@@ -915,7 +806,7 @@ async function listRecentNotifications(creator, { pages = 3, limit = 15 } = {}) 
 
 /** Payout ledger: CHAT_PRODUCT / TIP / SUBSCRIPTION / PAYOUT rows. */
 async function listTransactionHistory(creator, { limit = 10, next } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const safeLimit = Math.min(Math.max(Number(limit) || 10, 1), 50);
   const result = await requestJson({
     method: 'GET',
@@ -923,34 +814,31 @@ async function listTransactionHistory(creator, { limit = 10, next } = {}) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 /** Wallet / available-for-payout balance. */
 async function getUserBalance(creator) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
     path: '/users/balance',
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function markNotificationsReadAll(creator) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'POST',
     path: '/notifications/read-all',
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     contentType: 'application/x-www-form-urlencoded',
     rawBody: '',
   });
@@ -972,7 +860,7 @@ function countUnreadNotificationsFromList(payload) {
 }
 
 async function sendMessage(creator, chatId, { content, optimisticMessageId } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!chatId) {
     throw new MaloumApiError('chatId is required', 400);
   }
@@ -985,7 +873,6 @@ async function sendMessage(creator, chatId, { content, optimisticMessageId } = {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     body: {
       content,
       optimisticMessageId: optimisticMessageId || randomUUID(),
@@ -995,7 +882,7 @@ async function sendMessage(creator, chatId, { content, optimisticMessageId } = {
 }
 
 async function deleteMessage(creator, chatId, messageId, { deleteTextOnly = false } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!chatId) {
     throw new MaloumApiError('chatId is required', 400);
   }
@@ -1008,7 +895,6 @@ async function deleteMessage(creator, chatId, messageId, { deleteTextOnly = fals
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     body: {
       deleteTextOnly: Boolean(deleteTextOnly),
     },
@@ -1093,20 +979,19 @@ async function sendPpv(creator, chatId, {
 }
 
 async function listSentBroadcasts(creator, { limit = 15, next, filter = 'ALL' } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
     path: `/broadcasts/sent${buildQuery({ limit, filter, next })}`,
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function revokeBroadcast(creator, broadcastId) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!broadcastId) {
     throw new MaloumApiError('broadcastId is required', 400);
   }
@@ -1116,20 +1001,18 @@ async function revokeBroadcast(creator, broadcastId) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function listChatLists(creator, { limit = 25, next } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
     path: `/chat-lists${buildQuery({ limit, next })}`,
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
@@ -1148,7 +1031,7 @@ async function listAllChatLists(creator, { limit = 80, maxPages = 20 } = {}) {
 }
 
 async function updateFanNickname(creator, chatId, nickname) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!chatId) {
     throw new MaloumApiError('chatId is required', 400);
   }
@@ -1158,14 +1041,13 @@ async function updateFanNickname(creator, chatId, nickname) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     body: { nickname: typeof nickname === 'string' ? nickname : '' },
   });
   return result.data;
 }
 
 async function updateFanNotes(creator, chatId, notes) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!chatId) {
     throw new MaloumApiError('chatId is required', 400);
   }
@@ -1175,14 +1057,13 @@ async function updateFanNotes(creator, chatId, notes) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     body: { notes: typeof notes === 'string' ? notes : '' },
   });
   return result.data;
 }
 
 async function getMemberChatLists(creator, memberId) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!memberId) {
     throw new MaloumApiError('memberId is required', 400);
   }
@@ -1192,13 +1073,12 @@ async function getMemberChatLists(creator, memberId) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function setMemberChatLists(creator, memberId, chatListIds = []) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!memberId) {
     throw new MaloumApiError('memberId is required', 400);
   }
@@ -1211,7 +1091,6 @@ async function setMemberChatLists(creator, memberId, chatListIds = []) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     body: { chatListIds: ids },
   });
   return result.data;
@@ -1224,7 +1103,7 @@ async function sendBroadcast(creator, {
   media = [],
   price = 0,
 } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
 
   const include = Array.isArray(includeFromLists)
     ? includeFromLists.map(String).filter(Boolean)
@@ -1275,7 +1154,6 @@ async function sendBroadcast(creator, {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
     body: {
       includeFromLists: include,
       excludeFromLists: exclude,
@@ -1286,20 +1164,19 @@ async function sendBroadcast(creator, {
 }
 
 async function listVaultFolders(creator, { query = '', limit = 15, next } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
     method: 'GET',
     path: `/vault/folders${buildQuery({ query, limit, next })}`,
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function getVaultFolder(creator, folderId) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!folderId) {
     throw new MaloumApiError('folderId is required', 400);
   }
@@ -1309,13 +1186,12 @@ async function getVaultFolder(creator, folderId) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
 
 async function listVaultMedia(creator, folderId, { fanId, limit = 50, next } = {}) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!folderId) {
     throw new MaloumApiError('folderId is required', 400);
   }
@@ -1329,7 +1205,6 @@ async function listVaultMedia(creator, folderId, { fanId, limit = 50, next } = {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
@@ -1371,7 +1246,7 @@ function findVaultItemByUploadId(items, uploadId) {
 }
 
 async function getUpload(creator, uploadId) {
-  const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
   const id = typeof uploadId === 'string' ? uploadId.trim() : '';
   if (!id) {
     throw new MaloumApiError('uploadId is required', 400);
@@ -1382,7 +1257,6 @@ async function getUpload(creator, uploadId) {
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
@@ -1491,14 +1365,13 @@ async function fetchMedia(creator, { url } = {}) {
   };
 }
 
-async function fetchCurrentUser({ accessToken, proxyUrl, timezone, creatorId = null }) {
+async function fetchCurrentUser({ accessToken, proxyUrl, timezone }) {
   const result = await requestJson({
     method: 'GET',
     path: '/users/current',
     proxyUrl,
     accessToken,
     timezone,
-    creatorId,
   });
   return result.data;
 }
@@ -1557,7 +1430,6 @@ async function login({
   usernameOrEmail,
   password,
   proxyUrl,
-  creatorId = null,
 }) {
   if (!usernameOrEmail || !password) {
     throw new MaloumApiError('Email/username and password are required', 400);
@@ -1572,18 +1444,14 @@ async function login({
   const { resolveCfBypassBaseUrl, loginViaCfBypass } = require('./maloumCfBypass');
   const bypassBase = resolveCfBypassBaseUrl();
 
-  async function tryBypassLogin(proxy) {
-    return loginViaCfBypass({
-      usernameOrEmail: identifier,
-      password,
-      proxyUrl: proxy,
-    });
-  }
-
   if (bypassBase) {
     console.log(`[maloumClient] login via CF bypass ${bypassBase}`);
     try {
-      session = await tryBypassLogin(resolvedProxy);
+      session = await loginViaCfBypass({
+        usernameOrEmail: identifier,
+        password,
+        proxyUrl: resolvedProxy,
+      });
     } catch (err) {
       if (err instanceof WrongPasswordError) {
         throw err;
@@ -1640,12 +1508,12 @@ async function login({
         contentType,
         text.slice(0, 200)
       );
-        session = await loginAfterCloudflareBlock({
-          usernameOrEmail: identifier,
-          password,
-          proxyUrl: resolvedProxy,
-          skipBypass: Boolean(bypassBase),
-        });
+      session = await loginAfterCloudflareBlock({
+        usernameOrEmail: identifier,
+        password,
+        proxyUrl: resolvedProxy,
+        skipBypass: Boolean(bypassBase),
+      });
     } else {
       console.warn(
         '[maloumClient] login failed:',
@@ -1667,7 +1535,6 @@ async function login({
       accessToken: session.access_token,
       proxyUrl: resolvedProxy,
       timezone,
-      creatorId,
     });
   } catch (err) {
     if (err instanceof MaloumApiError && err.status === 401) {
@@ -1744,7 +1611,6 @@ module.exports = {
   extractSessionTokens,
   parseJsonSafe,
   isCloudflareBlocked,
-  requestJson,
   listChats,
   getChat,
   createChat,
@@ -1765,7 +1631,6 @@ module.exports = {
   markRead,
   getUnreadCount,
   getNotificationsUnreadCount,
-  normalizeUnreadCount,
   listNotifications,
   listRecentNotifications,
   listTransactionHistory,

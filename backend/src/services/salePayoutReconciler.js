@@ -139,15 +139,7 @@ async function loadAuthedCreator(creatorId) {
   }
 
   const row = result.rows[0];
-  const platform =
-    row.platform === '4based' ||
-    row.platform === 'telegram' ||
-    row.platform === 'maloum'
-      ? row.platform
-      : null;
-  if (!platform) {
-    return { error: 'unsupported_platform' };
-  }
+  const platform = row.platform === '4based' ? '4based' : 'maloum';
   const meta = {
     id: row.id,
     platform,
@@ -157,10 +149,6 @@ async function loadAuthedCreator(creatorId) {
     accountId: row.accountId || null,
     providerUserId: row.providerUserId || null,
   };
-
-  if (platform === 'telegram') {
-    return { meta, creator: { ...meta } };
-  }
 
   let session = {};
   try {
@@ -2590,10 +2578,6 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false, mo
 
   const { meta, creator: authedCreator } = loaded;
   const platform = meta.platform;
-  if (platform === 'telegram') {
-    return { skipped: true, reason: 'telegram_unsupported', restored, merged, collapsed };
-  }
-
   const bounds = monthBounds(yearMonth);
   let fetchFrom = bounds.monthFrom;
 
@@ -2629,14 +2613,12 @@ async function reconcileCreatorPayouts(creatorId, { yearMonth, force = false, mo
         fetchFrom,
         recoverOrphans: monthOnly,
       });
-    } else if (platform === 'maloum') {
+    } else {
       summary = await reconcileMaloum(authedCreator, meta, {
         monthFrom: bounds.monthFrom,
         monthTo: bounds.monthTo,
         fetchFrom,
       });
-    } else {
-      return { skipped: true, reason: 'unsupported_platform', restored, merged, collapsed };
     }
   } catch (err) {
     console.warn(
@@ -2874,9 +2856,6 @@ async function fetchReflectedTotalSales(creatorId) {
   }
 
   const { meta, creator } = loaded;
-  if (meta.platform === 'telegram') {
-    return { amounts: [], error: 'Telegram has no payout-site total' };
-  }
   try {
     if (meta.platform === '4based') {
       const bounds = monthBounds();
