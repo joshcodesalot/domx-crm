@@ -17,7 +17,6 @@ const maloumSentMessagesRoutes = require('./routes/maloumSentMessages');
 const messagingDashboardRoutes = require('./routes/messagingDashboard');
 const saleReconciliationRoutes = require('./routes/saleReconciliation');
 const translateRoutes = require('./routes/translate');
-const suggestReplyRoutes = require('./routes/suggestReply');
 const eventsRoutes = require('./routes/events');
 const moderationRoutes = require('./routes/moderation');
 const activityRoutes = require('./routes/activity');
@@ -28,20 +27,10 @@ const telegramMassMessageRoutes = require('./routes/telegramMassMessages');
 const telegramSextingSessionRoutes = require('./routes/telegramSextingSessions');
 const throneWebhookRoutes = require('./routes/throneWebhook');
 const throneRoutes = require('./routes/throne');
-const aiRoutes = require('./routes/ai');
 const {
   startMaloumTokenRefreshScheduler,
 } = require('./services/maloumTokenRefresh');
 const { startContentScheduleRunner } = require('./services/contentScheduleRunner');
-const {
-  startMaloumInboundPoller,
-} = require('./services/ai/poller/maloumInboundPoller');
-const {
-  startFourBasedInboundPoller,
-} = require('./services/ai/poller/fourBasedInboundPoller');
-const {
-  startTelegramInboundPoller,
-} = require('./services/ai/poller/telegramInboundPoller');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -101,14 +90,12 @@ app.use('/api/maloum-sent-messages', maloumSentMessagesRoutes);
 app.use('/api/messaging-dashboard', messagingDashboardRoutes);
 app.use('/api/sale-reconciliation', saleReconciliationRoutes);
 app.use('/api/translate-to-german', translateRoutes);
-app.use('/api/suggest-reply', suggestReplyRoutes);
 app.use('/api/events', eventsRoutes);
 app.use('/api/moderation', moderationRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/scheduled-content', contentScheduleRoutes);
 app.use('/api/telegram-sexting-sessions', telegramSextingSessionRoutes);
 app.use('/api/throne', throneRoutes);
-app.use('/api/ai', aiRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
@@ -137,9 +124,4 @@ app.listen(PORT, () => {
   } = require('./services/fourbasedFanScrapeRunner');
   void resumeFourBasedFanScrapeJobs();
   startContentScheduleRunner();
-  startMaloumInboundPoller();
-  startFourBasedInboundPoller();
-  startTelegramInboundPoller();
-  const { startTelegramAlertBot } = require('./services/ai/alerts/telegramAlertBot');
-  startTelegramAlertBot();
 });

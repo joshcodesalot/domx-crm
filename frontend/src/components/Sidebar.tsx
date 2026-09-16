@@ -3,7 +3,6 @@ import {
   BarChart2,
   Bell,
   CalendarDays,
-  Inbox,
   LayoutGrid,
   LineChart,
   List,
@@ -63,8 +62,6 @@ interface SidebarProps {
     | 'creators'
     | 'staff'
     | 'moderation'
-    | 'aiQueue'
-    | 'aiRules'
     | 'account'
     | 'schedule';
 }
@@ -191,7 +188,6 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       | 'feed'
       | 'fan-scraper'
       | 'lists'
-      | 'ai-bulk-reply'
       | 'notifications'
       | 'schedule'
   ) {
@@ -220,10 +216,6 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       navigate('/chatter/maloum/lists');
       return;
     }
-    if (view === 'ai-bulk-reply') {
-      navigate('/chatter/maloum/ai-bulk-reply');
-      return;
-    }
     if (view === 'notifications') {
       navigate('/chatter/maloum/notifications');
       return;
@@ -238,7 +230,6 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
       | 'mass-message'
       | 'feed'
       | 'fan-scraper'
-      | 'ai-bulk-reply'
       | 'notifications'
       | 'schedule'
   ) {
@@ -261,10 +252,6 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     }
     if (view === 'fan-scraper') {
       navigate('/chatter/4based/fan-scraper');
-      return;
-    }
-    if (view === 'ai-bulk-reply') {
-      navigate('/chatter/4based/ai-bulk-reply');
       return;
     }
     if (view === 'notifications') {
@@ -508,17 +495,6 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                     Lists
                   </button>
                 )}
-                {(user?.role === 'owner' || user?.role === 'manager') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleMaloumNavigate('ai-bulk-reply')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <Sparkles className="w-4 h-4 shrink-0" />
-                    AI Bulk Reply
-                  </button>
-                )}
               </div>
             )}
           </div>
@@ -632,17 +608,6 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
                   >
                     <UserSearch className="w-4 h-4 shrink-0" />
                     Fan Scraper
-                  </button>
-                )}
-                {(user?.role === 'owner' || user?.role === 'manager') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleFourBasedNavigate('ai-bulk-reply')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <Sparkles className="w-4 h-4 shrink-0" />
-                    AI Bulk Reply
                   </button>
                 )}
               </div>
@@ -780,27 +745,6 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             title="Keyword Moderation"
           >
             <ShieldAlert className="w-5 h-5" />
-          </button>
-        )}
-        {(hasPermission('ai.moderate') ||
-          hasPermission('ai.settings.manage')) && (
-          <button
-            type="button"
-            onClick={() => navigate('/ai/queue')}
-            className={navClass('aiQueue')}
-            title="AI Queue"
-          >
-            <Inbox className="w-5 h-5" />
-          </button>
-        )}
-        {hasPermission('ai.rules.manage') && (
-          <button
-            type="button"
-            onClick={() => navigate('/ai/rules')}
-            className={navClass('aiRules')}
-            title="AI Rules"
-          >
-            <Sparkles className="w-5 h-5" />
           </button>
         )}
       </nav>

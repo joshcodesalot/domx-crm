@@ -30,16 +30,10 @@ import { berlinDateString, useStaffTimeZone } from '@/lib/berlinTime';
 import {
   TRANSLATION_SETTINGS_EVENT,
 } from '@/components/fourbased/FourBasedChatPanels';
-import { DEFAULT_FAN_NOTES_TEMPLATE } from '@/components/maloum/MaloumFanPanel';
 import GermanTimeClock from '@/components/GermanTimeClock';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
-import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
-import AiSuggestionCard from '@/components/ai/AiSuggestionCard';
-import AiIgnoreStrip from '@/components/ai/AiIgnoreStrip';
-import { useAiThreadSuggestion } from '@/hooks/useAiThreadSuggestion';
-import { useAiThreadControls } from '@/hooks/useAiThreadControls';
 import TelegramFanPanel from '@/components/telegram/TelegramFanPanel';
 import TelegramReactionPicker, {
   applyOptimisticReactions,
@@ -58,11 +52,6 @@ import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
 } from '@/lib/historyTranslateQueue';
-import {
-  ingestLatestPage,
-  latestInboundPlatformMessageId,
-  mapTelegramMessagesForIngest,
-} from '@/lib/aiIngest';
 import {
   addVaultSentIds,
   vaultCacheKey,
@@ -892,15 +881,12 @@ export function TelegramChatThread({
   const confirm = useConfirm();
   const { onSyncEvent } = useStaffSync();
   const staffTimeZone = useStaffTimeZone();
-  const canUseSuggestReply = user?.role === 'owner' || user?.role === 'manager';
   const canManageScripts = hasPermission('scripts.manage');
   const [fan, setFan] = useState<TelegramFan | null>(initialFan || null);
   const [messages, setMessages] = useState<TelegramMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [translatingOutgoing, setTranslatingOutgoing] = useState(false);
-  const [skipOutgoingTranslate, setSkipOutgoingTranslate] = useState(false);
-  const [suggestedEnglish, setSuggestedEnglish] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [messagesRefreshing, setMessagesRefreshing] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -968,7 +954,6 @@ export function TelegramChatThread({
   messageUnsendsRef.current = messageUnsends;
   const threadKeyRef = useRef(`${creatorId}:${peerId}`);
   threadKeyRef.current = `${creatorId}:${peerId}`;
-  const aiIngestSeenIdsRef = useRef<Set<string>>(new Set());
   const historyTranslateQueueRef = useRef<HistoryTranslateQueue | null>(null);
   const historyTranslationsRef = useRef(historyTranslations);
   historyTranslationsRef.current = historyTranslations;
@@ -1052,7 +1037,6 @@ export function TelegramChatThread({
     setMessages([]);
     setMessagesNext(null);
     messagesNextRef.current = null;
-    aiIngestSeenIdsRef.current = new Set();
     loadedOlderRef.current = false;
     loadingOlderRef.current = false;
     setLoadingOlder(false);
@@ -1063,8 +1047,6 @@ export function TelegramChatThread({
     setVaultPickMode('composer');
     setPendingScriptVaultMedia(null);
     setAppliedScriptId(null);
-    setSkipOutgoingTranslate(false);
-    setSuggestedEnglish(null);
     setChatMediaPreview(null);
     setGenerateSessionOpen(false);
     setReactingMessageId(null);
@@ -1182,15 +1164,6 @@ export function TelegramChatThread({
             markedReadOnOpenRef.current = true;
             onMarkedReadRef.current?.(peerId);
           }
-          void ingestLatestPage({
-            creatorId,
-            platform: 'telegram',
-            platformChatId: peerId,
-            platformFanId: result.fan?.telegramUserId || peerId,
-            source: 'telegram_poll',
-            seenIds: aiIngestSeenIdsRef.current,
-            messages: mapTelegramMessagesForIngest(incoming),
-          });
         }
       } catch (err) {
         if (!silent && threadKeyRef.current === key) {
@@ -1389,20 +1362,6 @@ export function TelegramChatThread({
     });
   }, [onSyncEvent, creatorId, peerId, loadMessages, loadSenders, pollEnabled]);
 
-  useEffect(() => {
-    return onSyncEvent((event) => {
-      if (event.type !== 'ai:fan-memory') return;
-      if (event.creatorId !== creatorId || event.platform !== 'telegram') return;
-      const fanKey = String(event.platformFanId || event.platformChatId || '');
-      if (fanKey && fanKey !== String(peerId)) return;
-      setFan((prev) => ({
-        ...(prev || ({} as TelegramFan)),
-        ...(event.nickname ? { nickname: event.nickname } : {}),
-        ...(event.notes ? { notes: event.notes } : {}),
-      }));
-    });
-  }, [onSyncEvent, creatorId, peerId]);
-
   const updateNearBottom = useCallback((el: HTMLDivElement) => {
     nearBottomRef.current =
       el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
@@ -1527,11 +1486,10 @@ export function TelegramChatThread({
     cancelTelegramTyping();
     setSending(true);
     setError(null);
-    const englishDraft =
-      skipOutgoingTranslate && suggestedEnglish ? suggestedEnglish : text;
+    const englishDraft = text;
     try {
       let messageToSend = text;
-      if (text && autoTranslateOutgoing && !skipOutgoingTranslate) {
+      if (text && autoTranslateOutgoing) {
         setTranslatingOutgoing(true);
         try {
           const history: TranslateHistoryItem[] = messages
@@ -1565,8 +1523,6 @@ export function TelegramChatThread({
       setDraft('');
       setVaultItems([]);
       setReplyTarget(null);
-      setSkipOutgoingTranslate(false);
-      setSuggestedEnglish(null);
       const sentMessages = (result.messages || (result.message ? [result.message] : []))
         .filter(Boolean)
         .map((msg) => withLocalReplyTo(msg as TelegramMessage, replyTarget));
@@ -1786,72 +1742,9 @@ export function TelegramChatThread({
     }
   }
 
-  const applySuggestedReply = useCallback(
-    (payload: { english: string; german: string }) => {
-      setDraft(payload.german || '');
-      setSuggestedEnglish(payload.english || null);
-      setSkipOutgoingTranslate(true);
-      setAppliedScriptId(null);
-    },
-    []
-  );
-
-  const getSuggestMessages = useCallback((): TranslateHistoryItem[] => {
-    return messages
-      .filter((m) => typeof m.text === 'string' && m.text.trim())
-      .slice(-12)
-      .map((m) => ({
-        role: m.isOutgoing ? 'assistant' : 'user',
-        content: m.text.trim(),
-      }));
-  }, [messages]);
-
-  const latestInboundId = useMemo(
-    () => latestInboundPlatformMessageId(mapTelegramMessagesForIngest(messages)),
-    [messages]
-  );
-  const {
-    suggestion: aiSuggestion,
-    stale: aiSuggestionStale,
-    dismiss: dismissAiSuggestion,
-    busy: aiBusy,
-    actionError: aiActionError,
-    canPause: canPauseAi,
-    canTakeover: canTakeoverAi,
-    reject: rejectAiSuggestion,
-    regenerate: regenerateAiSuggestion,
-    takeover: takeoverAiConversation,
-    pause: pauseAiCreator,
-  } = useAiThreadSuggestion({
-    creatorId,
-    platform: 'telegram',
-    platformChatId: peerId,
-    latestInboundId,
-  });
-  const {
-    canIgnore: canIgnoreAi,
-    aiIgnored,
-    busy: aiIgnoreBusy,
-    error: aiIgnoreError,
-    ignore: ignoreAi,
-    unignore: unignoreAi,
-  } = useAiThreadControls({
-    creatorId,
-    platform: 'telegram',
-    platformChatId: peerId,
-  });
-
-  const getSuggestFanNotes = useCallback(() => {
-    const notes = fan?.notes?.trim() || '';
-    if (!notes || notes === DEFAULT_FAN_NOTES_TEMPLATE.trim()) return '';
-    return notes;
-  }, [fan?.notes]);
-
   const applyScriptToComposer = useCallback(
     (script: CreatorScript) => {
       setDraft(script.messageText || '');
-      setSkipOutgoingTranslate(false);
-      setSuggestedEnglish(null);
       setVaultItems((script.media || []).map(scriptMediaToTelegramVaultItem));
       setAppliedScriptId(script.id);
     },
@@ -2506,55 +2399,12 @@ export function TelegramChatThread({
             Translating to German…
           </p>
         )}
-        {skipOutgoingTranslate && !translatingOutgoing && (
-          <p className="text-xs text-domx-600 dark:text-domx-400 mb-2">
-            AI German — won’t re-translate
-          </p>
-        )}
-
-        {canIgnoreAi ? (
-          <AiIgnoreStrip
-            aiIgnored={aiIgnored}
-            busy={aiIgnoreBusy}
-            error={aiIgnoreError}
-            onIgnore={() => {
-              void ignoreAi().then((ok) => {
-                if (ok) dismissAiSuggestion();
-              });
-            }}
-            onUnignore={() => void unignoreAi()}
-          />
-        ) : null}
-
-        {aiSuggestion && !aiIgnored ? (
-          <AiSuggestionCard
-            suggestion={aiSuggestion}
-            stale={aiSuggestionStale}
-            platform="telegram"
-            busy={aiBusy}
-            error={aiActionError}
-            onDismiss={dismissAiSuggestion}
-            onReject={rejectAiSuggestion}
-            onRegenerate={regenerateAiSuggestion}
-            onTakeover={canTakeoverAi ? takeoverAiConversation : undefined}
-            onPause={canPauseAi ? pauseAiCreator : undefined}
-          />
-        ) : null}
 
         <QuickEmojiBar
           disabled={sending || translatingOutgoing}
           onInsert={(emoji) => setDraft((d) => d + emoji)}
           trailing={
             <div className="flex items-center gap-0.5">
-              {canUseSuggestReply && (
-                <SuggestReplyToolbarButton
-                  disabled={sending || translatingOutgoing || messages.length === 0}
-                  getMessages={getSuggestMessages}
-                  getFanNotes={getSuggestFanNotes}
-                  fanNickname={fan?.nickname || null}
-                  onApply={applySuggestedReply}
-                />
-              )}
               <ScriptToolbarButton
                 creatorId={creatorId}
                 platform="telegram"
@@ -2603,8 +2453,6 @@ export function TelegramChatThread({
               const next = e.target.value;
               setDraft(next);
               if (!next.trim()) {
-                setSkipOutgoingTranslate(false);
-                setSuggestedEnglish(null);
                 cancelTelegramTyping();
               } else {
                 pingTelegramTyping();
@@ -2618,11 +2466,9 @@ export function TelegramChatThread({
             }}
             rows={1}
             placeholder={
-              skipOutgoingTranslate
-                ? 'Edit German reply… (won’t re-translate)'
-                : autoTranslateOutgoing
-                  ? 'Type a message… (Auto-translates to German)'
-                  : 'Type a message…'
+              autoTranslateOutgoing
+                ? 'Type a message… (Auto-translates to German)'
+                : 'Type a message…'
             }
             className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-60"
           />

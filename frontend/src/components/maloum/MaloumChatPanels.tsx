@@ -40,14 +40,7 @@ import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
-import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
-import AiSuggestionCard from '@/components/ai/AiSuggestionCard';
-import AiIgnoreStrip from '@/components/ai/AiIgnoreStrip';
-import { useAiThreadSuggestion } from '@/hooks/useAiThreadSuggestion';
-import { useAiThreadControls } from '@/hooks/useAiThreadControls';
-import MaloumFanPanel, {
-  DEFAULT_FAN_NOTES_TEMPLATE,
-} from '@/components/maloum/MaloumFanPanel';
+import MaloumFanPanel from '@/components/maloum/MaloumFanPanel';
 import maloumIcon from '@/assets/maloum_icon.png';
 import {
   createMessagingDashboardEntry,
@@ -80,11 +73,6 @@ import {
   type MessageUnsendRecord,
   type TranslateHistoryItem,
 } from '@/lib/api';
-import {
-  ingestLatestPage,
-  latestInboundPlatformMessageId,
-  mapMaloumMessagesForIngest,
-} from '@/lib/aiIngest';
 import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
@@ -1110,8 +1098,6 @@ export function MaloumChatThread({
   const creatorId = creator.id;
   const canEditVaultNotes = hasPermission('vault.notes.edit');
   const canManageScripts = hasPermission('scripts.manage');
-  const canUseSuggestReply =
-    user?.role === 'owner' || user?.role === 'manager';
 
   const [chat, setChat] = useState<MaloumChat | null>(initialChat);
   const [providerUserId, setProviderUserId] = useState<string | null>(
@@ -1126,8 +1112,6 @@ export function MaloumChatThread({
   const [messagesError, setMessagesError] = useState<string | null>(null);
 
   const [draft, setDraft] = useState('');
-  const [skipOutgoingTranslate, setSkipOutgoingTranslate] = useState(false);
-  const [suggestedEnglish, setSuggestedEnglish] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [translatingOutgoing, setTranslatingOutgoing] = useState(false);
@@ -1248,7 +1232,6 @@ export function MaloumChatThread({
   threadKeyRef.current = `${creatorId}:${chatId}`;
   const chatRef = useRef(chat);
   chatRef.current = chat;
-  const aiIngestSeenIdsRef = useRef<Set<string>>(new Set());
   /** Maloum is EUR-only in the chatter UI. */
   const currency = 'EUR';
 
@@ -1345,21 +1328,6 @@ export function MaloumChatThread({
         if (append || manualTranslateOnlyIdsRef.current.size === 0) {
           messagesNextRef.current = nextCursor;
           setMessagesNext(nextCursor);
-        }
-        if (!append) {
-          void ingestLatestPage({
-            creatorId,
-            platform: 'maloum',
-            platformChatId: chatId,
-            platformFanId:
-              partnerId(chatResult?.chat) || partnerId(chatRef.current),
-            source: 'maloum_poll',
-            seenIds: aiIngestSeenIdsRef.current,
-            messages: mapMaloumMessagesForIngest(
-              chronological,
-              resolvedProviderUserId
-            ),
-          });
         }
       } catch (err) {
         if (!silent && threadKeyRef.current === key) {
@@ -1484,8 +1452,6 @@ export function MaloumChatThread({
     setMessagesNext(null);
     messagesNextRef.current = null;
     setDraft('');
-    setSkipOutgoingTranslate(false);
-    setSuggestedEnglish(null);
     setSendError(null);
     setSelectedVaultItems([]);
     setPpvPrice('');
@@ -1506,7 +1472,6 @@ export function MaloumChatThread({
     setTranslatingMessageKeys(new Set());
     nearBottomRef.current = true;
     preserveScrollRef.current = null;
-    aiIngestSeenIdsRef.current = new Set();
     void loadMessages();
     void loadSenders();
     void loadUnsends();
@@ -1555,25 +1520,6 @@ export function MaloumChatThread({
       void loadSenders();
     });
   }, [onSyncEvent, creatorId, chatId, loadMessages, loadSenders]);
-
-  useEffect(() => {
-    return onSyncEvent((event) => {
-      if (event.type !== 'ai:fan-memory') return;
-      if (event.creatorId !== creatorId || event.platform !== 'maloum') return;
-      if (String(event.platformChatId || '') !== String(chatId)) return;
-      setChat((prev) => {
-        if (!prev?.chatPartner) return prev;
-        return {
-          ...prev,
-          chatPartner: {
-            ...prev.chatPartner,
-            ...(event.nickname ? { nickname: event.nickname } : {}),
-            ...(event.notes ? { notes: event.notes } : {}),
-          },
-        };
-      });
-    });
-  }, [onSyncEvent, creatorId, chatId]);
 
   useEffect(() => {
     const el = threadRootRef.current;
@@ -1935,8 +1881,6 @@ export function MaloumChatThread({
 
   const applyScriptToComposer = useCallback((script: CreatorScript) => {
     setDraft(script.messageText || '');
-    setSkipOutgoingTranslate(false);
-    setSuggestedEnglish(null);
     setSelectedVaultItems(
       (script.media || []).map(scriptMediaToMaloumVaultItem)
     );
@@ -1947,78 +1891,6 @@ export function MaloumChatThread({
     setPriceModalOpen(false);
     setAppliedScriptId(script.id);
   }, []);
-
-  const applySuggestedReply = useCallback(
-    (payload: { english: string; german: string }) => {
-      setDraft(payload.german || '');
-      setSuggestedEnglish(payload.english || null);
-      setSkipOutgoingTranslate(true);
-      setAppliedScriptId(null);
-    },
-    []
-  );
-
-  const getSuggestMessages = useCallback((): TranslateHistoryItem[] => {
-    return messages
-      .filter((m) => messageText(m).trim())
-      .slice(-12)
-      .map((m) => ({
-        role:
-          providerUserId && m.senderId === providerUserId
-            ? 'assistant'
-            : 'user',
-        content: messageText(m).trim(),
-      }));
-  }, [messages, providerUserId]);
-
-  const latestInboundId = useMemo(
-    () =>
-      latestInboundPlatformMessageId(
-        mapMaloumMessagesForIngest(messages, providerUserId)
-      ),
-    [messages, providerUserId]
-  );
-  const {
-    suggestion: aiSuggestion,
-    stale: aiSuggestionStale,
-    dismiss: dismissAiSuggestion,
-    busy: aiBusy,
-    actionError: aiActionError,
-    canPause: canPauseAi,
-    canTakeover: canTakeoverAi,
-    approve: approveAiSuggestion,
-    editSend: editSendAiSuggestion,
-    reject: rejectAiSuggestion,
-    regenerate: regenerateAiSuggestion,
-    takeover: takeoverAiConversation,
-    pause: pauseAiCreator,
-  } = useAiThreadSuggestion({
-    creatorId,
-    platform: 'maloum',
-    platformChatId: chatId,
-    latestInboundId,
-  });
-  const {
-    canIgnore: canIgnoreAi,
-    aiIgnored,
-    busy: aiIgnoreBusy,
-    error: aiIgnoreError,
-    ignore: ignoreAi,
-    unignore: unignoreAi,
-  } = useAiThreadControls({
-    creatorId,
-    platform: 'maloum',
-    platformChatId: chatId,
-  });
-
-  const getSuggestFanNotes = useCallback(() => {
-    const notes =
-      typeof chat?.chatPartner?.notes === 'string'
-        ? chat.chatPartner.notes.trim()
-        : '';
-    if (!notes || notes === DEFAULT_FAN_NOTES_TEMPLATE.trim()) return '';
-    return notes;
-  }, [chat]);
 
   const activeVaultSelection =
     vaultPickMode === 'script' ? scriptPickItems : selectedVaultItems;
@@ -2046,8 +1918,6 @@ export function MaloumChatThread({
 
     const composerSnapshot = {
       draft,
-      skipOutgoingTranslate,
-      suggestedEnglish,
       selectedVaultItems: vaultItemsSelected,
       ppvPrice,
       priceModalOpen,
@@ -2055,8 +1925,6 @@ export function MaloumChatThread({
     };
     const restoreComposer = () => {
       setDraft(composerSnapshot.draft);
-      setSkipOutgoingTranslate(composerSnapshot.skipOutgoingTranslate);
-      setSuggestedEnglish(composerSnapshot.suggestedEnglish);
       setSelectedVaultItems(composerSnapshot.selectedVaultItems);
       setPpvPrice(composerSnapshot.ppvPrice);
       setPriceModalOpen(composerSnapshot.priceModalOpen);
@@ -2066,8 +1934,6 @@ export function MaloumChatThread({
     setSending(true);
     setSendError(null);
     setDraft('');
-    setSkipOutgoingTranslate(false);
-    setSuggestedEnglish(null);
     setSelectedVaultItems([]);
     setPpvPrice('');
     setPriceModalOpen(false);
@@ -2076,8 +1942,7 @@ export function MaloumChatThread({
 
     try {
       let textToSend = englishDraft;
-      const usedSuggestedGerman = skipOutgoingTranslate && Boolean(englishDraft);
-      if (autoTranslateOutgoing && englishDraft && !skipOutgoingTranslate) {
+      if (autoTranslateOutgoing && englishDraft) {
         setTranslatingOutgoing(true);
         try {
           const history: TranslateHistoryItem[] = messages
@@ -2183,9 +2048,7 @@ export function MaloumChatThread({
             }
           }
         }
-        const loggedEnglish = usedSuggestedGerman
-          ? suggestedEnglish?.trim() || englishDraft
-          : englishDraft || textToSend || null;
+        const loggedEnglish = englishDraft || textToSend || null;
         void createMessagingDashboardEntry({
           id: crypto.randomUUID(),
           creatorId,
@@ -2270,8 +2133,6 @@ export function MaloumChatThread({
     sending,
     translatingOutgoing,
     autoTranslateOutgoing,
-    skipOutgoingTranslate,
-    suggestedEnglish,
     ppvPrice,
     priceModalOpen,
     priceDraft,
@@ -2902,56 +2763,11 @@ export function MaloumChatThread({
         {translatingOutgoing && (
           <p className="text-xs text-gray-500 dark:text-zinc-500 mb-2">Translating to German…</p>
         )}
-        {skipOutgoingTranslate && !translatingOutgoing && (
-          <p className="text-xs text-domx-600 dark:text-domx-400 mb-2">
-            AI German — won’t re-translate
-          </p>
-        )}
-
-        {canIgnoreAi ? (
-          <AiIgnoreStrip
-            aiIgnored={aiIgnored}
-            busy={aiIgnoreBusy}
-            error={aiIgnoreError}
-            onIgnore={() => {
-              void ignoreAi().then((ok) => {
-                if (ok) dismissAiSuggestion();
-              });
-            }}
-            onUnignore={() => void unignoreAi()}
-          />
-        ) : null}
-
-        {aiSuggestion && !aiIgnored ? (
-          <AiSuggestionCard
-            suggestion={aiSuggestion}
-            stale={aiSuggestionStale}
-            platform="maloum"
-            busy={aiBusy}
-            error={aiActionError}
-            onDismiss={dismissAiSuggestion}
-            onApprove={approveAiSuggestion}
-            onEditSend={editSendAiSuggestion}
-            onReject={rejectAiSuggestion}
-            onRegenerate={regenerateAiSuggestion}
-            onTakeover={canTakeoverAi ? takeoverAiConversation : undefined}
-            onPause={canPauseAi ? pauseAiCreator : undefined}
-          />
-        ) : null}
 
         <QuickEmojiBar
           onInsert={(emoji) => setDraft((d) => d + emoji)}
           trailing={
             <div className="flex items-center gap-0.5">
-              {canUseSuggestReply && (
-                <SuggestReplyToolbarButton
-                  disabled={sending || translatingOutgoing || messages.length === 0}
-                  getMessages={getSuggestMessages}
-                  getFanNotes={getSuggestFanNotes}
-                  fanNickname={chat?.chatPartner?.nickname || null}
-                  onApply={applySuggestedReply}
-                />
-              )}
               <ScriptToolbarButton
                 creatorId={creatorId}
                 platform="maloum"
@@ -2983,10 +2799,6 @@ export function MaloumChatThread({
             onChange={(e) => {
               const next = e.target.value;
               setDraft(next);
-              if (!next.trim()) {
-                setSkipOutgoingTranslate(false);
-                setSuggestedEnglish(null);
-              }
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
@@ -2996,11 +2808,9 @@ export function MaloumChatThread({
             }}
             rows={1}
             placeholder={
-              skipOutgoingTranslate
-                ? 'Edit German reply… (won’t re-translate)'
-                : autoTranslateOutgoing
-                  ? 'Type a message… (Auto-translates to German)'
-                  : 'Type a message…'
+              autoTranslateOutgoing
+                ? 'Type a message… (Auto-translates to German)'
+                : 'Type a message…'
             }
             className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-60"
           />

@@ -32,7 +32,6 @@ import {
   type FourBasedUserProfile,
   type MaloumFanStats,
 } from '@/lib/api';
-import { useStaffSync } from '@/context/StaffSyncContext';
 
 const NOTES_DEBOUNCE_MS = 3500;
 const COINS_PER_DOLLAR = 121;
@@ -156,7 +155,6 @@ export default function FourBasedFanPanel({
   className = '',
   onClose,
 }: FourBasedFanPanelProps) {
-  const { onSyncEvent } = useStaffSync();
   const [tab, setTab] = useState<TabId>('faninfo');
   const username = fanUsername || fanProfile?.name || fanName || 'fan';
   const ltv = formatLtv(chat?.sales_volume);
@@ -289,33 +287,6 @@ export default function FourBasedFanPanel({
     void loadLists();
     void loadStats();
   }, [loadPivot, loadLists, loadStats]);
-
-  useEffect(() => {
-    return onSyncEvent((event) => {
-      if (event.type !== 'ai:fan-memory') return;
-      if (event.creatorId !== creatorId || event.platform !== '4based') return;
-      if (String(event.platformFanId || '') !== String(fanId || '')) return;
-      if (event.nickname && !editingNickname) {
-        setAlias(event.nickname);
-        setNicknameDraft(event.nickname);
-      }
-      if (!event.notes) return;
-      const localIsTemplate =
-        !notesDraftRef.current.trim() ||
-        notesDraftRef.current.trim() === DEFAULT_FAN_NOTES_TEMPLATE.trim();
-      if ((notesStatus === 'dirty' || notesStatus === 'saving') && !localIsTemplate) {
-        return;
-      }
-      if (notesTimerRef.current != null) {
-        window.clearTimeout(notesTimerRef.current);
-        notesTimerRef.current = null;
-      }
-      setRemoteNotes(event.notes);
-      notesSavedBaselineRef.current = event.notes;
-      setNotesDraft(event.notes);
-      setNotesStatus('idle');
-    });
-  }, [onSyncEvent, creatorId, fanId, editingNickname, notesStatus]);
 
   useEffect(() => {
     if (!editingNickname) {

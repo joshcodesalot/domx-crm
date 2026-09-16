@@ -1,4 +1,4 @@
-const { createResponse } = require('./ai/providers/xaiClient');
+const { createResponse } = require('./xaiClient');
 
 const DEFAULT_BLOCKS = 20;
 const MIN_BLOCKS = 1;

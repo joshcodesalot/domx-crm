@@ -13,8 +13,6 @@ interface AppLayoutProps {
     | 'creators'
     | 'staff'
     | 'moderation'
-    | 'aiQueue'
-    | 'aiRules'
     | 'account';
   children: ReactNode;
 }

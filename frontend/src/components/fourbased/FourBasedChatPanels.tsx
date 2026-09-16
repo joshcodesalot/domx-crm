@@ -38,14 +38,7 @@ import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
-import SuggestReplyToolbarButton from '@/components/suggest/SuggestReplyToolbarButton';
-import AiSuggestionCard from '@/components/ai/AiSuggestionCard';
-import AiIgnoreStrip from '@/components/ai/AiIgnoreStrip';
-import { useAiThreadSuggestion } from '@/hooks/useAiThreadSuggestion';
-import { useAiThreadControls } from '@/hooks/useAiThreadControls';
-import FourBasedFanPanel, {
-  DEFAULT_FAN_NOTES_TEMPLATE,
-} from '@/components/fourbased/FourBasedFanPanel';
+import FourBasedFanPanel from '@/components/fourbased/FourBasedFanPanel';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
@@ -57,7 +50,6 @@ import {
   getFourBasedChat,
   getFourBasedCoinPackages,
   getFourBasedMessages,
-  getFourBasedPivot,
   getFourBasedProfile,
   getFourBasedUser,
   getMessageUnsends,
@@ -90,11 +82,6 @@ import {
   type MessageUnsendRecord,
   type TranslateHistoryItem,
 } from '@/lib/api';
-import {
-  ingestLatestPage,
-  latestInboundPlatformMessageId,
-  mapFourBasedMessagesForIngest,
-} from '@/lib/aiIngest';
 import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
@@ -1389,8 +1376,6 @@ export function FourBasedChatThread({
   const creatorId = creator.id;
   const canEditVaultNotes = hasPermission('vault.notes.edit');
   const canManageScripts = hasPermission('scripts.manage');
-  const canUseSuggestReply =
-    user?.role === 'owner' || user?.role === 'manager';
 
   const [chat, setChat] = useState<FourBasedChat | null>(initialChat);
   const [providerUserId, setProviderUserId] = useState<string | null>(
@@ -1413,8 +1398,6 @@ export function FourBasedChatThread({
   const [fanProfileLoading, setFanProfileLoading] = useState(false);
 
   const [draft, setDraft] = useState('');
-  const [skipOutgoingTranslate, setSkipOutgoingTranslate] = useState(false);
-  const [suggestedEnglish, setSuggestedEnglish] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [translatingOutgoing, setTranslatingOutgoing] = useState(false);
@@ -1536,7 +1519,6 @@ export function FourBasedChatThread({
   threadKeyRef.current = `${creatorId}:${chatId}`;
   const chatRef = useRef(chat);
   chatRef.current = chat;
-  const aiIngestSeenIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const el = threadRootRef.current;
@@ -1595,8 +1577,6 @@ export function FourBasedChatThread({
 
   function applyScriptToComposer(script: CreatorScript) {
     setDraft(script.messageText || '');
-    setSkipOutgoingTranslate(false);
-    setSuggestedEnglish(null);
     setSelectedVaultItems(
       (script.media || []).map(scriptMediaToFourBasedVaultItem)
     );
@@ -1608,87 +1588,6 @@ export function FourBasedChatThread({
     setTeaserVaultId(null);
     setAppliedScriptId(script.id);
   }
-
-  const applySuggestedReply = useCallback(
-    (payload: { english: string; german: string }) => {
-      setDraft(payload.german || '');
-      setSuggestedEnglish(payload.english || null);
-      setSkipOutgoingTranslate(true);
-      setAppliedScriptId(null);
-    },
-    []
-  );
-
-  const getSuggestMessages = useCallback((): TranslateHistoryItem[] => {
-    return messages
-      .filter((m) => typeof m.message === 'string' && m.message.trim())
-      .slice(-12)
-      .map((m) => ({
-        role: m.user_id === providerUserId ? 'assistant' : 'user',
-        content: m.message!.trim(),
-      }));
-  }, [messages, providerUserId]);
-
-  const latestInboundId = useMemo(
-    () =>
-      latestInboundPlatformMessageId(
-        mapFourBasedMessagesForIngest(messages, providerUserId)
-      ),
-    [messages, providerUserId]
-  );
-  const {
-    suggestion: aiSuggestion,
-    stale: aiSuggestionStale,
-    dismiss: dismissAiSuggestion,
-    busy: aiBusy,
-    actionError: aiActionError,
-    canPause: canPauseAi,
-    canTakeover: canTakeoverAi,
-    reject: rejectAiSuggestion,
-    regenerate: regenerateAiSuggestion,
-    takeover: takeoverAiConversation,
-    pause: pauseAiCreator,
-  } = useAiThreadSuggestion({
-    creatorId,
-    platform: '4based',
-    platformChatId: chatId,
-    latestInboundId,
-  });
-  const {
-    canIgnore: canIgnoreAi,
-    aiIgnored,
-    busy: aiIgnoreBusy,
-    error: aiIgnoreError,
-    ignore: ignoreAi,
-    unignore: unignoreAi,
-  } = useAiThreadControls({
-    creatorId,
-    platform: '4based',
-    platformChatId: chatId,
-  });
-
-  const getSuggestFanNotes = useCallback(async () => {
-    if (!fan.id) return '';
-    try {
-      const result = await getFourBasedPivot(creatorId, fan.id);
-      const notes = (result.note || '').trim();
-      if (!notes || notes === DEFAULT_FAN_NOTES_TEMPLATE.trim()) return '';
-      return notes;
-    } catch {
-      return '';
-    }
-  }, [creatorId, fan.id]);
-
-  const getSuggestFanNickname = useCallback(async () => {
-    if (!fan.id) return null;
-    try {
-      const result = await getFourBasedPivot(creatorId, fan.id);
-      const alias = (result.alias || '').trim();
-      return alias || null;
-    } catch {
-      return null;
-    }
-  }, [creatorId, fan.id]);
 
   const fanIsOnline =
     fanProfile?.is_online != null ? Boolean(fanProfile.is_online) : fan.isOnline;
@@ -1807,25 +1706,6 @@ export function FourBasedChatThread({
         if (result.providerUserId) {
           setProviderUserId(result.providerUserId);
         }
-        if (!append) {
-          const resolvedProviderUserId =
-            result.providerUserId || providerUserId;
-          const currentChat = chatRef.current;
-          void ingestLatestPage({
-            creatorId,
-            platform: '4based',
-            platformChatId: chatId,
-            platformFanId: currentChat
-              ? fanFromChat(currentChat, resolvedProviderUserId).id
-              : null,
-            source: 'fourbased_poll',
-            seenIds: aiIngestSeenIdsRef.current,
-            messages: mapFourBasedMessagesForIngest(
-              chronological,
-              resolvedProviderUserId
-            ),
-          });
-        }
       } catch (err) {
         if (!silent && !append && threadKeyRef.current === key) {
           setMessagesError(
@@ -1895,8 +1775,6 @@ export function FourBasedChatThread({
     setMessageUnsends({});
     setFanProfile(null);
     setDraft('');
-    setSkipOutgoingTranslate(false);
-    setSuggestedEnglish(null);
     setSendError(null);
     clearMediaAttachments();
     setPlayingMsgId(null);
@@ -1912,7 +1790,6 @@ export function FourBasedChatThread({
     setTranslatingMessageKeys(new Set());
     nearBottomRef.current = true;
     preserveScrollRef.current = null;
-    aiIngestSeenIdsRef.current = new Set();
     void loadMessages();
     void loadSenders();
     void getMessageUnsends({
@@ -2254,8 +2131,6 @@ export function FourBasedChatThread({
 
     const composerSnapshot = {
       draft,
-      skipOutgoingTranslate,
-      suggestedEnglish,
       selectedVaultItems,
       ppvDollars,
       priceModalOpen,
@@ -2264,8 +2139,6 @@ export function FourBasedChatThread({
     };
     const restoreComposer = () => {
       setDraft(composerSnapshot.draft);
-      setSkipOutgoingTranslate(composerSnapshot.skipOutgoingTranslate);
-      setSuggestedEnglish(composerSnapshot.suggestedEnglish);
       setSelectedVaultItems(composerSnapshot.selectedVaultItems);
       setPpvDollars(composerSnapshot.ppvDollars);
       setPriceModalOpen(composerSnapshot.priceModalOpen);
@@ -2276,14 +2149,11 @@ export function FourBasedChatThread({
     setSending(true);
     setSendError(null);
     setDraft('');
-    setSkipOutgoingTranslate(false);
-    setSuggestedEnglish(null);
     clearMediaAttachments();
     draftInputRef.current?.blur();
 
     const localId = crypto.randomUUID();
     const englishDraft = text;
-    const usedSuggestedGerman = skipOutgoingTranslate && Boolean(text);
     const vaultForLog = composerSnapshot.selectedVaultItems;
     const dollarsForLog = hasPpvPrice ? ppvDollarsNum : 0;
     const coinsForLog = dollarsForLog > 0 ? priceCoins : 0;
@@ -2293,7 +2163,7 @@ export function FourBasedChatThread({
     try {
       let messageToSend = text;
 
-      if (autoTranslateOutgoing && text && !skipOutgoingTranslate) {
+      if (autoTranslateOutgoing && text) {
         setTranslatingOutgoing(true);
         try {
           const history: TranslateHistoryItem[] = messages
@@ -2361,9 +2231,7 @@ export function FourBasedChatThread({
           messageToSend ||
           (vaultForLog[0] ? vaultForLog[0].description || '' : '') ||
           englishDraft;
-        const loggedEnglish = usedSuggestedGerman
-          ? suggestedEnglish?.trim() || englishDraft
-          : englishDraft || actualSent;
+        const loggedEnglish = englishDraft || actualSent;
         const chatterName = user.name;
         const dashboardMessageId = `4based:${sentMessage._id}`;
         setMessageSenders((prev) => ({
@@ -3353,54 +3221,11 @@ export function FourBasedChatThread({
             Translating to German…
           </p>
         )}
-        {skipOutgoingTranslate && !translatingOutgoing && (
-          <p className="text-xs text-domx-600 dark:text-domx-400 mb-2">
-            AI German — won’t re-translate
-          </p>
-        )}
-
-        {canIgnoreAi ? (
-          <AiIgnoreStrip
-            aiIgnored={aiIgnored}
-            busy={aiIgnoreBusy}
-            error={aiIgnoreError}
-            onIgnore={() => {
-              void ignoreAi().then((ok) => {
-                if (ok) dismissAiSuggestion();
-              });
-            }}
-            onUnignore={() => void unignoreAi()}
-          />
-        ) : null}
-
-        {aiSuggestion && !aiIgnored ? (
-          <AiSuggestionCard
-            suggestion={aiSuggestion}
-            stale={aiSuggestionStale}
-            platform="4based"
-            busy={aiBusy}
-            error={aiActionError}
-            onDismiss={dismissAiSuggestion}
-            onReject={rejectAiSuggestion}
-            onRegenerate={regenerateAiSuggestion}
-            onTakeover={canTakeoverAi ? takeoverAiConversation : undefined}
-            onPause={canPauseAi ? pauseAiCreator : undefined}
-          />
-        ) : null}
 
         <QuickEmojiBar
           onInsert={(emoji) => setDraft((d) => d + emoji)}
           trailing={
             <div className="flex items-center gap-0.5">
-              {canUseSuggestReply && (
-                <SuggestReplyToolbarButton
-                  disabled={sending || translatingOutgoing || messages.length === 0}
-                  getMessages={getSuggestMessages}
-                  getFanNotes={getSuggestFanNotes}
-                  getFanNickname={getSuggestFanNickname}
-                  onApply={applySuggestedReply}
-                />
-              )}
               <ScriptToolbarButton
                 creatorId={creatorId}
                 platform="4based"
@@ -3432,10 +3257,6 @@ export function FourBasedChatThread({
             onChange={(e) => {
               const next = e.target.value;
               setDraft(next);
-              if (!next.trim()) {
-                setSkipOutgoingTranslate(false);
-                setSuggestedEnglish(null);
-              }
             }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
@@ -3445,11 +3266,9 @@ export function FourBasedChatThread({
             }}
             rows={1}
             placeholder={
-              skipOutgoingTranslate
-                ? 'Edit German reply… (won’t re-translate)'
-                : autoTranslateOutgoing
-                  ? 'Type a message… (Auto-translates to German)'
-                  : 'Type a message…'
+              autoTranslateOutgoing
+                ? 'Type a message… (Auto-translates to German)'
+                : 'Type a message…'
             }
             className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-60"
           />

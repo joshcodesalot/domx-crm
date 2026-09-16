@@ -1,4 +1,4 @@
-const { createResponse } = require('./ai/providers/xaiClient');
+const { createResponse } = require('./xaiClient');
 
 const FEMDOM_SYSTEM_PROMPT = `You are a German chat converter for a dominant femdom creator.
 

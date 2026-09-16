@@ -8,7 +8,6 @@ import {
   Trash2,
   Users,
   Globe,
-  Sparkles,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import AddCreatorModal from '@/components/AddCreatorModal';
@@ -17,23 +16,14 @@ import CreatorAvatar from '@/components/CreatorAvatar';
 import EditCreatorProxyModal from '@/components/EditCreatorProxyModal';
 import RemoveCreatorModal from '@/components/RemoveCreatorModal';
 import RenameCreatorModal from '@/components/RenameCreatorModal';
-import AiCreatorModeControl from '@/components/AiCreatorModeControl';
-import AiCreatorProfileModal from '@/components/AiCreatorProfileModal';
-import ToggleSwitch from '@/components/ToggleSwitch';
 import { useAuth } from '@/context/AuthContext';
 import {
   deleteCreator,
-  getAiCreatorSettings,
-  getAiFlags,
   getCreators,
-  patchAiCreatorSettings,
-  patchAiFlags,
   reconnectFourBasedAccountSaved,
   reconnectMaloumAccountSaved,
   refreshMaloumAvatar,
   verifyMaloumSession,
-  type AiCreatorSettings,
-  type AiFlags,
   type Creator,
 } from '@/lib/api';
 import fourBasedIcon from '@/assets/4based_icon.ico';
@@ -83,76 +73,17 @@ export default function ManageCreators() {
   const [staffTarget, setStaffTarget] = useState<Creator | null>(null);
   const [renameTarget, setRenameTarget] = useState<Creator | null>(null);
   const [proxyTarget, setProxyTarget] = useState<Creator | null>(null);
-  const [aiProfileTarget, setAiProfileTarget] = useState<Creator | null>(null);
   const [refreshingIconId, setRefreshingIconId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
-  const [aiSettings, setAiSettings] = useState<Record<string, AiCreatorSettings>>(
-    {}
-  );
-  const [aiSettingsErrors, setAiSettingsErrors] = useState<Record<string, string>>(
-    {}
-  );
-  const [aiSavingIds, setAiSavingIds] = useState<Set<string>>(() => new Set());
-  const [aiFlags, setAiFlags] = useState<AiFlags | null>(null);
-  const [aiFlagsSaving, setAiFlagsSaving] = useState(false);
 
   const canManage = hasPermission('creators.manage');
-  const canManageAi = hasPermission('ai.settings.manage');
-  const canEditAutoSend =
-    Boolean(aiFlags?.canEditAutoSend) && hasPermission('ai.autosend.enable');
-
-  const loadAiSettingsFor = useCallback(async (list: Creator[]) => {
-    if (!canManageAi) {
-      setAiSettings({});
-      setAiSettingsErrors({});
-      return;
-    }
-
-    const results = await Promise.all(
-      list.map(async (creator) => {
-        try {
-          const settings = await getAiCreatorSettings(creator.id);
-          return { id: creator.id, settings };
-        } catch (err) {
-          return {
-            id: creator.id,
-            error:
-              err instanceof Error ? err.message : 'Failed to load AI settings',
-          };
-        }
-      })
-    );
-
-    const nextSettings: Record<string, AiCreatorSettings> = {};
-    const nextErrors: Record<string, string> = {};
-    for (const row of results) {
-      if ('settings' in row && row.settings) {
-        nextSettings[row.id] = row.settings;
-      }
-      if ('error' in row && row.error) {
-        nextErrors[row.id] = row.error;
-      }
-    }
-    setAiSettings(nextSettings);
-    setAiSettingsErrors(nextErrors);
-  }, [canManageAi]);
-
-  const loadGlobalAiFlags = useCallback(async () => {
-    if (!canManageAi) {
-      setAiFlags(null);
-      return;
-    }
-    const flags = await getAiFlags();
-    setAiFlags(flags);
-  }, [canManageAi]);
 
   const loadCreators = useCallback(async () => {
     const { creators: list } = await getCreators();
     setCreators(list);
-    await Promise.all([loadAiSettingsFor(list), loadGlobalAiFlags()]);
-  }, [loadAiSettingsFor, loadGlobalAiFlags]);
+  }, []);
 
   useEffect(() => {
     async function load() {
@@ -263,60 +194,6 @@ export default function ManageCreators() {
     }
   }
 
-  async function handleAiSettingsChange(
-    creatorId: string,
-    patch: { mode?: string; paused?: boolean }
-  ) {
-    setAiSavingIds((prev) => {
-      const next = new Set(prev);
-      next.add(creatorId);
-      return next;
-    });
-    setAiSettingsErrors((prev) => {
-      if (!prev[creatorId]) return prev;
-      const next = { ...prev };
-      delete next[creatorId];
-      return next;
-    });
-    try {
-      const updated = await patchAiCreatorSettings(creatorId, patch);
-      setAiSettings((prev) => ({ ...prev, [creatorId]: updated }));
-    } catch (err) {
-      setAiSettingsErrors((prev) => ({
-        ...prev,
-        [creatorId]:
-          err instanceof Error ? err.message : 'Failed to update AI settings',
-      }));
-    } finally {
-      setAiSavingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(creatorId);
-        return next;
-      });
-    }
-  }
-
-  async function handleGlobalAiFlagsChange(patch: {
-    enabled?: boolean;
-    suggestAllowed?: boolean;
-    autoSendAllowed?: boolean;
-  }) {
-    if (!canManageAi || aiFlagsSaving) return;
-    setAiFlagsSaving(true);
-    setError(null);
-    try {
-      const next = await patchAiFlags(patch);
-      setAiFlags(next);
-      await loadAiSettingsFor(creators);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : 'Failed to update global AI flags'
-      );
-    } finally {
-      setAiFlagsSaving(false);
-    }
-  }
-
   async function handleRemoveConfirm() {
     if (!removeTarget) return;
 
@@ -338,63 +215,7 @@ export default function ManageCreators() {
       <div className="max-w-6xl mx-auto">
         <div className="flex flex-wrap items-start justify-between gap-4 mb-6">
           <h2 className="text-2xl font-semibold">Manage Creators</h2>
-          <div className="flex flex-wrap items-start justify-end gap-4">
-            {canManageAi && (
-              <div className="flex flex-wrap items-start gap-5 max-w-xl">
-                <div className="flex flex-col gap-1 min-w-[12rem]">
-                  <label className="flex items-center justify-between gap-3">
-                    <span className="text-xs font-semibold text-gray-500 tracking-wider">
-                      GLOBAL AI
-                    </span>
-                    <ToggleSwitch
-                      checked={Boolean(aiFlags?.enabled)}
-                      disabled={aiFlagsSaving || loading || !aiFlags}
-                      onChange={(enabled) => {
-                        const patch: {
-                          enabled: boolean;
-                          suggestAllowed?: boolean;
-                        } = { enabled };
-                        if (enabled && !aiFlags?.suggestAllowed) {
-                          patch.suggestAllowed = true;
-                        }
-                        void handleGlobalAiFlagsChange(patch);
-                      }}
-                      aria-label="Global AI"
-                    />
-                  </label>
-                  <p className="text-[11px] text-gray-500 leading-relaxed">
-                    {aiFlags?.enabled
-                      ? 'AI is allowed. Set each creator’s mode below.'
-                      : 'Global AI is off — creator modes are locked'}
-                  </p>
-                </div>
-                <div className="flex flex-col gap-1 min-w-[14rem]">
-                  <label className="flex items-center justify-between gap-3">
-                    <span className="text-xs font-semibold text-gray-500 tracking-wider">
-                      AUTO-SEND
-                    </span>
-                    <ToggleSwitch
-                      checked={Boolean(aiFlags?.autoSendAllowed)}
-                      disabled={
-                        aiFlagsSaving ||
-                        loading ||
-                        !aiFlags?.enabled ||
-                        !canEditAutoSend
-                      }
-                      onChange={(autoSendAllowed) => {
-                        void handleGlobalAiFlagsChange({ autoSendAllowed });
-                      }}
-                      aria-label="AI auto-send"
-                    />
-                  </label>
-                  <p className="text-[11px] text-gray-500 leading-relaxed">
-                    Required for Auto low-risk. Leave off until you want the AI
-                    to send.
-                  </p>
-                </div>
-              </div>
-            )}
-            <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handleRefresh}
@@ -419,7 +240,6 @@ export default function ManageCreators() {
                 Add Creator
               </button>
             )}
-            </div>
           </div>
         </div>
 
@@ -582,27 +402,6 @@ export default function ManageCreators() {
                               className={`w-4 h-4 ${refreshingIconId === creator.id ? 'animate-pulse' : ''}`}
                             />
                           </button>
-                          {canManageAi && (
-                            <>
-                              <AiCreatorModeControl
-                                creatorId={creator.id}
-                                settings={aiSettings[creator.id]}
-                                error={aiSettingsErrors[creator.id] || null}
-                                saving={aiSavingIds.has(creator.id)}
-                                onChange={(patch) =>
-                                  void handleAiSettingsChange(creator.id, patch)
-                                }
-                              />
-                              <button
-                                type="button"
-                                className="p-1.5 text-gray-400 hover:text-violet-500 dark:hover:text-violet-400 rounded-md hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
-                                title="AI profile"
-                                onClick={() => setAiProfileTarget(creator)}
-                              >
-                                <Sparkles className="w-4 h-4" />
-                              </button>
-                            </>
-                          )}
                           <button
                             type="button"
                             className="p-1.5 text-gray-400 hover:text-brand-600 dark:hover:text-brand-400 rounded-md hover:bg-brand-50 dark:hover:bg-brand-900/20 transition-colors"
@@ -668,14 +467,6 @@ export default function ManageCreators() {
           creator={staffTarget}
           onClose={() => setStaffTarget(null)}
           onSaved={loadCreators}
-        />
-      )}
-
-      {aiProfileTarget && (
-        <AiCreatorProfileModal
-          creatorId={aiProfileTarget.id}
-          displayName={aiProfileTarget.displayName}
-          onClose={() => setAiProfileTarget(null)}
         />
       )}
 
