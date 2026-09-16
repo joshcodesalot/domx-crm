@@ -189,6 +189,8 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
     if (!silent) setCreatorsLoading(true);
     try {
       const { creators: list } = await getCreators();
+      const hadNone = creatorsRef.current.length === 0;
+      creatorsRef.current = list;
       setCreators((prev) => (creatorsEqual(prev, list) ? prev : list));
       setCreatorsError(null);
       setBadgesByCreatorId((prev) => {
@@ -198,6 +200,16 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
         }
         return badgesEqual(prev, next) ? prev : next;
       });
+      if (hadNone && list.length > 0 && badgeNeedsRef.current.size > 0) {
+        const plan = collectBadgePollPlan(list, badgeNeedsRef.current.values());
+        badgePollPlanRef.current = plan;
+        if (plan.focusIds.length > 0) {
+          void refreshBadgesRef.current(plan.focusIds);
+        }
+        if (plan.wantAll) {
+          void refreshBadgesRef.current();
+        }
+      }
     } catch (err) {
       if (!silent) {
         setCreatorsError(
@@ -424,16 +436,24 @@ export function useCreatorLive(opts?: {
     badgeScope === 'all' ||
     (wantBadges && badgeScope === undefined);
   const focusKey = focusedIds.join(',');
+  const registerBadgeNeed = ctx.registerBadgeNeed;
 
   useEffect(() => {
     const enabled = wantBadges && pollEnabled;
-    ctx.registerBadgeNeed(subscriberKey, {
+    registerBadgeNeed(subscriberKey, {
       enabled,
       all: enabled && pollAllBadges,
       creatorIds: enabled ? focusedIds : [],
     });
-    return () => ctx.registerBadgeNeed(subscriberKey, { enabled: false });
-  }, [ctx, subscriberKey, wantBadges, pollEnabled, pollAllBadges, focusKey]);
+    return () => registerBadgeNeed(subscriberKey, { enabled: false });
+  }, [
+    registerBadgeNeed,
+    subscriberKey,
+    wantBadges,
+    pollEnabled,
+    pollAllBadges,
+    focusKey,
+  ]);
 
   const creators = useMemo(() => {
     if (!opts?.platform) return ctx.creators;

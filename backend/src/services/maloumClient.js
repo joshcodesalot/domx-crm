@@ -832,6 +832,26 @@ async function markRead(creator, chatId) {
   return result.data;
 }
 
+function asFiniteCount(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(0, value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return Math.max(0, n);
+  }
+  return null;
+}
+
+function normalizeUnreadCount(value) {
+  const direct = asFiniteCount(value);
+  if (direct !== null) return direct;
+  if (!value || typeof value !== 'object') return 0;
+  const nested = value.unread ?? value.unreadCount ?? value.count ?? value.data;
+  const fromNested = asFiniteCount(nested);
+  return fromNested !== null ? fromNested : 0;
+}
+
 async function getUnreadCount(creator) {
   const { accessToken, proxyUrl, timezone, creatorId } = authContext(creator);
   const result = await requestJson({
@@ -841,9 +861,9 @@ async function getUnreadCount(creator) {
     accessToken,
     timezone,
     creatorId,
-    cfBypass: 'never',
+    cfBypass: 'fallback',
   });
-  return result.data;
+  return normalizeUnreadCount(result.data);
 }
 
 async function getNotificationsUnreadCount(creator) {
@@ -855,9 +875,9 @@ async function getNotificationsUnreadCount(creator) {
     accessToken,
     timezone,
     creatorId,
-    cfBypass: 'never',
+    cfBypass: 'fallback',
   });
-  return result.data;
+  return normalizeUnreadCount(result.data);
 }
 
 async function listNotifications(creator, { limit = 15, next, cfBypass } = {}) {
@@ -1745,6 +1765,7 @@ module.exports = {
   markRead,
   getUnreadCount,
   getNotificationsUnreadCount,
+  normalizeUnreadCount,
   listNotifications,
   listRecentNotifications,
   listTransactionHistory,

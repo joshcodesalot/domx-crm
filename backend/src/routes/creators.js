@@ -5207,7 +5207,7 @@ router.get(
       }
 
       const unread = await maloumClient.getUnreadCount(loaded.creator);
-      res.json({ unread: typeof unread === 'number' ? unread : Number(unread) || 0 });
+      res.json({ unread });
     } catch (err) {
       return handleMaloumError(res, err, 'Get Maloum unread count error:');
     }
@@ -5240,12 +5240,9 @@ router.get(
         maloumClient.getNotificationsUnreadCount(loaded.creator),
       ]);
 
-      const toCount = (value) =>
-        typeof value === 'number' ? value : Number(value) || 0;
-
       res.json({
-        messages: toCount(messagesUnread),
-        notifications: toCount(notificationsUnread),
+        messages: messagesUnread,
+        notifications: notificationsUnread,
       });
 
       const creator = loaded.creator;
