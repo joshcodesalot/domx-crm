@@ -12,6 +12,7 @@ const staffRoutes = require('./routes/staff');
 const rolesRoutes = require('./routes/roles');
 const creatorsRoutes = require('./routes/creators');
 const maloumFanScrapeRoutes = require('./routes/maloumFanScrape');
+const maloumCommentGuardRoutes = require('./routes/maloumCommentGuard');
 const fourbasedFanScrapeRoutes = require('./routes/fourbasedFanScrape');
 const maloumSentMessagesRoutes = require('./routes/maloumSentMessages');
 const messagingDashboardRoutes = require('./routes/messagingDashboard');
@@ -85,6 +86,7 @@ app.use('/api/creators', telegramListRoutes);
 app.use('/api/creators', telegramMassMessageRoutes);
 app.use('/api/creators', creatorsRoutes);
 app.use('/api/creators', maloumFanScrapeRoutes);
+app.use('/api/creators', maloumCommentGuardRoutes);
 app.use('/api/creators', fourbasedFanScrapeRoutes);
 app.use('/api/maloum-sent-messages', maloumSentMessagesRoutes);
 app.use('/api/messaging-dashboard', messagingDashboardRoutes);
@@ -124,4 +126,8 @@ app.listen(PORT, () => {
   } = require('./services/fourbasedFanScrapeRunner');
   void resumeFourBasedFanScrapeJobs();
   startContentScheduleRunner();
+  const {
+    startMaloumCommentGuard,
+  } = require('./services/maloumCommentGuard');
+  startMaloumCommentGuard();
 });

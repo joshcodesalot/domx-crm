@@ -4351,6 +4351,7 @@ export interface MaloumPostComment {
   _id?: string;
   text?: string;
   createdAt?: string;
+  isAuthorBlockedByCurrentUser?: boolean;
   user?: {
     _id?: string;
     username?: string;
@@ -4378,6 +4379,90 @@ export async function listMaloumPostComments(
       query ? `?${query}` : ''
     }`
   );
+}
+
+export interface MaloumCommentGuardSettings {
+  creatorId: string;
+  enabled: boolean;
+  lastScanAt: string | null;
+  lastError: string | null;
+  scanning: boolean;
+}
+
+export interface MaloumCommentGuardEvent {
+  id: string;
+  creatorId: string;
+  postId: string | null;
+  commentId: string | null;
+  memberId: string;
+  username: string | null;
+  commentText: string | null;
+  matchedTerm: string | null;
+  status: 'blocked' | 'failed';
+  error: string | null;
+  createdAt: string;
+}
+
+export async function getMaloumCommentGuard(
+  creatorId: string
+): Promise<{ settings: MaloumCommentGuardSettings }> {
+  return request(`/api/creators/${creatorId}/maloum/comment-guard`);
+}
+
+export async function updateMaloumCommentGuard(
+  creatorId: string,
+  enabled: boolean
+): Promise<{ settings: MaloumCommentGuardSettings }> {
+  return request(`/api/creators/${creatorId}/maloum/comment-guard`, {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function listMaloumCommentGuardEvents(
+  creatorId: string,
+  limit = 30
+): Promise<{ events: MaloumCommentGuardEvent[] }> {
+  return request(
+    `/api/creators/${creatorId}/maloum/comment-guard/events?limit=${limit}`
+  );
+}
+
+export async function runMaloumCommentGuard(creatorId: string): Promise<{
+  settings: MaloumCommentGuardSettings;
+  summary: {
+    ok: boolean;
+    scannedPosts: number;
+    matched: number;
+    blocked: number;
+    failed: number;
+    error?: string;
+  };
+}> {
+  return request(`/api/creators/${creatorId}/maloum/comment-guard/run`, {
+    method: 'POST',
+  });
+}
+
+export async function blockMaloumCommentAuthor(
+  creatorId: string,
+  payload: {
+    memberId: string;
+    postId?: string;
+    commentId?: string;
+    username?: string;
+    commentText?: string;
+    matchedTerm?: string | null;
+  }
+): Promise<{
+  ok: boolean;
+  alreadyBlocked: boolean;
+  event: MaloumCommentGuardEvent | null;
+}> {
+  return request(`/api/creators/${creatorId}/maloum/comment-guard/block`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function createMaloumChat(

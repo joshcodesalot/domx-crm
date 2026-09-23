@@ -19,6 +19,7 @@ import {
   Newspaper,
   RefreshCw,
   Send,
+  Shield,
   Trash2,
   Upload,
   X,
@@ -48,20 +49,29 @@ import {
   vaultCacheKey,
 } from '@/lib/vaultListingCache';
 import {
+  blockMaloumCommentAuthor,
   createMaloumPost,
   deleteMaloumPost,
   getCreators,
+  getMaloumCommentGuard,
   listMaloumCategories,
+  listMaloumCommentGuardEvents,
   listMaloumMyPosts,
+  listMaloumPostComments,
   listAllMaloumVaultFolders,
   listMaloumVaultMedia,
   maloumMediaUrl,
+  runMaloumCommentGuard,
   translateToGerman,
+  updateMaloumCommentGuard,
   uploadMaloumFeedPhoto,
   createScheduledContent,
   type Creator,
   type MaloumCategory,
+  type MaloumCommentGuardEvent,
+  type MaloumCommentGuardSettings,
   type MaloumFeedPost,
+  type MaloumPostComment,
   type MaloumVaultFolder,
   type MaloumVaultMediaItem,
 } from '@/lib/api';
@@ -70,6 +80,185 @@ import { friendlyCategoryName } from '@/lib/maloumLabels';
 
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const MAX_CATEGORIES = 3;
+const GUARD_TERMS = ['AI', 'KI', 'A.I.', 'K.I.'];
+
+function matchedGuardTerm(text: string): string | null {
+  for (const term of GUARD_TERMS) {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(
+      `(?:^|[^\\p{L}\\p{N}_])${escaped}(?:$|[^\\p{L}\\p{N}_])`,
+      'iu'
+    );
+    if (pattern.test(text)) return term;
+  }
+  return null;
+}
+
+function PostComments({
+  creatorId,
+  postId,
+  onBlocked,
+}: {
+  creatorId: string;
+  postId: string;
+  onBlocked: () => void;
+}) {
+  const confirm = useConfirm();
+  const { toast } = useToast();
+  const [comments, setComments] = useState<MaloumPostComment[]>([]);
+  const [providerUserId, setProviderUserId] = useState<string | null>(null);
+  const [next, setNext] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [blockingId, setBlockingId] = useState<string | null>(null);
+
+  const load = useCallback(
+    async (opts?: { append?: boolean; cursor?: string | null }) => {
+      const append = Boolean(opts?.append);
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+      setError(null);
+      try {
+        const result = await listMaloumPostComments(creatorId, postId, {
+          limit: 15,
+          next: opts?.cursor || undefined,
+        });
+        setComments((prev) =>
+          append ? [...prev, ...(result.comments || [])] : result.comments || []
+        );
+        setProviderUserId(result.providerUserId || null);
+        setNext(result.next || null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load comments');
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    },
+    [creatorId, postId]
+  );
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function handleBlock(comment: MaloumPostComment) {
+    const memberId = String(comment.user?._id || '').trim();
+    if (!memberId || blockingId) return;
+    const username = comment.user?.username || 'this fan';
+    const ok = await confirm({
+      title: 'Block and delete comments?',
+      message: `This blocks ${username} on Maloum and deletes their past comments.`,
+      confirmLabel: 'Block',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    setBlockingId(memberId);
+    try {
+      const text = typeof comment.text === 'string' ? comment.text : '';
+      const result = await blockMaloumCommentAuthor(creatorId, {
+        memberId,
+        postId,
+        commentId: comment._id,
+        username: comment.user?.username,
+        commentText: text,
+        matchedTerm: matchedGuardTerm(text),
+      });
+      setComments((prev) =>
+        prev.filter((item) => String(item.user?._id || '') !== memberId)
+      );
+      toast.success(
+        result.alreadyBlocked
+          ? `${username} was already blocked`
+          : `Blocked ${username} and deleted their comments`
+      );
+      onBlocked();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Block failed');
+    } finally {
+      setBlockingId(null);
+    }
+  }
+
+  if (loading && comments.length === 0) {
+    return (
+      <div className="px-4 pb-4">
+        <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 pb-4 space-y-2">
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      {!error && comments.length === 0 && (
+        <p className="text-xs text-gray-500 dark:text-zinc-500">No comments.</p>
+      )}
+      {comments.map((comment) => {
+        const text = typeof comment.text === 'string' ? comment.text : '';
+        const term = matchedGuardTerm(text);
+        const memberId = String(comment.user?._id || '');
+        const blocked = Boolean(comment.isAuthorBlockedByCurrentUser);
+        const isCreatorComment =
+          Boolean(providerUserId) && memberId === providerUserId;
+        return (
+          <div
+            key={comment._id || `${memberId}-${comment.createdAt}`}
+            className={`rounded-xl border px-3 py-2 ${
+              term
+                ? 'border-amber-500/40 bg-amber-500/10'
+                : 'border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900/60'
+            }`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-gray-900 dark:text-white">
+                  {comment.user?.username || 'Unknown'}
+                  {term && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300 font-semibold">
+                      {term}
+                    </span>
+                  )}
+                </p>
+                <p className="text-sm text-gray-800 dark:text-zinc-200 whitespace-pre-wrap break-words mt-1">
+                  {text || <span className="italic text-gray-400">Empty comment</span>}
+                </p>
+                {comment.createdAt && (
+                  <p className="text-[11px] text-gray-500 dark:text-zinc-500 mt-1">
+                    {formatRelativeTime(comment.createdAt)}
+                  </p>
+                )}
+              </div>
+              {isCreatorComment ? null : blocked ? (
+                <span className="text-[11px] text-gray-500 shrink-0">Blocked</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void handleBlock(comment)}
+                  disabled={!memberId || blockingId === memberId}
+                  className="shrink-0 text-[11px] font-medium text-red-500 hover:text-red-400 disabled:opacity-40"
+                >
+                  {blockingId === memberId ? 'Blocking…' : 'Block and delete comments'}
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      {next && (
+        <button
+          type="button"
+          onClick={() => void load({ append: true, cursor: next })}
+          disabled={loadingMore}
+          className="text-xs text-domx-600 dark:text-domx-400 hover:underline disabled:opacity-40"
+        >
+          {loadingMore ? 'Loading…' : 'Load more comments'}
+        </button>
+      )}
+    </div>
+  );
+}
 
 function readStoredBoolean(key: string, defaultValue: boolean): boolean {
   const stored = localStorage.getItem(key);
@@ -176,6 +365,13 @@ export default function MaloumFeed() {
   const [postsLoading, setPostsLoading] = useState(false);
   const [postsError, setPostsError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [openCommentPostIds, setOpenCommentPostIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [guard, setGuard] = useState<MaloumCommentGuardSettings | null>(null);
+  const [guardEvents, setGuardEvents] = useState<MaloumCommentGuardEvent[]>([]);
+  const [guardSaving, setGuardSaving] = useState(false);
+  const [guardRunning, setGuardRunning] = useState(false);
 
   const [mediaSource, setMediaSource] = useState<'upload' | 'vault'>('upload');
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -310,6 +506,21 @@ export default function MaloumFeed() {
     }
   }, [selectedCreatorId]);
 
+  const loadCommentGuard = useCallback(async () => {
+    if (!selectedCreatorId) return;
+    try {
+      const [settingsResult, eventsResult] = await Promise.all([
+        getMaloumCommentGuard(selectedCreatorId),
+        listMaloumCommentGuardEvents(selectedCreatorId, 30),
+      ]);
+      setGuard(settingsResult.settings);
+      setGuardEvents(eventsResult.events || []);
+    } catch {
+      setGuard(null);
+      setGuardEvents([]);
+    }
+  }, [selectedCreatorId]);
+
   useEffect(() => {
     void loadCreators();
   }, [loadCreators]);
@@ -337,12 +548,22 @@ export default function MaloumFeed() {
     setVaultMediaNext(null);
     setDraft('');
     setIsPublic(true);
+    setOpenCommentPostIds(new Set());
+    setGuard(null);
+    setGuardEvents([]);
     if (selectedCreatorId) {
       void loadPosts();
       void loadCategories();
       void loadUploadFolders();
+      void loadCommentGuard();
     }
-  }, [selectedCreatorId, loadPosts, loadCategories, loadUploadFolders]);
+  }, [
+    selectedCreatorId,
+    loadPosts,
+    loadCategories,
+    loadUploadFolders,
+    loadCommentGuard,
+  ]);
 
   useEffect(() => {
     if (!uploadFile) {
@@ -647,6 +868,50 @@ export default function MaloumFeed() {
     },
     [selectedCreatorId, deletingId, confirm, toast]
   );
+
+  async function handleGuardToggle(enabled: boolean) {
+    if (!selectedCreatorId || guardSaving) return;
+    setGuardSaving(true);
+    try {
+      const result = await updateMaloumCommentGuard(selectedCreatorId, enabled);
+      setGuard(result.settings);
+      toast.success(enabled ? 'Comment guard on' : 'Comment guard off');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update comment guard');
+    } finally {
+      setGuardSaving(false);
+    }
+  }
+
+  async function handleGuardRun() {
+    if (!selectedCreatorId || guardRunning) return;
+    setGuardRunning(true);
+    try {
+      const result = await runMaloumCommentGuard(selectedCreatorId);
+      setGuard(result.settings);
+      await loadCommentGuard();
+      if (result.summary.ok) {
+        toast.success(
+          `Checked ${result.summary.scannedPosts} posts, blocked ${result.summary.blocked}`
+        );
+      } else {
+        toast.error(result.summary.error || result.settings.lastError || 'Comment check failed');
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Comment check failed');
+    } finally {
+      setGuardRunning(false);
+    }
+  }
+
+  function togglePostComments(postId: string) {
+    setOpenCommentPostIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(postId)) next.delete(postId);
+      else next.add(postId);
+      return next;
+    });
+  }
 
   const canPost =
     !posting &&
@@ -1015,7 +1280,7 @@ export default function MaloumFeed() {
           </section>
 
           <main className="flex-1 min-w-0 min-h-0 flex flex-col">
-            <div className="h-16 px-4 md:px-6 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 shrink-0 bg-white/80 dark:bg-zinc-950/80">
+            <div className="px-4 md:px-6 py-3 border-b border-gray-200 dark:border-zinc-800/60 flex flex-wrap items-center justify-between gap-3 shrink-0 bg-white/80 dark:bg-zinc-950/80">
               <div className="min-w-0">
                 <h2 className="text-sm font-semibold text-gray-900 dark:text-white truncate">
                   {selectedCreator?.displayName || 'Creator'} — Feed
@@ -1024,19 +1289,105 @@ export default function MaloumFeed() {
                   Profile posts on Maloum
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => void loadPosts()}
-                className="p-2 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800"
-                title="Refresh"
-              >
-                <RefreshCw
-                  className={`w-4 h-4 ${postsLoading ? 'animate-spin' : ''}`}
-                />
-              </button>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="inline-flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-zinc-300">
+                  <Shield className="w-3.5 h-3.5" />
+                  Comment guard
+                  <ToggleSwitch
+                    checked={Boolean(guard?.enabled)}
+                    onChange={(checked) => void handleGuardToggle(checked)}
+                    disabled={guardSaving || !selectedCreatorId}
+                    aria-label="Comment guard"
+                  />
+                </label>
+                <span className="text-[11px] text-gray-500 dark:text-zinc-500">
+                  {guard?.lastScanAt
+                    ? `Last check ${formatRelativeTime(guard.lastScanAt)}`
+                    : 'Not checked yet'}
+                </span>
+                {guard?.lastError && (
+                  <span
+                    className="text-[11px] text-red-400 max-w-[180px] truncate"
+                    title={guard.lastError}
+                  >
+                    {guard.lastError}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleGuardRun()}
+                  disabled={guardRunning || !selectedCreatorId}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-gray-700 dark:text-zinc-200 bg-gray-100 dark:bg-zinc-800 hover:bg-gray-200 dark:hover:bg-zinc-700 disabled:opacity-40 inline-flex items-center gap-1.5"
+                >
+                  {guardRunning ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Shield className="w-3.5 h-3.5" />
+                  )}
+                  Check now
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void loadPosts()}
+                  className="p-2 rounded-lg text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800"
+                  title="Refresh"
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 ${postsLoading ? 'animate-spin' : ''}`}
+                  />
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
+              <section className="rounded-2xl border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 p-4">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-zinc-500">
+                  Comment guard log
+                </h3>
+                {guardEvents.length === 0 ? (
+                  <p className="text-sm text-gray-500 dark:text-zinc-500 mt-2">
+                    No AI or KI comments blocked yet.
+                  </p>
+                ) : (
+                  <ul className="mt-2 space-y-2">
+                    {guardEvents.map((event) => (
+                      <li
+                        key={event.id}
+                        className="text-sm text-gray-800 dark:text-zinc-200"
+                      >
+                        <span className="font-medium">
+                          {event.username || event.memberId}
+                        </span>
+                        {event.matchedTerm && (
+                          <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                            {event.matchedTerm}
+                          </span>
+                        )}
+                        <span
+                          className={`ml-2 text-[11px] font-medium ${
+                            event.status === 'blocked'
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-red-400'
+                          }`}
+                        >
+                          {event.status === 'blocked' ? 'Blocked' : 'Failed'}
+                        </span>
+                        <span className="ml-2 text-[11px] text-gray-500 dark:text-zinc-500">
+                          {formatRelativeTime(event.createdAt)}
+                        </span>
+                        {event.commentText && (
+                          <p className="text-xs text-gray-600 dark:text-zinc-400 mt-0.5 whitespace-pre-wrap break-words">
+                            {event.commentText}
+                          </p>
+                        )}
+                        {event.error && (
+                          <p className="text-xs text-red-400 mt-0.5">{event.error}</p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
               {postsLoading && posts.length === 0 && (
                 <div className="flex justify-center py-12">
                   <Loader2 className="w-6 h-6 animate-spin text-gray-400" />
@@ -1078,10 +1429,23 @@ export default function MaloumFeed() {
                             <Heart className="w-3 h-3" />
                             {post.likeCount ?? 0}
                           </span>
-                          <span className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => togglePostComments(post._id)}
+                            className={`inline-flex items-center gap-1 hover:text-gray-900 dark:hover:text-white ${
+                              openCommentPostIds.has(post._id)
+                                ? 'text-domx-600 dark:text-domx-400'
+                                : ''
+                            }`}
+                          >
                             <MessageCircle className="w-3 h-3" />
                             {post.commentCount ?? 0}
-                          </span>
+                            <span>
+                              {openCommentPostIds.has(post._id)
+                                ? 'Hide comments'
+                                : 'Comments'}
+                            </span>
+                          </button>
                         </div>
                         {Array.isArray(post.categories) && post.categories.length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-2">
@@ -1119,6 +1483,13 @@ export default function MaloumFeed() {
                           loading="lazy"
                         />
                       </div>
+                    )}
+                    {selectedCreatorId && openCommentPostIds.has(post._id) && (
+                      <PostComments
+                        creatorId={selectedCreatorId}
+                        postId={post._id}
+                        onBlocked={() => void loadCommentGuard()}
+                      />
                     )}
                   </article>
                 );

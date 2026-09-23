@@ -530,6 +530,23 @@ async function listPostComments(creator, postId, { limit = 15, next } = {}) {
   return result.data;
 }
 
+async function blockChatMember(creator, memberId, { deleteComments = true } = {}) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const id = String(memberId || '').trim();
+  if (!id) {
+    throw new MaloumApiError('memberId is required', 400);
+  }
+  const result = await requestJson({
+    method: 'POST',
+    path: `/chats/members/${encodeURIComponent(id)}/block`,
+    proxyUrl,
+    accessToken,
+    timezone,
+    body: { deleteComments: deleteComments !== false },
+  });
+  return result.data;
+}
+
 async function listMyPosts(creator, { limit = 15, next } = {}) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   const result = await requestJson({
@@ -1618,6 +1635,7 @@ module.exports = {
   getUserProfile,
   listUserPosts,
   listPostComments,
+  blockChatMember,
   listMyPosts,
   listCategories,
   createPost,

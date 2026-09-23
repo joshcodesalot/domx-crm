@@ -29,6 +29,7 @@ const {
 const { emitToUser, emitToUsers } = require('../services/userEventBus');
 const fourBasedClient = require('../services/fourBasedClient');
 const maloumClient = require('../services/maloumClient');
+const maloumPollCache = require('../services/maloumPollCache');
 const {
   InvalidProxyError,
   buildProxyUrl,
@@ -5130,6 +5131,42 @@ function handleMaloumError(res, err, label) {
   return res.status(500).json({ error: 'Internal server error' });
 }
 
+function toMaloumCount(value) {
+  return typeof value === 'number' ? value : Number(value) || 0;
+}
+
+function maloumSessionError(loaded) {
+  if (!loaded?.error) return null;
+  const err = new Error(loaded.error.message);
+  err.status = loaded.error.status;
+  err.code = 'MALOUM_SESSION';
+  return err;
+}
+
+function handlePollCacheError(res, err, label) {
+  if (err && err.code === 'MALOUM_SESSION') {
+    return res.status(err.status).json({ error: err.message });
+  }
+  return handleMaloumError(res, err, label);
+}
+
+async function loadMaloumCreatorOrThrow(id) {
+  const loaded = await loadMaloumCreator(id);
+  const sessionErr = maloumSessionError(loaded);
+  if (sessionErr) throw sessionErr;
+  return loaded;
+}
+
+function invalidateMaloumMessagePollCache(creatorId, chatId) {
+  if (!creatorId) return;
+  maloumPollCache.invalidatePrefix(`chats:${creatorId}:`);
+  maloumPollCache.invalidatePrefix(`badges:${creatorId}`);
+  maloumPollCache.invalidatePrefix(`unread:${creatorId}`);
+  if (chatId) {
+    maloumPollCache.invalidatePrefix(`msgs:${creatorId}:${chatId}:`);
+  }
+}
+
 router.get(
   '/:id/maloum/chats',
   authenticate,
@@ -5144,11 +5181,6 @@ router.get(
       const allowed = await userCanAccessCreator(req.user, id);
       if (!allowed) {
         return res.status(403).json({ error: 'You do not have access to this creator' });
-      }
-
-      const loaded = await loadMaloumCreator(id);
-      if (loaded.error) {
-        return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
       const limit = Math.min(Number(req.query.limit) || 15, 100);
@@ -5180,20 +5212,25 @@ router.get(
       const lastMessageSender = listIds
         ? undefined
         : lastMessageSenderRaw || undefined;
-      const chats = await maloumClient.listChats(loaded.creator, {
-        limit,
-        next,
-        filter,
-        lastMessageSender,
-        listIds,
+      const chatsKey = `chats:${id}:${limit}:${next || ''}:${filter || ''}:${lastMessageSender || ''}:${listIds || ''}`;
+      const payload = await maloumPollCache.getOrLoad(chatsKey, async () => {
+        const loaded = await loadMaloumCreatorOrThrow(id);
+        const chats = await maloumClient.listChats(loaded.creator, {
+          limit,
+          next,
+          filter,
+          lastMessageSender,
+          listIds,
+        });
+        return {
+          next: chats?.next ?? null,
+          chats: Array.isArray(chats?.data) ? chats.data : Array.isArray(chats) ? chats : [],
+          providerUserId: loaded.creator.providerUserId,
+        };
       });
-      res.json({
-        next: chats?.next ?? null,
-        chats: Array.isArray(chats?.data) ? chats.data : Array.isArray(chats) ? chats : [],
-        providerUserId: loaded.creator.providerUserId,
-      });
+      res.json(payload);
     } catch (err) {
-      return handleMaloumError(res, err, 'List Maloum chats error:');
+      return handlePollCacheError(res, err, 'List Maloum chats error:');
     }
   }
 );
@@ -5214,15 +5251,19 @@ router.get(
         return res.status(403).json({ error: 'You do not have access to this creator' });
       }
 
-      const loaded = await loadMaloumCreator(id);
-      if (loaded.error) {
-        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      const badgesCached = maloumPollCache.peek(`badges:${id}`);
+      if (badgesCached && typeof badgesCached.messages === 'number') {
+        return res.json({ unread: badgesCached.messages });
       }
 
-      const unread = await maloumClient.getUnreadCount(loaded.creator);
-      res.json({ unread: typeof unread === 'number' ? unread : Number(unread) || 0 });
+      const payload = await maloumPollCache.getOrLoad(`unread:${id}`, async () => {
+        const loaded = await loadMaloumCreatorOrThrow(id);
+        const unread = await maloumClient.getUnreadCount(loaded.creator);
+        return { unread: toMaloumCount(unread) };
+      });
+      res.json(payload);
     } catch (err) {
-      return handleMaloumError(res, err, 'Get Maloum unread count error:');
+      return handlePollCacheError(res, err, 'Get Maloum unread count error:');
     }
   }
 );
@@ -5243,42 +5284,42 @@ router.get(
         return res.status(403).json({ error: 'You do not have access to this creator' });
       }
 
-      const loaded = await loadMaloumCreator(id);
-      if (loaded.error) {
-        return res.status(loaded.error.status).json({ error: loaded.error.message });
-      }
+      const payload = await maloumPollCache.getOrLoad(`badges:${id}`, async () => {
+        const loaded = await loadMaloumCreatorOrThrow(id);
+        const unreadCached = maloumPollCache.peek(`unread:${id}`);
+        const [messagesUnread, notificationsUnread] = await Promise.all([
+          unreadCached && typeof unreadCached.unread === 'number'
+            ? unreadCached.unread
+            : maloumClient.getUnreadCount(loaded.creator),
+          maloumClient.getNotificationsUnreadCount(loaded.creator),
+        ]);
 
-      const [messagesUnread, notificationsUnread] = await Promise.all([
-        maloumClient.getUnreadCount(loaded.creator),
-        maloumClient.getNotificationsUnreadCount(loaded.creator),
-      ]);
+        const messages = toMaloumCount(messagesUnread);
+        const notifications = toMaloumCount(notificationsUnread);
+        maloumPollCache.set(`unread:${id}`, { unread: messages });
 
-      const toCount = (value) =>
-        typeof value === 'number' ? value : Number(value) || 0;
-
-      res.json({
-        messages: toCount(messagesUnread),
-        notifications: toCount(notificationsUnread),
-      });
-
-      const creator = loaded.creator;
-      scheduleBadgeSideEffects(id, async () => {
-        const notifications = await maloumClient.listRecentNotifications(creator, {
-          pages: 1,
-          limit: 15,
+        const creator = loaded.creator;
+        scheduleBadgeSideEffects(id, async () => {
+          const notificationsList = await maloumClient.listRecentNotifications(creator, {
+            pages: 1,
+            limit: 15,
+          });
+          try {
+            await messagingDashboard.processMaloumSaleAndTipNotifications(
+              id,
+              notificationsList
+            );
+          } catch (err) {
+            console.warn('Maloum sale/tip sync failed:', err.message);
+          }
+          scheduleThrottledReconcile(id);
         });
-        try {
-          await messagingDashboard.processMaloumSaleAndTipNotifications(
-            id,
-            notifications
-          );
-        } catch (err) {
-          console.warn('Maloum sale/tip sync failed:', err.message);
-        }
-        scheduleThrottledReconcile(id);
+
+        return { messages, notifications };
       });
+      res.json(payload);
     } catch (err) {
-      return handleMaloumError(res, err, 'Get Maloum badges error:');
+      return handlePollCacheError(res, err, 'Get Maloum badges error:');
     }
   }
 );
@@ -5448,28 +5489,28 @@ router.get(
         return res.status(403).json({ error: 'You do not have access to this creator' });
       }
 
-      const loaded = await loadMaloumCreator(id);
-      if (loaded.error) {
-        return res.status(loaded.error.status).json({ error: loaded.error.message });
-      }
-
       const limit = Math.min(Number(req.query.limit) || 15, 100);
       const next = typeof req.query.next === 'string' ? req.query.next : undefined;
-      const messages = await maloumClient.getMessages(loaded.creator, chatId, {
-        limit,
-        next,
+      const messagesKey = `msgs:${id}:${chatId}:${limit}:${next || ''}`;
+      const payload = await maloumPollCache.getOrLoad(messagesKey, async () => {
+        const loaded = await loadMaloumCreatorOrThrow(id);
+        const messages = await maloumClient.getMessages(loaded.creator, chatId, {
+          limit,
+          next,
+        });
+        return {
+          next: messages?.next ?? null,
+          messages: Array.isArray(messages?.data)
+            ? messages.data
+            : Array.isArray(messages)
+              ? messages
+              : [],
+          providerUserId: loaded.creator.providerUserId,
+        };
       });
-      res.json({
-        next: messages?.next ?? null,
-        messages: Array.isArray(messages?.data)
-          ? messages.data
-          : Array.isArray(messages)
-            ? messages
-            : [],
-        providerUserId: loaded.creator.providerUserId,
-      });
+      res.json(payload);
     } catch (err) {
-      return handleMaloumError(res, err, 'Get Maloum messages error:');
+      return handlePollCacheError(res, err, 'Get Maloum messages error:');
     }
   }
 );
@@ -5506,6 +5547,7 @@ router.post(
       await maloumClient.deleteMessage(loaded.creator, chatId, messageId, {
         deleteTextOnly: Boolean(deleteTextOnly),
       });
+      invalidateMaloumMessagePollCache(id, chatId);
 
       let unsend = null;
       try {
@@ -5603,6 +5645,7 @@ router.post(
           priceNet: net,
           optimisticMessageId: resolvedOptimisticId,
         });
+        invalidateMaloumMessagePollCache(id, chatId);
         return res.status(201).json({
           messageId,
           message: { _id: messageId },
@@ -5618,6 +5661,7 @@ router.post(
         text: bodyText,
         optimisticMessageId: resolvedOptimisticId,
       });
+      invalidateMaloumMessagePollCache(id, chatId);
       return res.status(201).json({
         messageId,
         message: { _id: messageId },
