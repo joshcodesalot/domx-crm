@@ -129,8 +129,22 @@ function lockConflict(name) {
   });
 }
 
+function canOpenEveryCreatorBrowser(user) {
+  return user?.role === 'marketing';
+}
+
 async function assertAccess(user, creatorId) {
-  if (!isUuid(creatorId) || !(await userCanAccessCreator(user, creatorId))) {
+  if (!isUuid(creatorId)) {
+    throw new BrowserProfileError('Creator not found', 404);
+  }
+  if (canOpenEveryCreatorBrowser(user)) {
+    const found = await pool.query('SELECT id FROM creators WHERE id = $1', [creatorId]);
+    if (!found.rows[0]) {
+      throw new BrowserProfileError('Creator not found', 404);
+    }
+    return;
+  }
+  if (!(await userCanAccessCreator(user, creatorId))) {
     throw new BrowserProfileError('Creator not found', 404);
   }
 }
@@ -505,27 +519,36 @@ async function sessionStatus(creatorId, viewToken, generation) {
 }
 
 async function listBrowserProfiles(user) {
-  const seesAll = userSeesAllCreators(user);
+  const seesAll = userSeesAllCreators(user) || canOpenEveryCreatorBrowser(user);
   const result = await pool.query(
-    `SELECT bp."creatorId", bp."lockedBy", bp."heartbeatAt", bp."lockedAt",
+    `SELECT c.id AS "creatorId",
+            c."displayName",
+            c.platform,
+            c."avatarUrl",
+            bp."lockedBy", bp."heartbeatAt", bp."lockedAt",
             bp."archivePath",
             (bp."encryptedProxy" IS NOT NULL) AS "hasProxy",
             u.name AS "lockedByName"
-     FROM browser_profiles bp
+     FROM creators c
+     LEFT JOIN browser_profiles bp ON bp."creatorId" = c.id
      LEFT JOIN users u ON u.id = bp."lockedBy"
      WHERE (
        $1::boolean
        OR EXISTS (
          SELECT 1 FROM creator_staff_assignments a
-         WHERE a."creatorId" = bp."creatorId" AND a."userId" = $2
+         WHERE a."creatorId" = c.id AND a."userId" = $2
        )
-     )`,
+     )
+     ORDER BY c."displayName" ASC`,
     [seesAll, user.id]
   );
   return result.rows.map((row) => {
     const locked = isLockActive(row);
     return {
       creatorId: row.creatorId,
+      displayName: row.displayName,
+      platform: row.platform,
+      avatarUrl: row.avatarUrl || null,
       locked,
       lockedBySelf: locked && row.lockedBy === user.id,
       lockedByName: locked ? row.lockedByName : null,

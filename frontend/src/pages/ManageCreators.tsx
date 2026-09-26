@@ -8,13 +8,11 @@ import {
   Trash2,
   Users,
   Globe,
-  Monitor,
 } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import AddCreatorModal from '@/components/AddCreatorModal';
 import AssignCreatorStaffModal from '@/components/AssignCreatorStaffModal';
 import CreatorAvatar from '@/components/CreatorAvatar';
-import EditBrowserProxyModal from '@/components/EditBrowserProxyModal';
 import EditCreatorProxyModal from '@/components/EditCreatorProxyModal';
 import RemoveCreatorModal from '@/components/RemoveCreatorModal';
 import RenameCreatorModal from '@/components/RenameCreatorModal';
@@ -22,14 +20,10 @@ import { useAuth } from '@/context/AuthContext';
 import {
   deleteCreator,
   getCreators,
-  getToken,
-  listBrowserProfiles,
-  openBrowserProfile,
   reconnectFourBasedAccountSaved,
   reconnectMaloumAccountSaved,
   refreshMaloumAvatar,
   verifyMaloumSession,
-  type BrowserProfileLock,
   type Creator,
 } from '@/lib/api';
 import fourBasedIcon from '@/assets/4based_icon.ico';
@@ -79,30 +73,17 @@ export default function ManageCreators() {
   const [staffTarget, setStaffTarget] = useState<Creator | null>(null);
   const [renameTarget, setRenameTarget] = useState<Creator | null>(null);
   const [proxyTarget, setProxyTarget] = useState<Creator | null>(null);
-  const [browserProxyTarget, setBrowserProxyTarget] = useState<Creator | null>(null);
-  const [locks, setLocks] = useState<Record<string, BrowserProfileLock>>({});
-  const [openingId, setOpeningId] = useState<string | null>(null);
-  const [downloadingBrowser, setDownloadingBrowser] = useState(false);
   const [refreshingIconId, setRefreshingIconId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
 
   const canManage = hasPermission('creators.manage');
-  const columnCount = canManage ? 6 : 5;
+  const columnCount = canManage ? 5 : 4;
 
   const loadCreators = useCallback(async () => {
     const { creators: list } = await getCreators();
     setCreators(list);
-  }, []);
-
-  const loadLocks = useCallback(async () => {
-    const { profiles } = await listBrowserProfiles();
-    const next: Record<string, BrowserProfileLock> = {};
-    for (const profile of profiles) {
-      next[profile.creatorId] = profile;
-    }
-    setLocks(next);
   }, []);
 
   useEffect(() => {
@@ -111,7 +92,6 @@ export default function ManageCreators() {
       setError(null);
       try {
         await loadCreators();
-        await loadLocks();
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load creators');
       } finally {
@@ -119,65 +99,13 @@ export default function ManageCreators() {
       }
     }
     load();
-  }, [loadCreators, loadLocks]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void loadLocks().catch(() => {});
-    }, 15000);
-    return () => window.clearInterval(timer);
-  }, [loadLocks]);
-
-  useEffect(() => {
-    return window.electronAPI?.onClearcoteInstallProgress?.(() => {
-      setDownloadingBrowser(true);
-    });
-  }, []);
-
-  async function handleOpenBrowser(creator: Creator) {
-    const desktop = window.electronAPI;
-    if (!desktop?.isElectron || !desktop.launchClearcote || !desktop.openClearcoteView) {
-      setError('Open the browser from the DomX desktop app.');
-      return;
-    }
-    if (desktop.platform !== 'win32' && desktop.platform !== 'darwin' && desktop.platform !== 'linux') {
-      setError('Open the browser from the DomX app on Windows or Mac.');
-      return;
-    }
-    const token = getToken();
-    if (!token) {
-      setError('Sign in again to open the browser.');
-      return;
-    }
-
-    setOpeningId(creator.id);
-    setDownloadingBrowser(false);
-    setError(null);
-    try {
-      const opened = await openBrowserProfile(creator.id, desktop.platform);
-      const launch =
-        desktop.platform === 'darwin'
-          ? await desktop.openClearcoteView({ token, profile: opened })
-          : await desktop.launchClearcote({ token, profile: opened });
-      if (!launch?.ok) {
-        setError(launch?.error || 'Could not open the browser.');
-      }
-      await loadLocks();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not open the browser.');
-      await loadLocks().catch(() => {});
-    } finally {
-      setOpeningId(null);
-      setDownloadingBrowser(false);
-    }
-  }
+  }, [loadCreators]);
 
   async function handleRefresh() {
     setRefreshing(true);
     setError(null);
     try {
       await loadCreators();
-      await loadLocks();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to refresh creators');
     } finally {
@@ -338,9 +266,6 @@ export default function ManageCreators() {
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
                   Validated
                 </th>
-                <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
-                  Browser
-                </th>
                 {canManage && (
                   <th className="text-right px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
                     Actions
@@ -422,50 +347,6 @@ export default function ManageCreators() {
                     </td>
                     <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
                       {formatValidatedAt(creator.lastValidatedAt) || '—'}
-                    </td>
-                    <td className="px-4 py-3">
-                      {(() => {
-                        const lock = locks[creator.id];
-                        const heldByOther = Boolean(lock?.locked && !lock.lockedBySelf);
-                        return (
-                          <div className="flex flex-col items-start gap-1">
-                            <button
-                              type="button"
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md border border-gray-200 dark:border-white/10 hover:bg-gray-50 dark:hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed"
-                              disabled={openingId === creator.id || heldByOther}
-                              title={
-                                heldByOther
-                                  ? `In use by ${lock?.lockedByName || 'another chatter'}`
-                                  : 'Open browser'
-                              }
-                              onClick={() => void handleOpenBrowser(creator)}
-                            >
-                              <Monitor className="w-3.5 h-3.5" />
-                              {openingId === creator.id
-                                ? downloadingBrowser
-                                  ? 'Downloading browser…'
-                                  : 'Opening…'
-                                : 'Open browser'}
-                            </button>
-                            {lock?.locked && (
-                              <p className="text-xs text-gray-400">
-                                {lock.lockedBySelf
-                                  ? 'Open on this account'
-                                  : `In use by ${lock.lockedByName || 'another chatter'}`}
-                              </p>
-                            )}
-                            {canManage && (
-                              <button
-                                type="button"
-                                className="text-xs text-gray-400 hover:text-sky-600 dark:hover:text-sky-400"
-                                onClick={() => setBrowserProxyTarget(creator)}
-                              >
-                                Browser proxy
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })()}
                     </td>
                     {canManage && (
                       <td className="px-4 py-3">
@@ -604,16 +485,6 @@ export default function ManageCreators() {
           creator={proxyTarget}
           onClose={() => setProxyTarget(null)}
           onSaved={loadCreators}
-        />
-      )}
-
-      {browserProxyTarget && (
-        <EditBrowserProxyModal
-          creator={browserProxyTarget}
-          onClose={() => setBrowserProxyTarget(null)}
-          onSaved={() => {
-            void loadLocks();
-          }}
         />
       )}
 

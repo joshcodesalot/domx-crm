@@ -6,6 +6,7 @@ const ROLES = [
   { slug: 'backend', name: 'Backend', rank: 3 },
   { slug: 'team_leader', name: 'Team Leader', rank: 4 },
   { slug: 'chatter', name: 'Chatter', rank: 5 },
+  { slug: 'marketing', name: 'Marketing', rank: 6 },
 ];
 
 const PERMISSIONS = [
@@ -28,6 +29,7 @@ const PERMISSIONS = [
   { slug: 'scripts.manage', name: 'Manage Chat Scripts', category: 'App', description: 'Create, edit, and remove chat scripts and folders (Managers and above)' },
   { slug: 'moderation.manage', name: 'Manage Keyword Rules', category: 'App', description: 'Create, edit, and remove keyword moderation rules (Managers and above)' },
   { slug: 'moderation.review', name: 'Review Moderation Events', category: 'App', description: 'View and resolve keyword moderation review queue (Managers and above)' },
+  { slug: 'marketing.view', name: 'View Marketing', category: 'App', description: 'Open creator browsers from the Marketing page' },
 ];
 
 const DEFAULT_MATRIX = {
@@ -41,6 +43,7 @@ const DEFAULT_MATRIX = {
     'scripts.manage',
     'moderation.manage',
     'moderation.review',
+    'marketing.view',
   ],
   manager: [
     'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view', 'creators.manage',
@@ -52,6 +55,7 @@ const DEFAULT_MATRIX = {
     'scripts.manage',
     'moderation.manage',
     'moderation.review',
+    'marketing.view',
   ],
   backend: [
     'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view',
@@ -59,13 +63,16 @@ const DEFAULT_MATRIX = {
     'mass_messages.send',
     'vault.notes.edit',
     'scripts.manage',
+    'marketing.view',
   ],
   team_leader: [
     'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view',
     'staff.view',
     'vault.notes.edit',
+    'marketing.view',
   ],
-  chatter: ['dashboard.view', 'analytics.self', 'creators.view'],
+  chatter: ['dashboard.view', 'analytics.self', 'creators.view', 'marketing.view'],
+  marketing: ['marketing.view'],
 };
 
 async function seedRolesAndPermissions(db = pool) {

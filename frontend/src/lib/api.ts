@@ -708,6 +708,9 @@ export async function getCreators(): Promise<CreatorsResponse> {
 
 export interface BrowserProfileLock {
   creatorId: string;
+  displayName: string;
+  platform: string;
+  avatarUrl: string | null;
   locked: boolean;
   lockedBySelf: boolean;
   lockedByName: string | null;

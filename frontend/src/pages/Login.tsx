@@ -4,6 +4,7 @@ import { Navigate, useLocation } from 'react-router-dom';
 import ThemeToggle from '@/components/ThemeToggle';
 import { useAuth } from '@/context/AuthContext';
 import { APP_VERSION } from '@/lib/appVersion';
+import { homePath } from '@/lib/homePath';
 
 export default function Login() {
   const { login, isAuthenticated, isLoading, needsOwnerSetup, user } = useAuth();
@@ -25,7 +26,7 @@ export default function Login() {
   if (isAuthenticated) {
     return (
       <Navigate
-        to={user?.mustChangePassword ? '/change-password' : '/dashboard'}
+        to={user?.mustChangePassword ? '/change-password' : homePath(user)}
         replace
       />
     );

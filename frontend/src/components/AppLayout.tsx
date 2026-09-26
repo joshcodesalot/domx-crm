@@ -13,7 +13,8 @@ interface AppLayoutProps {
     | 'creators'
     | 'staff'
     | 'moderation'
-    | 'account';
+    | 'account'
+    | 'marketing';
   children: ReactNode;
 }
 

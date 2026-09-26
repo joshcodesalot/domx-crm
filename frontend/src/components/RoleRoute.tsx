@@ -1,5 +1,6 @@
 import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
+import { homePath } from '@/lib/homePath';
 
 interface RoleRouteProps {
   roles: string[];
@@ -22,7 +23,7 @@ export default function RoleRoute({ roles }: RoleRouteProps) {
 
   const role = user?.role || '';
   if (!roles.includes(role)) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to={homePath(user)} replace />;
   }
 
   return <Outlet />;

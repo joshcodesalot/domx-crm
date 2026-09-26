@@ -8,6 +8,7 @@ import {
   List,
   LogOut,
   Megaphone,
+  Monitor,
   MessageSquare,
   Newspaper,
   PanelsTopLeft,
@@ -63,14 +64,15 @@ interface SidebarProps {
     | 'staff'
     | 'moderation'
     | 'account'
-    | 'schedule';
+    | 'schedule'
+    | 'marketing';
 }
 
 export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
   const { user, logout, hasPermission } = useAuth();
   const navigate = useNavigate();
   const { creators, badgesByCreatorId, throneUnread } = useCreatorLive({
-    wantBadges: true,
+    wantBadges: hasPermission('creators.view'),
   });
   const unreadTotals = useMemo(() => {
     const totals = {
@@ -715,6 +717,16 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
               </div>
             )}
           </div>
+        )}
+        {hasPermission('marketing.view') && (
+          <button
+            type="button"
+            onClick={() => navigate('/marketing')}
+            className={navClass('marketing')}
+            title="Marketing"
+          >
+            <Monitor className="w-5 h-5" />
+          </button>
         )}
         {hasPermission('creators.manage') && (
           <button

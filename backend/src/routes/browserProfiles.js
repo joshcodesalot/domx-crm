@@ -19,6 +19,7 @@ const {
 } = require('../services/browserProfiles');
 
 const router = express.Router();
+const canViewBrowser = requirePermission('creators.view', 'marketing.view');
 
 function sendError(res, err) {
   if (!(err instanceof BrowserProfileError)) {
@@ -38,7 +39,7 @@ function viewTokenFrom(req) {
   return typeof req.body?.viewToken === 'string' ? req.body.viewToken : '';
 }
 
-router.get('/', authenticate, requirePermission('creators.view'), async (req, res) => {
+router.get('/', authenticate, canViewBrowser, async (req, res) => {
   try {
     const profiles = await listBrowserProfiles(req.user);
     return res.json({ profiles });
@@ -78,7 +79,7 @@ router.put(
 router.post(
   '/:creatorId/open',
   authenticate,
-  requirePermission('creators.view'),
+  canViewBrowser,
   async (req, res) => {
     try {
       const opened = await openBrowserProfile(
@@ -97,7 +98,7 @@ router.post(
 router.post(
   '/:creatorId/heartbeat',
   authenticate,
-  requirePermission('creators.view'),
+  canViewBrowser,
   async (req, res) => {
     try {
       const result = await heartbeatBrowserProfile(
@@ -115,7 +116,7 @@ router.post(
 router.post(
   '/:creatorId/close',
   authenticate,
-  requirePermission('creators.view'),
+  canViewBrowser,
   async (req, res) => {
     try {
       const token = viewTokenFrom(req);
@@ -151,7 +152,7 @@ router.get(
     const host = hostSecretOk(req.get('x-domx-host-secret'));
     if (!host) {
       return authenticate(req, res, () =>
-        requirePermission('creators.view')(req, res, () => next())
+        canViewBrowser(req, res, () => next())
       );
     }
     return next();
@@ -195,7 +196,7 @@ function ensureViewer(req, res) {
       return sendJson(body);
     };
     authenticate(req, res, () => {
-      requirePermission('creators.view')(req, res, () => finish(true));
+      canViewBrowser(req, res, () => finish(true));
     });
   });
 }

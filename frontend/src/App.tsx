@@ -15,6 +15,7 @@ import Login from '@/pages/Login';
 import SetupOwner from '@/pages/SetupOwner';
 import ModerationAlertsListener from '@/components/ModerationAlertsListener';
 import ActivityHeartbeatListener from '@/components/ActivityHeartbeatListener';
+import { homePath } from '@/lib/homePath';
 
 const Dashboard = lazy(() => import('@/pages/Dashboard'));
 const ManageCreators = lazy(() => import('@/pages/ManageCreators'));
@@ -46,6 +47,7 @@ const AnalyticsCharts = lazy(() => import('@/pages/AnalyticsCharts'));
 const CreatorAnalytics = lazy(() => import('@/pages/CreatorAnalytics'));
 const AccountSettings = lazy(() => import('@/pages/AccountSettings'));
 const KeywordModeration = lazy(() => import('@/pages/KeywordModeration'));
+const Marketing = lazy(() => import('@/pages/Marketing'));
 
 function PageFallback() {
   return (
@@ -278,6 +280,13 @@ function PersistentMessageProTelegramPanel() {
   );
 }
 
+function HomeRedirect() {
+  const { isAuthenticated, isLoading, user } = useAuth();
+  if (isLoading) return <PageFallback />;
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  return <Navigate to={homePath(user)} replace />;
+}
+
 function AppRoutes() {
   return (
     <HashRouter>
@@ -299,7 +308,9 @@ function AppRoutes() {
               <Route element={<ProtectedRoute />}>
                 <Route path="/account/settings" element={<AccountSettings />} />
                 <Route element={<CreatorBootProvider />}>
-                  <Route path="/dashboard" element={<Dashboard />} />
+                  <Route element={<PermissionRoute permission="dashboard.view" />}>
+                    <Route path="/dashboard" element={<Dashboard />} />
+                  </Route>
                   <Route element={<RoleRoute roles={['owner', 'manager']} />}>
                     <Route path="/dashboard/charts" element={<AnalyticsCharts />} />
                     <Route
@@ -374,13 +385,16 @@ function AppRoutes() {
                       element={<FourBasedFanScraper />}
                     />
                   </Route>
+                  <Route element={<PermissionRoute permission="marketing.view" />}>
+                    <Route path="/marketing" element={<Marketing />} />
+                  </Route>
                   <Route element={<PermissionRoute permission="creators.manage" />}>
                     <Route path="/creators/manage" element={<ManageCreators />} />
                   </Route>
                 </Route>
               </Route>
-              <Route path="/" element={<Navigate to="/dashboard" replace />} />
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/" element={<HomeRedirect />} />
+              <Route path="*" element={<HomeRedirect />} />
             </Routes>
           </Suspense>
         </CreatorLiveProvider>

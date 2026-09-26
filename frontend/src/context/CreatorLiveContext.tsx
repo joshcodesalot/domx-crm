@@ -77,7 +77,8 @@ function creatorsEqual(prev: Creator[], next: Creator[]): boolean {
 }
 
 export function CreatorLiveProvider({ children }: { children: ReactNode }) {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, hasPermission } = useAuth();
+  const canListCreators = hasPermission('creators.view');
   const { onSyncEvent } = useStaffSync();
   const documentVisible = useDocumentVisible();
   const [creators, setCreators] = useState<Creator[]>([]);
@@ -198,7 +199,7 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
   refreshThroneUnreadRef.current = refreshThroneUnread;
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (!isAuthenticated || !canListCreators) {
       setCreators([]);
       setBadgesByCreatorId({});
       setThroneUnread(0);
@@ -207,15 +208,15 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
       return;
     }
     void refreshCreators();
-  }, [isAuthenticated, refreshCreators]);
+  }, [isAuthenticated, canListCreators, refreshCreators]);
 
   useEffect(() => {
-    if (!isAuthenticated || !documentVisible) return;
+    if (!isAuthenticated || !canListCreators || !documentVisible) return;
     const timer = window.setInterval(() => {
       void refreshCreators({ silent: true });
     }, CREATOR_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [isAuthenticated, documentVisible, refreshCreators]);
+  }, [isAuthenticated, canListCreators, documentVisible, refreshCreators]);
 
   useEffect(() => {
     if (!isAuthenticated || !documentVisible || badgeNeeds === 0) return;
@@ -232,20 +233,20 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const justVisible = documentVisible && !wasVisibleRef.current;
     wasVisibleRef.current = documentVisible;
-    if (!justVisible || !isAuthenticated) return;
+    if (!justVisible || !isAuthenticated || !canListCreators) return;
     void refreshCreatorsRef.current({ silent: true });
     if (badgeNeedsRef.current.size > 0) {
       void refreshBadgesRef.current();
       void refreshThroneUnreadRef.current();
     }
-  }, [documentVisible, isAuthenticated]);
+  }, [documentVisible, isAuthenticated, canListCreators]);
 
   useEffect(() => {
     return onSyncEvent((event) => {
-      if (!isCreatorRosterEvent(event)) return;
+      if (!canListCreators || !isCreatorRosterEvent(event)) return;
       void refreshCreators({ silent: true });
     });
-  }, [onSyncEvent, refreshCreators]);
+  }, [onSyncEvent, refreshCreators, canListCreators]);
 
   useEffect(() => {
     return onSyncEvent((event) => {

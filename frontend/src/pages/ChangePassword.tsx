@@ -4,6 +4,7 @@ import { Navigate, useNavigate } from 'react-router-dom';
 import ThemeToggle from '@/components/ThemeToggle';
 import { useAuth } from '@/context/AuthContext';
 import { APP_VERSION } from '@/lib/appVersion';
+import { homePath } from '@/lib/homePath';
 
 export default function ChangePassword() {
   const navigate = useNavigate();
@@ -26,7 +27,7 @@ export default function ChangePassword() {
   }
 
   if (!user?.mustChangePassword) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to={homePath(user)} replace />;
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -36,7 +37,7 @@ export default function ChangePassword() {
 
     try {
       await changePassword(newPassword, confirmPassword);
-      navigate('/dashboard', { replace: true });
+      navigate(homePath(user), { replace: true });
     } catch (err) {
       setStatus('idle');
       setError(err instanceof Error ? err.message : 'Failed to change password');

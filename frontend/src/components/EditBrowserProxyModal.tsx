@@ -1,15 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Globe } from 'lucide-react';
 import CreatorProxyFields from '@/components/CreatorProxyFields';
-import {
-  getBrowserProfileProxy,
-  updateBrowserProfileProxy,
-  type Creator,
-} from '@/lib/api';
+import { getBrowserProfileProxy, updateBrowserProfileProxy } from '@/lib/api';
 import { isValidProxyHostPort } from '@/lib/proxyUrl';
 
 interface EditBrowserProxyModalProps {
-  creator: Creator;
+  creator: { id: string; displayName: string };
   onClose: () => void;
   onSaved: () => void;
 }

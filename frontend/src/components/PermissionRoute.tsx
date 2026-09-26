@@ -1,5 +1,6 @@
 import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
+import { homePath } from '@/lib/homePath';
 
 interface PermissionRouteProps {
   permission?: string;
@@ -10,7 +11,7 @@ export default function PermissionRoute({
   permission,
   anyOf,
 }: PermissionRouteProps) {
-  const { isAuthenticated, isLoading, hasPermission } = useAuth();
+  const { isAuthenticated, isLoading, hasPermission, user } = useAuth();
 
   if (isLoading) {
     return (
@@ -31,7 +32,7 @@ export default function PermissionRoute({
       : false;
 
   if (!allowed) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to={homePath(user)} replace />;
   }
 
   return <Outlet />;
