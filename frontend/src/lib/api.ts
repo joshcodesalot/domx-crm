@@ -706,6 +706,64 @@ export async function getCreators(): Promise<CreatorsResponse> {
   return request<CreatorsResponse>('/api/creators');
 }
 
+export interface BrowserProfileLock {
+  creatorId: string;
+  locked: boolean;
+  lockedBySelf: boolean;
+  lockedByName: string | null;
+  hasArchive: boolean;
+  hasProxy: boolean;
+}
+
+export interface BrowserProfileOpen {
+  mode: 'local' | 'remote';
+  alreadyOpen: boolean;
+  creatorId: string;
+  displayName: string;
+  viewToken?: string;
+  generation?: number;
+  fingerprintSeed?: string;
+  fingerprintPlatform?: string;
+  encryptionKey?: string;
+  proxyUrl?: string | null;
+  timezone?: string | null;
+  acceptLanguage?: string | null;
+  hasArchive?: boolean;
+  viewUrl?: string;
+}
+
+export async function listBrowserProfiles(): Promise<{ profiles: BrowserProfileLock[] }> {
+  return request<{ profiles: BrowserProfileLock[] }>('/api/browser-profiles');
+}
+
+export async function openBrowserProfile(
+  creatorId: string,
+  platform: string
+): Promise<BrowserProfileOpen> {
+  return request<BrowserProfileOpen>(`/api/browser-profiles/${creatorId}/open`, {
+    method: 'POST',
+    body: JSON.stringify({ platform }),
+  });
+}
+
+export async function getBrowserProfileProxy(creatorId: string): Promise<{
+  hasProxy: boolean;
+  proxyHost: string | null;
+  proxyUsername: string | null;
+}> {
+  return request(`/api/browser-profiles/${creatorId}/proxy`);
+}
+
+export async function updateBrowserProfileProxy(
+  creatorId: string,
+  input: { proxyHost: string; proxyUsername: string; proxyPassword: string }
+): Promise<{ ok: boolean; hasProxy: boolean }> {
+  return request(`/api/browser-profiles/${creatorId}/proxy`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+}
+
 export async function getCreatorStaff(
   creatorId: string
 ): Promise<CreatorStaffResponse> {

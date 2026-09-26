@@ -1,6 +1,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { matchCommentText, GUARD_TERMS } = require('./maloumCommentGuard');
+const { maloumThrottleWaitMs } = require('./maloumClient');
 
 describe('maloumCommentGuard matchCommentText', () => {
   it('matches whole-word AI and KI regardless of case', () => {
@@ -31,5 +32,34 @@ describe('maloumCommentGuard matchCommentText', () => {
 
   it('keeps the guard terms stable', () => {
     assert.deepEqual(GUARD_TERMS, ['AI', 'KI', 'A.I.', 'K.I.']);
+  });
+});
+
+describe('maloumThrottleWaitMs', () => {
+  it('waits for the window named in a getComments throttle', () => {
+    assert.equal(
+      maloumThrottleWaitMs({
+        message:
+          'Throttled five-seconds-herrin_lea-PostsController-getComments on PostsController in method getComments',
+      }),
+      5000
+    );
+    assert.equal(
+      maloumThrottleWaitMs({
+        message: 'Throttled thirty-seconds-herrin_lea-PostsController-getComments',
+      }),
+      30000
+    );
+    assert.equal(
+      maloumThrottleWaitMs({
+        message: 'Throttled sixty-seconds-herrin_lea-PostsController-getComments',
+      }),
+      60000
+    );
+  });
+
+  it('defaults to the five-second window', () => {
+    assert.equal(maloumThrottleWaitMs({ message: 'Throttled' }), 5000);
+    assert.equal(maloumThrottleWaitMs({ status: 429 }), 5000);
   });
 });

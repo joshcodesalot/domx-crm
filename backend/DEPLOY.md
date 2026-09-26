@@ -332,6 +332,7 @@ All backend files that should survive a restart or a server move live under one 
 | `maloum-media-cache/` | Maloum vault/chat thumbs |
 | `4based-media-cache/` | 4based vault/chat media |
 | `jwt-secret` | Fallback JWT secret if `JWT_SECRET` is unset |
+| `browser-profiles/` | Clearcote profile archives, one zip per creator |
 
 Root: `data/` next to the API (`/home/debian/domx_backend/data` in this guide). `MALOUM_MEDIA_CACHE_DIR` and `FOURBASED_MEDIA_CACHE_DIR` still win if set.
 
@@ -353,6 +354,50 @@ scp /tmp/domx.dump newserver:/tmp/domx.dump
 # On the new server
 pg_restore -d domx /tmp/domx.dump
 ```
+
+---
+
+## Clearcote browser host
+
+Windows chatters start Clearcote on their own PC. Mac chatters only watch a Debian machine. The API stores one profile archive per creator under `data/browser-profiles/` and does not run Chrome.
+
+Run the agent on the browser machine, separate from the API process. The checkout needs `browser-host/` and `frontend/electron/clearcote/` (the agent loads those launch helpers).
+
+```bash
+sudo apt install xvfb tigervnc-scraping-server novnc
+# Clearcote's official Linux chrome binary, not system Chrome:
+# CLEARCOTE_EXECUTABLE=/opt/clearcote/chrome
+
+cd /home/debian/domx/browser-host
+npm install
+```
+
+```env
+BROWSER_HOST_SECRET=long-random-string
+BROWSER_HOST_BIND=127.0.0.1
+BROWSER_HOST_PORT=6090
+CLEARCOTE_EXECUTABLE=/opt/clearcote/chrome
+BROWSER_HOST_DATA=/var/lib/domx-browser
+```
+
+```bash
+node agent.js
+```
+
+TigerVNC listens on localhost only. The agent serves noVNC and a token-checked websocket at `/websockify` (the websockify role). Point nginx at `127.0.0.1:6090` with a WebSocket upgrade. The view URL works only with the short-lived token the API gives the lock holder.
+
+On the API `.env`:
+
+```env
+BROWSER_HOST_URL=http://10.0.0.8:6090
+BROWSER_HOST_PUBLIC_URL=https://browser.example.com
+BROWSER_HOST_SECRET=long-random-string
+DOMX_API_URL=https://api.low7labs.cloud
+```
+
+`BROWSER_HOST_URL` is how the API reaches the agent. `BROWSER_HOST_PUBLIC_URL` is what the Mac app loads. `DOMX_API_URL` (or `BROWSER_PROFILE_API_URL`) is how the agent downloads and uploads the profile zip. Leave `BROWSER_HOST_URL` unset until this host exists; Mac opens then explain that the host is not configured.
+
+A missed heartbeat (about 45 seconds) releases the lock. Closing the Mac view stops Clearcote on this host and uploads the profile, so the next open can be on Windows.
 
 ---
 

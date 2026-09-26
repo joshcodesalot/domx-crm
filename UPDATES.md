@@ -105,12 +105,27 @@ latest.json
 
 Overwrite `latest.yml`, `latest-mac.yml`, and `latest.json` each release. Keep old versioned installers if you want rollback options.
 
+### Clearcote for Windows chatters
+
+This is not a DomX version bump. Upload these two files to the same folder and overwrite them when you ship a newer Clearcote build:
+
+```
+Clearcote-win-x64.zip
+Clearcote-win-x64.sha256
+```
+
+`Clearcote-win-x64.zip` is Clearcote's official Windows x64 archive (`clearcote-*-windows-x64.zip`), renamed. Leave their license files inside the zip. `Clearcote-win-x64.sha256` is one line: the SHA-256 of that zip.
+
+The DomX auto-updater ignores both names. A Windows chatter who does not already have Clearcote downloads them the first time they use Open browser. Mac builds do not include Clearcote.
+
 ### 5. Verify
 
 Confirm these URLs load in a browser:
 
 - https://domx-agency.com/crm-updates/latest.yml
 - https://domx-agency.com/crm-updates/latest.json
+- https://domx-agency.com/crm-updates/Clearcote-win-x64.zip
+- https://domx-agency.com/crm-updates/Clearcote-win-x64.sha256
 
 ### 6. Test
 

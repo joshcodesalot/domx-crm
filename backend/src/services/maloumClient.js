@@ -515,19 +515,49 @@ async function listUserPosts(creator, username, { limit = 15, next } = {}) {
   return result.data;
 }
 
+const COMMENT_THROTTLE_ATTEMPTS = 4;
+
+function isMaloumThrottled(err) {
+  if (Number(err?.status) === 429) return true;
+  return /throttled/i.test(String(err?.message || ''));
+}
+
+function maloumThrottleWaitMs(err) {
+  const message = String(err?.message || '');
+  if (/sixty-seconds/i.test(message)) return 60_000;
+  if (/thirty-seconds/i.test(message)) return 30_000;
+  if (/five-seconds/i.test(message)) return 5_000;
+  return 5_000;
+}
+
 async function listPostComments(creator, postId, { limit = 15, next } = {}) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!postId) {
     throw new MaloumApiError('postId is required', 400);
   }
-  const result = await requestJson({
-    method: 'GET',
-    path: `/posts/${encodeURIComponent(postId)}/comments${buildQuery({ limit, next })}`,
-    proxyUrl,
-    accessToken,
-    timezone,
-  });
-  return result.data;
+  const path = `/posts/${encodeURIComponent(postId)}/comments${buildQuery({ limit, next })}`;
+  for (let attempt = 1; attempt <= COMMENT_THROTTLE_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await requestJson({
+        method: 'GET',
+        path,
+        proxyUrl,
+        accessToken,
+        timezone,
+      });
+      return result.data;
+    } catch (err) {
+      if (!isMaloumThrottled(err) || attempt >= COMMENT_THROTTLE_ATTEMPTS) {
+        throw err;
+      }
+      const waitMs = maloumThrottleWaitMs(err);
+      console.warn(
+        `[maloumClient] getComments throttled, retrying in ${waitMs}ms (attempt ${attempt}/${COMMENT_THROTTLE_ATTEMPTS})`
+      );
+      await sleep(waitMs);
+    }
+  }
+  return null;
 }
 
 async function blockChatMember(creator, memberId, { deleteComments = true } = {}) {
@@ -1635,6 +1665,8 @@ module.exports = {
   getUserProfile,
   listUserPosts,
   listPostComments,
+  isMaloumThrottled,
+  maloumThrottleWaitMs,
   blockChatMember,
   listMyPosts,
   listCategories,

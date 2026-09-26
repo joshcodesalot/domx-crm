@@ -61,6 +61,10 @@ const {
   openMessageProWindow,
   closeMessageProWindow,
 } = require('./messageProWindow');
+const {
+  registerClearcoteIpc,
+  registerClearcoteLifecycle,
+} = require('./clearcoteLauncher');
 
 const isDev = !app.isPackaged;
 
@@ -126,6 +130,8 @@ async function bootstrap() {
   registerUpdaterIpc(ipcMain);
   registerMaloumSessionIpc();
   registerMessageProIpc();
+  registerClearcoteIpc(ipcMain);
+  registerClearcoteLifecycle();
 
   if (!isDev) {
     await runInitialUpdateCheck();

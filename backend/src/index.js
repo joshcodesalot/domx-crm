@@ -50,6 +50,14 @@ app.use(
   express.raw({ type: 'application/json' }),
   throneWebhookRoutes
 );
+const browserProfileRoutes = require('./routes/browserProfiles');
+app.put(
+  '/api/browser-profiles/:creatorId/archive',
+  express.raw({ limit: '200mb', type: () => true }),
+  (req, res, next) => {
+    browserProfileRoutes.uploadBrowserProfileArchive(req, res).catch(next);
+  }
+);
 app.use(express.json({ limit: '6mb' }));
 
 app.use(
@@ -98,12 +106,20 @@ app.use('/api/activity', activityRoutes);
 app.use('/api/scheduled-content', contentScheduleRoutes);
 app.use('/api/telegram-sexting-sessions', telegramSextingSessionRoutes);
 app.use('/api/throne', throneRoutes);
+app.use('/api/browser-profiles', browserProfileRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
 });
 
-app.use((err, _req, res, _next) => {
+app.use((err, req, res, _next) => {
+  if (err && err.type === 'entity.too.large') {
+    const tooLargeProfile =
+      req.method === 'PUT' && /\/api\/browser-profiles\/[^/]+\/archive$/.test(req.path);
+    return res.status(413).json({
+      error: tooLargeProfile ? 'Profile archive is too large' : 'Request is too large',
+    });
+  }
   console.error(err);
   res.status(500).json({ error: 'Internal server error' });
 });

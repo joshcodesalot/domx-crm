@@ -111,6 +111,34 @@ export interface ElectronAPI {
   openMessageProWindow?: (
     platform?: 'maloum' | '4based' | 'telegram'
   ) => Promise<{ opened: boolean; focused?: boolean; route?: string }>;
+  launchClearcote?: (payload: {
+    token: string;
+    profile: {
+      creatorId: string;
+      displayName?: string;
+      viewToken?: string;
+      generation?: number;
+      fingerprintSeed?: string;
+      fingerprintPlatform?: string;
+      encryptionKey?: string;
+      proxyUrl?: string | null;
+      timezone?: string | null;
+      acceptLanguage?: string | null;
+      hasArchive?: boolean;
+      alreadyOpen?: boolean;
+    };
+  }) => Promise<{ ok: boolean; alreadyRunning?: boolean; error?: string; code?: string }>;
+  openClearcoteView?: (payload: {
+    token: string;
+    profile: {
+      creatorId: string;
+      displayName?: string;
+      viewToken?: string;
+      viewUrl?: string;
+      alreadyOpen?: boolean;
+    };
+  }) => Promise<{ ok: boolean; alreadyRunning?: boolean; error?: string; code?: string }>;
+  onClearcoteInstallProgress?: (callback: () => void) => () => void;
   onActivityKeydown?: (callback: () => void) => () => void;
   onUpdaterChecking: (callback: (state: UpdaterState) => void) => () => void;
   onUpdaterBlocked: (callback: (state: UpdaterState) => void) => () => void;

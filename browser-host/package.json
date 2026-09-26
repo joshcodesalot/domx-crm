@@ -1,0 +1,13 @@
+{
+  "name": "domx-browser-host",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Debian Clearcote host for DomX Mac viewers",
+  "main": "agent.js",
+  "scripts": {
+    "start": "node agent.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

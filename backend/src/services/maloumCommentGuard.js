@@ -6,6 +6,7 @@ const { loadMaloumCreator } = require('./platformCreatorSession');
 const GUARD_TERMS = ['AI', 'KI', 'A.I.', 'K.I.'];
 const INTERVAL_MS = 60 * 60 * 1000;
 const REQUEST_GAP_MS = 350;
+const COMMENT_GAP_MS = 1200;
 const PAGE_LIMIT = 15;
 
 let schedulerTimer = null;
@@ -31,6 +32,12 @@ function pageRows(page) {
   if (Array.isArray(page?.data)) return page.data;
   if (Array.isArray(page)) return page;
   return [];
+}
+
+function postHasNoComments(post) {
+  const raw = post?.commentCount;
+  if (raw === undefined || raw === null || raw === '') return false;
+  return Number(raw) === 0;
 }
 
 function pageNext(page) {
@@ -210,7 +217,7 @@ async function scanPostComments(creator, postId, blockedThisRun, summary) {
       if (seen.has(next)) break;
       seen.add(next);
     }
-    await pause();
+    await pause(COMMENT_GAP_MS);
     const page = await maloumClient.listPostComments(creator, postId, {
       limit: PAGE_LIMIT,
       next,
@@ -285,6 +292,7 @@ async function scanCreator(creatorId) {
         const postId = String(post?._id || post?.id || '').trim();
         if (!postId) continue;
         summary.scannedPosts += 1;
+        if (postHasNoComments(post)) continue;
         await scanPostComments(creator, postId, blockedThisRun, summary);
       }
       const cursor = pageNext(page);

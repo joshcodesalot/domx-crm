@@ -14,6 +14,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('maloum:load-partition-session', payload),
   openMessageProWindow: (platform) =>
     ipcRenderer.invoke('messagepro:open-window', platform || 'maloum'),
+  launchClearcote: (payload) => ipcRenderer.invoke('clearcote:launch-local', payload),
+  openClearcoteView: (payload) => ipcRenderer.invoke('clearcote:open-remote', payload),
+  onClearcoteInstallProgress: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('clearcote:install-progress', listener);
+    return () => ipcRenderer.removeListener('clearcote:install-progress', listener);
+  },
   onActivityKeydown: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('activity:keydown', listener);
