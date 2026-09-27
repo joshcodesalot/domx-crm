@@ -1,0 +1,2 @@
+ALTER TABLE creators
+  ADD COLUMN IF NOT EXISTS "marketingEnabled" BOOLEAN NOT NULL DEFAULT false;

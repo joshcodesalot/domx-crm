@@ -90,6 +90,7 @@ export interface Creator {
   hasSavedCredentials?: boolean;
   hasCustomProxy?: boolean;
   lastValidatedAt: string | null;
+  marketingEnabled?: boolean;
   authRefreshState?: 'active' | 'needs_reauth' | 'disabled';
   accessTokenExpiresAt?: string | null;
   createdAt: string;
@@ -849,6 +850,16 @@ export async function renameCreator(
   return request<{ creator: Creator }>(`/api/creators/${creatorId}`, {
     method: 'PATCH',
     body: JSON.stringify({ displayName }),
+  });
+}
+
+export async function setCreatorMarketing(
+  creatorId: string,
+  enabled: boolean
+): Promise<{ creator: Creator }> {
+  return request<{ creator: Creator }>(`/api/creators/${creatorId}/marketing`, {
+    method: 'PATCH',
+    body: JSON.stringify({ enabled }),
   });
 }
 

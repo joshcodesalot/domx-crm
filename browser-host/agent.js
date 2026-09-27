@@ -10,8 +10,8 @@ const {
   buildClearcoteArgs,
   findClearcoteExecutable,
   MISSING_CLEARCOTE_MESSAGE,
-} = require('../frontend/electron/clearcote/launchArgs');
-const { packProfile, unpackProfile } = require('../frontend/electron/clearcote/profileArchive');
+} = require('./clearcote/launchArgs');
+const { packProfile, unpackProfile } = require('./clearcote/profileArchive');
 
 const sessions = new Map();
 let nextDisplay = 100;

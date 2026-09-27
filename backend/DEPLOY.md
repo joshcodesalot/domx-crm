@@ -361,16 +361,83 @@ pg_restore -d domx /tmp/domx.dump
 
 Windows chatters start Clearcote on their own PC. Mac chatters only watch a Debian machine. The API stores one profile archive per creator under `data/browser-profiles/` and does not run Chrome.
 
-Run the agent on the browser machine, separate from the API process. The checkout needs `browser-host/` and `frontend/electron/clearcote/` (the agent loads those launch helpers).
+Use the official Linux archive on this Debian machine. Do not install the Windows zip here, and do not fall back to Debian’s Google Chrome or Chromium.
+
+This example runs the browser host on the same machine as the API (`127.0.0.1`) and uses the public name `browser.domx-agency.com`. Replace that name everywhere (DNS, nginx, and the API env) if yours is different. Leave `BROWSER_HOST_URL` unset on the API until this host exists. Mac opens then explain that the host is not configured.
+
+### Windows zip
+
+Windows chatters do not get a copy from this server. Upload two files to the same folder as the DomX installers and overwrite them when you ship a newer Clearcote build:
+
+```
+https://domx-agency.com/crm-updates/Clearcote-win-x64.zip
+https://domx-agency.com/crm-updates/Clearcote-win-x64.sha256
+```
+
+`Clearcote-win-x64.zip` is Clearcote’s official Windows x64 archive (`clearcote-149.0.7827.114-windows-x64.zip`), renamed. Leave their license files inside the zip. `Clearcote-win-x64.sha256` is one line, the SHA-256 of that zip: `f40c83049aae13d8c0322e9822eeb2d7236fddd5e7915304eb6f0f5f1f79fcb6`.
+
+This is not a DomX version bump. The auto-updater ignores both names. The first time a Windows user clicks **Open browser**, the app downloads the zip and extracts it to `%LOCALAPPDATA%\Clearcote\chrome.exe` (usually `C:\Users\<name>\AppData\Local\Clearcote\chrome.exe`). You do not copy it onto each PC by hand. Mac builds do not include Clearcote.
+
+### Download Clearcote for the Debian host
+
+[Clearcote Browser v0.1.0-pre.22](https://github.com/clearcotelabs/clearcote-browser/releases/tag/v0.1.0-pre.22) (Chromium 149.0.7827.114). The Linux archive is about 140 MB. Expected SHA-256: `6625971f51318acb6adc301fcc18dcf790c3de0ba2b313be7182eff180a8ec53`.
 
 ```bash
-sudo apt install xvfb tigervnc-scraping-server novnc
-# Clearcote's official Linux chrome binary, not system Chrome:
-# CLEARCOTE_EXECUTABLE=/opt/clearcote/chrome
+sudo apt install -y curl xz-utils ca-certificates
+sudo mkdir -p /opt/clearcote
+cd /tmp
 
-cd /home/debian/domx/browser-host
-npm install
+curl -fL -o clearcote-linux.tar.xz \
+  https://github.com/clearcotelabs/clearcote-browser/releases/download/v0.1.0-pre.22/clearcote-149.0.7827.114-linux-x64.tar.xz
+curl -fL -o clearcote-linux.tar.xz.sha256 \
+  https://github.com/clearcotelabs/clearcote-browser/releases/download/v0.1.0-pre.22/clearcote-149.0.7827.114-linux-x64.tar.xz.sha256
+
+sha256sum -c clearcote-linux.tar.xz.sha256
 ```
+
+The checksum line must end in `OK`. Unpack and point DomX at the `chrome` file. The archive may put it in the top folder or one folder down:
+
+```bash
+sudo tar -xJf /tmp/clearcote-linux.tar.xz -C /opt/clearcote
+sudo find /opt/clearcote -type f -name chrome
+sudo chmod +x /opt/clearcote/chrome
+```
+
+If `find` prints a path such as `/opt/clearcote/clearcote-linux64/chrome`, set `CLEARCOTE_EXECUTABLE` to that full path, or move the contents up so the binary is exactly `/opt/clearcote/chrome`.
+
+If Chrome exits as soon as a session starts, the machine is missing libraries:
+
+```bash
+ldd /opt/clearcote/chrome | grep 'not found'
+```
+
+Install whatever that list names. On a headless Debian box the usual ones are `libnss3`, `libgbm1`, `libgtk-3-0`, and `libasound2`.
+
+### Virtual screen and agent
+
+The agent starts Xvfb, attaches TigerVNC on localhost, and serves noVNC itself. It does not use a separate websockify package. `tigervnc-scraping-server` provides `x0vncserver` (preferred). `tigervnc-standalone-server` provides `Xtigervnc` (fallback).
+
+```bash
+sudo apt install -y xvfb tigervnc-scraping-server tigervnc-standalone-server novnc
+```
+
+The host folder is self-contained. It does not need a frontend checkout beside it:
+
+```text
+/home/debian/domx_browser_host/agent.js
+/home/debian/domx_browser_host/clearcote/launchArgs.js
+/home/debian/domx_browser_host/clearcote/profileArchive.js
+/home/debian/domx_browser_host/package.json
+```
+
+```bash
+cd /home/debian/domx_browser_host
+npm install
+sudo mkdir -p /var/lib/domx-browser
+sudo chown "$USER" /var/lib/domx-browser
+```
+
+`/home/debian/domx_browser_host/.env`:
 
 ```env
 BROWSER_HOST_SECRET=long-random-string
@@ -380,24 +447,90 @@ CLEARCOTE_EXECUTABLE=/opt/clearcote/chrome
 BROWSER_HOST_DATA=/var/lib/domx-browser
 ```
 
+The API in this guide is on the same machine, so the agent listens on `127.0.0.1` and `BROWSER_HOST_URL` is `http://127.0.0.1:6090`. Use the same secret string on the API. Generate a long random value. Do not keep the placeholder.
+
 ```bash
-node agent.js
+cd /home/debian/domx_browser_host
+set -a && source .env && set +a
+screen -S domx-browser -dm bash -c 'node agent.js'
+curl -s http://127.0.0.1:6090/health
 ```
 
-TigerVNC listens on localhost only. The agent serves noVNC and a token-checked websocket at `/websockify` (the websockify role). Point nginx at `127.0.0.1:6090` with a WebSocket upgrade. The view URL works only with the short-lived token the API gives the lock holder.
+A healthy response is `{"ok":true,"novnc":true,"clearcote":true}`. `clearcote: false` means `CLEARCOTE_EXECUTABLE` does not point at a real file. `novnc: false` means the `novnc` package is missing.
 
-On the API `.env`:
+Do not publish port 6090 on the internet. It only needs to answer on localhost. Macs should only reach nginx on 443.
+
+TigerVNC listens on localhost only. The agent serves noVNC and a token-checked websocket at `/websockify`. The view URL works only with the short-lived token the API gives the lock holder.
+
+### nginx for the Mac window
+
+Point DNS for `browser.domx-agency.com` at this Debian machine. That name is `BROWSER_HOST_PUBLIC_URL`. This site is separate from `api.low7labs.cloud` (section 8). Do not send browser traffic through the API vhost.
+
+`/etc/nginx/sites-available/browser.domx-agency.com`:
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name browser.domx-agency.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:6090;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}
+```
+
+The `Upgrade` headers are required. noVNC’s picture is a WebSocket at `/websockify`, and a normal HTTP proxy connects the page and then drops the screen.
+
+```bash
+sudo ln -s /etc/nginx/sites-available/browser.domx-agency.com /etc/nginx/sites-enabled/
+sudo nginx -t && sudo nginx -s reload
+sudo certbot --nginx -d browser.domx-agency.com
+```
+
+After Certbot, confirm the `443` server still has the `Upgrade` and `Connection` lines. Certbot sometimes rewrites the site and leaves those out. Open `https://browser.domx-agency.com/vnc.html`. You should see the noVNC page. It does not show a browser until a Mac user opens a creator, because there is no VNC session yet.
+
+### API environment
+
+On the API server, in the API `.env`:
 
 ```env
-BROWSER_HOST_URL=http://10.0.0.8:6090
-BROWSER_HOST_PUBLIC_URL=https://browser.example.com
+BROWSER_HOST_URL=http://127.0.0.1:6090
+BROWSER_HOST_PUBLIC_URL=https://browser.domx-agency.com
 BROWSER_HOST_SECRET=long-random-string
 DOMX_API_URL=https://api.low7labs.cloud
 ```
 
-`BROWSER_HOST_URL` is how the API reaches the agent. `BROWSER_HOST_PUBLIC_URL` is what the Mac app loads. `DOMX_API_URL` (or `BROWSER_PROFILE_API_URL`) is how the agent downloads and uploads the profile zip. Leave `BROWSER_HOST_URL` unset until this host exists; Mac opens then explain that the host is not configured.
+| Variable | Who uses it |
+| --- | --- |
+| `BROWSER_HOST_URL` | The API calls `POST /sessions` and `DELETE /sessions/:id` here, with header `X-Domx-Host-Secret`. |
+| `BROWSER_HOST_PUBLIC_URL` | The Mac app loads this plus `/vnc.html?...&path=websockify?token=...`. |
+| `BROWSER_HOST_SECRET` | Must match the browser machine exactly. |
+| `DOMX_API_URL` | The API tells the agent to download and upload the profile zip at `https://api.low7labs.cloud/api/browser-profiles/<creatorId>/archive`. `BROWSER_PROFILE_API_URL` is the same setting. |
 
-A missed heartbeat (about 45 seconds) releases the lock. Closing the Mac view stops Clearcote on this host and uploads the profile, so the next open can be on Windows.
+Restart the API after saving that file. From the API server, `curl -s http://127.0.0.1:6090/health` must succeed before a Mac open will work.
+
+### What a Mac open does
+
+1. The API locks the creator and asks `http://127.0.0.1:6090` to start a session.
+2. The agent downloads that creator’s zip from `https://api.low7labs.cloud`, starts Xvfb on display `:100` or higher, starts VNC on `127.0.0.1` only, and launches Clearcote at `https://x.com`.
+3. The Mac app opens `https://browser.domx-agency.com/vnc.html?...`. nginx forwards the page and the `/websockify` socket to port 6090. The socket is accepted only when the token matches the lock holder.
+4. Closing the view stops Clearcote and uploads the zip, so the next open can be on Windows.
+
+A missed heartbeat (about 45 seconds) releases the lock. Port 6090 is the private control port. Port 443 on `browser.domx-agency.com` is the only public browser address.
 
 ---
 
@@ -444,6 +577,7 @@ screen -S domx-api -dm bash -c 'node src/index.js'
 | View live output | `screen -r domx-api` |
 | List screen sessions | `screen -ls` |
 | Health check | `curl https://api.low7labs.cloud/api/health` |
+| Browser host health | `curl -s http://127.0.0.1:6090/health` |
 | Reload nginx | `nginx -t && nginx -s reload` |
 
 ---

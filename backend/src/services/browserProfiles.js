@@ -137,11 +137,14 @@ async function assertAccess(user, creatorId) {
   if (!isUuid(creatorId)) {
     throw new BrowserProfileError('Creator not found', 404);
   }
+  const found = await pool.query(
+    'SELECT "marketingEnabled" FROM creators WHERE id = $1',
+    [creatorId]
+  );
+  if (!found.rows[0] || !found.rows[0].marketingEnabled) {
+    throw new BrowserProfileError('Creator not found', 404);
+  }
   if (canOpenEveryCreatorBrowser(user)) {
-    const found = await pool.query('SELECT id FROM creators WHERE id = $1', [creatorId]);
-    if (!found.rows[0]) {
-      throw new BrowserProfileError('Creator not found', 404);
-    }
     return;
   }
   if (!(await userCanAccessCreator(user, creatorId))) {
@@ -532,7 +535,8 @@ async function listBrowserProfiles(user) {
      FROM creators c
      LEFT JOIN browser_profiles bp ON bp."creatorId" = c.id
      LEFT JOIN users u ON u.id = bp."lockedBy"
-     WHERE (
+     WHERE c."marketingEnabled"
+       AND (
        $1::boolean
        OR EXISTS (
          SELECT 1 FROM creator_staff_assignments a

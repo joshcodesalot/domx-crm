@@ -4,9 +4,9 @@ const ROLES = [
   { slug: 'owner', name: 'Owner', rank: 1 },
   { slug: 'manager', name: 'Manager', rank: 2 },
   { slug: 'backend', name: 'Backend', rank: 3 },
-  { slug: 'team_leader', name: 'Team Leader', rank: 4 },
-  { slug: 'chatter', name: 'Chatter', rank: 5 },
-  { slug: 'marketing', name: 'Marketing', rank: 6 },
+  { slug: 'marketing', name: 'Marketing', rank: 4 },
+  { slug: 'team_leader', name: 'Team Leader', rank: 5 },
+  { slug: 'chatter', name: 'Chatter', rank: 6 },
 ];
 
 const PERMISSIONS = [
@@ -69,9 +69,8 @@ const DEFAULT_MATRIX = {
     'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view',
     'staff.view',
     'vault.notes.edit',
-    'marketing.view',
   ],
-  chatter: ['dashboard.view', 'analytics.self', 'creators.view', 'marketing.view'],
+  chatter: ['dashboard.view', 'analytics.self', 'creators.view'],
   marketing: ['marketing.view'],
 };
 

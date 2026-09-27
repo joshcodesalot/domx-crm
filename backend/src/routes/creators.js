@@ -141,6 +141,7 @@ function toCreator(row) {
     hasSavedCredentials: Boolean(row.encryptedLoginPassword),
     hasCustomProxy: Boolean(row.hasCustomProxy),
     lastValidatedAt: row.lastValidatedAt || null,
+    marketingEnabled: Boolean(row.marketingEnabled),
     authRefreshState: row.authRefreshState || 'active',
     accessTokenExpiresAt: row.accessTokenExpiresAt || null,
     createdAt: row.createdAt,
@@ -374,7 +375,7 @@ const CREATOR_SELECT_COLUMNS = `
   id, "displayName", username, platform, "connectionStatus",
   "postLoginUrl", "avatarUrl", "avatarSource", "staffCount", "accountId", "partitionId",
   "loginEmail", "encryptedLoginPassword", "lastValidatedAt", "authRefreshState",
-  "accessTokenExpiresAt", "createdAt", "updatedAt",
+  "accessTokenExpiresAt", "marketingEnabled", "createdAt", "updatedAt",
   ("encryptedProxy" IS NOT NULL) AS "hasCustomProxy"
 `;
 
@@ -1759,6 +1760,43 @@ router.patch(
       res.json({ creator: toCreator(result.rows[0]) });
     } catch (err) {
       console.error('Rename creator error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
+router.patch(
+  '/:id/marketing',
+  authenticate,
+  requirePermission('creators.manage'),
+  async (req, res) => {
+    const { id } = req.params;
+    const { enabled } = req.body;
+
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled must be true or false' });
+    }
+
+    try {
+      const result = await pool.query(
+        `UPDATE creators
+         SET "marketingEnabled" = $2,
+             "updatedAt" = NOW()
+         WHERE id = $1
+         RETURNING ${CREATOR_SELECT_COLUMNS}`,
+        [id, enabled]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Creator not found' });
+      }
+
+      res.json({ creator: toCreator(result.rows[0]) });
+    } catch (err) {
+      console.error('Set creator marketing error:', err);
       res.status(500).json({ error: 'Internal server error' });
     }
   }

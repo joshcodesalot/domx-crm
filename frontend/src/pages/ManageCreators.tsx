@@ -24,6 +24,7 @@ import {
   reconnectMaloumAccountSaved,
   refreshMaloumAvatar,
   verifyMaloumSession,
+  setCreatorMarketing,
   type Creator,
 } from '@/lib/api';
 import fourBasedIcon from '@/assets/4based_icon.ico';
@@ -76,10 +77,11 @@ export default function ManageCreators() {
   const [refreshingIconId, setRefreshingIconId] = useState<string | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
+  const [marketingId, setMarketingId] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
 
   const canManage = hasPermission('creators.manage');
-  const columnCount = canManage ? 5 : 4;
+  const columnCount = canManage ? 6 : 5;
 
   const loadCreators = useCallback(async () => {
     const { creators: list } = await getCreators();
@@ -195,6 +197,22 @@ export default function ManageCreators() {
     }
   }
 
+  async function handleMarketingToggle(creator: Creator) {
+    const enabled = !creator.marketingEnabled;
+    setMarketingId(creator.id);
+    setError(null);
+    try {
+      const { creator: updated } = await setCreatorMarketing(creator.id, enabled);
+      setCreators((current) =>
+        current.map((item) => (item.id === updated.id ? { ...item, ...updated } : item))
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update marketing');
+    } finally {
+      setMarketingId(null);
+    }
+  }
+
   async function handleRemoveConfirm() {
     if (!removeTarget) return;
 
@@ -266,6 +284,11 @@ export default function ManageCreators() {
                 <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
                   Validated
                 </th>
+                {canManage && (
+                  <th className="text-left px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
+                    Marketing
+                  </th>
+                )}
                 {canManage && (
                   <th className="text-right px-4 py-3 font-medium text-gray-500 dark:text-gray-400">
                     Actions
@@ -348,6 +371,33 @@ export default function ManageCreators() {
                     <td className="px-4 py-3 text-gray-500 dark:text-gray-400">
                       {formatValidatedAt(creator.lastValidatedAt) || '—'}
                     </td>
+                    {canManage && (
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={Boolean(creator.marketingEnabled)}
+                          disabled={marketingId === creator.id}
+                          title={
+                            creator.marketingEnabled
+                              ? 'Shown on the Marketing page'
+                              : 'Hidden from the Marketing page'
+                          }
+                          onClick={() => void handleMarketingToggle(creator)}
+                          className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-40 ${
+                            creator.marketingEnabled
+                              ? 'bg-brand-600'
+                              : 'bg-gray-200 dark:bg-white/15'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              creator.marketingEnabled ? 'translate-x-4' : 'translate-x-0.5'
+                            }`}
+                          />
+                        </button>
+                      </td>
+                    )}
                     {canManage && (
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-0.5">

@@ -19,7 +19,7 @@ const {
 } = require('../services/browserProfiles');
 
 const router = express.Router();
-const canViewBrowser = requirePermission('creators.view', 'marketing.view');
+const canViewBrowser = requirePermission('marketing.view');
 
 function sendError(res, err) {
   if (!(err instanceof BrowserProfileError)) {
