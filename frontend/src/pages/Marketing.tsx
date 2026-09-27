@@ -65,7 +65,7 @@ export default function Marketing() {
     });
   }, []);
 
-  async function handleOpenBrowser(profile: BrowserProfileLock) {
+  async function handleOpenBrowser(profile: BrowserProfileLock, remote = false) {
     const desktop = window.electronAPI;
     if (!desktop?.isElectron || !desktop.launchClearcote || !desktop.openClearcoteView) {
       setError('Open the browser from the DomX desktop app.');
@@ -81,15 +81,18 @@ export default function Marketing() {
       return;
     }
 
+    const useRemote = remote || desktop.platform === 'darwin';
     setOpeningId(profile.creatorId);
     setDownloadingBrowser(false);
     setError(null);
     try {
-      const opened = await openBrowserProfile(profile.creatorId, desktop.platform);
-      const launch =
-        desktop.platform === 'darwin'
-          ? await desktop.openClearcoteView({ token, profile: opened })
-          : await desktop.launchClearcote({ token, profile: opened });
+      const opened = await openBrowserProfile(
+        profile.creatorId,
+        useRemote ? 'darwin' : desktop.platform
+      );
+      const launch = useRemote
+        ? await desktop.openClearcoteView({ token, profile: opened })
+        : await desktop.launchClearcote({ token, profile: opened });
       if (!launch?.ok) {
         setError(launch?.error || 'Could not open the browser.');
       }
@@ -194,6 +197,21 @@ export default function Marketing() {
                                 : 'Opening…'
                               : 'Open browser'}
                           </button>
+                          {window.electronAPI?.platform === 'win32' && (
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md border border-gray-200 dark:border-white/10 hover:bg-gray-50 dark:hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed"
+                              disabled={openingId === profile.creatorId || heldByOther}
+                              title={
+                                heldByOther
+                                  ? `In use by ${profile.lockedByName || 'another chatter'}`
+                                  : 'Open the Debian browser'
+                              }
+                              onClick={() => void handleOpenBrowser(profile, true)}
+                            >
+                              Open remotely
+                            </button>
+                          )}
                           {profile.locked && (
                             <p className="text-xs text-gray-400">
                               {profile.lockedBySelf

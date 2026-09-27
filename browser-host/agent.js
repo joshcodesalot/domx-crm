@@ -175,6 +175,7 @@ async function startDisplay(display, vncPort) {
       const vnc = spawnGroup(
         'x0vncserver',
         [
+          '-fg',
           '-display',
           `:${display}`,
           '-rfbport',
@@ -183,6 +184,7 @@ async function startDisplay(display, vncPort) {
           'yes',
           '-SecurityTypes',
           'None',
+          '-AcceptCutText=1',
         ],
         env
       );

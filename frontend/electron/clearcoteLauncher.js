@@ -1,7 +1,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, clipboard, dialog } = require('electron');
 const { getApiUrl } = require('./apiConfig');
 const {
   buildClearcoteArgs,
@@ -280,6 +280,30 @@ async function launchLocal(payload, onProgress) {
   return { ok: true };
 }
 
+function allowRemoteClipboard(ses) {
+  const clipboardPermission = (permission) =>
+    permission === 'clipboard-read' || permission === 'clipboard-sanitized-write';
+  ses.setPermissionCheckHandler((_webContents, permission) => clipboardPermission(permission));
+  ses.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(clipboardPermission(permission));
+  });
+}
+
+function pasteIntoRemoteView(win) {
+  const text = clipboard.readText();
+  if (!text || win.isDestroyed()) return;
+  const script = `(() => {
+    const target = document.getElementById('noVNC_keyboardinput');
+    if (!target) return;
+    const data = new DataTransfer();
+    data.setData('text/plain', ${JSON.stringify(text)});
+    const paste = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, 'clipboardData', { value: data });
+    target.dispatchEvent(paste);
+  })()`;
+  win.webContents.executeJavaScript(script).catch(() => {});
+}
+
 function openRemoteView(payload) {
   const token = payload?.token;
   const profile = payload?.profile;
@@ -304,9 +328,18 @@ function openRemoteView(payload) {
     title: profile.displayName ? `Browser — ${profile.displayName}` : 'Browser',
     show: false,
     webPreferences: {
+      partition: 'persist:clearcote-remote',
       nodeIntegration: false,
       contextIsolation: true,
     },
+  });
+  allowRemoteClipboard(win.webContents.session);
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.alt) return;
+    if (!(input.control || input.meta)) return;
+    if (String(input.key).toLowerCase() !== 'v') return;
+    event.preventDefault();
+    pasteIntoRemoteView(win);
   });
   remoteWindows.set(profile.creatorId, win);
 
