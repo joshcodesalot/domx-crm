@@ -54,6 +54,10 @@ const {
   redactMember,
 } = require('../services/telegramFanView');
 const { upsertMessageUnsend } = require('../services/messageUnsend');
+const {
+  isChatCopyLocked,
+  LOCKED_MESSAGE,
+} = require('../services/massMessageLocks');
 
 const router = express.Router();
 
@@ -854,6 +858,13 @@ router.delete(
       const allowed = await userCanAccessCreator(req.user, id);
       if (!allowed) {
         return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+      if (
+        await isChatCopyLocked(id, 'telegram', {
+          telegramMessageId: messageId,
+        })
+      ) {
+        return res.status(409).json({ error: LOCKED_MESSAGE });
       }
       await deleteText(id, peerId, messageId);
       let unsend = null;

@@ -63,6 +63,7 @@ import {
   getMessagingDashboardSenders,
   getTelegramDialogs,
   getTelegramMessages,
+  listMassMessageLocks,
   searchTelegramMessages,
   markScriptSent,
   resolveCreatorAvatarUrl,
@@ -76,6 +77,7 @@ import {
   type Creator,
   type CreatorScript,
   type CreatorScriptMediaItem,
+  type MassMessageLock,
   type MessageUnsendRecord,
   type TelegramDialog,
   type TelegramFan,
@@ -84,6 +86,7 @@ import {
   type TelegramVaultItem,
   type TranslateHistoryItem,
 } from '@/lib/api';
+import { telegramMessageIsLocked } from '@/lib/massMessageLock';
 
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
@@ -884,6 +887,21 @@ export function TelegramChatThread({
   const canManageScripts = hasPermission('scripts.manage');
   const [fan, setFan] = useState<TelegramFan | null>(initialFan || null);
   const [messages, setMessages] = useState<TelegramMessage[]>([]);
+  const [massLocks, setMassLocks] = useState<MassMessageLock[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listMassMessageLocks(creatorId, 'telegram')
+      .then((result) => {
+        if (!cancelled) setMassLocks(result.locks || []);
+      })
+      .catch(() => {
+        if (!cancelled) setMassLocks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [creatorId]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [translatingOutgoing, setTranslatingOutgoing] = useState(false);
@@ -1997,7 +2015,8 @@ export function TelegramChatThread({
             ? messageSenders[`telegram:${msg.id}`]
             : undefined;
           const unsentBy = messageUnsends[msg.id]?.unsentByUserName;
-          const canUnsend = msg.isOutgoing && !msg.deleted;
+          const canUnsend =
+            msg.isOutgoing && !msg.deleted && !telegramMessageIsLocked(massLocks, msg.id);
           const deleting = deletingMessageId === msg.id;
           const clusterKey = senderClusterKey(msg);
           const prevKey = index > 0 ? senderClusterKey(messages[index - 1]) : null;

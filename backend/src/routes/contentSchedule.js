@@ -101,6 +101,7 @@ function mapJob(row) {
     runAt: row.runAt,
     status: row.status,
     bodyText: row.bodyText,
+    translateBody: row.translateBody !== false,
     imageFileName: row.imageFileName,
     hasImage: Boolean(row.storedPath),
     payload: row.payload || {},
@@ -144,6 +145,13 @@ function normalizePlatform(value) {
   if (raw === 'maloum') return 'maloum';
   if (raw === 'telegram') return 'telegram';
   return null;
+}
+
+function parseTranslateBody(value, defaultValue = true) {
+  if (value === undefined || value === null || value === '') return defaultValue;
+  if (value === false || value === 'false' || value === 0 || value === '0') return false;
+  if (value === true || value === 'true' || value === 1 || value === '1') return true;
+  return defaultValue;
 }
 
 function detectKind(entry) {
@@ -196,6 +204,7 @@ async function insertJob({
   platform,
   runAt,
   bodyText,
+  translateBody = true,
   imageFileName,
   storedPath,
   payload,
@@ -204,9 +213,9 @@ async function insertJob({
   const id = randomUUID();
   const result = await pool.query(
     `INSERT INTO scheduled_content_jobs (
-       id, kind, "creatorId", platform, "runAt", status, "bodyText",
+       id, kind, "creatorId", platform, "runAt", status, "bodyText", "translateBody",
        "imageFileName", "storedPath", payload, "createdByUserId"
-     ) VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,$9::jsonb,$10)
+     ) VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,$9,$10::jsonb,$11)
      RETURNING *`,
     [
       id,
@@ -215,6 +224,7 @@ async function insertJob({
       platform,
       runAt,
       bodyText || '',
+      translateBody !== false,
       imageFileName || null,
       storedPath || null,
       JSON.stringify(payload || {}),
@@ -557,6 +567,7 @@ router.post('/', (req, res, next) => {
       platform,
       runAt,
       bodyText: String(body.bodyText || body.message || body.caption || ''),
+      translateBody: parseTranslateBody(body.translateBody, true),
       imageFileName: req.file?.originalname || body.imageFileName || null,
       storedPath: req.file?.path || null,
       payload,
@@ -703,6 +714,7 @@ router.post('/import', (req, res, next) => {
         time: runAt ? calendarTimeString(runAt, tz) : '',
         runAt: runAt ? runAt.toISOString() : null,
         bodyText,
+        translateBody: parseTranslateBody(entry.translate ?? entry.translateBody, true),
         imageFileName: fileName || matched?.originalFileName || null,
         assetId: kind === 'feed_post' ? matched?.id || null : null,
         errors,
@@ -834,6 +846,7 @@ router.post('/import/commit', async (req, res) => {
         platform,
         runAt,
         bodyText,
+        translateBody: parseTranslateBody(entry.translateBody ?? entry.translate, true),
         imageFileName,
         storedPath,
         payload: kind === 'mass_message' ? normalizeMassPayload(platform, payload) : payload,

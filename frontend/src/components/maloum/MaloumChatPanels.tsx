@@ -53,6 +53,7 @@ import {
   listMaloumChatLists,
   listAllMaloumVaultFolders,
   listMaloumVaultMedia,
+  listMassMessageLocks,
   listMaloumVaultSent,
   listVaultMediaNotes,
   maloumMediaUrl,
@@ -68,11 +69,13 @@ import {
   type MaloumChatListItem,
   type MaloumChatPartner,
   type MaloumMessage,
+  type MassMessageLock,
   type MaloumVaultFolder,
   type MaloumVaultMediaItem,
   type MessageUnsendRecord,
   type TranslateHistoryItem,
 } from '@/lib/api';
+import { chatCopyIsLocked } from '@/lib/massMessageLock';
 import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
@@ -1110,6 +1113,21 @@ export function MaloumChatThread({
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [massLocks, setMassLocks] = useState<MassMessageLock[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listMassMessageLocks(creatorId, 'maloum')
+      .then((result) => {
+        if (!cancelled) setMassLocks(result.locks || []);
+      })
+      .catch(() => {
+        if (!cancelled) setMassLocks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [creatorId]);
 
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -2167,10 +2185,14 @@ export function MaloumChatThread({
       setDeletingMessageId(messageId);
       setDeleteError(null);
       try {
+        const existingMedia = existing ? messageMediaAssets(existing) : [];
         const result = await deleteMaloumMessage(creatorId, chatId, messageId, {
           deleteTextOnly: false,
           originalText,
           messageSentAt,
+          mediaIds: existingMedia
+            .map((asset) => asset.uploadId)
+            .filter((id): id is string => Boolean(id)),
         });
         const unsendRecord: MessageUnsendRecord = result.unsend
           ? {
@@ -2360,8 +2382,17 @@ export function MaloumChatThread({
           ).trim();
           const assets = unsent ? [] : messageMediaAssets(msg);
           const text = unsent ? '' : messageText(msg);
+          const lockMediaIds = messageMediaAssets(msg)
+            .map((asset) => asset.uploadId)
+            .filter((id): id is string => Boolean(id));
+          const lockedCopy =
+            !unsent &&
+            chatCopyIsLocked(massLocks, {
+              text,
+              mediaIds: lockMediaIds,
+            });
           const canDelete =
-            mine && !unsent && isPersistedMaloumMessageId(msgKey);
+            mine && !unsent && isPersistedMaloumMessageId(msgKey) && !lockedCopy;
           const deleting = deletingMessageId === msgKey;
           const optimisticKey =
             typeof msg.optimisticMessageId === 'string'

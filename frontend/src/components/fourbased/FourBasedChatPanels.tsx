@@ -57,6 +57,7 @@ import {
   listFourBasedChats,
   listFourBasedUserLists,
   listFourBasedVault,
+  listMassMessageLocks,
   listVaultMediaNotes,
   markScriptSent,
   pickFourBasedPreviewUrl,
@@ -76,12 +77,14 @@ import {
   type FourBasedCoinPackage,
   type FourBasedLastMessage,
   type FourBasedMessage,
+  type MassMessageLock,
   type FourBasedUserList,
   type FourBasedUserProfile,
   type FourBasedVaultItem,
   type MessageUnsendRecord,
   type TranslateHistoryItem,
 } from '@/lib/api';
+import { chatCopyIsLocked } from '@/lib/massMessageLock';
 import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
@@ -1386,6 +1389,21 @@ export function FourBasedChatThread({
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [massLocks, setMassLocks] = useState<MassMessageLock[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listMassMessageLocks(creatorId, '4based')
+      .then((result) => {
+        if (!cancelled) setMassLocks(result.locks || []);
+      })
+      .catch(() => {
+        if (!cancelled) setMassLocks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [creatorId]);
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>({});
   const [messageUnlockMeta, setMessageUnlockMeta] = useState<
     Record<string, { purchased: boolean; unlockedAt: string | null }>
@@ -2062,6 +2080,15 @@ export function FourBasedChatThread({
       const result = await deleteFourBasedMessage(creatorId, chatId, messageId, {
         originalText,
         messageSentAt,
+        mediaIds: existing
+          ? [
+              existing.file_stack_id,
+              existing.file_stack?._id,
+              existing.file_stack?.vault_file_stack_id,
+            ]
+              .map((value) => String(value || '').trim())
+              .filter(Boolean)
+          : [],
       });
       const deletedIds =
         Array.isArray(result.message?.deleted_user_ids) &&
@@ -2802,8 +2829,21 @@ export function FourBasedChatThread({
           const mine = msg.user_id === providerUserId;
           const msgKey = fourBasedMessageId(msg);
           const deleted = isDeletedFourBasedMessage(msg);
+          const lockMediaIds = [
+            msg.file_stack_id,
+            msg.file_stack?._id,
+            msg.file_stack?.vault_file_stack_id,
+          ]
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+          const lockedCopy =
+            !deleted &&
+            chatCopyIsLocked(massLocks, {
+              text: typeof msg.message === 'string' ? msg.message : '',
+              mediaIds: lockMediaIds,
+            });
           const canDelete =
-            mine && !deleted && isPersistedFourBasedMessageId(msg._id);
+            mine && !deleted && isPersistedFourBasedMessageId(msg._id) && !lockedCopy;
           const deleting = deletingMessageId === msg._id;
           const localKey = typeof msg.local_id === 'string' ? msg.local_id : '';
           const unsendInfo = msg._id ? messageUnsends[msg._id] : undefined;

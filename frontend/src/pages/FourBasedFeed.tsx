@@ -432,6 +432,7 @@ export default function FourBasedFeed() {
             platform: '4based',
             runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
             bodyText: draft.trim(),
+            translateBody: autoTranslateOutgoing,
             payload: { folder: uploadFolder },
             file: uploadFile,
           });
@@ -444,6 +445,7 @@ export default function FourBasedFeed() {
             platform: '4based',
             runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
             bodyText: draft.trim(),
+            translateBody: autoTranslateOutgoing,
             payload: {
               vaultId,
               vaultGuid:

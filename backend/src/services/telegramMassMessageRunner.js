@@ -1,4 +1,5 @@
 const pool = require('../db/pool');
+const { isLocked, lockedIdSet, LOCKED_MESSAGE } = require('./massMessageLocks');
 const {
   TelegramWorkerError,
   sendText,
@@ -533,6 +534,9 @@ async function deleteWithFloodRetry(creatorId, peerId, messageId, run) {
 async function executeUnsendCampaign(campaignId, run) {
   const campaign = await loadCampaign(campaignId);
   if (!campaign) throw new Error('Campaign not found');
+  if (await isLocked(campaign.creatorId, 'telegram', campaignId)) {
+    throw new Error(LOCKED_MESSAGE);
+  }
   const rows = await pool.query(
     `SELECT id, "peerId", "telegramMessageIds"
      FROM telegram_mm_recipients
@@ -663,8 +667,10 @@ async function executeUnsendLast(creatorId, cap, run) {
      LIMIT $2`,
     [creatorId, limit]
   );
-  run.total = campaigns.rows.length;
-  for (const row of campaigns.rows) {
+  const locked = await lockedIdSet(creatorId, 'telegram');
+  const rows = campaigns.rows.filter((row) => !locked.has(String(row.id)));
+  run.total = rows.length;
+  for (const row of rows) {
     if (run.abort) break;
     run.campaignId = row.id;
     const inner = {

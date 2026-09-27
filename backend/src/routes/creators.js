@@ -46,6 +46,11 @@ const {
 } = require('../services/salePayoutReconciler');
 const massMessageUnsendAllRunner = require('../services/massMessageUnsendAllRunner');
 const {
+  isLocked: isMassMessageLocked,
+  isChatCopyLocked,
+  LOCKED_MESSAGE,
+} = require('../services/massMessageLocks');
+const {
   connectCreatorById,
   ensureCreatorSocket,
   disconnectCreator,
@@ -4245,7 +4250,7 @@ router.delete(
   requirePermission('creators.view'),
   async (req, res) => {
     const { id, chatId, messageId } = req.params;
-    const { originalText, messageSentAt } = req.body || {};
+    const { originalText, messageSentAt, mediaIds } = req.body || {};
 
     if (!isValidUuid(id)) {
       return res.status(400).json({ error: 'Invalid creator ID' });
@@ -4266,6 +4271,14 @@ router.delete(
       const loaded = await loadFourBasedCreator(id);
       if (loaded.error) {
         return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+      if (
+        await isChatCopyLocked(id, '4based', {
+          text: originalText,
+          mediaIds,
+        })
+      ) {
+        return res.status(409).json({ error: LOCKED_MESSAGE });
       }
 
       const message = await fourBasedClient.deleteMessage(
@@ -4733,6 +4746,9 @@ router.delete(
       const loaded = await loadFourBasedCreator(id);
       if (loaded.error) {
         return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+      if (await isMassMessageLocked(id, '4based', massMessageId)) {
+        return res.status(409).json({ error: LOCKED_MESSAGE });
       }
 
       const result = await fourBasedClient.deleteMassMessage(loaded.creator, massMessageId);
@@ -5559,7 +5575,7 @@ router.post(
   requirePermission('creators.view'),
   async (req, res) => {
     const { id, chatId, messageId } = req.params;
-    const { deleteTextOnly, originalText, messageSentAt } = req.body || {};
+    const { deleteTextOnly, originalText, messageSentAt, mediaIds } = req.body || {};
 
     if (!isValidUuid(id)) {
       return res.status(400).json({ error: 'Invalid creator ID' });
@@ -5580,6 +5596,14 @@ router.post(
       const loaded = await loadMaloumCreator(id);
       if (loaded.error) {
         return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+      if (
+        await isChatCopyLocked(id, 'maloum', {
+          text: originalText,
+          mediaIds,
+        })
+      ) {
+        return res.status(409).json({ error: LOCKED_MESSAGE });
       }
 
       await maloumClient.deleteMessage(loaded.creator, chatId, messageId, {
@@ -5908,6 +5932,9 @@ router.post(
       const loaded = await loadMaloumCreator(id);
       if (loaded.error) {
         return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+      if (await isMassMessageLocked(id, 'maloum', broadcastId)) {
+        return res.status(409).json({ error: LOCKED_MESSAGE });
       }
 
       await maloumClient.revokeBroadcast(loaded.creator, broadcastId);

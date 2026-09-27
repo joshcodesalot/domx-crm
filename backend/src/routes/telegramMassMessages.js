@@ -18,6 +18,7 @@ const {
   stopCreator,
   parseUuidList,
 } = require('../services/telegramMassMessageRunner');
+const { isLocked, LOCKED_MESSAGE } = require('../services/massMessageLocks');
 
 const router = express.Router();
 
@@ -347,6 +348,9 @@ router.post(
       const campaign = await loadCampaign(campaignId);
       if (!campaign || campaign.creatorId !== creator.id) {
         return res.status(404).json({ error: 'Campaign not found' });
+      }
+      if (await isLocked(creator.id, 'telegram', campaignId)) {
+        return res.status(409).json({ error: LOCKED_MESSAGE });
       }
       const started = startUnsend(campaignId, creator.id);
       return res.json({

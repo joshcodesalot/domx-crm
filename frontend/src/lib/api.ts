@@ -2210,7 +2210,11 @@ export async function deleteFourBasedMessage(
   creatorId: string,
   chatId: string,
   messageId: string,
-  options: { originalText?: string; messageSentAt?: string | null } = {}
+  options: {
+    originalText?: string;
+    messageSentAt?: string | null;
+    mediaIds?: string[];
+  } = {}
 ): Promise<{
   ok: boolean;
   message?: FourBasedMessage;
@@ -2223,6 +2227,7 @@ export async function deleteFourBasedMessage(
       body: JSON.stringify({
         originalText: options.originalText || '',
         messageSentAt: options.messageSentAt || null,
+        mediaIds: options.mediaIds || [],
       }),
     }
   );
@@ -2550,6 +2555,58 @@ export async function deleteFourBasedMassMessage(
     `/api/creators/${creatorId}/4based/mass-messages/${encodeURIComponent(massMessageId)}`,
     { method: 'DELETE' }
   );
+}
+
+export interface MassMessageLock {
+  id: string;
+  creatorId: string;
+  platform: 'maloum' | '4based' | 'telegram';
+  platformMessageId: string;
+  bodyText: string;
+  mediaIds: string[];
+  lockedByUserId: string | null;
+  createdAt: string;
+  telegramMessageIds?: string[];
+}
+
+export async function listMassMessageLocks(
+  creatorId: string,
+  platform?: 'maloum' | '4based' | 'telegram'
+): Promise<{ locks: MassMessageLock[] }> {
+  const params = new URLSearchParams();
+  if (platform) params.set('platform', platform);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/mass-message-locks${query ? `?${query}` : ''}`
+  );
+}
+
+export async function lockMassMessage(
+  creatorId: string,
+  payload: {
+    platform: 'maloum' | '4based' | 'telegram';
+    platformMessageId: string;
+    bodyText?: string;
+    mediaIds?: string[];
+  }
+): Promise<{ lock: MassMessageLock }> {
+  return request(`/api/creators/${creatorId}/mass-message-locks`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function unlockMassMessage(
+  creatorId: string,
+  payload: {
+    platform: 'maloum' | '4based' | 'telegram';
+    platformMessageId: string;
+  }
+): Promise<{ ok: boolean }> {
+  return request(`/api/creators/${creatorId}/mass-message-locks`, {
+    method: 'DELETE',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function countFourBasedMassMessageReceivers(
@@ -3236,7 +3293,11 @@ export async function deleteTelegramMessage(
   creatorId: string,
   peerId: string,
   messageId: string,
-  options: { originalText?: string; messageSentAt?: string | null } = {}
+  options: {
+    originalText?: string;
+    messageSentAt?: string | null;
+    mediaIds?: string[];
+  } = {}
 ): Promise<{
   ok: boolean;
   unsend?: MessageUnsendRecord & { platformMessageId: string };
@@ -4068,6 +4129,7 @@ export async function deleteMaloumMessage(
     deleteTextOnly?: boolean;
     originalText?: string;
     messageSentAt?: string | null;
+    mediaIds?: string[];
   } = {}
 ): Promise<{
   ok: boolean;
@@ -4081,6 +4143,7 @@ export async function deleteMaloumMessage(
         deleteTextOnly: Boolean(options.deleteTextOnly),
         originalText: options.originalText || '',
         messageSentAt: options.messageSentAt || null,
+        mediaIds: options.mediaIds || [],
       }),
     }
   );
@@ -5130,6 +5193,7 @@ export interface ScheduledContentJob {
   runAt: string;
   status: ScheduledContentStatus;
   bodyText: string;
+  translateBody?: boolean;
   imageFileName: string | null;
   hasImage: boolean;
   payload: Record<string, unknown>;
@@ -5233,6 +5297,7 @@ export async function createScheduledContent(input: {
   platform: 'maloum' | '4based' | 'telegram';
   runAt: string;
   bodyText?: string;
+  translateBody?: boolean;
   payload?: Record<string, unknown>;
   file?: File | null;
 }): Promise<{ job: ScheduledContentJob }> {
@@ -5243,6 +5308,7 @@ export async function createScheduledContent(input: {
     form.append('platform', input.platform);
     form.append('runAt', input.runAt);
     form.append('bodyText', input.bodyText || '');
+    if (input.translateBody === false) form.append('translateBody', 'false');
     if (input.payload) form.append('payload', JSON.stringify(input.payload));
     form.append('file', input.file);
     const token = getToken();
@@ -5269,6 +5335,7 @@ export async function createScheduledContent(input: {
       platform: input.platform,
       runAt: input.runAt,
       bodyText: input.bodyText || '',
+      ...(input.translateBody === false ? { translateBody: false } : {}),
       payload: input.payload || {},
     }),
   });
@@ -5293,6 +5360,7 @@ export interface ScheduledImportPreviewRow {
   time: string;
   runAt: string | null;
   bodyText: string;
+  translateBody?: boolean;
   imageFileName: string | null;
   assetId: string | null;
   errors: string[];
@@ -5357,6 +5425,7 @@ export async function commitScheduledContentImport(
     creatorId: string;
     runAt: string;
     bodyText: string;
+    translateBody?: boolean;
     assetId?: string | null;
     payload?: Record<string, unknown>;
   }>

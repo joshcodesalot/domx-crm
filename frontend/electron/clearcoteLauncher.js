@@ -6,10 +6,8 @@ const { getApiUrl } = require('./apiConfig');
 const {
   buildClearcoteArgs,
   findClearcoteExecutable,
-  httpProxyCredentials,
-  proxyAuthExtensionPath,
   removeProxyAuthExtension,
-  writeProxyAuthExtension,
+  startHttpProxyForwarder,
   MISSING_CLEARCOTE_MESSAGE,
 } = require('./clearcote/launchArgs');
 const { ensureClearcoteInstalled, CHECKSUM_FAILED_MESSAGE } = require('./clearcote/browserInstall');
@@ -177,6 +175,7 @@ async function launchLocal(payload, onProgress) {
   let child = null;
   let lostLock = false;
   let spawnFailed = false;
+  let proxyForwarder = null;
   try {
     fs.rmSync(userDataDir, { recursive: true, force: true });
     fs.mkdirSync(userDataDir, { recursive: true });
@@ -185,15 +184,7 @@ async function launchLocal(payload, onProgress) {
     if (archive) {
       unpackProfile(archive, userDataDir);
     }
-    const proxyCredentials = httpProxyCredentials(profile.proxyUrl);
-    const proxyAuthExtensionDir = proxyCredentials ? proxyAuthExtensionPath(userDataDir) : undefined;
-    if (proxyCredentials) {
-      writeProxyAuthExtension(
-        proxyAuthExtensionDir,
-        proxyCredentials.username,
-        proxyCredentials.password
-      );
-    }
+    proxyForwarder = await startHttpProxyForwarder(profile.proxyUrl);
     const args = buildClearcoteArgs({
       userDataDir,
       fingerprintSeed: profile.fingerprintSeed,
@@ -202,7 +193,7 @@ async function launchLocal(payload, onProgress) {
       proxyUrl: profile.proxyUrl,
       timezone: profile.timezone,
       acceptLanguage: profile.acceptLanguage,
-      proxyAuthExtensionDir,
+      localProxyServer: proxyForwarder ? proxyForwarder.proxyServer : undefined,
     });
     child = spawn(executable, args, { stdio: 'ignore', windowsHide: false });
   } catch (err) {
@@ -214,6 +205,7 @@ async function launchLocal(payload, onProgress) {
     }
     fs.rmSync(userDataDir, { recursive: true, force: true });
     removeProxyAuthExtension(userDataDir);
+    if (proxyForwarder) proxyForwarder.close();
     return { ok: false, error: err.message || 'Could not open the browser.' };
   }
 
@@ -265,6 +257,7 @@ async function launchLocal(payload, onProgress) {
     } finally {
       fs.rmSync(userDataDir, { recursive: true, force: true });
       removeProxyAuthExtension(userDataDir);
+      if (proxyForwarder) proxyForwarder.close();
       maybeQuit();
     }
   };

@@ -13,6 +13,7 @@ import {
   Image as ImageIcon,
   Loader2,
   Lock,
+  LockKeyhole,
   Megaphone,
   Play,
   RefreshCw,
@@ -49,6 +50,8 @@ import {
   getMassUnsendAll,
   getMassUnsendAllPlatform,
   listFourBasedMassMessages,
+  listMassMessageLocks,
+  lockMassMessage,
   listFourBasedUserLists,
   listFourBasedVault,
   listVaultMediaNotes,
@@ -61,8 +64,10 @@ import {
   stopMassUnsendAll,
   stopMassUnsendAllPlatform,
   translateToGerman,
+  unlockMassMessage,
   type Creator,
   type FourBasedMassMessage,
+  type MassMessageLock,
   type FourBasedMassMessageTab,
   type FourBasedUserList,
   type FourBasedVaultItem,
@@ -218,6 +223,8 @@ export default function FourBasedMassMessage() {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [massLocks, setMassLocks] = useState<MassMessageLock[]>([]);
+  const [lockingId, setLockingId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkUnsending, setBulkUnsending] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{
@@ -433,6 +440,67 @@ export default function FourBasedMassMessage() {
     // Intentionally only when creator changes — avoid reloading on tab/offset churn.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCreatorId]);
+
+  const lockedIds = useMemo(
+    () => new Set(massLocks.map((lock) => lock.platformMessageId)),
+    [massLocks]
+  );
+
+  const loadMassLocks = useCallback(async (creatorId: string) => {
+    try {
+      const result = await listMassMessageLocks(creatorId, '4based');
+      setMassLocks(result.locks || []);
+    } catch {
+      setMassLocks([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCreatorId) {
+      setMassLocks([]);
+      return;
+    }
+    void loadMassLocks(selectedCreatorId);
+  }, [selectedCreatorId, loadMassLocks]);
+
+  const toggleMassLock = useCallback(
+    async (msg: FourBasedMassMessage) => {
+      const id = massMessageId(msg);
+      if (!selectedCreatorId || !id || lockingId) return;
+      const locked = lockedIds.has(id);
+      setLockingId(id);
+      try {
+        if (locked) {
+          await unlockMassMessage(selectedCreatorId, {
+            platform: '4based',
+            platformMessageId: id,
+          });
+        } else {
+          const stack = msg.file_stack;
+          const mediaIds = [
+            msg.file_stack_id,
+            stack?._id,
+            stack?.id,
+            stack?.vault_file_stack_id,
+          ]
+            .map((value) => String(value || '').trim())
+            .filter(Boolean);
+          await lockMassMessage(selectedCreatorId, {
+            platform: '4based',
+            platformMessageId: id,
+            bodyText: msg.message || msg.message_data?.message || '',
+            mediaIds,
+          });
+        }
+        await loadMassLocks(selectedCreatorId);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to update lock');
+      } finally {
+        setLockingId(null);
+      }
+    },
+    [selectedCreatorId, lockingId, lockedIds, loadMassLocks, toast]
+  );
 
   useEffect(() => {
     if (!selectedCreatorId) return;
@@ -787,9 +855,13 @@ export default function FourBasedMassMessage() {
   const selectAllVisible = useCallback(() => {
     if (historyTab !== 'sent') return;
     setSelectedIds(
-      new Set(messages.map((msg) => massMessageId(msg)).filter(Boolean))
+      new Set(
+        messages
+          .map((msg) => massMessageId(msg))
+          .filter((id) => id && !lockedIds.has(id))
+      )
     );
-  }, [historyTab, messages]);
+  }, [historyTab, messages, lockedIds]);
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
@@ -804,7 +876,7 @@ export default function FourBasedMassMessage() {
     if (historyTab !== 'sent') return;
     const ids = messages
       .map((msg) => massMessageId(msg))
-      .filter((id) => id && selectedIds.has(id));
+      .filter((id) => id && selectedIds.has(id) && !lockedIds.has(id));
     if (ids.length === 0) return;
 
     const ok = await confirm({
@@ -869,6 +941,7 @@ export default function FourBasedMassMessage() {
     historyTab,
     messages,
     selectedIds,
+    lockedIds,
     confirm,
     toast,
   ]);
@@ -973,6 +1046,7 @@ export default function FourBasedMassMessage() {
           platform: '4based',
           runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
           bodyText: englishDraft,
+          translateBody: autoTranslateOutgoing,
           payload: {
             filter: audienceFilters,
             includeUserList: includeIds,
@@ -1355,7 +1429,8 @@ export default function FourBasedMassMessage() {
                 const includeNames = (msg.include_user_list || [])
                   .map((listId) => listNameById.get(listId) || listId)
                   .filter(Boolean);
-                const canSelect = historyTab === 'sent' && Boolean(id);
+                const isLocked = Boolean(id && lockedIds.has(id));
+                const canSelect = historyTab === 'sent' && Boolean(id) && !isLocked;
                 const isSelected = canSelect && selectedIds.has(id);
                 const isBulkCurrent = bulkUnsending && bulkProgress.currentId === id;
                 return (
@@ -1416,23 +1491,51 @@ export default function FourBasedMassMessage() {
                         </div>
                       </div>
                       {historyTab === 'sent' && (
-                        <button
-                          type="button"
-                          onClick={() => void handleDelete(id)}
-                          disabled={
-                            deletingId === id ||
-                            bulkUnsending ||
-                            Boolean(deletingId)
-                          }
-                          className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-500/10 disabled:opacity-40"
-                          title="Unsend mass message"
-                        >
-                          {deletingId === id || isBulkCurrent ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="w-4 h-4" />
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => void toggleMassLock(msg)}
+                            disabled={lockingId === id}
+                            className={`p-2 rounded-lg disabled:opacity-40 ${
+                              isLocked
+                                ? 'text-amber-500 hover:bg-amber-500/10'
+                                : 'text-gray-400 hover:text-amber-500 hover:bg-amber-500/10'
+                            }`}
+                            title={
+                              isLocked
+                                ? 'Undeleteable. Click to allow delete'
+                                : 'Make undeleteable'
+                            }
+                            aria-label={
+                              isLocked ? 'Unlock mass message' : 'Make undeleteable'
+                            }
+                          >
+                            {lockingId === id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <LockKeyhole className="w-4 h-4" />
+                            )}
+                          </button>
+                          {!isLocked && (
+                            <button
+                              type="button"
+                              onClick={() => void handleDelete(id)}
+                              disabled={
+                                deletingId === id ||
+                                bulkUnsending ||
+                                Boolean(deletingId)
+                              }
+                              className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-500/10 disabled:opacity-40"
+                              title="Unsend mass message"
+                            >
+                              {deletingId === id || isBulkCurrent ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
+                            </button>
                           )}
-                        </button>
+                        </div>
                       )}
                     </div>
                     {fileStack && (
@@ -1473,7 +1576,8 @@ export default function FourBasedMassMessage() {
               )}
             </div>
 
-            <div className="shrink-0 border-t border-gray-200 dark:border-zinc-800/60 bg-white dark:bg-zinc-950 p-4 space-y-3">
+            <div className="shrink-0 border-t border-gray-200 dark:border-zinc-800/60 bg-white dark:bg-zinc-950 flex flex-col min-h-0 max-h-[55%]">
+              <div className="overflow-y-auto min-h-0 p-4 space-y-3">
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-gray-700 dark:text-zinc-300">
@@ -1631,11 +1735,6 @@ export default function FourBasedMassMessage() {
                 </div>
               )}
 
-              {sendError && <p className="text-xs text-red-400">{sendError}</p>}
-              {translatingOutgoing && (
-                <p className="text-xs text-gray-500">Translating to German…</p>
-              )}
-
               <label className="flex items-center justify-between gap-3">
                 <span className="text-xs font-medium text-gray-700 dark:text-zinc-300 inline-flex items-center gap-1.5">
                   <CalendarClock className="w-3.5 h-3.5" />
@@ -1655,7 +1754,13 @@ export default function FourBasedMassMessage() {
                   onTimeChange={setScheduleTime}
                 />
               )}
+              </div>
 
+              <div className="shrink-0 px-4 pb-4 pt-2 space-y-2 border-t border-gray-100 dark:border-zinc-800/80">
+              {sendError && <p className="text-xs text-red-400">{sendError}</p>}
+              {translatingOutgoing && (
+                <p className="text-xs text-gray-500">Translating to German…</p>
+              )}
               <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-4based-500/50">
                 <button
                   type="button"
@@ -1696,6 +1801,7 @@ export default function FourBasedMassMessage() {
                     <Send className="w-5 h-5" />
                   )}
                 </button>
+              </div>
               </div>
             </div>
           </>

@@ -40,10 +40,12 @@ async function hostRequest(pathname, options = {}) {
   return { response, data };
 }
 
-async function stopRemoteSession(creatorId) {
+async function stopRemoteSession(creatorId, options = {}) {
   if (!hostBase()) return { ok: true, skipped: true };
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 60000;
   const result = await hostRequest(`/sessions/${encodeURIComponent(creatorId)}`, {
     method: 'DELETE',
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!result) return { ok: true, skipped: true };
   if (result.response.status === 404) return { ok: true, missing: true };

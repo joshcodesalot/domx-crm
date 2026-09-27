@@ -1,5 +1,7 @@
 const fs = require('fs');
+const net = require('net');
 const path = require('path');
+const tls = require('tls');
 
 const MISSING_CLEARCOTE_MESSAGE =
   'Clearcote is not installed. Point CLEARCOTE_EXECUTABLE at the Clearcote chrome binary. DomX does not fall back to system Chrome.';
@@ -48,6 +50,8 @@ function parseProxyUrl(proxyUrl) {
   const host = parsed.hostname.includes(':') ? `[${parsed.hostname}]` : parsed.hostname;
   return {
     scheme,
+    hostname: parsed.hostname,
+    port,
     server: `${scheme}://${host}:${port}`,
     username: decodeURIComponent(parsed.username || ''),
     password: decodeURIComponent(parsed.password || ''),
@@ -98,17 +102,112 @@ chrome.webRequest.onAuthRequired.addListener((details, callback) => {
   fs.writeFileSync(path.join(dir, 'background.js'), background);
 }
 
-function proxyLaunchArgs(proxyUrl) {
+function proxyLaunchArgs(proxyUrl, localProxyServer) {
   const parsed = parseProxyUrl(proxyUrl);
-  if (!parsed) {
+  if (!parsed && !localProxyServer) {
     return [];
   }
-  const args = [`--proxy-server=${parsed.server}`];
-  if ((parsed.username || parsed.password) && parsed.scheme.startsWith('socks')) {
+  const server = localProxyServer || parsed.server;
+  const args = [`--proxy-server=${server}`];
+  if (
+    !localProxyServer &&
+    parsed &&
+    (parsed.username || parsed.password) &&
+    parsed.scheme.startsWith('socks')
+  ) {
     args.push(`--socks5-credentials=${parsed.username}:${parsed.password}`);
   }
   args.push('--disable-quic', '--webrtc-ip-handling-policy=disable_non_proxied_udp');
   return args;
+}
+
+function openUpstream(parsed) {
+  const port = Number(parsed.port);
+  if (parsed.scheme === 'https') {
+    return tls.connect({ host: parsed.hostname, port, servername: parsed.hostname });
+  }
+  return net.connect(port, parsed.hostname);
+}
+
+function startHttpProxyForwarder(proxyUrl) {
+  const parsed = parseProxyUrl(proxyUrl);
+  const creds = httpProxyCredentials(proxyUrl);
+  if (!parsed || !creds) {
+    return Promise.resolve(null);
+  }
+  const authorization = `Basic ${Buffer.from(`${creds.username}:${creds.password}`).toString('base64')}`;
+  const server = net.createServer((client) => {
+    const chunks = [];
+    const takeHead = (buf) => {
+      const end = buf.indexOf('\r\n\r\n');
+      if (end === -1) return null;
+      return { head: buf.slice(0, end).toString('latin1'), rest: buf.slice(end + 4) };
+    };
+    const onClient = (chunk) => {
+      chunks.push(chunk);
+      const split = takeHead(Buffer.concat(chunks));
+      if (!split) return;
+      client.off('data', onClient);
+      client.pause();
+      const lines = split.head.split('\r\n');
+      const requestLine = lines[0] || '';
+      const isConnect = /^CONNECT\s/i.test(requestLine);
+      const headers = lines.slice(1).filter((line) => !/^proxy-authorization:/i.test(line));
+      headers.push(`Proxy-Authorization: ${authorization}`);
+      const upstream = openUpstream(parsed);
+      const fail = () => {
+        client.destroy();
+        upstream.destroy();
+      };
+      upstream.on('error', fail);
+      client.on('error', fail);
+      const ready = parsed.scheme === 'https' ? 'secureConnect' : 'connect';
+      upstream.once(ready, () => {
+        upstream.write(`${requestLine}\r\n${headers.join('\r\n')}\r\n\r\n`);
+        if (split.rest.length) upstream.write(split.rest);
+        if (!isConnect) {
+          client.resume();
+          client.pipe(upstream);
+          upstream.pipe(client);
+          return;
+        }
+        let buffered = Buffer.alloc(0);
+        const onUpstream = (data) => {
+          buffered = Buffer.concat([buffered, data]);
+          const end = buffered.indexOf('\r\n\r\n');
+          if (end === -1) return;
+          upstream.off('data', onUpstream);
+          const status = buffered.slice(0, buffered.indexOf('\r\n')).toString('latin1');
+          const extra = buffered.slice(end + 4);
+          if (!/^HTTP\/\d(?:\.\d)? 200\b/i.test(status)) {
+            client.write('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n');
+            client.end();
+            upstream.destroy();
+            return;
+          }
+          client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+          if (extra.length) client.write(extra);
+          client.resume();
+          upstream.pipe(client);
+          client.pipe(upstream);
+        };
+        upstream.on('data', onUpstream);
+      });
+    };
+    client.on('data', onClient);
+  });
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      resolve({
+        proxyServer: `http://127.0.0.1:${port}`,
+        close() {
+          server.close();
+        },
+      });
+    });
+  });
 }
 
 function buildClearcoteArgs({
@@ -121,6 +220,7 @@ function buildClearcoteArgs({
   acceptLanguage,
   virtualDisplay = false,
   proxyAuthExtensionDir,
+  localProxyServer,
   startUrl = 'https://x.com',
 }) {
   if (!userDataDir) {
@@ -156,7 +256,7 @@ function buildClearcoteArgs({
     args.push(`--lang=${lang}`);
   }
 
-  args.push(...proxyLaunchArgs(proxyUrl));
+  args.push(...proxyLaunchArgs(proxyUrl, localProxyServer));
 
   if (proxyAuthExtensionDir) {
     args.push(
@@ -190,6 +290,7 @@ module.exports = {
   proxyAuthExtensionPath,
   removeProxyAuthExtension,
   writeProxyAuthExtension,
+  startHttpProxyForwarder,
   proxyLaunchArgs,
   buildClearcoteArgs,
 };

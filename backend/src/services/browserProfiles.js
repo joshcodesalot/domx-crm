@@ -268,7 +268,7 @@ async function openBrowserProfile(user, creatorId, platform, req) {
   let viewToken = reuse ? decryptSecret(row.encryptedViewToken) : null;
   if (!reuse) {
     try {
-      await stopRemoteSession(creatorId);
+      await stopRemoteSession(creatorId, { timeoutMs: 8000 });
     } catch (err) {
       console.error('Clearcote host stop before open:', err.message);
     }

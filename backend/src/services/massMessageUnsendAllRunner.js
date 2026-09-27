@@ -1,6 +1,7 @@
 const { loadFourBasedCreator, loadMaloumCreator } = require('./platformCreatorSession');
 const fourBasedClient = require('./fourBasedClient');
 const maloumClient = require('./maloumClient');
+const { lockedIdSet } = require('./massMessageLocks');
 
 /** @typedef {{ abort: boolean, status: string, done: number, failed: number, totalEstimate: number, currentId: string | null, lastError: string | null, startedAt: number, currentCreatorId: string | null, currentCreatorName: string | null, creatorsDone: number, creatorsTotal: number, creatorsSkipped: number }} UnsendRun */
 
@@ -185,6 +186,7 @@ async function runFourBased(creatorId, run, opts = {}) {
   }
 
   const cap = creatorUnsendCap(opts);
+  const locked = await lockedIdSet(creatorId, '4based');
   const pageSize = Number.isFinite(cap) ? Math.min(50, cap) : 50;
   let offset = 0;
   let processed = 0;
@@ -215,7 +217,7 @@ async function runFourBased(creatorId, run, opts = {}) {
     const rawIds = (Array.isArray(page) ? page : [])
       .map(massMessageId)
       .filter(Boolean);
-    const ids = rawIds.filter((id) => !attempted.has(id));
+    const ids = rawIds.filter((id) => !attempted.has(id) && !locked.has(id));
     for (const id of rawIds) attempted.add(id);
     if (ids.length === 0) {
       if (rawIds.length === 0 || rawIds.length < limit) break;
@@ -280,6 +282,7 @@ async function runMaloum(creatorId, run, opts = {}) {
   }
 
   const cap = creatorUnsendCap(opts);
+  const locked = await lockedIdSet(creatorId, 'maloum');
   let next;
   let processed = 0;
   const seen = new Set();
@@ -312,7 +315,10 @@ async function runMaloum(creatorId, run, opts = {}) {
         ? result
         : [];
     const ids = broadcasts
-      .filter((row) => !row.isRevoked && row._id && !seen.has(row._id))
+      .filter(
+        (row) =>
+          !row.isRevoked && row._id && !seen.has(row._id) && !locked.has(String(row._id))
+      )
       .map((row) => row._id);
     for (const id of broadcasts.map((row) => row._id).filter(Boolean)) {
       seen.add(id);

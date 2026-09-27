@@ -110,6 +110,7 @@ type ReviewRow = {
   date: string;
   time: string;
   bodyText: string;
+  translateBody: boolean;
   imageSource: 'upload' | 'vault';
   assetId: string | null;
   imageFileName: string;
@@ -224,6 +225,9 @@ function ScheduleJobCard({
             <p className="text-xs text-gray-500 dark:text-zinc-400 mt-1 line-clamp-2">
               {job.bodyText}
             </p>
+          )}
+          {job.translateBody === false && job.platform !== 'telegram' && (
+            <p className="text-[11px] text-gray-400 mt-1">Sent without translation</p>
           )}
           {job.lastError && (
             <p className="text-xs text-red-400 mt-1">{job.lastError}</p>
@@ -613,6 +617,7 @@ export default function ContentSchedule() {
           date: row.date,
           time: row.time,
           bodyText: row.bodyText,
+          translateBody: row.translateBody !== false,
           imageSource: 'upload',
           assetId: row.assetId || matched?.id || null,
           imageFileName: row.imageFileName || matched?.originalFileName || '',
@@ -666,6 +671,7 @@ export default function ContentSchedule() {
           creatorId: row.creatorId,
           runAt: berlinWallToIso(row.date, row.time, timeZone),
           bodyText: row.bodyText,
+          translateBody: row.translateBody,
           assetId: row.imageSource === 'upload' ? row.assetId : null,
           payload: row.imageSource === 'vault' ? row.payload : {},
         }))
@@ -822,6 +828,7 @@ export default function ContentSchedule() {
                         <th className="p-2">Kind</th>
                         <th className="p-2">When</th>
                         <th className="p-2">Text</th>
+                        <th className="p-2">Translate</th>
                         <th className="p-2">Image</th>
                       </tr>
                     </thead>
@@ -951,6 +958,20 @@ export default function ContentSchedule() {
                                   {issue}
                                 </p>
                               ))}
+                            </td>
+                            <td className="p-2">
+                              <label className="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-zinc-300">
+                                <input
+                                  type="checkbox"
+                                  checked={row.translateBody && row.platform !== 'telegram'}
+                                  disabled={row.platform === 'telegram'}
+                                  onChange={(e) =>
+                                    updateRow(row.key, { translateBody: e.target.checked })
+                                  }
+                                  aria-label="Translate scheduled text to German"
+                                />
+                                {row.platform === 'telegram' ? 'As typed' : 'German'}
+                              </label>
                             </td>
                             <td className="p-2 space-y-1">
                               {row.kind === 'feed_post' ? (

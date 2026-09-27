@@ -15,6 +15,7 @@ import {
   Image as ImageIcon,
   Loader2,
   Lock,
+  LockKeyhole,
   Megaphone,
   Play,
   RefreshCw,
@@ -57,6 +58,8 @@ import {
   getMassUnsendAll,
   getMassUnsendAllPlatform,
   listMaloumBroadcasts,
+  listMassMessageLocks,
+  lockMassMessage,
   listMaloumChatLists,
   listAllMaloumVaultFolders,
   listMaloumVaultMedia,
@@ -64,6 +67,7 @@ import {
   maloumMediaUrl,
   revokeMaloumBroadcast,
   sendMaloumBroadcast,
+  unlockMassMessage,
   createScheduledContent,
   startMassUnsendAll,
   startMassUnsendAllPlatform,
@@ -72,6 +76,7 @@ import {
   translateToGerman,
   type Creator,
   type MaloumBroadcast,
+  type MassMessageLock,
   type MaloumChatListItem,
   type MaloumVaultFolder,
   type MaloumVaultMediaItem,
@@ -185,6 +190,8 @@ export default function MaloumMassMessage() {
   const [broadcastsLoading, setBroadcastsLoading] = useState(false);
   const [broadcastsError, setBroadcastsError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [massLocks, setMassLocks] = useState<MassMessageLock[]>([]);
+  const [lockingId, setLockingId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkUnsending, setBulkUnsending] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{
@@ -354,6 +361,63 @@ export default function MaloumMassMessage() {
       void loadChatLists();
     }
   }, [selectedCreatorId, loadBroadcasts, loadChatLists]);
+
+  const lockedIds = useMemo(
+    () => new Set(massLocks.map((lock) => lock.platformMessageId)),
+    [massLocks]
+  );
+
+  const loadMassLocks = useCallback(async (creatorId: string) => {
+    try {
+      const result = await listMassMessageLocks(creatorId, 'maloum');
+      setMassLocks(result.locks || []);
+    } catch {
+      setMassLocks([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCreatorId) {
+      setMassLocks([]);
+      return;
+    }
+    void loadMassLocks(selectedCreatorId);
+  }, [selectedCreatorId, loadMassLocks]);
+
+  const toggleMassLock = useCallback(
+    async (broadcast: MaloumBroadcast) => {
+      if (!selectedCreatorId || !broadcast._id || lockingId) return;
+      const locked = lockedIds.has(broadcast._id);
+      setLockingId(broadcast._id);
+      try {
+        if (locked) {
+          await unlockMassMessage(selectedCreatorId, {
+            platform: 'maloum',
+            platformMessageId: broadcast._id,
+          });
+        } else {
+          const media = broadcast.content?.media || [];
+          const mediaIds = media.flatMap((item) =>
+            [item._id, item.mediaId, item.uploadId]
+              .map((value) => String(value || '').trim())
+              .filter(Boolean)
+          );
+          await lockMassMessage(selectedCreatorId, {
+            platform: 'maloum',
+            platformMessageId: broadcast._id,
+            bodyText: broadcast.content?.text || '',
+            mediaIds,
+          });
+        }
+        await loadMassLocks(selectedCreatorId);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to update lock');
+      } finally {
+        setLockingId(null);
+      }
+    },
+    [selectedCreatorId, lockingId, lockedIds, loadMassLocks, toast]
+  );
 
   useEffect(() => {
     if (!selectedCreatorId || !documentVisible) return;
@@ -652,11 +716,11 @@ export default function MaloumMassMessage() {
     setSelectedIds(
       new Set(
         broadcasts
-          .filter((b) => !b.isRevoked && b._id)
+          .filter((b) => !b.isRevoked && b._id && !lockedIds.has(b._id))
           .map((b) => b._id)
       )
     );
-  }, [broadcasts]);
+  }, [broadcasts, lockedIds]);
 
   const clearSelection = useCallback(() => {
     setSelectedIds(new Set());
@@ -669,7 +733,7 @@ export default function MaloumMassMessage() {
   const handleBulkUnsend = useCallback(async () => {
     if (!selectedCreatorId || bulkUnsending || revokingId) return;
     const ids = broadcasts
-      .filter((b) => !b.isRevoked && b._id && selectedIds.has(b._id))
+      .filter((b) => !b.isRevoked && b._id && selectedIds.has(b._id) && !lockedIds.has(b._id))
       .map((b) => b._id);
     if (ids.length === 0) return;
 
@@ -734,6 +798,7 @@ export default function MaloumMassMessage() {
     revokingId,
     broadcasts,
     selectedIds,
+    lockedIds,
     confirm,
     toast,
   ]);
@@ -833,6 +898,7 @@ export default function MaloumMassMessage() {
           platform: 'maloum',
           runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
           bodyText: englishDraft,
+          translateBody: autoTranslateOutgoing,
           payload: {
             includeFromLists: namedListRefs(includeIds, chatLists),
             excludeFromLists: namedListRefs(excludeIds, chatLists),
@@ -1136,7 +1202,9 @@ export default function MaloumMassMessage() {
                 const media = broadcast.content?.media || [];
                 const price = Number(broadcast.content?.price) || 0;
                 const when = formatRelativeTime(broadcast.processedAt);
-                const canSelect = !broadcast.isRevoked && Boolean(broadcast._id);
+                const isLocked = lockedIds.has(broadcast._id);
+                const canSelect =
+                  !broadcast.isRevoked && Boolean(broadcast._id) && !isLocked;
                 const isSelected = canSelect && selectedIds.has(broadcast._id);
                 const isBulkCurrent =
                   bulkUnsending && bulkProgress.currentId === broadcast._id;
@@ -1210,23 +1278,51 @@ export default function MaloumMassMessage() {
                         </div>
                       </div>
                       {!broadcast.isRevoked && (
-                        <button
-                          type="button"
-                          onClick={() => void handleRevoke(broadcast._id)}
-                          disabled={
-                            revokingId === broadcast._id ||
-                            bulkUnsending ||
-                            Boolean(revokingId)
-                          }
-                          className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-500/10 disabled:opacity-40"
-                          title="Delete mass message"
-                        >
-                          {revokingId === broadcast._id || isBulkCurrent ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="w-4 h-4" />
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => void toggleMassLock(broadcast)}
+                            disabled={lockingId === broadcast._id}
+                            className={`p-2 rounded-lg disabled:opacity-40 ${
+                              isLocked
+                                ? 'text-amber-500 hover:bg-amber-500/10'
+                                : 'text-gray-400 hover:text-amber-500 hover:bg-amber-500/10'
+                            }`}
+                            title={
+                              isLocked
+                                ? 'Undeleteable. Click to allow delete'
+                                : 'Make undeleteable'
+                            }
+                            aria-label={
+                              isLocked ? 'Unlock mass message' : 'Make undeleteable'
+                            }
+                          >
+                            {lockingId === broadcast._id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <LockKeyhole className="w-4 h-4" />
+                            )}
+                          </button>
+                          {!isLocked && (
+                            <button
+                              type="button"
+                              onClick={() => void handleRevoke(broadcast._id)}
+                              disabled={
+                                revokingId === broadcast._id ||
+                                bulkUnsending ||
+                                Boolean(revokingId)
+                              }
+                              className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-500/10 disabled:opacity-40"
+                              title="Delete mass message"
+                            >
+                              {revokingId === broadcast._id || isBulkCurrent ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
+                            </button>
                           )}
-                        </button>
+                        </div>
                       )}
                     </div>
                     {media.length > 0 && (
@@ -1281,7 +1377,8 @@ export default function MaloumMassMessage() {
               )}
             </div>
 
-            <div className="shrink-0 border-t border-gray-200 dark:border-zinc-800/60 bg-white dark:bg-zinc-950 p-4 space-y-3">
+            <div className="shrink-0 border-t border-gray-200 dark:border-zinc-800/60 bg-white dark:bg-zinc-950 flex flex-col min-h-0 max-h-[55%]">
+              <div className="overflow-y-auto min-h-0 p-4 space-y-3">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <ListPicker
                   title="Include lists"
@@ -1396,11 +1493,6 @@ export default function MaloumMassMessage() {
                 </div>
               )}
 
-              {sendError && <p className="text-xs text-red-400">{sendError}</p>}
-              {translatingOutgoing && (
-                <p className="text-xs text-gray-500">Translating to German…</p>
-              )}
-
               <label className="flex items-center justify-between gap-3">
                 <span className="text-xs font-medium text-gray-700 dark:text-zinc-300 inline-flex items-center gap-1.5">
                   <CalendarClock className="w-3.5 h-3.5" />
@@ -1420,7 +1512,13 @@ export default function MaloumMassMessage() {
                   onTimeChange={setScheduleTime}
                 />
               )}
+              </div>
 
+              <div className="shrink-0 px-4 pb-4 pt-2 space-y-2 border-t border-gray-100 dark:border-zinc-800/80">
+              {sendError && <p className="text-xs text-red-400">{sendError}</p>}
+              {translatingOutgoing && (
+                <p className="text-xs text-gray-500">Translating to German…</p>
+              )}
               <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-domx-500/50">
                 <button
                   type="button"
@@ -1461,6 +1559,7 @@ export default function MaloumMassMessage() {
                     <Send className="w-5 h-5" />
                   )}
                 </button>
+              </div>
               </div>
             </div>
           </>

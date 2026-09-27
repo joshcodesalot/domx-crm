@@ -3,6 +3,7 @@ import {
   CalendarClock,
   Image as ImageIcon,
   Loader2,
+  LockKeyhole,
   Megaphone,
   RefreshCw,
   Send,
@@ -26,12 +27,16 @@ import {
   createScheduledContent,
   listTelegramLists,
   listTelegramMassMessages,
+  listMassMessageLocks,
+  lockMassMessage,
   sendTelegramMassMessage,
   stopTelegramMassMessage,
   telegramVaultMediaUrl,
   unsendLastTelegramMassMessages,
+  unlockMassMessage,
   unsendTelegramMassCampaign,
   type TelegramList,
+  type MassMessageLock,
   type TelegramMmCampaign,
   type TelegramMmProgress,
   type TelegramVaultItem,
@@ -76,6 +81,8 @@ export default function TelegramMassMessage() {
   const [countLoading, setCountLoading] = useState(false);
 
   const [campaigns, setCampaigns] = useState<TelegramMmCampaign[]>([]);
+  const [massLocks, setMassLocks] = useState<MassMessageLock[]>([]);
+  const [lockingId, setLockingId] = useState<string | null>(null);
   const [progress, setProgress] = useState<TelegramMmProgress | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -139,6 +146,57 @@ export default function TelegramMassMessage() {
     void loadLists();
     void loadCampaigns();
   }, [selectedCreatorId, loadLists, loadCampaigns]);
+
+  const lockedIds = useMemo(
+    () => new Set(massLocks.map((lock) => lock.platformMessageId)),
+    [massLocks]
+  );
+
+  const loadMassLocks = useCallback(async (creatorId: string) => {
+    try {
+      const result = await listMassMessageLocks(creatorId, 'telegram');
+      setMassLocks(result.locks || []);
+    } catch {
+      setMassLocks([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCreatorId) {
+      setMassLocks([]);
+      return;
+    }
+    void loadMassLocks(selectedCreatorId);
+  }, [selectedCreatorId, loadMassLocks]);
+
+  const toggleMassLock = useCallback(
+    async (campaign: TelegramMmCampaign) => {
+      if (!selectedCreatorId || lockingId) return;
+      const locked = lockedIds.has(campaign.id);
+      setLockingId(campaign.id);
+      try {
+        if (locked) {
+          await unlockMassMessage(selectedCreatorId, {
+            platform: 'telegram',
+            platformMessageId: campaign.id,
+          });
+        } else {
+          await lockMassMessage(selectedCreatorId, {
+            platform: 'telegram',
+            platformMessageId: campaign.id,
+            bodyText: campaign.bodyText || '',
+            mediaIds: campaign.vaultIds || [],
+          });
+        }
+        await loadMassLocks(selectedCreatorId);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to update lock');
+      } finally {
+        setLockingId(null);
+      }
+    },
+    [selectedCreatorId, lockingId, lockedIds, loadMassLocks, toast]
+  );
 
   const busy =
     progress?.status === 'running' ||
@@ -434,7 +492,9 @@ export default function TelegramMassMessage() {
               {!loading && campaigns.length === 0 && (
                 <p className="text-sm text-gray-500 text-center py-12">No mass messages yet.</p>
               )}
-              {campaigns.map((campaign) => (
+              {campaigns.map((campaign) => {
+                const isLocked = lockedIds.has(campaign.id);
+                return (
                 <article
                   key={campaign.id}
                   className="rounded-xl border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 p-4 space-y-2"
@@ -443,9 +503,35 @@ export default function TelegramMassMessage() {
                     <p className="text-sm text-gray-900 dark:text-white whitespace-pre-wrap">
                       {campaign.bodyText || '(media only)'}
                     </p>
-                    <span className="text-[10px] uppercase tracking-wide text-gray-500 shrink-0">
-                      {campaign.status}
-                    </span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => void toggleMassLock(campaign)}
+                        disabled={lockingId === campaign.id}
+                        className={`p-1.5 rounded-lg disabled:opacity-40 ${
+                          isLocked
+                            ? 'text-amber-500 hover:bg-amber-500/10'
+                            : 'text-gray-400 hover:text-amber-500 hover:bg-amber-500/10'
+                        }`}
+                        title={
+                          isLocked
+                            ? 'Undeleteable. Click to allow unsend'
+                            : 'Make undeleteable'
+                        }
+                        aria-label={
+                          isLocked ? 'Unlock mass message' : 'Make undeleteable'
+                        }
+                      >
+                        {lockingId === campaign.id ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <LockKeyhole className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                      <span className="text-[10px] uppercase tracking-wide text-gray-500">
+                        {campaign.status}
+                      </span>
+                    </div>
                   </div>
                   <p className="text-[11px] text-gray-500">
                     {campaign.sent}/{campaign.total} sent
@@ -456,7 +542,7 @@ export default function TelegramMassMessage() {
                   {campaign.lastError && (
                     <p className="text-[11px] text-red-400">{campaign.lastError}</p>
                   )}
-                  {campaign.sent > 0 && campaign.status !== 'unsending' && (
+                  {campaign.sent > 0 && campaign.status !== 'unsending' && !isLocked && (
                     <button
                       type="button"
                       disabled={Boolean(unsendingId) || busy}
@@ -472,11 +558,13 @@ export default function TelegramMassMessage() {
                     </button>
                   )}
                 </article>
-              ))}
+                );
+              })}
             </div>
 
-            <div className="border-t border-gray-200 dark:border-zinc-800 p-4 space-y-3 shrink-0">
-              <div className="grid grid-cols-2 gap-3 max-h-36 overflow-y-auto">
+            <div className="border-t border-gray-200 dark:border-zinc-800 shrink-0 flex flex-col min-h-0 max-h-[55%]">
+              <div className="overflow-y-auto min-h-0 p-4 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1.5">
                     Include
@@ -570,8 +658,6 @@ export default function TelegramMassMessage() {
                 </div>
               )}
 
-              {sendError && <p className="text-xs text-red-400">{sendError}</p>}
-
               <label className="flex items-center justify-between gap-3">
                 <span className="text-xs font-medium inline-flex items-center gap-1.5">
                   <CalendarClock className="w-3.5 h-3.5" />
@@ -591,7 +677,10 @@ export default function TelegramMassMessage() {
                   onTimeChange={setScheduleTime}
                 />
               )}
+              </div>
 
+              <div className="shrink-0 px-4 pb-4 pt-2 space-y-2 border-t border-gray-100 dark:border-zinc-800/80">
+              {sendError && <p className="text-xs text-red-400">{sendError}</p>}
               <div className="flex items-end gap-2 rounded-2xl border border-gray-200 dark:border-zinc-800 p-2">
                 <button
                   type="button"
@@ -627,6 +716,7 @@ export default function TelegramMassMessage() {
                     <Send className="w-5 h-5" />
                   )}
                 </button>
+              </div>
               </div>
             </div>
           </>

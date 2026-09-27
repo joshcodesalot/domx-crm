@@ -435,12 +435,9 @@ async function unsendBeforeScheduledMass(job) {
 async function executeJob(job) {
   const settings = await loadSettings(job.creatorId);
   const english = String(job.bodyText || '').trim();
-  const text =
-    job.platform === 'telegram'
-      ? english
-      : english
-        ? await translateCaption(english)
-        : '';
+  const shouldTranslate =
+    job.platform !== 'telegram' && job.translateBody !== false && Boolean(english);
+  const text = shouldTranslate ? await translateCaption(english) : english;
 
   if (job.kind === 'mass_message') {
     await unsendBeforeScheduledMass(job);

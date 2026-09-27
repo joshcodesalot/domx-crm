@@ -9,10 +9,8 @@ const { WebSocketServer } = require('ws');
 const {
   buildClearcoteArgs,
   findClearcoteExecutable,
-  httpProxyCredentials,
-  proxyAuthExtensionPath,
   removeProxyAuthExtension,
-  writeProxyAuthExtension,
+  startHttpProxyForwarder,
   MISSING_CLEARCOTE_MESSAGE,
 } = require('./clearcote/launchArgs');
 const { packProfile, unpackProfile } = require('./clearcote/profileArchive');
@@ -294,6 +292,10 @@ async function stopSession(creatorId, { upload }) {
     try {
       killProcess(session.chrome);
       await waitExit(session.chrome, 5000);
+      if (session.proxyForwarder) {
+        session.proxyForwarder.close();
+        session.proxyForwarder = null;
+      }
       if (upload && !session.skipUpload) {
         await uploadArchive(session);
       }
@@ -402,15 +404,7 @@ async function startSession(body) {
     const displayProcs = await startDisplay(display, vncPort);
     session.xvfb = displayProcs.xvfb;
     session.vnc = displayProcs.vnc;
-    const proxyCredentials = httpProxyCredentials(body.proxyUrl);
-    const proxyAuthExtensionDir = proxyCredentials ? proxyAuthExtensionPath(userDataDir) : undefined;
-    if (proxyCredentials) {
-      writeProxyAuthExtension(
-        proxyAuthExtensionDir,
-        proxyCredentials.username,
-        proxyCredentials.password
-      );
-    }
+    session.proxyForwarder = await startHttpProxyForwarder(body.proxyUrl);
     const chrome = spawnGroup(
       executable,
       buildClearcoteArgs({
@@ -422,7 +416,7 @@ async function startSession(body) {
         timezone: body.timezone,
         acceptLanguage: body.acceptLanguage,
         virtualDisplay: true,
-        proxyAuthExtensionDir,
+        localProxyServer: session.proxyForwarder ? session.proxyForwarder.proxyServer : undefined,
       }),
       { ...process.env, DISPLAY: `:${display}` }
     );

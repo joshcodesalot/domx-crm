@@ -1,12 +1,14 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { isLockActive, LOCK_STALE_MS } = require('./browserProfiles');
 const {
   buildClearcoteArgs,
   proxyLaunchArgs,
+  startHttpProxyForwarder,
   writeProxyAuthExtension,
 } = require('../../../frontend/electron/clearcote/launchArgs');
 const {
@@ -83,6 +85,81 @@ describe('Clearcote launch args', () => {
       assert.equal(manifest.permissions.includes('webRequestAuthProvider'), true);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('points Clearcote at the local forwarder without proxy credentials', () => {
+    const args = buildClearcoteArgs({
+      userDataDir: 'C:\\profiles\\creator',
+      fingerprintSeed: '12345',
+      encryptionKey: 'secret-key',
+      proxyUrl: 'http://user:p%40ss@10.0.0.1:8000',
+      localProxyServer: 'http://127.0.0.1:9',
+    });
+    const joined = args.join('\n');
+    assert.match(joined, /--proxy-server=http:\/\/127\.0\.0\.1:9/);
+    assert.equal(joined.includes('10.0.0.1'), false);
+    assert.equal(joined.includes('--load-extension='), false);
+    assert.equal(joined.includes('user:p'), false);
+  });
+
+  it('adds proxy credentials before the browser sees the upstream proxy', async () => {
+    const upstream = net.createServer((socket) => {
+      socket.once('data', (buf) => {
+        const text = buf.toString('latin1');
+        const expected = `Basic ${Buffer.from('user:p@ss').toString('base64')}`;
+        assert.match(text, new RegExp(`Proxy-Authorization: ${expected}`));
+        socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+        socket.end();
+      });
+    });
+    await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const { port } = upstream.address();
+    const forwarder = await startHttpProxyForwarder(`http://user:p%40ss@127.0.0.1:${port}`);
+    try {
+      const status = await new Promise((resolve, reject) => {
+        const client = net.connect(Number(new URL(forwarder.proxyServer).port), '127.0.0.1', () => {
+          client.write('CONNECT x.com:443 HTTP/1.1\r\nHost: x.com:443\r\n\r\n');
+        });
+        client.once('data', (buf) => {
+          resolve(buf.toString('latin1'));
+          client.end();
+        });
+        client.on('error', reject);
+      });
+      assert.match(status, /^HTTP\/1\.1 200/);
+    } finally {
+      forwarder.close();
+      upstream.close();
+    }
+  });
+
+  it('hides an upstream proxy challenge from the browser', async () => {
+    const upstream = net.createServer((socket) => {
+      socket.once('data', () => {
+        socket.write('HTTP/1.1 407 Proxy Authentication Required\r\nContent-Length: 0\r\n\r\n');
+        socket.end();
+      });
+    });
+    await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const { port } = upstream.address();
+    const forwarder = await startHttpProxyForwarder(`http://user:secret@127.0.0.1:${port}`);
+    try {
+      const status = await new Promise((resolve, reject) => {
+        const client = net.connect(Number(new URL(forwarder.proxyServer).port), '127.0.0.1', () => {
+          client.write('CONNECT x.com:443 HTTP/1.1\r\nHost: x.com:443\r\n\r\n');
+        });
+        client.once('data', (buf) => {
+          resolve(buf.toString('latin1'));
+          client.end();
+        });
+        client.on('error', reject);
+      });
+      assert.match(status, /^HTTP\/1\.1 502/);
+      assert.equal(status.includes('407'), false);
+    } finally {
+      forwarder.close();
+      upstream.close();
     }
   });
 

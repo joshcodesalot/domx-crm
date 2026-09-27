@@ -750,6 +750,7 @@ export default function MaloumFeed() {
             platform: 'maloum',
             runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
             bodyText: draft.trim(),
+            translateBody: autoTranslateOutgoing,
             payload: {
               folderId: uploadFolderId,
               categories: selectedCategoryIds,
@@ -766,6 +767,7 @@ export default function MaloumFeed() {
             platform: 'maloum',
             runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
             bodyText: draft.trim(),
+            translateBody: autoTranslateOutgoing,
             payload: {
               mediaId,
               categories: selectedCategoryIds,
