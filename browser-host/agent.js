@@ -9,6 +9,10 @@ const { WebSocketServer } = require('ws');
 const {
   buildClearcoteArgs,
   findClearcoteExecutable,
+  httpProxyCredentials,
+  proxyAuthExtensionPath,
+  removeProxyAuthExtension,
+  writeProxyAuthExtension,
   MISSING_CLEARCOTE_MESSAGE,
 } = require('./clearcote/launchArgs');
 const { packProfile, unpackProfile } = require('./clearcote/profileArchive');
@@ -296,6 +300,7 @@ async function stopSession(creatorId, { upload }) {
       await waitExit(session.vnc, 2000);
       await waitExit(session.xvfb, 2000);
       fs.rmSync(session.userDataDir, { recursive: true, force: true });
+      removeProxyAuthExtension(session.userDataDir);
       sessions.delete(creatorId);
       return { ok: true };
     } catch (err) {
@@ -374,6 +379,7 @@ async function startSession(body) {
   const vncPort = 5900 + (display - 100);
   const userDataDir = path.join(dataRoot(), creatorId);
   fs.rmSync(userDataDir, { recursive: true, force: true });
+  removeProxyAuthExtension(userDataDir);
   fs.mkdirSync(userDataDir, { recursive: true });
   const session = {
     creatorId,
@@ -394,6 +400,15 @@ async function startSession(body) {
     const displayProcs = await startDisplay(display, vncPort);
     session.xvfb = displayProcs.xvfb;
     session.vnc = displayProcs.vnc;
+    const proxyCredentials = httpProxyCredentials(body.proxyUrl);
+    const proxyAuthExtensionDir = proxyCredentials ? proxyAuthExtensionPath(userDataDir) : undefined;
+    if (proxyCredentials) {
+      writeProxyAuthExtension(
+        proxyAuthExtensionDir,
+        proxyCredentials.username,
+        proxyCredentials.password
+      );
+    }
     const chrome = spawnGroup(
       executable,
       buildClearcoteArgs({
@@ -405,6 +420,7 @@ async function startSession(body) {
         timezone: body.timezone,
         acceptLanguage: body.acceptLanguage,
         virtualDisplay: true,
+        proxyAuthExtensionDir,
       }),
       { ...process.env, DISPLAY: `:${display}` }
     );

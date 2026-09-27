@@ -7,6 +7,7 @@ const { isLockActive, LOCK_STALE_MS } = require('./browserProfiles');
 const {
   buildClearcoteArgs,
   proxyLaunchArgs,
+  writeProxyAuthExtension,
 } = require('../../../frontend/electron/clearcote/launchArgs');
 const {
   packProfile,
@@ -42,6 +43,7 @@ describe('browser profile lock', () => {
 
 describe('Clearcote launch args', () => {
   it('keeps the seed, profile key, proxy, and timezone', () => {
+    const extensionDir = 'C:\\profiles\\creator-proxy-auth';
     const args = buildClearcoteArgs({
       userDataDir: 'C:\\profiles\\creator',
       fingerprintSeed: '12345',
@@ -50,6 +52,7 @@ describe('Clearcote launch args', () => {
       proxyUrl: 'http://user:p%40ss@10.0.0.1:8000',
       timezone: 'Europe/Berlin',
       acceptLanguage: 'de-DE,de',
+      proxyAuthExtensionDir: extensionDir,
     });
     const joined = args.join('\n');
     assert.match(joined, /--fingerprint=12345/);
@@ -59,10 +62,28 @@ describe('Clearcote launch args', () => {
     assert.match(joined, /--accept-lang=de-DE,de/);
     assert.match(joined, /--lang=de-DE/);
     assert.match(joined, /--proxy-server=http:\/\/10\.0\.0\.1:8000/);
-    assert.match(joined, /--proxy-auth=user:p@ss/);
+    assert.equal(joined.includes('--proxy-auth='), false);
+    assert.equal(joined.includes(`--load-extension=${extensionDir}`), true);
+    assert.equal(joined.includes(`--disable-extensions-except=${extensionDir}`), true);
+    assert.equal(joined.includes('--disable-features=DisableLoadExtensionCommandLineSwitch'), true);
     assert.equal(joined.includes('--enable-automation'), false);
-    assert.equal(joined.includes('user:p'), true);
+    assert.equal(joined.includes('user:p'), false);
     assert.equal(args.some((arg) => arg.startsWith('--proxy-server=') && arg.includes('@')), false);
+  });
+
+  it('writes HTTP proxy credentials into the extension', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'domx-proxy-auth-'));
+    try {
+      writeProxyAuthExtension(dir, 'user', 'p@ss');
+      const background = fs.readFileSync(path.join(dir, 'background.js'), 'utf8');
+      assert.match(background, /const password = "p@ss"/);
+      assert.match(background, /details\.isProxy/);
+      const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+      assert.equal(manifest.manifest_version, 3);
+      assert.equal(manifest.permissions.includes('webRequestAuthProvider'), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('uses socks credentials without putting them in the server flag', () => {

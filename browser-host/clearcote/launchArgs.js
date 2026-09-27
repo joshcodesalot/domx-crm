@@ -37,25 +37,75 @@ function primaryLang(acceptLanguage) {
   return first || null;
 }
 
-function proxyLaunchArgs(proxyUrl) {
+function parseProxyUrl(proxyUrl) {
   if (!proxyUrl || typeof proxyUrl !== 'string') {
-    return [];
+    return null;
   }
   const parsed = new URL(proxyUrl);
   const scheme = parsed.protocol.replace(':', '').toLowerCase();
   const defaultPort = scheme === 'https' ? '443' : scheme.startsWith('socks') ? '1080' : '80';
   const port = parsed.port || defaultPort;
   const host = parsed.hostname.includes(':') ? `[${parsed.hostname}]` : parsed.hostname;
-  const args = [`--proxy-server=${scheme}://${host}:${port}`];
-  const username = decodeURIComponent(parsed.username || '');
-  const password = decodeURIComponent(parsed.password || '');
-  if (username || password) {
-    const credentials = `${username}:${password}`;
-    if (scheme.startsWith('socks')) {
-      args.push(`--socks5-credentials=${credentials}`);
-    } else {
-      args.push(`--proxy-auth=${credentials}`);
-    }
+  return {
+    scheme,
+    server: `${scheme}://${host}:${port}`,
+    username: decodeURIComponent(parsed.username || ''),
+    password: decodeURIComponent(parsed.password || ''),
+  };
+}
+
+function httpProxyCredentials(proxyUrl) {
+  const parsed = parseProxyUrl(proxyUrl);
+  if (!parsed || (parsed.scheme !== 'http' && parsed.scheme !== 'https')) {
+    return null;
+  }
+  if (!parsed.username && !parsed.password) {
+    return null;
+  }
+  return { username: parsed.username, password: parsed.password };
+}
+
+function proxyAuthExtensionPath(userDataDir) {
+  return `${userDataDir}-proxy-auth`;
+}
+
+function removeProxyAuthExtension(userDataDir) {
+  if (!userDataDir) return;
+  fs.rmSync(proxyAuthExtensionPath(userDataDir), { recursive: true, force: true });
+}
+
+function writeProxyAuthExtension(dir, username, password) {
+  fs.mkdirSync(dir, { recursive: true });
+  const manifest = {
+    manifest_version: 3,
+    name: 'DomX proxy auth',
+    version: '1.0.0',
+    permissions: ['webRequest', 'webRequestAuthProvider'],
+    host_permissions: ['<all_urls>'],
+    background: { service_worker: 'background.js' },
+  };
+  const background = `const username = ${JSON.stringify(username)};
+const password = ${JSON.stringify(password)};
+chrome.webRequest.onAuthRequired.addListener((details, callback) => {
+  if (!details.isProxy) {
+    callback({});
+    return;
+  }
+  callback({ authCredentials: { username, password } });
+}, { urls: ['<all_urls>'] }, ['asyncBlocking']);
+`;
+  fs.writeFileSync(path.join(dir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  fs.writeFileSync(path.join(dir, 'background.js'), background);
+}
+
+function proxyLaunchArgs(proxyUrl) {
+  const parsed = parseProxyUrl(proxyUrl);
+  if (!parsed) {
+    return [];
+  }
+  const args = [`--proxy-server=${parsed.server}`];
+  if ((parsed.username || parsed.password) && parsed.scheme.startsWith('socks')) {
+    args.push(`--socks5-credentials=${parsed.username}:${parsed.password}`);
   }
   args.push('--disable-quic', '--webrtc-ip-handling-policy=disable_non_proxied_udp');
   return args;
@@ -70,6 +120,7 @@ function buildClearcoteArgs({
   timezone,
   acceptLanguage,
   virtualDisplay = false,
+  proxyAuthExtensionDir,
   startUrl = 'https://x.com',
 }) {
   if (!userDataDir) {
@@ -107,6 +158,14 @@ function buildClearcoteArgs({
 
   args.push(...proxyLaunchArgs(proxyUrl));
 
+  if (proxyAuthExtensionDir) {
+    args.push(
+      `--disable-extensions-except=${proxyAuthExtensionDir}`,
+      `--load-extension=${proxyAuthExtensionDir}`,
+      '--disable-features=DisableLoadExtensionCommandLineSwitch'
+    );
+  }
+
   if (virtualDisplay) {
     args.push(
       '--no-sandbox',
@@ -127,6 +186,10 @@ module.exports = {
   MISSING_CLEARCOTE_MESSAGE,
   findClearcoteExecutable,
   primaryLang,
+  httpProxyCredentials,
+  proxyAuthExtensionPath,
+  removeProxyAuthExtension,
+  writeProxyAuthExtension,
   proxyLaunchArgs,
   buildClearcoteArgs,
 };

@@ -6,6 +6,10 @@ const { getApiUrl } = require('./apiConfig');
 const {
   buildClearcoteArgs,
   findClearcoteExecutable,
+  httpProxyCredentials,
+  proxyAuthExtensionPath,
+  removeProxyAuthExtension,
+  writeProxyAuthExtension,
   MISSING_CLEARCOTE_MESSAGE,
 } = require('./clearcote/launchArgs');
 const { ensureClearcoteInstalled, CHECKSUM_FAILED_MESSAGE } = require('./clearcote/browserInstall');
@@ -176,9 +180,19 @@ async function launchLocal(payload, onProgress) {
   try {
     fs.rmSync(userDataDir, { recursive: true, force: true });
     fs.mkdirSync(userDataDir, { recursive: true });
+    removeProxyAuthExtension(userDataDir);
     const archive = await downloadArchive(token, profile);
     if (archive) {
       unpackProfile(archive, userDataDir);
+    }
+    const proxyCredentials = httpProxyCredentials(profile.proxyUrl);
+    const proxyAuthExtensionDir = proxyCredentials ? proxyAuthExtensionPath(userDataDir) : undefined;
+    if (proxyCredentials) {
+      writeProxyAuthExtension(
+        proxyAuthExtensionDir,
+        proxyCredentials.username,
+        proxyCredentials.password
+      );
     }
     const args = buildClearcoteArgs({
       userDataDir,
@@ -188,6 +202,7 @@ async function launchLocal(payload, onProgress) {
       proxyUrl: profile.proxyUrl,
       timezone: profile.timezone,
       acceptLanguage: profile.acceptLanguage,
+      proxyAuthExtensionDir,
     });
     child = spawn(executable, args, { stdio: 'ignore', windowsHide: false });
   } catch (err) {
@@ -198,6 +213,7 @@ async function launchLocal(payload, onProgress) {
       // The chatter can retry after the lock expires.
     }
     fs.rmSync(userDataDir, { recursive: true, force: true });
+    removeProxyAuthExtension(userDataDir);
     return { ok: false, error: err.message || 'Could not open the browser.' };
   }
 
@@ -248,6 +264,7 @@ async function launchLocal(payload, onProgress) {
       }
     } finally {
       fs.rmSync(userDataDir, { recursive: true, force: true });
+      removeProxyAuthExtension(userDataDir);
       maybeQuit();
     }
   };
