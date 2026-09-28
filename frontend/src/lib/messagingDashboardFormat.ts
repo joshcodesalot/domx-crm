@@ -1,3 +1,6 @@
+import { DEFAULT_TIMEZONE } from '@/components/PeriodDaysToggle';
+import { berlinDateString } from '@/lib/berlinTime';
+
 export interface MessagingDashboardMediaItem {
   mediaId?: string;
   type?: string;
@@ -88,25 +91,62 @@ export interface CreateMessagingDashboardEntryInput {
   sentAt: string;
 }
 
-export function formatLocalDateInput(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+export function formatLocalDateInput(
+  date: Date,
+  timeZone: string = DEFAULT_TIMEZONE
+): string {
+  return berlinDateString(date, timeZone);
 }
 
-export function getDefaultMessagingDashboardDateRange(): {
+function shiftCalendarDate(isoDate: string, days: number): string {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const shifted = new Date(Date.UTC(year, month - 1, day + days, 12, 0, 0));
+  const yy = shifted.getUTCFullYear();
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+}
+
+export function getDefaultMessagingDashboardDateRange(
+  timeZone: string = DEFAULT_TIMEZONE
+): {
   startDate: string;
   endDate: string;
 } {
-  const end = new Date();
-  const start = new Date();
-  start.setDate(start.getDate() - 30);
-
+  const endDate = formatLocalDateInput(new Date(), timeZone);
   return {
-    startDate: formatLocalDateInput(start),
-    endDate: formatLocalDateInput(end),
+    startDate: shiftCalendarDate(endDate, -30),
+    endDate,
   };
+}
+
+export function formatCalendarRangeLabel(startDate: string, endDate: string): string {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+  const start = new Date(`${startDate}T12:00:00Z`);
+  const end = new Date(`${endDate}T12:00:00Z`);
+  return `${formatter.format(start)} - ${formatter.format(end)}`;
+}
+
+export function formatInstant(
+  date: string | Date,
+  timeZone: string = DEFAULT_TIMEZONE
+): string {
+  const value = typeof date === 'string' ? new Date(date) : date;
+  if (Number.isNaN(value.getTime())) return '--';
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(value);
 }
 
 export function formatResponseTime(seconds: number | null | undefined): string {
@@ -177,20 +217,28 @@ export function formatEuro(amount: number | null | undefined): string {
   return formatMoney(amount, 'EUR');
 }
 
-export function formatSentTime(date: string | Date): { time: string; date: string } {
+export function formatSentTime(
+  date: string | Date,
+  timeZone: string = DEFAULT_TIMEZONE
+): { time: string; date: string } {
   const value = typeof date === 'string' ? new Date(date) : date;
+  if (Number.isNaN(value.getTime())) {
+    return { time: '--', date: '--' };
+  }
 
   return {
-    time: value.toLocaleTimeString('en-GB', {
+    time: new Intl.DateTimeFormat('en-GB', {
+      timeZone,
       hour: '2-digit',
       minute: '2-digit',
-      hour12: false,
-    }),
-    date: value.toLocaleDateString('en-US', {
+      hourCycle: 'h23',
+    }).format(value),
+    date: new Intl.DateTimeFormat('en-US', {
+      timeZone,
       month: 'short',
       day: '2-digit',
       year: 'numeric',
-    }),
+    }).format(value),
   };
 }
 

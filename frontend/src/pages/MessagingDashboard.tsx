@@ -12,6 +12,8 @@ import {
   type User,
 } from '@/lib/api';
 import {
+  formatCalendarRangeLabel,
+  formatInstant,
   formatMediaLabel,
   formatMoney,
   formatResponseTime,
@@ -19,25 +21,13 @@ import {
   getDefaultMessagingDashboardDateRange,
   resolveDashboardCurrency,
 } from '@/lib/messagingDashboardFormat';
+import { useStaffTimeZone } from '@/lib/berlinTime';
 
 const inputClassName =
   'w-full px-3 py-2 text-sm border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100';
 
 const selectClassName =
   'w-full px-3 py-2 text-sm border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100';
-
-function formatDateRangeLabel(startDate: string, endDate: string): string {
-  const start = new Date(`${startDate}T00:00:00`);
-  const end = new Date(`${endDate}T00:00:00`);
-
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-
-  return `${formatter.format(start)} - ${formatter.format(end)}`;
-}
 
 function purchasedBadgeClass(purchased: boolean): string {
   return purchased
@@ -60,8 +50,14 @@ function formatContentTypeLabel(contentType: string): string {
   }
 }
 
-function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
-  const sentTime = formatSentTime(entry.sentAt);
+function MessagingDashboardRow({
+  entry,
+  timeZone,
+}: {
+  entry: MessagingDashboardEntry;
+  timeZone: string;
+}) {
+  const sentTime = formatSentTime(entry.sentAt, timeZone);
   const mediaLabel = formatMediaLabel(entry);
   const moneyCurrency = resolveDashboardCurrency(entry.currency, entry.platform);
   const platformLabel =
@@ -136,7 +132,7 @@ function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
         {entry.purchased && entry.unlockedAt ? (
           <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 whitespace-nowrap">
             {(() => {
-              const unlocked = formatSentTime(entry.unlockedAt);
+              const unlocked = formatSentTime(entry.unlockedAt, timeZone);
               return `${unlocked.date} ${unlocked.time}`;
             })()}
           </div>
@@ -166,7 +162,11 @@ function MessagingDashboardRow({ entry }: { entry: MessagingDashboardEntry }) {
 
 export default function MessagingDashboard() {
   const documentVisible = useDocumentVisible();
-  const defaultRange = useMemo(() => getDefaultMessagingDashboardDateRange(), []);
+  const timeZone = useStaffTimeZone();
+  const defaultRange = useMemo(
+    () => getDefaultMessagingDashboardDateRange(timeZone),
+    [timeZone]
+  );
   const [startDate, setStartDate] = useState(defaultRange.startDate);
   const [endDate, setEndDate] = useState(defaultRange.endDate);
   const [chatterId, setChatterId] = useState('');
@@ -188,7 +188,7 @@ export default function MessagingDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const dateRangeLabel = formatDateRangeLabel(startDate, endDate);
+  const dateRangeLabel = formatCalendarRangeLabel(startDate, endDate);
 
   const filteredCreators = useMemo(() => {
     if (platform !== 'maloum' && platform !== '4based' && platform !== 'telegram') {
@@ -281,7 +281,7 @@ export default function MessagingDashboard() {
   }, [creatorId, filteredCreators]);
 
   function handleResetFilters() {
-    const range = getDefaultMessagingDashboardDateRange();
+    const range = getDefaultMessagingDashboardDateRange(timeZone);
     setStartDate(range.startDate);
     setEndDate(range.endDate);
     setChatterId('');
@@ -332,9 +332,7 @@ export default function MessagingDashboard() {
             <span className="hidden sm:inline h-4 w-px bg-gray-200 dark:bg-white/10" />
             <span>
               Last updated:{' '}
-              {lastUpdated
-                ? new Date(lastUpdated).toLocaleString()
-                : '--'}
+              {lastUpdated ? formatInstant(lastUpdated, timeZone) : '--'}
             </span>
             <button
               type="button"
@@ -539,7 +537,9 @@ export default function MessagingDashboard() {
                   </td>
                 </tr>
               ) : (
-                entries.map((entry) => <MessagingDashboardRow key={entry.id} entry={entry} />)
+                entries.map((entry) => (
+                  <MessagingDashboardRow key={entry.id} entry={entry} timeZone={timeZone} />
+                ))
               )}
             </tbody>
           </table>

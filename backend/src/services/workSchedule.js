@@ -8,8 +8,10 @@
 const pool = require('../db/pool');
 const {
   BUSINESS_TZ,
+  normalizeTimeZone,
   buildDateRangeBetween,
   calendarDateString,
+  zonedWallTimeToUtc,
 } = require('./businessTimezone');
 
 /** Staff work-schedule wall clock (PHT). */
@@ -97,7 +99,7 @@ function wallClockInTimeZone(date, timeZone = SCHEDULE_TZ) {
 }
 
 /**
- * True when `date` falls inside the weekly schedule (PHT).
+ * True when `date` falls inside the weekly schedule (Europe/Berlin).
  * No schedule rows → all day (same as messaging analytics).
  * Overnight spill from the previous weekday still counts.
  * @param {Date} date
@@ -106,7 +108,7 @@ function wallClockInTimeZone(date, timeZone = SCHEDULE_TZ) {
 function isDateWithinWeekSchedule(date, week) {
   if (!week || week.size === 0) return true;
 
-  const wall = wallClockInTimeZone(date, SCHEDULE_TZ);
+  const wall = wallClockInTimeZone(date, BUSINESS_TZ);
   const localTime = wall.time;
   const today = week.get(wall.dow);
   if (today) {
@@ -171,13 +173,14 @@ function dayOfWeekForDate(dateStr) {
 }
 
 /**
- * Next calendar day YYYY-MM-DD.
+ * Shift a YYYY-MM-DD by whole calendar days.
  * @param {string} dateStr
+ * @param {number} deltaDays
  */
-function nextCalendarDate(dateStr) {
+function shiftCalendarDate(dateStr, deltaDays) {
   const [y, m, d] = String(dateStr).split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
-  dt.setUTCDate(dt.getUTCDate() + 1);
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
   const yy = dt.getUTCFullYear();
   const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
   const dd = String(dt.getUTCDate()).padStart(2, '0');
@@ -185,13 +188,32 @@ function nextCalendarDate(dateStr) {
 }
 
 /**
- * Build a timestamptz literal expression for SQL using Europe/Berlin wall clock.
+ * Next calendar day YYYY-MM-DD.
+ * @param {string} dateStr
+ */
+function nextCalendarDate(dateStr) {
+  return shiftCalendarDate(dateStr, 1);
+}
+
+/**
+ * Previous calendar day YYYY-MM-DD.
+ * @param {string} dateStr
+ */
+function prevCalendarDate(dateStr) {
+  return shiftCalendarDate(dateStr, -1);
+}
+
+/**
+ * Build a timestamptz literal for a wall-clock instant.
+ * Defaults to the website clock (Europe/Berlin). Pass Asia/Manila for the leaderboard.
  * @param {string} dateStr YYYY-MM-DD
  * @param {string} timeStr HH:MM:SS
+ * @param {string} [timeZone]
  */
-function manilaTimestampSql(dateStr, timeStr) {
+function manilaTimestampSql(dateStr, timeStr, timeZone = BUSINESS_TZ) {
   const t = normalizeTime(timeStr) || '00:00:00';
-  return `(TIMESTAMP '${dateStr} ${t}' AT TIME ZONE '${BUSINESS_TZ}')`;
+  const tz = normalizeTimeZone(timeZone);
+  return `(TIMESTAMP '${dateStr} ${t}' AT TIME ZONE '${tz}')`;
 }
 
 /**
@@ -249,18 +271,49 @@ function scheduleMetaForWeek(week) {
 }
 
 /**
+ * Morning slice of an overnight shift that started the calendar day before `startDate`.
+ * [startDate 00:00, startDate endTime). Omitted unless that previous day is overnight.
+ * @param {Map<number, ScheduleDay>|undefined} week
+ * @param {string} startDate
+ * @param {string} timeZone
+ * @returns {{ windowStartSql: string, windowEndSql: string } | null}
+ */
+function leadingOvernightSpill(week, startDate, timeZone) {
+  if (!week || week.size === 0) return null;
+  const prev = week.get(dayOfWeekForDate(prevCalendarDate(startDate)));
+  if (!prev || !isOvernight(prev.startTime, prev.endTime)) return null;
+  const end = normalizeTime(prev.endTime) || '00:00:00';
+  return {
+    windowStartSql: manilaTimestampSql(startDate, '00:00:00', timeZone),
+    windowEndSql: manilaTimestampSql(startDate, end, timeZone),
+  };
+}
+
+/**
  * Expand shift windows for users over inclusive date range.
  * Users with no schedule get full calendar days.
+ * Default clock is Europe/Berlin. The leaderboard passes Asia/Manila and
+ * includeLeadingOvernightSpill so 00:00–08:00 on the first day still counts.
  * @param {string[]} userIds
  * @param {string} startDate
  * @param {string} endDate
  * @param {ScheduleMap} [schedules]
+ * @param {string} [timeZone]
+ * @param {{ includeLeadingOvernightSpill?: boolean }} [options]
  * @returns {Promise<Array<{ userId: string, windowStartSql: string, windowEndSql: string }>>}
  */
-async function expandShiftWindows(userIds, startDate, endDate, schedules) {
+async function expandShiftWindows(
+  userIds,
+  startDate,
+  endDate,
+  schedules,
+  timeZone = BUSINESS_TZ,
+  options = {}
+) {
   const ids = [...new Set((userIds || []).filter(Boolean))];
   if (ids.length === 0) return [];
 
+  const tz = normalizeTimeZone(timeZone);
   const byUser = schedules || (await loadSchedulesByUserId(ids));
   const dates = buildDateRangeBetween(startDate, endDate);
   /** @type {Array<{ userId: string, windowStartSql: string, windowEndSql: string }>} */
@@ -268,12 +321,16 @@ async function expandShiftWindows(userIds, startDate, endDate, schedules) {
 
   for (const userId of ids) {
     const week = byUser.get(userId);
+    if (options.includeLeadingOvernightSpill) {
+      const spill = leadingOvernightSpill(week, startDate, tz);
+      if (spill) windows.push({ userId, ...spill });
+    }
     for (const dateStr of dates) {
       if (!week || week.size === 0) {
         windows.push({
           userId,
-          windowStartSql: manilaTimestampSql(dateStr, '00:00:00'),
-          windowEndSql: manilaTimestampSql(nextCalendarDate(dateStr), '00:00:00'),
+          windowStartSql: manilaTimestampSql(dateStr, '00:00:00', tz),
+          windowEndSql: manilaTimestampSql(nextCalendarDate(dateStr), '00:00:00', tz),
         });
         continue;
       }
@@ -288,14 +345,14 @@ async function expandShiftWindows(userIds, startDate, endDate, schedules) {
       if (isOvernight(start, end)) {
         windows.push({
           userId,
-          windowStartSql: manilaTimestampSql(dateStr, start),
-          windowEndSql: manilaTimestampSql(nextCalendarDate(dateStr), end),
+          windowStartSql: manilaTimestampSql(dateStr, start, tz),
+          windowEndSql: manilaTimestampSql(nextCalendarDate(dateStr), end, tz),
         });
       } else {
         windows.push({
           userId,
-          windowStartSql: manilaTimestampSql(dateStr, start),
-          windowEndSql: manilaTimestampSql(dateStr, end),
+          windowStartSql: manilaTimestampSql(dateStr, start, tz),
+          windowEndSql: manilaTimestampSql(dateStr, end, tz),
         });
       }
     }
@@ -329,14 +386,17 @@ function buildWindowValuesClause(windows, startParamIndex = 1) {
 }
 
 /**
- * SQL predicate: entry sentAt falls inside a scheduled work hour for its chatter.
+ * SQL predicate: entry sentAt falls inside a scheduled Berlin work hour.
  * Users with no schedule rows always match (full day).
+ * A morning after midnight also matches the previous weekday's overnight row.
  *
  * @param {string} [entryAlias='m']
  * @param {string} [schedAlias='uws']
  */
 function duringScheduledHoursPredicate(entryAlias = 'm', schedAlias = 'uws') {
   const localTime = `(${entryAlias}."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::time`;
+  const berlinDow = `EXTRACT(DOW FROM (${entryAlias}."sentAt" AT TIME ZONE '${BUSINESS_TZ}'))::int`;
+  const prevDow = `(${berlinDow} + 6) % 7`;
   return `(
     NOT EXISTS (
       SELECT 1 FROM user_work_schedules _uws_any
@@ -359,11 +419,71 @@ function duringScheduledHoursPredicate(entryAlias = 'm', schedAlias = 'uws') {
         )
       )
     )
+    OR EXISTS (
+      SELECT 1 FROM user_work_schedules _uws_prev
+      WHERE _uws_prev."userId" = ${entryAlias}."chatterId"
+        AND _uws_prev."dayOfWeek" = ${prevDow}
+        AND _uws_prev."startTime" >= _uws_prev."endTime"
+        AND ${localTime} < _uws_prev."endTime"
+    )
   )`;
 }
 
 /**
- * LEFT JOIN fragment for schedule on entry's Manila DOW.
+ * Shift label converted from Berlin wall-clock hours into `timeZone`.
+ * A single weekly pattern uses the offset in effect at `at`. Mixed weeks stay "Custom week".
+ * @param {Map<number, ScheduleDay>|undefined} week
+ * @param {string} [timeZone]
+ * @param {Date} [at]
+ * @returns {{ scheduleApplied: boolean, shiftLabel: string|null }}
+ */
+function shiftLabelInTimeZone(week, timeZone = BUSINESS_TZ, at = new Date()) {
+  const meta = scheduleMetaForWeek(week);
+  if (!meta.scheduleApplied || !meta.shiftLabel || meta.shiftLabel === 'Custom week') {
+    return meta;
+  }
+  const day = [...week.values()][0];
+  const start = normalizeTime(day.startTime);
+  const end = normalizeTime(day.endTime);
+  if (!start || !end) return meta;
+
+  const tz = normalizeTimeZone(timeZone);
+  const berlinDate = wallClockInTimeZone(at, BUSINESS_TZ).dateStr;
+  const [year, month, date] = berlinDate.split('-').map(Number);
+  const [startHour, startMinute] = start.split(':').map(Number);
+  const [endHour, endMinute] = end.split(':').map(Number);
+  const startInstant = zonedWallTimeToUtc(
+    year,
+    month,
+    date,
+    startHour,
+    startMinute,
+    BUSINESS_TZ
+  );
+  const endDate = isOvernight(start, end) ? nextCalendarDate(berlinDate) : berlinDate;
+  const [endYear, endMonth, endDay] = endDate.split('-').map(Number);
+  const endInstant = zonedWallTimeToUtc(
+    endYear,
+    endMonth,
+    endDay,
+    endHour,
+    endMinute,
+    BUSINESS_TZ
+  );
+  const formatter = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  });
+  return {
+    scheduleApplied: true,
+    shiftLabel: `${formatter.format(startInstant)}–${formatter.format(endInstant)}`,
+  };
+}
+
+/**
+ * LEFT JOIN fragment for schedule on the entry's Berlin day of week.
  * @param {string} [entryAlias='m']
  * @param {string} [schedAlias='uws']
  */
@@ -446,6 +566,7 @@ module.exports = {
   manilaTimestampSql,
   loadSchedulesByUserId,
   scheduleMetaForWeek,
+  shiftLabelInTimeZone,
   expandShiftWindows,
   expandTodayWindows,
   buildWindowValuesClause,

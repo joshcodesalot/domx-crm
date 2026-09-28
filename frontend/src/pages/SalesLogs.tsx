@@ -13,12 +13,15 @@ import {
   type User,
 } from '@/lib/api';
 import {
+  formatCalendarRangeLabel,
+  formatInstant,
   formatLocalDateInput,
   formatMoney,
   formatSentTime,
   netTakeAmount,
   resolveDashboardCurrency,
 } from '@/lib/messagingDashboardFormat';
+import { useStaffTimeZone } from '@/lib/berlinTime';
 
 const inputClassName =
   'w-full px-3 py-2 text-sm border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100';
@@ -30,25 +33,15 @@ function isIsoDate(value: string | null): value is string {
   return !!value && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
-function getDefaultSalesLogsDateRange(): { startDate: string; endDate: string } {
-  const end = new Date();
-  const start = new Date();
-  start.setDate(start.getDate() - 6);
-  return {
-    startDate: formatLocalDateInput(start),
-    endDate: formatLocalDateInput(end),
-  };
-}
-
-function formatDateRangeLabel(startDate: string, endDate: string): string {
-  const start = new Date(`${startDate}T00:00:00`);
-  const end = new Date(`${endDate}T00:00:00`);
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-  return `${formatter.format(start)} - ${formatter.format(end)}`;
+function getDefaultSalesLogsDateRange(timeZone: string): {
+  startDate: string;
+  endDate: string;
+} {
+  const endDate = formatLocalDateInput(new Date(), timeZone);
+  const end = new Date(`${endDate}T12:00:00Z`);
+  end.setUTCDate(end.getUTCDate() - 6);
+  const startDate = end.toISOString().slice(0, 10);
+  return { startDate, endDate };
 }
 
 function formatCurrencyAmounts(amounts: CurrencyAmount[] | undefined): string {
@@ -65,9 +58,15 @@ function platformLabel(platform: MessagingDashboardEntry['platform']): string {
   return '--';
 }
 
-function SalesLogRow({ entry }: { entry: MessagingDashboardEntry }) {
-  const saleTime = formatSentTime(entry.unlockedAt || entry.sentAt);
-  const sentTime = formatSentTime(entry.sentAt);
+function SalesLogRow({
+  entry,
+  timeZone,
+}: {
+  entry: MessagingDashboardEntry;
+  timeZone: string;
+}) {
+  const saleTime = formatSentTime(entry.unlockedAt || entry.sentAt, timeZone);
+  const sentTime = formatSentTime(entry.sentAt, timeZone);
   const moneyCurrency = resolveDashboardCurrency(entry.currency, entry.platform);
   const listed = entry.priceNet;
   const net = netTakeAmount(entry.priceNet, entry.platform);
@@ -124,16 +123,17 @@ function SalesLogRow({ entry }: { entry: MessagingDashboardEntry }) {
 }
 
 export default function SalesLogs() {
+  const timeZone = useStaffTimeZone();
   const [searchParams] = useSearchParams();
   const defaultRange = useMemo(() => {
-    const fallback = getDefaultSalesLogsDateRange();
+    const fallback = getDefaultSalesLogsDateRange(timeZone);
     const startFromUrl = searchParams.get('startDate');
     const endFromUrl = searchParams.get('endDate');
     return {
       startDate: isIsoDate(startFromUrl) ? startFromUrl : fallback.startDate,
       endDate: isIsoDate(endFromUrl) ? endFromUrl : fallback.endDate,
     };
-  }, [searchParams]);
+  }, [searchParams, timeZone]);
 
   const [startDate, setStartDate] = useState(defaultRange.startDate);
   const [endDate, setEndDate] = useState(defaultRange.endDate);
@@ -156,7 +156,7 @@ export default function SalesLogs() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const dateRangeLabel = formatDateRangeLabel(startDate, endDate);
+  const dateRangeLabel = formatCalendarRangeLabel(startDate, endDate);
 
   const filteredCreators = useMemo(() => {
     if (platform !== 'maloum' && platform !== '4based' && platform !== 'telegram') {
@@ -240,7 +240,7 @@ export default function SalesLogs() {
   }, [creatorId, filteredCreators]);
 
   function handleResetFilters() {
-    const range = getDefaultSalesLogsDateRange();
+    const range = getDefaultSalesLogsDateRange(timeZone);
     setStartDate(range.startDate);
     setEndDate(range.endDate);
     setChatterId('');
@@ -308,7 +308,7 @@ export default function SalesLogs() {
             <span className="hidden sm:inline h-4 w-px bg-gray-200 dark:bg-white/10" />
             <span>
               Last updated:{' '}
-              {lastUpdated ? new Date(lastUpdated).toLocaleString() : '--'}
+              {lastUpdated ? formatInstant(lastUpdated, timeZone) : '--'}
             </span>
             <button
               type="button"
@@ -495,7 +495,9 @@ export default function SalesLogs() {
                   </td>
                 </tr>
               ) : (
-                entries.map((entry) => <SalesLogRow key={entry.id} entry={entry} />)
+                entries.map((entry) => (
+                  <SalesLogRow key={entry.id} entry={entry} timeZone={timeZone} />
+                ))
               )}
             </tbody>
           </table>

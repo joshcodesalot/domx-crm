@@ -29,6 +29,7 @@ const {
   monthStartDateString,
   weekStartDateString,
   resolveAnalyticsPeriod,
+  parseBusinessDateTime,
 } = require('../services/businessTimezone');
 const {
   EXTENDED_MESSAGE_STATS_SELECT,
@@ -54,11 +55,12 @@ const {
 } = require('../services/messagingAnalyticsHelpers');
 const {
   loadSchedulesByUserId,
-  scheduleMetaForWeek,
+  shiftLabelInTimeZone,
   expandShiftWindows,
   buildWindowValuesClause,
   duringScheduledHoursPredicate,
   scheduleDowJoin,
+  nextCalendarDate,
 } = require('../services/workSchedule');
 
 const { requireElectronServiceKey } = require('../middleware/electronServiceKey');
@@ -3215,7 +3217,10 @@ router.get(
         const ppvSalesMergedChatter = mergeCurrencyAmounts(periodExtras?.ppvSales || []);
         const periodSalesMerged = mergeCurrencyAmounts(periodExtras?.periodSales || []);
         const periodMessages = periodExtras?.messagesSent || 0;
-        const scheduleMeta = scheduleMetaForWeek(schedulesByUser.get(row.chatterId));
+        const scheduleMeta = shiftLabelInTimeZone(
+          schedulesByUser.get(row.chatterId),
+          tz
+        );
         const rates = buildChatterRateFields(row.chatterId, {
           totalSalesMerged,
           periodSalesMerged,
@@ -3277,7 +3282,10 @@ router.get(
           const ppvSalesMergedChatter = mergeCurrencyAmounts(periodExtras?.ppvSales || []);
           const periodSalesMerged = mergeCurrencyAmounts(periodExtras?.periodSales || []);
           const periodMessages = periodExtras?.messagesSent || 0;
-          const scheduleMeta = scheduleMetaForWeek(schedulesByUser.get(chatterId));
+          const scheduleMeta = shiftLabelInTimeZone(
+            schedulesByUser.get(chatterId),
+            tz
+          );
           const rates = buildChatterRateFields(chatterId, {
             totalSalesMerged,
             periodSalesMerged,
@@ -3447,6 +3455,14 @@ router.get(
       const viewerId = req.user.id;
       const periodStart = monthStartDateString(new Date(), tz);
       const periodEnd = calendarDateString(new Date(), tz);
+      const rangeStart = parseBusinessDateTime(`${periodStart}T00:00:00`, tz);
+      const rangeEnd = parseBusinessDateTime(
+        `${nextCalendarDate(periodEnd)}T00:00:00`,
+        tz
+      );
+      if (!rangeStart || !rangeEnd) {
+        return res.status(500).json({ error: 'Invalid leaderboard period' });
+      }
 
       const staffResult = await pool.query(
         `SELECT u.id AS "userId", u.name AS "userName"
@@ -3455,90 +3471,64 @@ router.get(
          ORDER BY u.name ASC`,
         [TRACKED_STAFF_ROLES]
       );
-      const staffIds = staffResult.rows.map((row) => row.userId);
-      const schedulesByUser = await loadSchedulesByUserId(staffIds);
-      const mtdWindows = await expandShiftWindows(
-        staffIds,
-        periodStart,
-        periodEnd,
-        schedulesByUser
-      );
-      // $1 = TRACKED_STAFF_ROLES; window userIds start at $2
-      const windowClause = buildWindowValuesClause(mtdWindows, 2);
 
-      const emptyLeaderboardAgg = () =>
-        Promise.resolve({ rows: [] });
-
-      const windowExistsSql = windowClause
-        ? `EXISTS (
-             SELECT 1 FROM windows w
-             WHERE w."userId" = m."chatterId"
-               AND m."sentAt" >= w."windowStart"
-               AND m."sentAt" < w."windowEnd"
-           )`
-        : 'FALSE';
-
-      const windowsCte = windowClause
-        ? `WITH windows("userId", "windowStart", "windowEnd") AS (
-             VALUES ${windowClause.sql}
-           )`
-        : '';
-
-      const leaderboardParams = windowClause
-        ? [TRACKED_STAFF_ROLES, ...windowClause.params]
-        : [TRACKED_STAFF_ROLES];
+      const onBerlinShift = duringScheduledHoursPredicate('m', 'uws');
+      const scheduleJoin = scheduleDowJoin('m', 'uws');
+      const inViewerMonth = `m."sentAt" >= $2::timestamptz AND m."sentAt" < $3::timestamptz`;
+      const leaderboardParams = [
+        TRACKED_STAFF_ROLES,
+        rangeStart.toISOString(),
+        rangeEnd.toISOString(),
+      ];
 
       const revealLeaderboard = isTeamAnalyticsRole(req.user.role);
 
       const [responseResult, salesResult, messageStatsResult] = await Promise.all([
-        windowClause
-          ? pool.query(
-              `${windowsCte}
-               SELECT m."chatterId" AS "userId",
-                      AVG(${EFFECTIVE_RESPONSE_SECONDS_SQL})::float AS "avgResponseTimeSeconds"
-               FROM messaging_dashboard_entries m
-               JOIN users u ON u.id = m."chatterId"
-               WHERE u.role = ANY($1::text[])
-                 AND m."responseTimeSeconds" IS NOT NULL
-                 AND ${windowExistsSql}
-               GROUP BY m."chatterId"`,
-              leaderboardParams
-            )
-          : emptyLeaderboardAgg(),
-        windowClause
-          ? pool.query(
-              `${windowsCte}
-               SELECT m."chatterId" AS "userId",
-                      UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                      COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
-               FROM messaging_dashboard_entries m
-               JOIN users u ON u.id = m."chatterId"
-               WHERE u.role = ANY($1::text[])
-                 AND ${COUNTED_SALES_FILTER}
-                 AND ${windowExistsSql}
-               GROUP BY m."chatterId", 2`,
-              leaderboardParams
-            )
-          : emptyLeaderboardAgg(),
-        windowClause
-          ? pool.query(
-              `${windowsCte}
-               SELECT m."chatterId" AS "userId",
-                      COUNT(*) FILTER (
-                        WHERE m."contentType" IN ('text', 'media', 'chat_product')
-                      )::int AS "messagesSent",
-                      COUNT(*) FILTER (WHERE m."contentType" = 'chat_product')::int AS "ppvsSent",
-                      COUNT(*) FILTER (
-                        WHERE m."contentType" = 'chat_product' AND m.purchased = true
-                      )::int AS "ppvsUnlocked"
-               FROM messaging_dashboard_entries m
-               JOIN users u ON u.id = m."chatterId"
-               WHERE u.role = ANY($1::text[])
-                 AND ${windowExistsSql}
-               GROUP BY m."chatterId"`,
-              leaderboardParams
-            )
-          : emptyLeaderboardAgg(),
+        pool.query(
+          `SELECT m."chatterId" AS "userId",
+                  AVG(${EFFECTIVE_RESPONSE_SECONDS_SQL})::float AS "avgResponseTimeSeconds"
+           FROM messaging_dashboard_entries m
+           JOIN users u ON u.id = m."chatterId"
+           ${scheduleJoin}
+           WHERE u.role = ANY($1::text[])
+             AND m."responseTimeSeconds" IS NOT NULL
+             AND ${inViewerMonth}
+             AND ${onBerlinShift}
+           GROUP BY m."chatterId"`,
+          leaderboardParams
+        ),
+        pool.query(
+          `SELECT m."chatterId" AS "userId",
+                  UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
+                  COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
+           FROM messaging_dashboard_entries m
+           JOIN users u ON u.id = m."chatterId"
+           ${scheduleJoin}
+           WHERE u.role = ANY($1::text[])
+             AND ${COUNTED_SALES_FILTER}
+             AND ${inViewerMonth}
+             AND ${onBerlinShift}
+           GROUP BY m."chatterId", 2`,
+          leaderboardParams
+        ),
+        pool.query(
+          `SELECT m."chatterId" AS "userId",
+                  COUNT(*) FILTER (
+                    WHERE m."contentType" IN ('text', 'media', 'chat_product')
+                  )::int AS "messagesSent",
+                  COUNT(*) FILTER (WHERE m."contentType" = 'chat_product')::int AS "ppvsSent",
+                  COUNT(*) FILTER (
+                    WHERE m."contentType" = 'chat_product' AND m.purchased = true
+                  )::int AS "ppvsUnlocked"
+           FROM messaging_dashboard_entries m
+           JOIN users u ON u.id = m."chatterId"
+           ${scheduleJoin}
+           WHERE u.role = ANY($1::text[])
+             AND ${inViewerMonth}
+             AND ${onBerlinShift}
+           GROUP BY m."chatterId"`,
+          leaderboardParams
+        ),
       ]);
 
       const byId = new Map();

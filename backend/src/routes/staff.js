@@ -17,7 +17,7 @@ const { emitToUser } = require('../services/userEventBus');
 const { invalidateCreatorAccessCache } = require('../services/creatorAccess');
 const { generateTempPassword } = require('../services/passwordUtils');
 const {
-  SCHEDULE_TZ,
+  BUSINESS_TZ,
   loadSchedulesByUserId,
   parseScheduleDaysPayload,
   formatTimeShort,
@@ -413,7 +413,7 @@ router.get(
 
       res.json({
         userId: id,
-        timeZone: SCHEDULE_TZ,
+        timeZone: BUSINESS_TZ,
         days,
       });
     } catch (err) {
@@ -477,7 +477,7 @@ router.put(
 
       res.json({
         userId: id,
-        timeZone: SCHEDULE_TZ,
+        timeZone: BUSINESS_TZ,
         days,
       });
     } catch (err) {

@@ -14,7 +14,8 @@ import {
   type SaleReconciliationEvent,
   type User,
 } from '@/lib/api';
-import { formatMoney, formatSentTime } from '@/lib/messagingDashboardFormat';
+import { formatLocalDateInput, formatMoney, formatSentTime } from '@/lib/messagingDashboardFormat';
+import { useStaffTimeZone } from '@/lib/berlinTime';
 
 type TabId = 'needs_review' | 'cleared' | 'deleted_imports';
 
@@ -24,16 +25,16 @@ const inputClassName =
 const selectClassName =
   'w-full px-3 py-2 text-sm border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-[#1a1a1a] text-gray-900 dark:text-gray-100';
 
-function currentYearMonth(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  return `${y}-${m}`;
+function currentYearMonth(timeZone: string): string {
+  return formatLocalDateInput(new Date(), timeZone).slice(0, 7);
 }
 
-function formatUnlocked(unlockedAt: string | null | undefined): string {
+function formatUnlocked(
+  unlockedAt: string | null | undefined,
+  timeZone: string
+): string {
   if (!unlockedAt) return '--';
-  const formatted = formatSentTime(unlockedAt);
+  const formatted = formatSentTime(unlockedAt, timeZone);
   return `${formatted.date} ${formatted.time}`;
 }
 
@@ -79,8 +80,9 @@ function reconcileButtonLabel(job: ReconcileAllJob | null, starting: boolean): s
 }
 
 export default function FalseSalesReview() {
+  const timeZone = useStaffTimeZone();
   const [tab, setTab] = useState<TabId>('needs_review');
-  const [yearMonth, setYearMonth] = useState(currentYearMonth);
+  const [yearMonth, setYearMonth] = useState(() => currentYearMonth(timeZone));
   const [creatorId, setCreatorId] = useState('');
   const [platform, setPlatform] = useState<'' | 'maloum' | '4based'>('');
   const [creators, setCreators] = useState<Creator[]>([]);
@@ -384,7 +386,7 @@ export default function FalseSalesReview() {
                     className="border-t border-gray-100 dark:border-white/5"
                   >
                     <td className="px-4 py-3 whitespace-nowrap">
-                      {formatUnlocked(event.createdAt)}
+                      {formatUnlocked(event.createdAt, timeZone)}
                     </td>
                     <td className="px-4 py-3">{event.creatorName || '--'}</td>
                     <td className="px-4 py-3">{event.platform}</td>
@@ -396,7 +398,7 @@ export default function FalseSalesReview() {
                       {formatMoney(event.amount, event.currency || 'EUR')}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
-                      {formatUnlocked(event.unlockedAt)}
+                      {formatUnlocked(event.unlockedAt, timeZone)}
                     </td>
                     <td className="px-4 py-3 max-w-[260px]">
                       <div className="line-clamp-2" title={event.reason || undefined}>
