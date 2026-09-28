@@ -286,42 +286,34 @@ async function openBrowserProfile(user, creatorId, platform, req) {
   row = await refreshGeo(row, user.id);
   const profile = publicProfile(row, creator, viewToken);
 
-  if (platform === 'darwin') {
-    let started;
-    try {
-      started = await startRemoteSession({
-        creatorId,
-        viewToken,
-        generation: profile.generation,
-        fingerprintSeed: profile.fingerprintSeed,
-        fingerprintPlatform: profile.fingerprintPlatform,
-        encryptionKey: profile.encryptionKey,
-        proxyUrl: profile.proxyUrl,
-        timezone: profile.timezone,
-        acceptLanguage: profile.acceptLanguage,
-        hasArchive: profile.hasArchive,
-        archiveUrl: `${apiBaseFromRequest(req)}/api/browser-profiles/${creatorId}/archive`,
-      });
-    } catch (err) {
-      if (!reuse) {
-        await clearMatchingLock(creatorId, viewToken);
-      }
-      throw new BrowserProfileError(err.message, err.status || 502, { code: err.code });
-    }
-    return {
-      mode: 'remote',
-      alreadyOpen: reuse,
+  let started;
+  try {
+    started = await startRemoteSession({
       creatorId,
-      displayName: creator.displayName,
       viewToken,
-      viewUrl: started.viewUrl,
-    };
+      generation: profile.generation,
+      fingerprintSeed: profile.fingerprintSeed,
+      fingerprintPlatform: profile.fingerprintPlatform,
+      encryptionKey: profile.encryptionKey,
+      proxyUrl: profile.proxyUrl,
+      timezone: profile.timezone,
+      acceptLanguage: profile.acceptLanguage,
+      hasArchive: profile.hasArchive,
+      archiveUrl: `${apiBaseFromRequest(req)}/api/browser-profiles/${creatorId}/archive`,
+    });
+  } catch (err) {
+    if (!reuse) {
+      await clearMatchingLock(creatorId, viewToken);
+    }
+    throw new BrowserProfileError(err.message, err.status || 502, { code: err.code });
   }
-
   return {
-    mode: 'local',
+    mode: 'remote',
     alreadyOpen: reuse,
-    ...profile,
+    creatorId,
+    displayName: creator.displayName,
+    viewToken,
+    viewUrl: started.viewUrl,
   };
 }
 

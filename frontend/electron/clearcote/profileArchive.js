@@ -19,6 +19,10 @@ const SKIP_DIR_NAMES = new Set([
   'graphitedawncache',
   'safe browsing',
   'crowd deny',
+  'service worker',
+  'indexeddb',
+  'file system',
+  'blob_storage',
 ]);
 
 const SKIP_FILE_NAMES = new Set([
@@ -26,6 +30,8 @@ const SKIP_FILE_NAMES = new Set([
   'singletonsocket',
   'singletoncookie',
   'lockfile',
+  'history',
+  'history-journal',
 ]);
 
 const CRC_TABLE = (() => {

@@ -27,7 +27,6 @@ export default function Marketing() {
   const [error, setError] = useState<string | null>(null);
   const [browserProxyTarget, setBrowserProxyTarget] = useState<BrowserProfileLock | null>(null);
   const [openingId, setOpeningId] = useState<string | null>(null);
-  const [downloadingBrowser, setDownloadingBrowser] = useState(false);
 
   const canManage = hasPermission('creators.manage');
   const columnCount = 3;
@@ -59,15 +58,9 @@ export default function Marketing() {
     return () => window.clearInterval(timer);
   }, [loadProfiles]);
 
-  useEffect(() => {
-    return window.electronAPI?.onClearcoteInstallProgress?.(() => {
-      setDownloadingBrowser(true);
-    });
-  }, []);
-
-  async function handleOpenBrowser(profile: BrowserProfileLock, remote = false) {
+  async function handleOpenBrowser(profile: BrowserProfileLock) {
     const desktop = window.electronAPI;
-    if (!desktop?.isElectron || !desktop.launchClearcote || !desktop.openClearcoteView) {
+    if (!desktop?.isElectron || !desktop.openClearcoteView) {
       setError('Open the browser from the DomX desktop app.');
       return;
     }
@@ -81,18 +74,11 @@ export default function Marketing() {
       return;
     }
 
-    const useRemote = remote || desktop.platform === 'darwin';
     setOpeningId(profile.creatorId);
-    setDownloadingBrowser(false);
     setError(null);
     try {
-      const opened = await openBrowserProfile(
-        profile.creatorId,
-        useRemote ? 'darwin' : desktop.platform
-      );
-      const launch = useRemote
-        ? await desktop.openClearcoteView({ token, profile: opened })
-        : await desktop.launchClearcote({ token, profile: opened });
+      const opened = await openBrowserProfile(profile.creatorId, 'darwin');
+      const launch = await desktop.openClearcoteView({ token, profile: opened });
       if (!launch?.ok) {
         setError(launch?.error || 'Could not open the browser.');
       }
@@ -102,7 +88,6 @@ export default function Marketing() {
       await loadProfiles().catch(() => {});
     } finally {
       setOpeningId(null);
-      setDownloadingBrowser(false);
     }
   }
 
@@ -191,27 +176,8 @@ export default function Marketing() {
                             onClick={() => void handleOpenBrowser(profile)}
                           >
                             <Monitor className="w-3.5 h-3.5" />
-                            {openingId === profile.creatorId
-                              ? downloadingBrowser
-                                ? 'Downloading browser…'
-                                : 'Opening…'
-                              : 'Open browser'}
+                            {openingId === profile.creatorId ? 'Opening…' : 'Open browser'}
                           </button>
-                          {window.electronAPI?.platform === 'win32' && (
-                            <button
-                              type="button"
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md border border-gray-200 dark:border-white/10 hover:bg-gray-50 dark:hover:bg-white/5 disabled:opacity-40 disabled:cursor-not-allowed"
-                              disabled={openingId === profile.creatorId || heldByOther}
-                              title={
-                                heldByOther
-                                  ? `In use by ${profile.lockedByName || 'another chatter'}`
-                                  : 'Open the Debian browser'
-                              }
-                              onClick={() => void handleOpenBrowser(profile, true)}
-                            >
-                              Open remotely
-                            </button>
-                          )}
                           {profile.locked && (
                             <p className="text-xs text-gray-400">
                               {profile.lockedBySelf

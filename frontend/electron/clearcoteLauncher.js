@@ -282,19 +282,103 @@ function allowRemoteClipboard(ses) {
   });
 }
 
-function pasteIntoRemoteView(win) {
+const REMOTE_PASTE_DELAY_MS = 120;
+
+function readRemoteClipboardScript() {
+  return `(() => {
+    const box = document.getElementById('noVNC_clipboard_text');
+    return box ? String(box.value || '') : '';
+  })()`;
+}
+
+function pushRemoteClipboardScript(text) {
+  const payload = JSON.stringify(text);
+  return `(() => {
+    const box = document.getElementById('noVNC_clipboard_text');
+    if (box && box.value !== ${payload}) {
+      box.value = ${payload};
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      box.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    const rfb = window.UI && window.UI.rfb;
+    if (rfb && typeof rfb.clipboardPasteFrom === 'function') {
+      rfb.clipboardPasteFrom(${payload});
+    }
+    return true;
+  })()`;
+}
+
+function remoteCtrlChordScript(letter) {
+  const keysym = letter === 'c' ? '0x63' : '0x76';
+  const code = letter === 'c' ? 'KeyC' : 'KeyV';
+  return `(() => {
+    const rfb = window.UI && window.UI.rfb;
+    if (rfb && typeof rfb.sendKey === 'function') {
+      rfb.sendKey(0xffe3, 'ControlLeft', true);
+      rfb.sendKey(${keysym}, '${code}', true);
+      rfb.sendKey(${keysym}, '${code}', false);
+      rfb.sendKey(0xffe3, 'ControlLeft', false);
+      return true;
+    }
+    const press = (type, key, code) => {
+      document.dispatchEvent(new KeyboardEvent(type, {
+        key,
+        code,
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+    };
+    press('keydown', 'Control', 'ControlLeft');
+    press('keydown', '${letter}', '${code}');
+    press('keyup', '${letter}', '${code}');
+    press('keyup', 'Control', 'ControlLeft');
+    return true;
+  })()`;
+}
+
+async function pushRemoteClipboard(win, text) {
+  if (!text || win.isDestroyed()) return;
+  await win.webContents.executeJavaScript(pushRemoteClipboardScript(text));
+}
+
+async function sendRemoteCtrlChord(win, letter) {
+  if (win.isDestroyed()) return;
+  await win.webContents.executeJavaScript(remoteCtrlChordScript(letter));
+}
+
+async function pasteIntoRemoteView(win, bridge) {
   const text = clipboard.readText();
   if (!text || win.isDestroyed()) return;
-  const script = `(() => {
-    const target = document.getElementById('noVNC_keyboardinput');
-    if (!target) return;
-    const data = new DataTransfer();
-    data.setData('text/plain', ${JSON.stringify(text)});
-    const paste = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
-    Object.defineProperty(paste, 'clipboardData', { value: data });
-    target.dispatchEvent(paste);
-  })()`;
-  win.webContents.executeJavaScript(script).catch(() => {});
+  bridge.generation += 1;
+  const generation = bridge.generation;
+  bridge.lastPushed = text;
+  bridge.lastRemote = text;
+  try {
+    await pushRemoteClipboard(win, text);
+    await new Promise((resolve) => setTimeout(resolve, REMOTE_PASTE_DELAY_MS));
+    if (generation !== bridge.generation || win.isDestroyed()) return;
+    await sendRemoteCtrlChord(win, 'v');
+  } catch {
+    // The view is closing or noVNC is not ready yet.
+  }
+}
+
+function watchRemoteClipboard(win, bridge) {
+  return setInterval(() => {
+    if (win.isDestroyed()) return;
+    const generation = bridge.generation;
+    win.webContents
+      .executeJavaScript(readRemoteClipboardScript())
+      .then((value) => {
+        if (generation !== bridge.generation || typeof value !== 'string') return;
+        if (value === bridge.lastRemote) return;
+        bridge.lastRemote = value;
+        if (!value || value === bridge.lastPushed) return;
+        clipboard.writeText(value);
+      })
+      .catch(() => {});
+  }, 400);
 }
 
 function openRemoteView(payload) {
@@ -314,8 +398,8 @@ function openRemoteView(payload) {
   }
 
   const win = new BrowserWindow({
-    width: 1366,
-    height: 800,
+    width: 1920,
+    height: 1080,
     minWidth: 960,
     minHeight: 640,
     title: profile.displayName ? `Browser — ${profile.displayName}` : 'Browser',
@@ -326,13 +410,27 @@ function openRemoteView(payload) {
       contextIsolation: true,
     },
   });
+  const bridge = { generation: 0, lastRemote: '', lastPushed: '' };
   allowRemoteClipboard(win.webContents.session);
   win.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown' || input.alt) return;
-    if (!(input.control || input.meta)) return;
-    if (String(input.key).toLowerCase() !== 'v') return;
-    event.preventDefault();
-    pasteIntoRemoteView(win);
+    if (input.type !== 'keyDown' || input.alt || input.shift) return;
+    const key = String(input.key || '').toLowerCase();
+    if (key !== 'c' && key !== 'v') return;
+    const command = Boolean(input.meta) && !input.control;
+    const control = Boolean(input.control) && !input.meta;
+    if (command) {
+      event.preventDefault();
+      if (key === 'c') {
+        sendRemoteCtrlChord(win, 'c').catch(() => {});
+      } else {
+        void pasteIntoRemoteView(win, bridge);
+      }
+      return;
+    }
+    if (control && key === 'v') {
+      event.preventDefault();
+      void pasteIntoRemoteView(win, bridge);
+    }
   });
   remoteWindows.set(profile.creatorId, win);
 
@@ -346,6 +444,7 @@ function openRemoteView(payload) {
       })
       .catch(() => {});
   }, HEARTBEAT_MS);
+  const clipboardTimer = watchRemoteClipboard(win, bridge);
 
   let closed = false;
   win.once('ready-to-show', () => {
@@ -353,6 +452,7 @@ function openRemoteView(payload) {
   });
   win.on('closed', () => {
     clearInterval(timer);
+    clearInterval(clipboardTimer);
     const current = remoteWindows.get(profile.creatorId);
     if (current === win) remoteWindows.delete(profile.creatorId);
     if (closed) {

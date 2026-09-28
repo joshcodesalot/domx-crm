@@ -78,13 +78,60 @@ function readBody(req) {
   });
 }
 
+function displaySocket(display) {
+  return `/tmp/.X11-unix/X${display}`;
+}
+
 function allocDisplay() {
   const used = new Set([...sessions.values()].map((session) => session.display));
   let display = nextDisplay;
-  while (used.has(display)) display += 1;
+  const start = display;
+  while (used.has(display) || fs.existsSync(displaySocket(display))) {
+    display += 1;
+    if (display > 200) display = 100;
+    if (display === start) {
+      throw Object.assign(new Error('No virtual display is available'), {
+        status: 503,
+        code: 'BROWSER_HOST_UNAVAILABLE',
+      });
+    }
+  }
   nextDisplay = display + 1;
   if (nextDisplay > 200) nextDisplay = 100;
   return display;
+}
+
+function displayIsUp(session) {
+  if (!fs.existsSync(displaySocket(session.display))) return false;
+  if (session.xvfb && session.xvfb.exitCode !== null) return false;
+  return true;
+}
+
+function pinWindowPlacement(userDataDir) {
+  const prefsPath = path.join(userDataDir, 'Default', 'Preferences');
+  if (!fs.existsSync(prefsPath)) return;
+  let prefs;
+  try {
+    prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+  } catch {
+    return;
+  }
+  if (!prefs || typeof prefs !== 'object' || Array.isArray(prefs)) return;
+  if (!prefs.browser || typeof prefs.browser !== 'object' || Array.isArray(prefs.browser)) {
+    prefs.browser = {};
+  }
+  prefs.browser.window_placement = {
+    left: 0,
+    top: 0,
+    right: 1920,
+    bottom: 1080,
+    maximized: false,
+    work_area_left: 0,
+    work_area_top: 0,
+    work_area_right: 1920,
+    work_area_bottom: 1080,
+  };
+  fs.writeFileSync(prefsPath, JSON.stringify(prefs));
 }
 
 function spawnGroup(command, args, env) {
@@ -158,34 +205,55 @@ async function assertStaysUp(child, label, stderr) {
   }
 }
 
+function scrapingVncCommand(display, vncPort) {
+  if (commandExists('X0tigervnc')) {
+    return {
+      bin: 'X0tigervnc',
+      args: [
+        '-display',
+        `:${display}`,
+        '-rfbport',
+        String(vncPort),
+        '-localhost',
+        '-SecurityTypes',
+        'None',
+        '-AcceptCutText',
+        '-SendCutText',
+      ],
+    };
+  }
+  return {
+    bin: 'x0vncserver',
+    args: [
+      '-fg',
+      '-display',
+      `:${display}`,
+      '-rfbport',
+      String(vncPort),
+      '-localhost',
+      'yes',
+      '-SecurityTypes',
+      'None',
+      '-AcceptCutText=1',
+      '-SendCutText=1',
+    ],
+  };
+}
+
 async function startDisplay(display, vncPort) {
   const env = { ...process.env, DISPLAY: `:${display}` };
-  if (commandExists('Xvfb') && commandExists('x0vncserver')) {
+  if (commandExists('Xvfb') && (commandExists('X0tigervnc') || commandExists('x0vncserver'))) {
     const xvfb = spawnGroup(
       'Xvfb',
-      [`:${display}`, '-screen', '0', '1366x768x24', '-ac', '-nolisten', 'tcp'],
+      [`:${display}`, '-screen', '0', '1920x1080x24', '-ac', '-nolisten', 'tcp'],
       env
     );
     const xvfbErr = capture(xvfb);
     try {
       await waitForDisplay(display);
       await assertStaysUp(xvfb, 'Xvfb', xvfbErr);
-      const vnc = spawnGroup(
-        'x0vncserver',
-        [
-          '-fg',
-          '-display',
-          `:${display}`,
-          '-rfbport',
-          String(vncPort),
-          '-localhost',
-          'yes',
-          '-SecurityTypes',
-          'None',
-          '-AcceptCutText=1',
-        ],
-        env
-      );
+      const scraping = scrapingVncCommand(display, vncPort);
+      const vnc = spawnGroup(scraping.bin, scraping.args, env);
       const vncErr = capture(vnc);
       try {
         await assertStaysUp(vnc, 'TigerVNC', vncErr);
@@ -214,7 +282,7 @@ async function startDisplay(display, vncPort) {
     [
       `:${display}`,
       '-geometry',
-      '1366x768',
+      '1920x1080',
       '-depth',
       '24',
       '-rfbport',
@@ -223,6 +291,8 @@ async function startDisplay(display, vncPort) {
       'yes',
       '-SecurityTypes',
       'None',
+      '-AcceptCutText',
+      '-SendCutText',
       '-ac',
     ],
     env
@@ -319,6 +389,13 @@ function startWatchdog(session) {
   let failures = 0;
   const sessionUrl = String(session.archiveUrl || '').replace(/\/archive$/, '/session');
   session.watchdog = setInterval(() => {
+    if (!displayIsUp(session)) {
+      session.skipUpload = true;
+      stopSession(session.creatorId, { upload: false }).catch((err) => {
+        console.error('Clearcote stop after display exited:', err.message);
+      });
+      return;
+    }
     if (!sessionUrl) return;
     fetch(sessionUrl, { headers: hostHeaders(session) })
       .then(async (response) => {
@@ -401,10 +478,17 @@ async function startSession(body) {
 
   try {
     await downloadArchive(session);
+    pinWindowPlacement(userDataDir);
     const displayProcs = await startDisplay(display, vncPort);
     session.xvfb = displayProcs.xvfb;
     session.vnc = displayProcs.vnc;
     session.proxyForwarder = await startHttpProxyForwarder(body.proxyUrl);
+    if (!displayIsUp(session)) {
+      throw Object.assign(new Error(`Virtual display :${display} is not running`), {
+        status: 503,
+        code: 'BROWSER_HOST_UNAVAILABLE',
+      });
+    }
     const chrome = spawnGroup(
       executable,
       buildClearcoteArgs({

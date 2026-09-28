@@ -272,7 +272,8 @@ function buildClearcoteArgs({
       '--disable-gpu',
       '--disable-dev-shm-usage',
       '--enable-features=WebBluetooth',
-      '--window-size=1366,768'
+      '--window-position=0,0',
+      '--window-size=1920,1080'
     );
   }
 

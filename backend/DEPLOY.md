@@ -415,7 +415,7 @@ Install whatever that list names. On a headless Debian box the usual ones are `l
 
 ### Virtual screen and agent
 
-The agent starts Xvfb, attaches TigerVNC on localhost, and serves noVNC itself. It does not use a separate websockify package. `tigervnc-scraping-server` provides `x0vncserver` (preferred). `tigervnc-standalone-server` provides `Xtigervnc` (fallback).
+The agent starts Xvfb, attaches TigerVNC on localhost, and serves noVNC itself. It does not use a separate websockify package. `tigervnc-scraping-server` provides `X0tigervnc`, which is the process the agent supervises. `x0vncserver` is only the session wrapper. `tigervnc-standalone-server` provides `Xtigervnc` (fallback).
 
 ```bash
 sudo apt install -y xvfb tigervnc-scraping-server tigervnc-standalone-server novnc

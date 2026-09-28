@@ -180,6 +180,8 @@ describe('Clearcote launch args', () => {
     });
     assert.equal(args.includes('--no-sandbox'), true);
     assert.equal(args.includes('--disable-gpu'), true);
+    assert.equal(args.includes('--window-position=0,0'), true);
+    assert.equal(args.includes('--window-size=1920,1080'), true);
     assert.equal(args.includes('https://x.com'), true);
   });
 });
@@ -190,13 +192,54 @@ describe('Clearcote profile archive', () => {
     const restored = fs.mkdtempSync(path.join(os.tmpdir(), 'domx-profile-out-'));
     try {
       fs.mkdirSync(path.join(root, 'Default', 'Cache'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'Default', 'Network'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'Default', 'Local Storage', 'leveldb'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'Default', 'Service Worker', 'CacheStorage'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'Default', 'IndexedDB', 'https_x.com_0.indexeddb.leveldb'), {
+        recursive: true,
+      });
+      fs.mkdirSync(path.join(root, 'Default', 'File System', '000'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'Default', 'blob_storage'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'Local State'), 'state');
       fs.writeFileSync(path.join(root, 'Default', 'Cookies'), 'cookies');
+      fs.writeFileSync(path.join(root, 'Default', 'Network', 'Cookies'), 'network-cookies');
+      fs.writeFileSync(path.join(root, 'Default', 'Local Storage', 'leveldb', '000001.log'), 'local');
       fs.writeFileSync(path.join(root, 'Default', 'Cache', 'data_0'), 'cache');
+      fs.writeFileSync(path.join(root, 'Default', 'Service Worker', 'CacheStorage', 'index'), 'sw');
+      fs.writeFileSync(
+        path.join(root, 'Default', 'IndexedDB', 'https_x.com_0.indexeddb.leveldb', '000001.log'),
+        'idb'
+      );
+      fs.writeFileSync(path.join(root, 'Default', 'File System', '000', 't'), 'files');
+      fs.writeFileSync(path.join(root, 'Default', 'blob_storage', 'blob'), 'blob');
+      fs.writeFileSync(path.join(root, 'Default', 'History'), 'history');
       fs.writeFileSync(path.join(root, 'SingletonLock'), 'lock');
       const zip = packProfile(root);
       unpackProfile(zip, restored);
+      assert.equal(fs.readFileSync(path.join(restored, 'Local State'), 'utf8'), 'state');
       assert.equal(fs.readFileSync(path.join(restored, 'Default', 'Cookies'), 'utf8'), 'cookies');
+      assert.equal(
+        fs.readFileSync(path.join(restored, 'Default', 'Network', 'Cookies'), 'utf8'),
+        'network-cookies'
+      );
+      assert.equal(
+        fs.readFileSync(path.join(restored, 'Default', 'Local Storage', 'leveldb', '000001.log'), 'utf8'),
+        'local'
+      );
       assert.equal(fs.existsSync(path.join(restored, 'Default', 'Cache', 'data_0')), false);
+      assert.equal(
+        fs.existsSync(path.join(restored, 'Default', 'Service Worker', 'CacheStorage', 'index')),
+        false
+      );
+      assert.equal(
+        fs.existsSync(
+          path.join(restored, 'Default', 'IndexedDB', 'https_x.com_0.indexeddb.leveldb', '000001.log')
+        ),
+        false
+      );
+      assert.equal(fs.existsSync(path.join(restored, 'Default', 'File System', '000', 't')), false);
+      assert.equal(fs.existsSync(path.join(restored, 'Default', 'blob_storage', 'blob')), false);
+      assert.equal(fs.existsSync(path.join(restored, 'Default', 'History')), false);
       assert.equal(fs.existsSync(path.join(restored, 'SingletonLock')), false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
@@ -206,7 +249,16 @@ describe('Clearcote profile archive', () => {
 
   it('rejects unsafe archive paths', () => {
     assert.equal(shouldSkipRelative('Default/Cache/data_0'), true);
+    assert.equal(shouldSkipRelative('Default/Service Worker/CacheStorage/index'), true);
+    assert.equal(shouldSkipRelative('Default/IndexedDB/site.indexeddb.leveldb/000001.log'), true);
+    assert.equal(shouldSkipRelative('Default/File System/000/t'), true);
+    assert.equal(shouldSkipRelative('Default/blob_storage/blob'), true);
+    assert.equal(shouldSkipRelative('Default/History'), true);
+    assert.equal(shouldSkipRelative('Default/History-journal'), true);
     assert.equal(shouldSkipRelative('Default/Cookies'), false);
+    assert.equal(shouldSkipRelative('Default/Network/Cookies'), false);
+    assert.equal(shouldSkipRelative('Default/Local Storage/leveldb/000001.log'), false);
+    assert.equal(shouldSkipRelative('Local State'), false);
     assert.equal(isSafeZipName('../evil'), false);
     assert.equal(isSafeZipName('Default/Cookies'), true);
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'domx-zip-'));
