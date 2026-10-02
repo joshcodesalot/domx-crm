@@ -334,7 +334,7 @@ async function sendToPeer(creatorId, peerId, text, vaultIds, userId) {
     return message?.id ? [String(message.id)] : [];
   }
   const items = await pool.query(
-    `SELECT id, "savedMessageId"
+    `SELECT id, kind, "storageKey", "thumbKey", "fileName", "mimeType"
      FROM telegram_vault_items
      WHERE "creatorId" = $1 AND id = ANY($2::uuid[])`,
     [creatorId, ids]
@@ -345,7 +345,7 @@ async function sendToPeer(creatorId, peerId, text, vaultIds, userId) {
   const byId = new Map(items.rows.map((row) => [row.id, row]));
   const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
   const sent = await sendVaultToPeer(creatorId, peerId, {
-    itemMessageIds: ordered.map((row) => row.savedMessageId),
+    items: ordered,
     caption: text,
   });
   await recordVaultSent({

@@ -11,6 +11,7 @@ const { emitToUsers } = require('./userEventBus');
 const { getUserIdsWithCreatorAccess } = require('./creatorAccess');
 const { saveCreatorAvatarFromBuffer } = require('./creatorAvatar');
 const { dataPath } = require('./dataDir');
+const { downloadVaultObjectToFile } = require('./b2Storage');
 
 const DATA_DIR = dataPath('telegram');
 const FAN_AVATARS_DIR = dataPath('telegram-fans');
@@ -581,18 +582,28 @@ function cachedJpegReady(filePath) {
   }
 }
 
-function copyVaultThumbToChat(creatorId, savedMessageId, peerId, sentMessageId) {
-  const fromPath = vaultThumbAbs(creatorId, savedMessageId);
+function copyThumbFileToChat(creatorId, thumbPath, peerId, sentMessageId) {
   const toPath = chatThumbAbs(creatorId, peerId, sentMessageId);
-  if (!cachedJpegReady(fromPath) || !sentMessageId) return false;
+  if (!cachedJpegReady(thumbPath) || !sentMessageId) return false;
   try {
     fs.mkdirSync(path.dirname(toPath), { recursive: true });
-    fs.copyFileSync(fromPath, toPath);
+    fs.copyFileSync(thumbPath, toPath);
     return true;
   } catch (err) {
     console.warn('[telegram] Vault thumb copy failed:', err.message || err);
     return false;
   }
+}
+
+function vaultSendType(item) {
+  if (item.kind === 'voice') return 'voice';
+  if (item.kind === 'video') return 'video';
+  return 'photo';
+}
+
+function vaultSendMime(item) {
+  if (item.kind === 'voice') return guessUploadAudioMime(item.mimeType, item.fileName);
+  return item.mimeType || undefined;
 }
 
 function acquireMediaDownloadSlot() {
@@ -1928,22 +1939,52 @@ async function uploadVaultMedia(creatorId, { filePath, mimeType, fileName, thumb
   }
 }
 
-async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption, replyToMessageId } = {}) {
+async function materializeVaultSendItem(item, dir) {
+  if (!item?.storageKey) {
+    throw new TelegramWorkerError('Vault item has not been migrated to storage', 409);
+  }
+  const ext = path.extname(String(item.fileName || '')) || '';
+  const filePath = path.join(dir, `${item.id || Date.now()}${ext}`);
+  await downloadVaultObjectToFile(item.storageKey, filePath);
+  let thumbPath = '';
+  if (item.thumbKey) {
+    thumbPath = path.join(dir, `${item.id || 'item'}-thumb.jpg`);
+    try {
+      await downloadVaultObjectToFile(item.thumbKey, thumbPath);
+      if (!cachedJpegReady(thumbPath)) thumbPath = '';
+    } catch (err) {
+      console.warn('[telegram] Vault thumb download failed:', err.message || err);
+      thumbPath = '';
+    }
+  }
+  return {
+    id: item.id,
+    kind: item.kind,
+    fileName: item.fileName || null,
+    mimeType: item.mimeType || null,
+    filePath,
+    thumbPath,
+  };
+}
+
+async function sendVaultToPeer(creatorId, peerId, { items, caption, replyToMessageId } = {}) {
   const client = await getClient(creatorId);
   const numericPeer = Number(peerId);
   if (!Number.isFinite(numericPeer)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
-  const ids = (Array.isArray(itemMessageIds) ? itemMessageIds : [])
-    .map((id) => Number(id))
-    .filter((id) => Number.isFinite(id));
-  if (!ids.length) {
+  const list = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!list.length) {
     throw new TelegramWorkerError('vaultIds are required');
+  }
+  if (list.some((item) => !item.storageKey)) {
+    throw new TelegramWorkerError('Vault item has not been migrated to storage', 409);
   }
   const captionText = typeof caption === 'string' ? caption.trim() : '';
   const sentMessages = [];
   let captionUsed = false;
   let replyUsed = false;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'domx-vault-send-'));
 
   const takeCaption = () => {
     if (captionUsed || !captionText) return '';
@@ -1958,91 +1999,88 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption, rep
     return params;
   };
 
-  const pushSent = (sent, savedId) => {
+  const pushSent = (sent, thumbPath) => {
     const serialized = serializeMessage(sent);
     if (!serialized) return;
-    if (savedId != null) {
-      copyVaultThumbToChat(creatorId, savedId, numericPeer, serialized.id);
+    if (thumbPath) {
+      copyThumbFileToChat(creatorId, thumbPath, numericPeer, serialized.id);
     }
     sentMessages.push(serialized);
   };
 
-  const sendOneCopy = async (savedId) => {
+  const sendOne = async (item) => {
     const nextCaption = takeCaption();
     const replyParams = takeReplyParams();
-    const sent = await client.sendCopy({
-      fromChatId: 'me',
-      message: savedId,
-      toChatId: numericPeer,
+    const sent = await client.sendMedia(numericPeer, {
+      type: vaultSendType(item),
+      file: `file:${item.filePath}`,
+      fileName: item.fileName || path.basename(item.filePath),
+      fileMime: vaultSendMime(item),
       caption: nextCaption || undefined,
       ...(replyParams || {}),
     });
-    pushSent(sent, savedId);
+    pushSent(sent, item.thumbPath);
   };
 
-  const sendAlbum = async (chunkIds, sourceMsgs) => {
-    if (chunkIds.length === 1) {
-      await sendOneCopy(chunkIds[0]);
+  const sendAlbum = async (chunk) => {
+    if (chunk.length === 1) {
+      await sendOne(chunk[0]);
       return;
     }
     const medias = [];
-    for (let i = 0; i < sourceMsgs.length; i += 1) {
-      const msg = sourceMsgs[i];
-      if (!msg) {
-        throw new TelegramWorkerError('A vault item is missing from Saved Messages', 404);
-      }
-      const useCaption = i === 0 ? takeCaption() : '';
-      const input = inputMediaFromMessage(msg, useCaption);
-      if (!input) {
+    for (let i = 0; i < chunk.length; i += 1) {
+      const item = chunk[i];
+      if (item.kind !== 'photo' && item.kind !== 'video') {
         throw new TelegramWorkerError('Vault item is not a photo or video', 400);
       }
-      medias.push(input);
+      const useCaption = i === 0 ? takeCaption() : '';
+      medias.push({
+        type: item.kind,
+        file: `file:${item.filePath}`,
+        fileName: item.fileName || path.basename(item.filePath),
+        fileMime: item.mimeType || undefined,
+        ...(useCaption ? { caption: useCaption } : {}),
+      });
     }
     const sent = await client.sendMediaGroup(numericPeer, medias, takeReplyParams());
     const sentList = asMessageList(sent);
     for (let i = 0; i < sentList.length; i += 1) {
-      pushSent(sentList[i], chunkIds[i]);
+      pushSent(sentList[i], chunk[i]?.thumbPath);
     }
   };
 
   try {
-    if (ids.length === 1) {
-      await sendOneCopy(ids[0]);
+    const ready = [];
+    for (const item of list) {
+      ready.push(await materializeVaultSendItem(item, dir));
+    }
+    if (ready.length === 1) {
+      await sendOne(ready[0]);
       await markPeerRead(client, numericPeer, { creatorId, force: true });
       return sentMessages;
     }
 
-    const source = await fetchSavedMessages(client, ids);
-    let albumIds = [];
-    let albumMsgs = [];
-
+    let album = [];
     const flushAlbum = async () => {
-      if (!albumIds.length) return;
-      await sendAlbum(albumIds, albumMsgs);
-      albumIds = [];
-      albumMsgs = [];
+      if (!album.length) return;
+      await sendAlbum(album);
+      album = [];
     };
 
-    for (let i = 0; i < source.length; i += 1) {
-      const msg = source[i];
-      if (!msg) {
-        throw new TelegramWorkerError('A vault item is missing from Saved Messages', 404);
-      }
-      const kind = vaultKindFromMedia(msg.media);
-      if (kind === 'voice') {
+    for (const item of ready) {
+      if (item.kind === 'voice') {
         await flushAlbum();
-        await sendOneCopy(ids[i]);
+        await sendOne(item);
         continue;
       }
-      if (!isVisualMediaKind(kind)) {
+      if (item.kind !== 'photo' && item.kind !== 'video') {
         throw new TelegramWorkerError(
           'Vault item is not a photo, video, or voice note',
           400
         );
       }
-      albumIds.push(ids[i]);
-      albumMsgs.push(msg);
-      if (albumIds.length >= VAULT_ALBUM_MAX) {
+      album.push(item);
+      if (album.length >= VAULT_ALBUM_MAX) {
         await flushAlbum();
       }
     }
@@ -2051,7 +2089,10 @@ async function sendVaultToPeer(creatorId, peerId, { itemMessageIds, caption, rep
     return sentMessages;
   } catch (err) {
     if (err instanceof TelegramWorkerError) throw err;
+    if (err?.name === 'B2StorageError') throw err;
     throw new TelegramWorkerError(describeError(err), 400);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 

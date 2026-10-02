@@ -1,8 +1,10 @@
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const express = require('express');
 const multer = require('multer');
+const sharp = require('sharp');
 const rateLimit = require('express-rate-limit');
 const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
@@ -33,10 +35,7 @@ const {
   listSavedGifs,
   searchGifs,
   getCachedGifMedia,
-  uploadVaultMedia,
-  deleteSavedVaultMessage,
   getCachedMessageMedia,
-  getCachedVaultMedia,
   deleteText,
   resolveUsername,
   unreadCount,
@@ -53,6 +52,14 @@ const {
   redactMessage,
   redactMember,
 } = require('../services/telegramFanView');
+const {
+  B2StorageError,
+  vaultOriginalKey,
+  vaultThumbKey,
+  putVaultObject,
+  streamVaultObject,
+  deleteVaultObjects,
+} = require('../services/b2Storage');
 const { upsertMessageUnsend } = require('../services/messageUnsend');
 const {
   isChatCopyLocked,
@@ -96,7 +103,7 @@ function parseReplyToMessageId(value) {
 }
 
 function handleTelegramError(res, err, logLabel) {
-  if (err instanceof TelegramWorkerError) {
+  if (err instanceof TelegramWorkerError || err instanceof B2StorageError) {
     return res.status(err.status || 400).json({ error: err.message });
   }
   console.error(logLabel, err);
@@ -158,6 +165,75 @@ function sendLocalFile(res, filePath, mimeType) {
     `inline; filename="${String(filename).replace(/"/g, '')}"`
   );
   return res.sendFile(resolved);
+}
+
+function isVaultManager(user) {
+  return user?.role === 'owner' || user?.role === 'manager';
+}
+
+function classifyVaultUpload(mimeType, fileName) {
+  const mime = String(mimeType || '').toLowerCase();
+  const name = String(fileName || '').toLowerCase();
+  if (mime.startsWith('image/')) return 'photo';
+  if (mime.startsWith('video/')) return 'video';
+  if (
+    mime.startsWith('audio/') ||
+    /\.(ogg|opus|mp3|m4a|wav|aac)$/i.test(name)
+  ) {
+    return 'voice';
+  }
+  return null;
+}
+
+async function photoDimensions(filePath) {
+  try {
+    const meta = await sharp(filePath, { failOn: 'none' }).rotate().metadata();
+    const width = Number(meta.width);
+    const height = Number(meta.height);
+    return {
+      width: Number.isFinite(width) && width > 0 ? Math.round(width) : null,
+      height: Number.isFinite(height) && height > 0 ? Math.round(height) : null,
+    };
+  } catch {
+    return { width: null, height: null };
+  }
+}
+
+async function writePhotoThumb(filePath) {
+  const dest = `${filePath}.thumb.jpg`;
+  await sharp(filePath, { failOn: 'none' })
+    .rotate()
+    .resize(320, 320, { fit: 'cover' })
+    .jpeg({ quality: 80 })
+    .toFile(dest);
+  return dest;
+}
+
+function parseVaultItemIds(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item || '').trim()).filter(isValidUuid))];
+}
+
+async function removeVaultItems(creatorId, itemIds) {
+  const existing = await pool.query(
+    `SELECT id, "storageKey", "thumbKey"
+     FROM telegram_vault_items
+     WHERE "creatorId" = $1 AND id = ANY($2::uuid[])`,
+    [creatorId, itemIds]
+  );
+  if (existing.rows.length === 0) return 0;
+  const keys = [];
+  for (const row of existing.rows) {
+    if (row.storageKey) keys.push(row.storageKey);
+    if (row.thumbKey) keys.push(row.thumbKey);
+  }
+  await deleteVaultObjects(keys);
+  await pool.query(
+    `DELETE FROM telegram_vault_items
+     WHERE "creatorId" = $1 AND id = ANY($2::uuid[])`,
+    [creatorId, existing.rows.map((row) => row.id)]
+  );
+  return existing.rows.length;
 }
 
 function cleanupUpload(file) {
@@ -629,7 +705,7 @@ router.post(
       }
 
       const items = await pool.query(
-        `SELECT id, "savedMessageId"
+        `SELECT id, kind, "storageKey", "thumbKey", "fileName", "mimeType"
          FROM telegram_vault_items
          WHERE "creatorId" = $1 AND id = ANY($2::uuid[])`,
         [id, vaultIdList]
@@ -640,7 +716,7 @@ router.post(
       const byId = new Map(items.rows.map((row) => [row.id, row]));
       const ordered = vaultIdList.map((itemId) => byId.get(itemId)).filter(Boolean);
       const sent = await sendVaultToPeer(id, peerId, {
-        itemMessageIds: ordered.map((row) => row.savedMessageId),
+        items: ordered,
         caption: trimmed,
         replyToMessageId,
       });
@@ -1282,6 +1358,7 @@ router.post(
       cleanupUpload(thumbFile);
       return res.status(400).json({ error: 'file is required' });
     }
+    let generatedThumb = null;
     try {
       const creator = await requireTelegramCreator(req, res);
       if (!creator) {
@@ -1298,49 +1375,73 @@ router.post(
         cleanupUpload(thumbFile);
         return res.status(404).json({ error: 'Folder not found' });
       }
-      const uploaded = await uploadVaultMedia(creator.id, {
-        filePath: mediaFile.path,
-        mimeType: mediaFile.mimetype,
-        fileName: mediaFile.originalname,
-        thumbPath: thumbFile?.path || null,
-      });
-      const inserted = await pool.query(
-        `INSERT INTO telegram_vault_items (
-           "creatorId", "folderId", "savedMessageId", "fileUniqueId", kind,
-           "fileName", duration, width, height, "uploadedBy"
-         )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         ON CONFLICT ("creatorId", "savedMessageId")
-         DO UPDATE SET
-           "folderId" = EXCLUDED."folderId",
-           "fileUniqueId" = COALESCE(EXCLUDED."fileUniqueId", telegram_vault_items."fileUniqueId"),
-           kind = EXCLUDED.kind,
-           "fileName" = COALESCE(EXCLUDED."fileName", telegram_vault_items."fileName"),
-           duration = COALESCE(EXCLUDED.duration, telegram_vault_items.duration),
-           width = COALESCE(EXCLUDED.width, telegram_vault_items.width),
-           height = COALESCE(EXCLUDED.height, telegram_vault_items.height),
-           "updatedAt" = NOW()
-         RETURNING id, "folderId", "savedMessageId", "fileUniqueId", kind,
-                   "fileName", duration, width, height, "uploadedBy", "createdAt"`,
-        [
-          creator.id,
-          folderId,
-          uploaded.savedMessageId,
-          uploaded.fileUniqueId,
-          uploaded.kind,
-          uploaded.fileName || mediaFile.originalname || null,
-          uploaded.duration,
-          uploaded.width,
-          uploaded.height,
-          req.user.id,
-        ]
-      );
-      return res.status(201).json({ item: serializeVaultItem(inserted.rows[0]) });
+      const kind = classifyVaultUpload(mediaFile.mimetype, mediaFile.originalname);
+      if (!kind) {
+        return res.status(400).json({ error: 'Only photos, videos, and audio can be added to the vault' });
+      }
+      const itemId = crypto.randomUUID();
+      const storageKey = vaultOriginalKey(creator.id, itemId);
+      let thumbPath = thumbFile?.path || null;
+      if (!thumbPath && kind === 'photo') {
+        generatedThumb = await writePhotoThumb(mediaFile.path);
+        thumbPath = generatedThumb;
+      }
+      const thumbKey = thumbPath ? vaultThumbKey(creator.id, itemId) : null;
+      const dims = kind === 'photo' ? await photoDimensions(mediaFile.path) : { width: null, height: null };
+      const storedKeys = [];
+      try {
+        const byteSize = await putVaultObject(
+          storageKey,
+          mediaFile.path,
+          mediaFile.mimetype || 'application/octet-stream'
+        );
+        storedKeys.push(storageKey);
+        if (thumbKey && thumbPath) {
+          await putVaultObject(thumbKey, thumbPath, 'image/jpeg');
+          storedKeys.push(thumbKey);
+        }
+        const inserted = await pool.query(
+          `INSERT INTO telegram_vault_items (
+             id, "creatorId", "folderId", "savedMessageId", kind, "fileName",
+             "mimeType", "storageKey", "thumbKey", "byteSize", width, height, "uploadedBy"
+           )
+           VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           RETURNING id, "folderId", "savedMessageId", "fileUniqueId", kind,
+                     "fileName", duration, width, height, "uploadedBy", "createdAt"`,
+          [
+            itemId,
+            creator.id,
+            folderId,
+            kind,
+            mediaFile.originalname || null,
+            mediaFile.mimetype || null,
+            storageKey,
+            thumbKey,
+            byteSize,
+            dims.width,
+            dims.height,
+            req.user.id,
+          ]
+        );
+        return res.status(201).json({ item: serializeVaultItem(inserted.rows[0]) });
+      } catch (err) {
+        await deleteVaultObjects(storedKeys).catch((cleanupErr) => {
+          console.warn('[telegram] Vault storage cleanup failed:', cleanupErr.message || cleanupErr);
+        });
+        throw err;
+      }
     } catch (err) {
       return handleTelegramError(res, err, 'Upload Telegram vault error:');
     } finally {
       cleanupUpload(mediaFile);
       cleanupUpload(thumbFile);
+      if (generatedThumb) {
+        try {
+          fs.unlinkSync(generatedThumb);
+        } catch {
+          // ignore
+        }
+      }
     }
   }
 );
@@ -1393,11 +1494,76 @@ router.patch(
   }
 );
 
+router.post(
+  '/:id/telegram/vault/move',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const itemIds = parseVaultItemIds(req.body?.itemIds);
+    const folderId = isValidUuid(req.body?.folderId) ? req.body.folderId : null;
+    if (!itemIds.length) {
+      return res.status(400).json({ error: 'itemIds are required' });
+    }
+    if (!folderId) {
+      return res.status(400).json({ error: 'folderId is required' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const folder = await pool.query(
+        `SELECT id FROM telegram_vault_folders WHERE id = $1 AND "creatorId" = $2`,
+        [folderId, creator.id]
+      );
+      if (folder.rows.length === 0) {
+        return res.status(404).json({ error: 'Folder not found' });
+      }
+      const updated = await pool.query(
+        `UPDATE telegram_vault_items
+         SET "folderId" = $3, "updatedAt" = NOW()
+         WHERE "creatorId" = $1 AND id = ANY($2::uuid[])`,
+        [creator.id, itemIds, folderId]
+      );
+      return res.json({ ok: true, moved: updated.rowCount });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Move Telegram vault items error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/telegram/vault/bulk-delete',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    if (!isVaultManager(req.user)) {
+      return res.status(403).json({ error: 'Only owners and managers can delete vault items' });
+    }
+    const itemIds = parseVaultItemIds(req.body?.itemIds);
+    if (!itemIds.length) {
+      return res.status(400).json({ error: 'itemIds are required' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const deleted = await removeVaultItems(creator.id, itemIds);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Vault item not found' });
+      }
+      return res.json({ ok: true, deleted });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Bulk delete Telegram vault items error:');
+    }
+  }
+);
+
 router.delete(
   '/:id/telegram/vault/:itemId',
   authenticate,
   requirePermission('creators.view'),
   async (req, res) => {
+    if (!isVaultManager(req.user)) {
+      return res.status(403).json({ error: 'Only owners and managers can delete vault items' });
+    }
     const { itemId } = req.params;
     if (!isValidUuid(itemId)) {
       return res.status(400).json({ error: 'Invalid vault item ID' });
@@ -1405,24 +1571,10 @@ router.delete(
     try {
       const creator = await requireTelegramCreator(req, res);
       if (!creator) return undefined;
-      const existing = await pool.query(
-        `SELECT id, "savedMessageId"
-         FROM telegram_vault_items
-         WHERE id = $1 AND "creatorId" = $2`,
-        [itemId, creator.id]
-      );
-      if (existing.rows.length === 0) {
+      const deleted = await removeVaultItems(creator.id, [itemId]);
+      if (!deleted) {
         return res.status(404).json({ error: 'Vault item not found' });
       }
-      try {
-        await deleteSavedVaultMessage(creator.id, existing.rows[0].savedMessageId);
-      } catch (err) {
-        console.warn('[telegram] Vault Saved Messages delete failed:', err.message || err);
-      }
-      await pool.query(
-        `DELETE FROM telegram_vault_items WHERE id = $1 AND "creatorId" = $2`,
-        [itemId, creator.id]
-      );
       return res.json({ ok: true });
     } catch (err) {
       return handleTelegramError(res, err, 'Delete Telegram vault item error:');
@@ -1443,7 +1595,7 @@ router.get(
       const creator = await requireTelegramCreator(req, res);
       if (!creator) return undefined;
       const item = await pool.query(
-        `SELECT "savedMessageId", kind
+        `SELECT kind, "storageKey", "thumbKey", "mimeType", "fileName"
          FROM telegram_vault_items
          WHERE id = $1 AND "creatorId" = $2`,
         [itemId, creator.id]
@@ -1451,14 +1603,25 @@ router.get(
       if (item.rows.length === 0) {
         return res.status(404).json({ error: 'Vault item not found' });
       }
+      const row = item.rows[0];
+      if (!row.storageKey) {
+        return res.status(409).json({ error: 'Vault item has not been migrated to storage' });
+      }
       const requested = req.query.variant === 'full' ? 'full' : 'thumb';
-      const variant = item.rows[0].kind === 'voice' ? 'full' : requested;
-      const media = await getCachedVaultMedia(
-        creator.id,
-        item.rows[0].savedMessageId,
-        variant
-      );
-      return sendLocalFile(res, media.filePath, media.mimeType);
+      const variant = row.kind === 'voice' ? 'full' : requested;
+      if (variant === 'thumb' && row.thumbKey) {
+        return streamVaultObject(res, row.thumbKey, {
+          contentType: 'image/jpeg',
+          filename: 'thumb.jpg',
+        });
+      }
+      if (variant === 'thumb' && row.kind !== 'photo') {
+        return res.status(404).json({ error: 'No thumbnail' });
+      }
+      return streamVaultObject(res, row.storageKey, {
+        contentType: row.mimeType || (row.kind === 'photo' ? 'image/jpeg' : 'application/octet-stream'),
+        filename: row.fileName || 'media',
+      });
     } catch (err) {
       return handleTelegramError(res, err, 'Get Telegram vault media error:');
     }

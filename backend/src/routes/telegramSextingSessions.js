@@ -32,7 +32,7 @@ function isValidUuid(value) {
 }
 
 function handleTelegramError(res, err, logLabel) {
-  if (err instanceof TelegramWorkerError) {
+  if (err instanceof TelegramWorkerError || err?.name === 'B2StorageError') {
     return res.status(err.status || 400).json({ error: err.message });
   }
   console.error(logLabel, err);
@@ -528,7 +528,7 @@ router.post('/:id/blocks/:blockId/send', async (req, res) => {
       sentMessages = [message];
     } else {
       const items = await pool.query(
-        `SELECT id, "savedMessageId"
+        `SELECT id, kind, "storageKey", "thumbKey", "fileName", "mimeType"
          FROM telegram_vault_items
          WHERE "creatorId" = $1 AND id = ANY($2::uuid[])`,
         [block.creatorId, vaultIds]
@@ -539,7 +539,7 @@ router.post('/:id/blocks/:blockId/send', async (req, res) => {
       const byId = new Map(items.rows.map((row) => [row.id, row]));
       const ordered = vaultIds.map((itemId) => byId.get(itemId)).filter(Boolean);
       sentMessages = await sendVaultToPeer(block.creatorId, session.groupPeerId, {
-        itemMessageIds: ordered.map((row) => row.savedMessageId),
+        items: ordered,
         caption: sendTextValue,
       });
       await recordVaultSent({

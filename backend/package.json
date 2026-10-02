@@ -12,6 +12,8 @@
     "playwright:install": "playwright install chromium"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1145.0",
+    "@aws-sdk/lib-storage": "^3.1145.0",
     "@mtcute/node": "^0.31.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",

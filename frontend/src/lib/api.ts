@@ -2838,7 +2838,7 @@ export interface TelegramVaultFolder {
 export interface TelegramVaultItem {
   id: string;
   folderId: string | null;
-  savedMessageId: string;
+  savedMessageId: string | null;
   fileUniqueId?: string | null;
   kind: 'photo' | 'video' | 'voice';
   fileName?: string | null;
@@ -3279,6 +3279,27 @@ export async function deleteTelegramVaultItem(
     `/api/creators/${creatorId}/telegram/vault/${encodeURIComponent(itemId)}`,
     { method: 'DELETE' }
   );
+}
+
+export async function moveTelegramVaultItems(
+  creatorId: string,
+  itemIds: string[],
+  folderId: string
+): Promise<{ ok: boolean; moved: number }> {
+  return request(`/api/creators/${creatorId}/telegram/vault/move`, {
+    method: 'POST',
+    body: JSON.stringify({ itemIds, folderId }),
+  });
+}
+
+export async function deleteTelegramVaultItems(
+  creatorId: string,
+  itemIds: string[]
+): Promise<{ ok: boolean; deleted: number }> {
+  return request(`/api/creators/${creatorId}/telegram/vault/bulk-delete`, {
+    method: 'POST',
+    body: JSON.stringify({ itemIds }),
+  });
 }
 
 export async function listTelegramVaultSent(

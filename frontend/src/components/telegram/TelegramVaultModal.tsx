@@ -16,6 +16,7 @@ import {
   Loader2,
   Mic,
   Plus,
+  Trash2,
   Upload,
   Video,
   X,
@@ -30,10 +31,12 @@ import TelegramAudioPlayer, {
 import { useAuth } from '@/context/AuthContext';
 import {
   createTelegramVaultFolder,
+  deleteTelegramVaultItems,
   listTelegramVault,
   listTelegramVaultFolders,
   listTelegramVaultSent,
   listVaultMediaNotes,
+  moveTelegramVaultItems,
   telegramVaultMediaUrl,
   uploadTelegramVaultItem,
   type TelegramVaultFolder,
@@ -204,8 +207,9 @@ export default function TelegramVaultModal({
   onChangeSelected: (items: TelegramVaultItem[]) => void;
   onClose: () => void;
 }) {
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const canEditNotes = hasPermission('vault.notes.edit');
+  const canDeleteVault = user?.role === 'owner' || user?.role === 'manager';
   const [folders, setFolders] = useState<TelegramVaultFolder[]>([]);
   const [folderId, setFolderId] = useState<string | null>(null);
   const [items, setItems] = useState<TelegramVaultItem[]>([]);
@@ -235,7 +239,11 @@ export default function TelegramVaultModal({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const cancelUploadRef = useRef(false);
   const dragDepthRef = useRef(0);
+  const draggingItemIdsRef = useRef<string[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [dropFolderId, setDropFolderId] = useState<string | null>(null);
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     setSelected(selectedItems);
@@ -423,8 +431,9 @@ export default function TelegramVaultModal({
     if (dragDepthRef.current === 0) setIsDragging(false);
   }
 
-  function queueVaultFiles(input: File[] | FileList | null) {
-    if (!input?.length || !folderId || uploading) return;
+  function queueVaultFiles(input: File[] | FileList | null, targetFolderId?: string) {
+    const destFolder = targetFolderId || folderId;
+    if (!input?.length || !destFolder || uploading) return;
     const raw = Array.from(input);
     const accepted: File[] = [];
     let skippedType = 0;
@@ -448,7 +457,40 @@ export default function TelegramVaultModal({
       setError(warning || 'No photos, videos, or audio to upload.');
       return;
     }
-    void handleUpload(toFileList(accepted), warning);
+    void handleUpload(toFileList(accepted), warning, destFolder);
+  }
+
+  async function moveItemsToFolder(itemIds: string[], destFolderId: string) {
+    if (!itemIds.length || destFolderId === folderId) return;
+    setError(null);
+    try {
+      await moveTelegramVaultItems(creatorId, itemIds, destFolderId);
+      const moving = new Set(itemIds);
+      setItems((prev) => prev.filter((item) => !moving.has(item.id)));
+      setSelected((prev) => prev.filter((item) => !moving.has(item.id)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to move vault items');
+    }
+  }
+
+  async function deleteSelectedItems() {
+    if (!canDeleteVault || !selected.length || deleting) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteTelegramVaultItems(
+        creatorId,
+        selected.map((item) => item.id)
+      );
+      const removing = new Set(selected.map((item) => item.id));
+      setItems((prev) => prev.filter((item) => !removing.has(item.id)));
+      setSelected([]);
+      setDeleteArmed(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete vault items');
+    } finally {
+      setDeleting(false);
+    }
   }
 
   function handleDrop(event: DragEvent<HTMLDivElement>) {
@@ -459,8 +501,13 @@ export default function TelegramVaultModal({
     queueVaultFiles(filesFromDataTransfer(event.dataTransfer));
   }
 
-  async function handleUpload(files: FileList | null, warning?: string | null) {
-    if (!files?.length || !folderId || uploading) return;
+  async function handleUpload(
+    files: FileList | null,
+    warning?: string | null,
+    targetFolderId?: string
+  ) {
+    const destFolder = targetFolderId || folderId;
+    if (!files?.length || !destFolder || uploading) return;
     const queue = Array.from(files);
     cancelUploadRef.current = false;
     resetDragState();
@@ -475,7 +522,7 @@ export default function TelegramVaultModal({
         const file = queue[index];
         const form = new FormData();
         form.append('file', file);
-        form.append('folderId', folderId);
+        form.append('folderId', destFolder);
         const isVideo =
           file.type.startsWith('video/') ||
           /\.(mp4|mov|webm|mkv|avi|m4v)$/i.test(file.name);
@@ -488,9 +535,11 @@ export default function TelegramVaultModal({
         }
         try {
           const result = await uploadTelegramVaultItem(creatorId, form);
-          setItems((prev) => [result.item, ...prev.filter((item) => item.id !== result.item.id)]);
-          if (kindFilter === 'all' || result.item.kind === kindFilter) {
-            offsetRef.current += 1;
+          if (destFolder === folderId) {
+            setItems((prev) => [result.item, ...prev.filter((item) => item.id !== result.item.id)]);
+            if (kindFilter === 'all' || result.item.kind === kindFilter) {
+              offsetRef.current += 1;
+            }
           }
         } catch (err) {
           failed += 1;
@@ -577,10 +626,24 @@ export default function TelegramVaultModal({
             {selected.length > 0 && (
               <button
                 type="button"
-                onClick={() => setSelected([])}
+                onClick={() => {
+                  setSelected([]);
+                  setDeleteArmed(false);
+                }}
                 className="px-3 py-2 text-sm text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white"
               >
                 Clear Selection
+              </button>
+            )}
+            {canDeleteVault && selected.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setDeleteArmed(true)}
+                disabled={deleting}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-red-300 dark:border-red-900/60 text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50"
+              >
+                <Trash2 className="w-4 h-4" />
+                Delete
               </button>
             )}
             <button
@@ -601,6 +664,34 @@ export default function TelegramVaultModal({
           </div>
         </div>
 
+        {deleteArmed && canDeleteVault && selected.length > 0 && (
+          <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30">
+            <p className="text-sm text-red-800 dark:text-red-200">
+              Delete {selected.length} item{selected.length === 1 ? '' : 's'} from the vault? This
+              cannot be undone.
+            </p>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setDeleteArmed(false)}
+                disabled={deleting}
+                className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void deleteSelectedItems()}
+                disabled={deleting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg bg-red-600 text-white hover:bg-red-500 disabled:opacity-50"
+              >
+                {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                Delete
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-1 overflow-hidden min-h-0">
           <div className="w-48 sm:w-56 border-r border-gray-200 dark:border-zinc-800/60 bg-gray-100/40 dark:bg-zinc-900/20 p-3 overflow-y-auto hidden md:block shrink-0">
             <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-3 px-2">
@@ -609,15 +700,51 @@ export default function TelegramVaultModal({
             <ul className="space-y-1">
               {folders.map((folder) => {
                 const active = folderId === folder.id;
+                const dropTarget = dropFolderId === folder.id;
                 return (
-                  <li key={folder.id}>
+                  <li
+                    key={folder.id}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (!event.dataTransfer) return;
+                      if (uploading && hasFileDrag(event.dataTransfer)) {
+                        event.dataTransfer.dropEffect = 'none';
+                        return;
+                      }
+                      event.dataTransfer.dropEffect = hasFileDrag(event.dataTransfer)
+                        ? 'copy'
+                        : 'move';
+                      setDropFolderId(folder.id);
+                    }}
+                    onDragLeave={(event) => {
+                      const next = event.relatedTarget;
+                      if (next instanceof Node && event.currentTarget.contains(next)) return;
+                      setDropFolderId((current) => (current === folder.id ? null : current));
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setDropFolderId(null);
+                      if (hasFileDrag(event.dataTransfer)) {
+                        queueVaultFiles(filesFromDataTransfer(event.dataTransfer), folder.id);
+                        return;
+                      }
+                      const ids = draggingItemIdsRef.current;
+                      draggingItemIdsRef.current = [];
+                      if (!ids.length) return;
+                      void moveItemsToFolder(ids, folder.id);
+                    }}
+                  >
                     <button
                       type="button"
                       onClick={() => setFolderId(folder.id)}
                       className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 truncate ${
-                        active
-                          ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
-                          : 'hover:bg-gray-100 dark:hover:bg-zinc-800/50 text-gray-500 dark:text-zinc-400'
+                        dropTarget
+                          ? 'bg-domx-600/15 text-gray-900 dark:text-white ring-1 ring-domx-500'
+                          : active
+                            ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
+                            : 'hover:bg-gray-100 dark:hover:bg-zinc-800/50 text-gray-500 dark:text-zinc-400'
                       }`}
                     >
                       {active ? (
@@ -762,6 +889,19 @@ export default function TelegramVaultModal({
                     >
                       <button
                         type="button"
+                        draggable
+                        onDragStart={(event) => {
+                          const ids = selected.some((entry) => entry.id === item.id)
+                            ? selected.map((entry) => entry.id)
+                            : [item.id];
+                          draggingItemIdsRef.current = ids;
+                          event.dataTransfer.setData('text/plain', ids.join(','));
+                          event.dataTransfer.effectAllowed = 'move';
+                        }}
+                        onDragEnd={() => {
+                          draggingItemIdsRef.current = [];
+                          setDropFolderId(null);
+                        }}
                         onClick={() => toggleItem(item)}
                         onDoubleClick={(e) => {
                           e.preventDefault();
