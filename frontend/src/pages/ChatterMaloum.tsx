@@ -1,6 +1,7 @@
+import { WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
+import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
-import Sidebar from '@/components/Sidebar';
 import { MaloumSingleCreatorChat } from '@/components/maloum/MaloumChatPanels';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
 import { usePollEnabled } from '@/hooks/useDocumentVisible';
@@ -66,8 +67,7 @@ export default function ChatterMaloum() {
   }
 
   return (
-    <div className="h-screen flex bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 antialiased overflow-hidden">
-      <Sidebar activePage="chatter" />
+    <AppShell title="Maloum Chat" activePage="chatter" bleed headerExtras={<><WorkspaceDrawerButton id="maloum-creators" size="lg" label="Creators" className="lg:hidden" /><WorkspaceDrawerButton id="maloum-inbox" size="md" label="Inbox" className="md:hidden" /></>}>
       <MaloumSingleCreatorChat
         creators={creators}
         creatorsLoading={creatorsLoading}
@@ -82,6 +82,6 @@ export default function ChatterMaloum() {
         onDeepLinkConsumed={consumeChatDeepLink}
         pollEnabled={pollEnabled}
       />
-    </div>
+    </AppShell>
   );
 }

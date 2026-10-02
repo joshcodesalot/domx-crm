@@ -1,3 +1,5 @@
+import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
+import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Image as ImageIcon,
@@ -9,7 +11,6 @@ import {
   Video,
   X,
 } from 'lucide-react';
-import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import FanScrapeActivityLog from '@/components/FanScrapeActivityLog';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
@@ -487,17 +488,16 @@ export default function FourBasedFanScraper() {
       : null;
 
   return (
-    <div className="h-screen flex bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 antialiased overflow-hidden">
-      <Sidebar activePage="chatter" />
+    <AppShell title="4based Fan Scraper" activePage="chatter" bleed headerExtras={<><WorkspaceDrawerButton id="4based-scrape-accounts" size="lg" label="Creators" className="lg:hidden" /></>}>
 
-      <aside className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50">
+      <WorkspaceDrawer id="4based-scrape-accounts" size="lg" className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50">
         <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center gap-2">
           <img src={fourBasedIcon} alt="" className="w-5 h-5 rounded" />
           <span className="text-sm font-semibold text-gray-900 dark:text-white">
             Fan Scraper
           </span>
         </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+        <div data-drawer-list className="flex-1 overflow-y-auto p-3 space-y-1.5">
           {creatorsLoading && (
             <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">
               Loading creators…
@@ -539,7 +539,7 @@ export default function FourBasedFanScraper() {
             );
           })}
         </div>
-      </aside>
+      </WorkspaceDrawer>
 
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <div className="h-16 px-6 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 shrink-0">
@@ -962,6 +962,6 @@ export default function FourBasedFanScraper() {
           zClassName="z-[100]"
         />
       )}
-    </div>
+    </AppShell>
   );
 }

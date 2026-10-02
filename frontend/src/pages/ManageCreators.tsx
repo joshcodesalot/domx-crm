@@ -13,6 +13,7 @@ import AppLayout from '@/components/AppLayout';
 import AddCreatorModal from '@/components/AddCreatorModal';
 import AssignCreatorStaffModal from '@/components/AssignCreatorStaffModal';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import PlatformIcon from '@/components/PlatformIcon';
 import EditCreatorProxyModal from '@/components/EditCreatorProxyModal';
 import RemoveCreatorModal from '@/components/RemoveCreatorModal';
 import RenameCreatorModal from '@/components/RenameCreatorModal';
@@ -268,7 +269,8 @@ export default function ManageCreators() {
           </div>
         )}
 
-        <div className="border border-gray-200 dark:border-white/10 rounded-xl overflow-x-auto">
+        <p className="text-xs text-gray-400 mb-2 sm:hidden">Swipe horizontally to see every column.</p>
+        <div className="table-scroll border border-gray-200 dark:border-white/10 rounded-xl overflow-x-auto surface-card">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/[0.02]">
@@ -330,7 +332,10 @@ export default function ManageCreators() {
                           initialsClassName="w-9 h-9 rounded-full bg-orange-100 flex items-center justify-center shrink-0 text-orange-600 font-bold text-sm"
                         />
                         <div className="min-w-0">
-                          <p className="font-medium truncate">{creator.displayName}</p>
+                          <p className="font-medium truncate inline-flex items-center gap-1.5">
+                            <PlatformIcon platform={creator.platform} />
+                            <span className="truncate">{creator.displayName}</span>
+                          </p>
                           <p className="text-xs text-gray-400 truncate">
                             {creator.username ? `@${creator.username}` : ''}
                             {creator.username ? ' · ' : ''}

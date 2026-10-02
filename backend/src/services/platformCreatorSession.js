@@ -3,6 +3,7 @@ const { decryptJson, decryptSecret } = require('./crypto');
 const { decryptAccessToken } = require('./maloumAuthTokens');
 const fourBasedClient = require('./fourBasedClient');
 const maloumClient = require('./maloumClient');
+const fanslyClient = require('./fanslyClient');
 
 async function loadFourBasedCreator(creatorId) {
   const result = await pool.query(
@@ -198,8 +199,89 @@ async function loadTelegramCreator(creatorId) {
   };
 }
 
+async function loadFanslyCreator(creatorId) {
+  const result = await pool.query(
+    `SELECT id, platform, "displayName", "providerUserId", "encryptedSession",
+            "encryptedAccessToken", "encryptedProxy", "connectionStatus", "accountId"
+     FROM creators
+     WHERE id = $1`,
+    [creatorId]
+  );
+
+  if (result.rows.length === 0) {
+    return { error: { status: 404, message: 'Creator not found' } };
+  }
+
+  const row = result.rows[0];
+  if (row.platform !== 'fansly') {
+    return { error: { status: 400, message: 'Creator is not a Fansly account' } };
+  }
+
+  let session = {};
+  try {
+    if (row.encryptedSession) {
+      session = decryptJson(row.encryptedSession) || {};
+    }
+  } catch {
+    return { error: { status: 500, message: 'Failed to decrypt Fansly session' } };
+  }
+
+  const accessToken = decryptSecret(row.encryptedAccessToken) || session.token || null;
+  let proxyUrl = decryptSecret(row.encryptedProxy) || null;
+  if (!proxyUrl) {
+    try {
+      proxyUrl = fanslyClient.resolveFanslyProxyUrl(null);
+    } catch {
+      proxyUrl = null;
+    }
+  }
+  const providerUserId = row.providerUserId || session.providerUserId || null;
+  const deviceId = session.deviceId || null;
+  const sessionId = session.sessionId || null;
+
+  if (!accessToken || !providerUserId || !deviceId || !sessionId) {
+    return {
+      error: {
+        status: 400,
+        message: 'Fansly account is missing auth credentials. Please reconnect.',
+      },
+    };
+  }
+
+  if (!proxyUrl) {
+    return {
+      error: {
+        status: 400,
+        message:
+          'Fansly proxy is required. Set FANSLY_PROXY_URL in backend .env or reconnect with a proxy.',
+      },
+    };
+  }
+
+  return {
+    creator: {
+      id: row.id,
+      displayName: row.displayName,
+      accountId: row.accountId,
+      providerUserId,
+      accessToken,
+      proxyUrl,
+      deviceId,
+      session: {
+        ...session,
+        providerUserId,
+        token: accessToken,
+        sessionId,
+        deviceId,
+        cookies: session.cookies || {},
+      },
+    },
+  };
+}
+
 module.exports = {
   loadFourBasedCreator,
   loadMaloumCreator,
   loadTelegramCreator,
+  loadFanslyCreator,
 };

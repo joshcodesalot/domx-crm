@@ -78,7 +78,7 @@ export interface Creator {
   id: string;
   displayName: string;
   username: string | null;
-  platform: 'maloum' | '4based' | 'telegram';
+  platform: 'maloum' | '4based' | 'telegram' | 'fansly';
   connectionStatus: 'connected' | 'error' | 'pending';
   postLoginUrl: string | null;
   avatarUrl: string | null;
@@ -117,7 +117,7 @@ export interface CreatorsResponse {
 export interface CreateCreatorInput {
   displayName: string;
   username?: string;
-  platform: 'maloum' | '4based' | 'telegram';
+  platform: 'maloum' | '4based' | 'telegram' | 'fansly';
   postLoginUrl?: string;
   connectionStatus?: 'connected' | 'error' | 'pending';
   accountId?: string;
@@ -2135,6 +2135,156 @@ export async function connectFourBasedAccount(
       ...(input.username ? { username: input.username } : {}),
     }),
   });
+}
+
+export interface ConnectFanslyInput {
+  accountId: string;
+  email: string;
+  password: string;
+  proxyUrl?: string;
+}
+
+export async function connectFanslyAccount(
+  input: ConnectFanslyInput
+): Promise<ConnectFourBasedResponse> {
+  return request<ConnectFourBasedResponse>('/api/creators/connect', {
+    method: 'POST',
+    body: JSON.stringify({
+      accountId: input.accountId,
+      platform: 'fansly',
+      email: input.email,
+      password: input.password,
+      ...(input.proxyUrl ? { proxyUrl: input.proxyUrl } : {}),
+    }),
+  });
+}
+
+export async function reconnectFanslyAccount(
+  creatorId: string,
+  input: { email: string; password: string; proxyUrl?: string }
+): Promise<{ creator: Creator }> {
+  return request(`/api/creators/${creatorId}/fansly/reconnect`, {
+    method: 'POST',
+    body: JSON.stringify({
+      email: input.email,
+      password: input.password,
+      ...(input.proxyUrl ? { proxyUrl: input.proxyUrl } : {}),
+    }),
+  });
+}
+
+export interface FanslyChat {
+  groupId: string;
+  partnerAccountId: string | null;
+  partnerUsername: string;
+  unreadCount: number;
+  lastMessageId: string | null;
+  lastMessage: FanslyMessage | null;
+}
+
+export interface FanslyMessage {
+  id: string;
+  type?: number;
+  content: string;
+  groupId: string | null;
+  senderId: string | null;
+  createdAt: number | null;
+  attachments: unknown[];
+  totalTipAmount: number;
+}
+
+export interface FanslyNotification {
+  id: string;
+  accountId: string;
+  type: number;
+  correlationId: string | null;
+  correlationGroupId: string | null;
+  createdAt: number;
+  metadata: string | null;
+}
+
+export interface FanslyAccount {
+  id: string;
+  username?: string | null;
+  displayName?: string | null;
+}
+
+export interface FanslyTip {
+  id: string;
+  senderId: string;
+  amount: number;
+  message?: string | null;
+  createdAt?: number;
+}
+
+export interface FanslyNotificationFilter {
+  id: string;
+  label: string;
+  types: string;
+}
+
+export interface FanslyNotificationsResponse {
+  filters: FanslyNotificationFilter[];
+  notifications: FanslyNotification[];
+  accounts?: FanslyAccount[];
+  messages?: FanslyMessage[];
+  tips?: FanslyTip[];
+}
+
+export async function listFanslyChats(
+  creatorId: string,
+  options: { flags?: 0 | 32; limit?: number; offset?: number } = {}
+): Promise<{ chats: FanslyChat[]; providerUserId: string }> {
+  const params = new URLSearchParams();
+  if (options.flags) params.set('flags', String(options.flags));
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.offset) params.set('offset', String(options.offset));
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/fansly/chats${query ? `?${query}` : ''}`
+  );
+}
+
+export async function listFanslyMessages(
+  creatorId: string,
+  groupId: string
+): Promise<{ messages: FanslyMessage[]; providerUserId: string }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/chats/${encodeURIComponent(groupId)}/messages`
+  );
+}
+
+export async function sendFanslyMessage(
+  creatorId: string,
+  groupId: string,
+  content: string
+): Promise<{ message: FanslyMessage }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/chats/${encodeURIComponent(groupId)}/messages`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    }
+  );
+}
+
+export async function listFanslyNotifications(
+  creatorId: string,
+  options: { before?: string; type?: string } = {}
+): Promise<FanslyNotificationsResponse> {
+  const params = new URLSearchParams();
+  if (options.before) params.set('before', options.before);
+  if (options.type) params.set('type', options.type);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/fansly/notifications${query ? `?${query}` : ''}`
+  );
+}
+
+export async function getFanslyUnread(
+  creatorId: string
+): Promise<{ messages: number; notifications: number }> {
+  return request(`/api/creators/${creatorId}/fansly/unread`);
 }
 
 export async function reconnectFourBasedAccount(

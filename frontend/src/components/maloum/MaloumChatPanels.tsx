@@ -36,6 +36,8 @@ import GermanTimeClock from '@/components/GermanTimeClock';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
+import { WorkspaceDrawer } from '@/components/WorkspaceDrawer';
+import { useSyncedDrawer } from '@/context/ShellContext';
 import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
@@ -189,7 +191,6 @@ const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const MAX_TRANSLATION_HISTORY = 8;
 const TRANSLATION_SETTINGS_EVENT = 'domx-translation-settings';
 const FAN_PANEL_OPEN_KEY = 'domx-maloum-fan-panel';
-const FAN_PANEL_WIDE_BREAKPOINT = 1000;
 
 function readStoredBoolean(key: string, defaultValue: boolean): boolean {
   const stored = localStorage.getItem(key);
@@ -1230,12 +1231,10 @@ export function MaloumChatThread({
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const threadRootRef = useRef<HTMLDivElement | null>(null);
-  const [threadWide, setThreadWide] = useState(true);
   const [fanPanelOpen, setFanPanelOpen] = useState(() =>
     readStoredBoolean(FAN_PANEL_OPEN_KEY, true)
   );
-  const fanPanelUserOverrideRef = useRef(localStorage.getItem(FAN_PANEL_OPEN_KEY) != null);
+  useSyncedDrawer(`maloum-fan-${chatId}`, 'xl', fanPanelOpen, setFanPanelOpen);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1539,30 +1538,9 @@ export function MaloumChatThread({
     });
   }, [onSyncEvent, creatorId, chatId, loadMessages, loadSenders]);
 
-  useEffect(() => {
-    const el = threadRootRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const applyWidth = (width: number) => {
-      const wide = width >= FAN_PANEL_WIDE_BREAKPOINT;
-      setThreadWide(wide);
-      if (!fanPanelUserOverrideRef.current) {
-        setFanPanelOpen(wide);
-      }
-    };
-    applyWidth(el.getBoundingClientRect().width);
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      applyWidth(entry.contentRect.width);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
   const toggleFanPanel = useCallback(() => {
     setFanPanelOpen((prev) => {
       const next = !prev;
-      fanPanelUserOverrideRef.current = true;
       localStorage.setItem(FAN_PANEL_OPEN_KEY, String(next));
       return next;
     });
@@ -2268,10 +2246,7 @@ export function MaloumChatThread({
   }, [vaultItems, vaultTypeFilter, vaultSentFilter, sentUploadIds]);
 
   return (
-    <div
-      ref={threadRootRef}
-      className={`flex h-full min-h-0 overflow-hidden relative ${className}`}
-    >
+    <div className={`flex h-full min-h-0 overflow-hidden relative ${className}`}>
       <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden relative chatter-thread-bg">
       <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95 z-0 pointer-events-none" />
 
@@ -3297,33 +3272,17 @@ export function MaloumChatThread({
       )}
       </div>
 
-      {fanPanelOpen && threadWide && (
-        <MaloumFanPanel
-          creatorId={creatorId}
-          chatId={chatId}
-          chat={chat}
-          onChatUpdated={handleChatUpdated}
-          className="w-72 shrink-0"
-        />
-      )}
-
-      {fanPanelOpen && !threadWide && (
-        <>
-          <button
-            type="button"
-            className="absolute inset-0 z-20 bg-black/40 animate-fade-in"
-            aria-label="Close fan info"
-            onClick={toggleFanPanel}
-          />
+      {fanPanelOpen && (
+        <div className="workspace-drawer drawer-xl workspace-open w-72 shrink-0 flex flex-col min-h-0 bg-white dark:bg-zinc-950">
           <MaloumFanPanel
             creatorId={creatorId}
             chatId={chatId}
             chat={chat}
             onChatUpdated={handleChatUpdated}
             onClose={toggleFanPanel}
-            className="absolute right-0 top-0 bottom-0 w-72 z-30 shadow-2xl animate-slide-up"
+            className="w-full flex-1 min-h-0"
           />
-        </>
+        </div>
       )}
     </div>
   );
@@ -3429,12 +3388,16 @@ export function MaloumSingleCreatorChat({
 
   return (
     <div className="flex-1 flex min-w-0 min-h-0 bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300">
-      <aside className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50 glass-panel">
+      <WorkspaceDrawer
+        id="maloum-creators"
+        size="lg"
+        className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50 glass-panel"
+      >
         <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center gap-2">
           <img src={maloumIcon} alt="" className="w-5 h-5 rounded" />
           <span className="text-sm font-semibold text-gray-900 dark:text-white">Maloum</span>
         </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-1.5 animate-fade-in">
+        <div data-drawer-list className="flex-1 overflow-y-auto p-3 space-y-1.5 animate-fade-in">
           {creatorsLoading && (
             <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">Loading creators…</p>
           )}
@@ -3509,10 +3472,15 @@ export function MaloumSingleCreatorChat({
             onHistoryChange={handleAutoTranslateHistoryChange}
           />
         </div>
-      </aside>
+      </WorkspaceDrawer>
 
-      <aside className="w-80 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-[#F7F8FA] dark:bg-[#0a0a0c] glass-panel">
+      <WorkspaceDrawer
+        id="maloum-inbox"
+        size="md"
+        className="w-80 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-[#F7F8FA] dark:bg-[#0a0a0c] glass-panel"
+      >
         {selectedCreatorId ? (
+          <div data-drawer-list className="flex flex-col flex-1 min-h-0">
           <MaloumChatList
             creatorId={selectedCreatorId}
             creatorName={selectedCreator?.displayName}
@@ -3526,10 +3494,11 @@ export function MaloumSingleCreatorChat({
               onDeepLinkConsumed?.();
             }}
           />
+          </div>
         ) : (
           <p className="text-xs text-gray-500 dark:text-zinc-500 p-4">Select a creator</p>
         )}
-      </aside>
+      </WorkspaceDrawer>
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col">
         {selectedCreator && selectedChatId ? (

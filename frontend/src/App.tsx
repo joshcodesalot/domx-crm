@@ -15,6 +15,7 @@ import Login from '@/pages/Login';
 import SetupOwner from '@/pages/SetupOwner';
 import ModerationAlertsListener from '@/components/ModerationAlertsListener';
 import ActivityHeartbeatListener from '@/components/ActivityHeartbeatListener';
+import { ShellProvider } from '@/context/ShellContext';
 import { homePath } from '@/lib/homePath';
 
 const Dashboard = lazy(() => import('@/pages/Dashboard'));
@@ -23,6 +24,7 @@ const ManageStaff = lazy(() => import('@/pages/ManageStaff'));
 const ChatterMaloum = lazy(() => import('@/pages/ChatterMaloum'));
 const Chatter4Based = lazy(() => import('@/pages/Chatter4Based'));
 const ChatterTelegram = lazy(() => import('@/pages/ChatterTelegram'));
+const ChatterFansly = lazy(() => import('@/pages/ChatterFansly'));
 const MaloumMassMessage = lazy(() => import('@/pages/MaloumMassMessage'));
 const MaloumFeed = lazy(() => import('@/pages/MaloumFeed'));
 const MaloumFanScraper = lazy(() => import('@/pages/MaloumFanScraper'));
@@ -34,6 +36,7 @@ const ContentSchedule = lazy(() => import('@/pages/ContentSchedule'));
 const MaloumNotifications = lazy(() => import('@/pages/MaloumNotifications'));
 const FourBasedNotifications = lazy(() => import('@/pages/FourBasedNotifications'));
 const TelegramNotifications = lazy(() => import('@/pages/TelegramNotifications'));
+const FanslyNotifications = lazy(() => import('@/pages/FanslyNotifications'));
 const MessagePro = lazy(() => import('@/pages/MessagePro'));
 const MessagePro4Based = lazy(() => import('@/pages/MessagePro4Based'));
 const MessageProTelegram = lazy(() => import('@/pages/MessageProTelegram'));
@@ -292,6 +295,7 @@ function HomeRedirect() {
 function AppRoutes() {
   return (
     <HashRouter>
+      <ShellProvider>
       <StaffSyncProvider>
         <CreatorLiveProvider>
           <Suspense fallback={<PageFallback />}>
@@ -343,6 +347,7 @@ function AppRoutes() {
                     <Route path="/chatter" element={null} />
                     <Route path="/chatter/4based" element={null} />
                     <Route path="/chatter/telegram" element={null} />
+                    <Route path="/chatter/fansly" element={<ChatterFansly />} />
                     <Route path="/message-pro" element={null} />
                     <Route path="/message-pro/4based" element={null} />
                     <Route path="/message-pro/telegram" element={null} />
@@ -361,6 +366,10 @@ function AppRoutes() {
                     <Route
                       path="/chatter/telegram/notifications"
                       element={<TelegramNotifications />}
+                    />
+                    <Route
+                      path="/chatter/fansly/notifications"
+                      element={<FanslyNotifications />}
                     />
                   </Route>
                   <Route element={<PermissionRoute permission="mass_messages.send" />}>
@@ -403,6 +412,7 @@ function AppRoutes() {
           </Suspense>
         </CreatorLiveProvider>
       </StaffSyncProvider>
+      </ShellProvider>
     </HashRouter>
   );
 }

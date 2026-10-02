@@ -34,6 +34,7 @@ import GermanTimeClock from '@/components/GermanTimeClock';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
+import { useSyncedDrawer } from '@/context/ShellContext';
 import VaultMediaNoteModal, {
   VaultMediaNoteButton,
 } from '@/components/VaultMediaNoteModal';
@@ -110,7 +111,6 @@ const CHAT_PAGE_LIMIT = 30;
 const NEAR_BOTTOM_PX = 120;
 const NEAR_TOP_PX = 80;
 const CHAT_LIST_NEAR_BOTTOM_PX = 240;
-const THREAD_WIDE_BREAKPOINT = 1000;
 
 function mergeFourBasedChatPages(
   prev: FourBasedChat[],
@@ -1525,43 +1525,18 @@ export function FourBasedChatThread({
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
   const messagesOffsetRef = useRef(0);
   const messagesHasMoreRef = useRef(false);
-  const threadRootRef = useRef<HTMLDivElement | null>(null);
-  const [threadWide, setThreadWide] = useState(true);
   const [fanPanelOpen, setFanPanelOpen] = useState(() =>
     readStoredBoolean(FAN_PANEL_OPEN_KEY, true)
   );
-  const fanPanelUserOverrideRef = useRef(
-    localStorage.getItem(FAN_PANEL_OPEN_KEY) != null
-  );
+  useSyncedDrawer(`4based-fan-${chatId}`, 'xl', fanPanelOpen, setFanPanelOpen);
   const threadKeyRef = useRef(`${creatorId}:${chatId}`);
   threadKeyRef.current = `${creatorId}:${chatId}`;
   const chatRef = useRef(chat);
   chatRef.current = chat;
 
-  useEffect(() => {
-    const el = threadRootRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const applyWidth = (width: number) => {
-      const wide = width >= THREAD_WIDE_BREAKPOINT;
-      setThreadWide(wide);
-      if (!fanPanelUserOverrideRef.current) {
-        setFanPanelOpen(wide);
-      }
-    };
-    applyWidth(el.getBoundingClientRect().width);
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      applyWidth(entry.contentRect.width);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
   const toggleFanPanel = useCallback(() => {
     setFanPanelOpen((prev) => {
       const next = !prev;
-      fanPanelUserOverrideRef.current = true;
       localStorage.setItem(FAN_PANEL_OPEN_KEY, String(next));
       return next;
     });
@@ -2704,10 +2679,7 @@ export function FourBasedChatThread({
   })();
 
   return (
-    <div
-      ref={threadRootRef}
-      className={`flex-1 flex h-full min-w-0 min-h-0 overflow-hidden relative ${className}`}
-    >
+    <div className={`flex-1 flex h-full min-w-0 min-h-0 overflow-hidden relative ${className}`}>
     <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden relative chatter-thread-bg">
       <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95 z-0 pointer-events-none" />
 
@@ -3796,29 +3768,8 @@ export function FourBasedChatThread({
       )}
     </div>
 
-      {fanPanelOpen && threadWide && (
-        <FourBasedFanPanel
-          creatorId={creatorId}
-          chatId={chatId}
-          chat={chat}
-          fanId={fan.id || null}
-          fanName={fan.name}
-          fanUsername={fanProfile?.name || fan.name}
-          fanAvatarUrl={fan.avatarUrl}
-          fanProfile={fanProfile}
-          onChatUpdated={handleChatUpdated}
-          className="w-72 shrink-0"
-        />
-      )}
-
-      {fanPanelOpen && !threadWide && (
-        <>
-          <button
-            type="button"
-            className="absolute inset-0 z-20 bg-black/40 animate-fade-in"
-            aria-label="Close fan info"
-            onClick={toggleFanPanel}
-          />
+      {fanPanelOpen && (
+        <div className="workspace-drawer drawer-xl workspace-open w-72 shrink-0 flex flex-col min-h-0 bg-white dark:bg-zinc-950">
           <FourBasedFanPanel
             creatorId={creatorId}
             chatId={chatId}
@@ -3830,9 +3781,9 @@ export function FourBasedChatThread({
             fanProfile={fanProfile}
             onChatUpdated={handleChatUpdated}
             onClose={toggleFanPanel}
-            className="absolute right-0 top-0 bottom-0 w-72 z-30 shadow-2xl animate-slide-up"
+            className="w-full flex-1 min-h-0"
           />
-        </>
+        </div>
       )}
     </div>
   );

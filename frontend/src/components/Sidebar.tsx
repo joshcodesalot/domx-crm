@@ -1,50 +1,118 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import {
   BarChart2,
   Bell,
   CalendarDays,
   ClipboardList,
+  Clock3,
   LayoutGrid,
-  LogIn,
-  LineChart,
   List,
+  LogIn,
   LogOut,
+  LineChart,
   Megaphone,
-  Monitor,
   MessageSquare,
+  Monitor,
+  Moon,
   Newspaper,
   PanelsTopLeft,
   Receipt,
-  ShieldAlert,
-  Sparkles,
   Settings,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  Sun,
   UserCog,
   UserSearch,
   Users,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
+import GermanTimeClock from '@/components/GermanTimeClock';
 import { useAuth } from '@/context/AuthContext';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
-import GermanTimeClock from '@/components/GermanTimeClock';
-import ThemeToggle from '@/components/ThemeToggle';
+import { useShell } from '@/context/ShellContext';
+import { useTheme } from '@/hooks/useTheme';
 import maloumIcon from '@/assets/maloum_icon.png';
 import fourBasedIcon from '@/assets/4based_icon.ico';
+import fanslyIcon from '@/assets/fansly.svg';
 import telegramIcon from '@/assets/telegram_icon.svg';
+
+export type SidebarPage =
+  | 'dashboard'
+  | 'analytics'
+  | 'charts'
+  | 'creatorAnalytics'
+  | 'falseSales'
+  | 'salesLogs'
+  | 'crmActivity'
+  | 'loginActivity'
+  | 'chatter'
+  | 'creators'
+  | 'staff'
+  | 'moderation'
+  | 'account'
+  | 'schedule'
+  | 'marketing';
 
 function formatUnreadCount(count: number): string {
   return count > 99 ? '99+' : String(count);
 }
 
-function SidebarUnreadPill({ count }: { count: number }) {
-  if (count <= 0) return null;
+function useIsMobile() {
+  const [mobile, setMobile] = useState(() => window.innerWidth < 768);
+  useEffect(() => {
+    function onResize() {
+      setMobile(window.innerWidth < 768);
+    }
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return mobile;
+}
+
+function NavItem({
+  active,
+  title,
+  icon,
+  label,
+  onClick,
+  danger = false,
+}: {
+  active?: boolean;
+  title: string;
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
   return (
-    <span className="absolute -top-1 -right-1 min-w-[14px] h-3.5 px-0.5 rounded-full bg-red-500 text-white text-[9px] font-semibold leading-[14px] text-center pointer-events-none">
-      {formatUnreadCount(count)}
-    </span>
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={`nav-link flex items-center w-full px-3 py-2 rounded-lg text-left transition-colors ${
+        active
+          ? 'text-gray-900 dark:text-white bg-gray-100 dark:bg-white/10 shadow-sm'
+          : danger
+            ? 'text-gray-500 dark:text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:text-red-400 dark:hover:bg-red-500/10'
+            : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 hover:bg-gray-50 dark:hover:text-white dark:hover:bg-white/5'
+      }`}
+    >
+      <span className="w-5 h-5 shrink-0 flex items-center justify-center">{icon}</span>
+      <span className="sidebar-text ml-3 text-sm font-medium truncate">{label}</span>
+    </button>
   );
 }
 
-function FlyoutUnreadCount({ count }: { count: number }) {
+function GroupTitle({ children }: { children: string }) {
+  return (
+    <p className="nav-group-title px-3 mb-1 text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-[0.12em] mt-5 first:mt-1">
+      {children}
+    </p>
+  );
+}
+
+function UnreadCount({ count }: { count: number }) {
   if (count <= 0) return null;
   return (
     <span className="ml-auto min-w-[18px] px-1.5 py-0.5 rounded-full bg-red-500 text-white text-[10px] font-semibold leading-none text-center">
@@ -53,36 +121,31 @@ function FlyoutUnreadCount({ count }: { count: number }) {
   );
 }
 
-interface SidebarProps {
-  activePage?:
-    | 'dashboard'
-    | 'analytics'
-    | 'charts'
-    | 'creatorAnalytics'
-    | 'falseSales'
-    | 'salesLogs'
-    | 'crmActivity'
-    | 'loginActivity'
-    | 'chatter'
-    | 'creators'
-    | 'staff'
-    | 'moderation'
-    | 'account'
-    | 'schedule'
-    | 'marketing';
-}
-
-export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
+export default function Sidebar({ activePage = 'dashboard' }: { activePage?: SidebarPage }) {
   const { user, logout, hasPermission } = useAuth();
   const navigate = useNavigate();
-  const { creators, badgesByCreatorId, throneUnread } = useCreatorLive({
+  const location = useLocation();
+  const { desktopCollapsed, mobileOpen, closeMobileSidebar } = useShell();
+  const { isDark, toggleTheme } = useTheme();
+  const isMobile = useIsMobile();
+  const labeled = isMobile || !desktopCollapsed;
+  const { creators, creatorsLoading, badgesByCreatorId, throneUnread } = useCreatorLive({
     wantBadges: hasPermission('creators.view'),
   });
+  const isChatter = user?.role === 'chatter';
+  const platformsWithCreators = useMemo(() => {
+    const present = new Set<'maloum' | '4based' | 'telegram' | 'fansly'>();
+    for (const creator of creators) {
+      present.add(creator.platform);
+    }
+    return present;
+  }, [creators]);
   const unreadTotals = useMemo(() => {
     const totals = {
       maloum: { messages: 0, notifications: 0 },
       '4based': { messages: 0, notifications: 0 },
       telegram: { messages: 0, notifications: 0 },
+      fansly: { messages: 0, notifications: 0 },
     };
     for (const creator of creators) {
       const badges = badgesByCreatorId[creator.id];
@@ -91,84 +154,65 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     }
     return totals;
   }, [creators, badgesByCreatorId]);
-  const [maloumMenuOpen, setMaloumMenuOpen] = useState(false);
-  const [fourBasedMenuOpen, setFourBasedMenuOpen] = useState(false);
-  const [telegramMenuOpen, setTelegramMenuOpen] = useState(false);
+
+  const path = location.pathname;
+  const [openPlatform, setOpenPlatform] = useState<
+    'maloum' | '4based' | 'telegram' | 'fansly' | null
+  >(null);
+  const [flyoutTop, setFlyoutTop] = useState(0);
   const maloumMenuRef = useRef<HTMLDivElement>(null);
   const fourBasedMenuRef = useRef<HTMLDivElement>(null);
   const telegramMenuRef = useRef<HTMLDivElement>(null);
-  const hash =
-    typeof window !== 'undefined' ? window.location.hash : '';
-  const isFourBasedActive =
-    hash.includes('/chatter/4based') || hash.includes('/message-pro/4based');
-  const isTelegramActive =
-    hash.includes('/chatter/telegram') || hash.includes('/message-pro/telegram');
-  const isMaloumActive =
-    activePage === 'chatter' &&
-    !isFourBasedActive &&
-    !isTelegramActive &&
-    !hash.includes('/chatter/schedule');
-
-  async function handleLogout() {
-    await logout();
-    navigate('/login');
-  }
+  const fanslyMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!maloumMenuOpen && !fourBasedMenuOpen && !telegramMenuOpen) {
-      return;
+    if (path.startsWith('/chatter/fansly')) {
+      setOpenPlatform('fansly');
+    } else if (path.startsWith('/chatter/4based') || path.startsWith('/message-pro/4based')) {
+      setOpenPlatform('4based');
+    } else if (
+      path.startsWith('/chatter/telegram') ||
+      path.startsWith('/message-pro/telegram')
+    ) {
+      setOpenPlatform('telegram');
+    } else if (
+      path === '/chatter' ||
+      path.startsWith('/chatter/maloum') ||
+      path === '/message-pro'
+    ) {
+      setOpenPlatform('maloum');
     }
+  }, [path]);
 
+  useEffect(() => {
+    if (labeled || !openPlatform) return;
     function handlePointerDown(event: MouseEvent) {
       const target = event.target as Node;
-      if (
-        maloumMenuOpen &&
-        maloumMenuRef.current &&
-        !maloumMenuRef.current.contains(target)
-      ) {
-        setMaloumMenuOpen(false);
-      }
-      if (
-        fourBasedMenuOpen &&
-        fourBasedMenuRef.current &&
-        !fourBasedMenuRef.current.contains(target)
-      ) {
-        setFourBasedMenuOpen(false);
-      }
-      if (
-        telegramMenuOpen &&
-        telegramMenuRef.current &&
-        !telegramMenuRef.current.contains(target)
-      ) {
-        setTelegramMenuOpen(false);
+      const ref =
+        openPlatform === 'maloum'
+          ? maloumMenuRef
+          : openPlatform === '4based'
+            ? fourBasedMenuRef
+            : openPlatform === 'fansly'
+              ? fanslyMenuRef
+              : telegramMenuRef;
+      if (ref.current && !ref.current.contains(target)) {
+        setOpenPlatform(null);
       }
     }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        setMaloumMenuOpen(false);
-        setFourBasedMenuOpen(false);
-        setTelegramMenuOpen(false);
-      }
-    }
-
     document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [labeled, openPlatform]);
 
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [maloumMenuOpen, fourBasedMenuOpen, telegramMenuOpen]);
-
-  const initial = user?.name?.charAt(0).toUpperCase() || 'U';
-
-  const navClass = (page: string) =>
-    page === activePage
-      ? 'text-gray-900 dark:text-white'
-      : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors';
+  function go(to: string) {
+    closeMobileSidebar();
+    setOpenPlatform(null);
+    navigate(to);
+  }
 
   async function openMessagePro(platform: 'maloum' | '4based' | 'telegram') {
+    closeMobileSidebar();
+    setOpenPlatform(null);
     const route =
       platform === '4based'
         ? '/message-pro/4based'
@@ -186,626 +230,529 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
     navigate(route);
   }
 
-  async function handleMaloumNavigate(
-    view:
-      | 'chat'
-      | 'message-pro'
-      | 'mass-message'
-      | 'feed'
-      | 'fan-scraper'
-      | 'lists'
-      | 'notifications'
-      | 'schedule'
-  ) {
-    setMaloumMenuOpen(false);
-    if (view === 'message-pro') {
-      await openMessagePro('maloum');
-      return;
-    }
-    if (view === 'mass-message') {
-      navigate('/chatter/maloum/mass-message');
-      return;
-    }
-    if (view === 'feed') {
-      navigate('/chatter/maloum/feed');
-      return;
-    }
-    if (view === 'schedule') {
-      navigate('/chatter/schedule');
-      return;
-    }
-    if (view === 'fan-scraper') {
-      navigate('/chatter/maloum/fan-scraper');
-      return;
-    }
-    if (view === 'lists') {
-      navigate('/chatter/maloum/lists');
-      return;
-    }
-    if (view === 'notifications') {
-      navigate('/chatter/maloum/notifications');
-      return;
-    }
-    navigate('/chatter');
+  async function handleLogout() {
+    await logout();
+    navigate('/login');
   }
 
-  async function handleFourBasedNavigate(
-    view:
-      | 'chat'
-      | 'message-pro'
-      | 'mass-message'
-      | 'feed'
-      | 'fan-scraper'
-      | 'notifications'
-      | 'schedule'
-  ) {
-    setFourBasedMenuOpen(false);
-    if (view === 'message-pro') {
-      await openMessagePro('4based');
-      return;
-    }
-    if (view === 'mass-message') {
-      navigate('/chatter/4based/mass-message');
-      return;
-    }
-    if (view === 'feed') {
-      navigate('/chatter/4based/feed');
-      return;
-    }
-    if (view === 'schedule') {
-      navigate('/chatter/schedule');
-      return;
-    }
-    if (view === 'fan-scraper') {
-      navigate('/chatter/4based/fan-scraper');
-      return;
-    }
-    if (view === 'notifications') {
-      navigate('/chatter/4based/notifications');
-      return;
-    }
-    navigate('/chatter/4based');
+  const initial = user?.name?.charAt(0).toUpperCase() || 'U';
+  const canSendMass = hasPermission('mass_messages.send');
+  const canScrape = hasPermission('fan_scraper.use');
+
+  function toolActive(href: string) {
+    return path === href;
   }
 
-  async function handleTelegramNavigate(
-    view:
-      | 'chat'
-      | 'message-pro'
-      | 'mass-message'
-      | 'lists'
-      | 'sexting-session'
-      | 'notifications'
+  function renderTools(
+    tools: {
+      label: string;
+      icon: ReactNode;
+      onClick: () => void;
+      active: boolean;
+      unread?: number;
+    }[]
   ) {
-    setTelegramMenuOpen(false);
-    if (view === 'message-pro') {
-      await openMessagePro('telegram');
-      return;
-    }
-    if (view === 'mass-message') {
-      navigate('/chatter/telegram/mass-message');
-      return;
-    }
-    if (view === 'lists') {
-      navigate('/chatter/telegram/lists');
-      return;
-    }
-    if (view === 'sexting-session') {
-      navigate('/chatter/telegram/sexting-session');
-      return;
-    }
-    if (view === 'notifications') {
-      navigate('/chatter/telegram/notifications');
-      return;
-    }
-    navigate('/chatter/telegram');
+    return tools.map((tool) => (
+      <button
+        key={tool.label}
+        type="button"
+        onClick={tool.onClick}
+        className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left rounded-lg ${
+          tool.active
+            ? 'text-gray-900 dark:text-white bg-gray-100 dark:bg-white/10'
+            : 'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5'
+        }`}
+      >
+        <span className="w-4 h-4 shrink-0">{tool.icon}</span>
+        <span className="truncate">{tool.label}</span>
+        <UnreadCount count={tool.unread || 0} />
+      </button>
+    ));
   }
+
+  function platformBlock(options: {
+    id: 'maloum' | '4based' | 'telegram' | 'fansly';
+    label: string;
+    icon: ReactNode;
+    unread: number;
+    menuRef: RefObject<HTMLDivElement | null>;
+    tools: {
+      label: string;
+      icon: ReactNode;
+      onClick: () => void;
+      active: boolean;
+      unread?: number;
+    }[];
+  }) {
+    const expanded = openPlatform === options.id;
+    return (
+      <div key={options.id} ref={options.menuRef as RefObject<HTMLDivElement>} className="relative">
+        <button
+          type="button"
+          title={
+            options.unread > 0
+              ? `${options.label} (${formatUnreadCount(options.unread)} unread)`
+              : options.label
+          }
+          aria-expanded={expanded}
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            setFlyoutTop(rect.top);
+            setOpenPlatform((current) => (current === options.id ? null : options.id));
+          }}
+          className={`nav-link relative flex items-center w-full px-3 py-2 rounded-lg text-left transition-colors ${
+            expanded
+              ? 'text-gray-900 dark:text-white bg-gray-100 dark:bg-white/10'
+              : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 hover:bg-gray-50 dark:hover:text-white dark:hover:bg-white/5'
+          }`}
+        >
+          <span className="w-5 h-5 shrink-0 flex items-center justify-center relative">
+            {options.icon}
+            {!labeled && options.unread > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[14px] h-3.5 px-0.5 rounded-full bg-red-500 text-white text-[9px] font-semibold leading-[14px] text-center">
+                {formatUnreadCount(options.unread)}
+              </span>
+            )}
+          </span>
+          <span className="sidebar-text ml-3 text-sm font-medium truncate flex-1">
+            {options.label}
+          </span>
+          {labeled && <UnreadCount count={options.unread} />}
+        </button>
+        {expanded && labeled && (
+          <div className="mt-1 ml-4 pl-2 border-l border-gray-200 dark:border-white/10 space-y-0.5">
+            {renderTools(options.tools)}
+          </div>
+        )}
+        {expanded && !labeled && (
+          <div
+            role="menu"
+            className="fixed z-[60] min-w-[180px] rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1"
+            style={{ top: flyoutTop, left: '4.25rem' }}
+          >
+            {renderTools(options.tools)}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const maloumTools = [
+    {
+      label: 'Chat',
+      icon: <MessageSquare className="w-4 h-4" />,
+      onClick: () => go('/chatter'),
+      active: toolActive('/chatter'),
+    },
+    {
+      label: 'Notifications',
+      icon: <Bell className="w-4 h-4" />,
+      onClick: () => go('/chatter/maloum/notifications'),
+      active: toolActive('/chatter/maloum/notifications'),
+      unread: unreadTotals.maloum.notifications,
+    },
+    {
+      label: 'Message Pro',
+      icon: <PanelsTopLeft className="w-4 h-4" />,
+      onClick: () => void openMessagePro('maloum'),
+      active: toolActive('/message-pro'),
+    },
+    ...(canSendMass
+      ? [
+          {
+            label: 'Mass Message',
+            icon: <Megaphone className="w-4 h-4" />,
+            onClick: () => go('/chatter/maloum/mass-message'),
+            active: toolActive('/chatter/maloum/mass-message'),
+          },
+          {
+            label: 'Feed',
+            icon: <Newspaper className="w-4 h-4" />,
+            onClick: () => go('/chatter/maloum/feed'),
+            active: toolActive('/chatter/maloum/feed'),
+          },
+          {
+            label: 'Lists',
+            icon: <List className="w-4 h-4" />,
+            onClick: () => go('/chatter/maloum/lists'),
+            active: toolActive('/chatter/maloum/lists'),
+          },
+        ]
+      : []),
+    ...(canScrape
+      ? [
+          {
+            label: 'Fan Scraper',
+            icon: <UserSearch className="w-4 h-4" />,
+            onClick: () => go('/chatter/maloum/fan-scraper'),
+            active: toolActive('/chatter/maloum/fan-scraper'),
+          },
+        ]
+      : []),
+  ];
+
+  const fourBasedTools = [
+    {
+      label: 'Chat',
+      icon: <MessageSquare className="w-4 h-4" />,
+      onClick: () => go('/chatter/4based'),
+      active: toolActive('/chatter/4based'),
+    },
+    {
+      label: 'Notifications',
+      icon: <Bell className="w-4 h-4" />,
+      onClick: () => go('/chatter/4based/notifications'),
+      active: toolActive('/chatter/4based/notifications'),
+      unread: unreadTotals['4based'].notifications,
+    },
+    {
+      label: 'Message Pro',
+      icon: <PanelsTopLeft className="w-4 h-4" />,
+      onClick: () => void openMessagePro('4based'),
+      active: toolActive('/message-pro/4based'),
+    },
+    ...(canSendMass
+      ? [
+          {
+            label: 'Mass Message',
+            icon: <Megaphone className="w-4 h-4" />,
+            onClick: () => go('/chatter/4based/mass-message'),
+            active: toolActive('/chatter/4based/mass-message'),
+          },
+          {
+            label: 'Feed',
+            icon: <Newspaper className="w-4 h-4" />,
+            onClick: () => go('/chatter/4based/feed'),
+            active: toolActive('/chatter/4based/feed'),
+          },
+        ]
+      : []),
+    ...(canScrape
+      ? [
+          {
+            label: 'Fan Scraper',
+            icon: <UserSearch className="w-4 h-4" />,
+            onClick: () => go('/chatter/4based/fan-scraper'),
+            active: toolActive('/chatter/4based/fan-scraper'),
+          },
+        ]
+      : []),
+  ];
+
+  const telegramTools = [
+    {
+      label: 'Chat',
+      icon: <MessageSquare className="w-4 h-4" />,
+      onClick: () => go('/chatter/telegram'),
+      active: toolActive('/chatter/telegram'),
+    },
+    {
+      label: 'Notifications',
+      icon: <Bell className="w-4 h-4" />,
+      onClick: () => go('/chatter/telegram/notifications'),
+      active: toolActive('/chatter/telegram/notifications'),
+      unread: throneUnread,
+    },
+    {
+      label: 'Message Pro',
+      icon: <PanelsTopLeft className="w-4 h-4" />,
+      onClick: () => void openMessagePro('telegram'),
+      active: toolActive('/message-pro/telegram'),
+    },
+    ...(canSendMass
+      ? [
+          {
+            label: 'Mass Message',
+            icon: <Megaphone className="w-4 h-4" />,
+            onClick: () => go('/chatter/telegram/mass-message'),
+            active: toolActive('/chatter/telegram/mass-message'),
+          },
+          {
+            label: 'Lists',
+            icon: <List className="w-4 h-4" />,
+            onClick: () => go('/chatter/telegram/lists'),
+            active: toolActive('/chatter/telegram/lists'),
+          },
+        ]
+      : []),
+    {
+      label: 'Sexting Session',
+      icon: <Sparkles className="w-4 h-4" />,
+      onClick: () => go('/chatter/telegram/sexting-session'),
+      active: toolActive('/chatter/telegram/sexting-session'),
+    },
+  ];
+
+  const isManager = user?.role === 'owner' || user?.role === 'manager';
+  const chatterCreatorsPending = isChatter && creatorsLoading && creators.length === 0;
+
+  const fanslyTools = [
+    {
+      label: 'Chat',
+      icon: <MessageSquare className="w-4 h-4" />,
+      onClick: () => go('/chatter/fansly'),
+      active: toolActive('/chatter/fansly'),
+    },
+    {
+      label: 'Notifications',
+      icon: <Bell className="w-4 h-4" />,
+      onClick: () => go('/chatter/fansly/notifications'),
+      active: toolActive('/chatter/fansly/notifications'),
+      unread: unreadTotals.fansly.notifications,
+    },
+  ];
+
+  function chatterCanSeePlatform(id: 'maloum' | '4based' | 'telegram' | 'fansly') {
+    if (!isChatter) return true;
+    if (chatterCreatorsPending) return false;
+    return platformsWithCreators.has(id);
+  }
+
+  const visiblePlatforms = (
+    ['maloum', '4based', 'telegram', 'fansly'] as const
+  ).filter((id) => chatterCanSeePlatform(id));
 
   return (
-    <aside className="w-16 flex flex-col items-center py-6 border-r border-gray-200 dark:border-white/10 shrink-0">
-      <div className="w-8 h-8 bg-gray-900 dark:bg-white rounded flex items-center justify-center mb-10 shadow-sm">
-        <span className="text-white dark:text-black font-bold text-xs tracking-tighter">
-          DX
-        </span>
+    <aside
+      id="app-sidebar"
+      aria-label="Primary navigation"
+      className={`fixed inset-y-0 left-0 z-50 md:relative md:z-auto flex flex-col border-r border-gray-200 dark:border-white/10 bg-white dark:bg-[#0a0a0a] shrink-0 py-4 ${
+        mobileOpen ? '' : '-translate-x-full'
+      } md:translate-x-0 ${desktopCollapsed ? 'desktop-collapsed' : ''}`}
+    >
+      <div className="px-4 mb-4 flex items-center nav-link gap-3 shrink-0">
+        <button
+          type="button"
+          onClick={() => go('/dashboard')}
+          title="DomX"
+          className="w-8 h-8 shrink-0 bg-gray-900 dark:bg-white rounded-lg flex items-center justify-center shadow-sm"
+        >
+          <span className="text-white dark:text-black font-bold text-xs tracking-tighter">
+            DX
+          </span>
+        </button>
+        <span className="sidebar-text logo-full font-bold text-lg tracking-tight">DomX</span>
       </div>
 
-      <nav className="flex flex-col gap-6">
+      <nav className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-3 space-y-1">
+        {(hasPermission('dashboard.view') || isManager || hasPermission('analytics.view')) && (
+          <GroupTitle>Core</GroupTitle>
+        )}
         {hasPermission('dashboard.view') && (
-          <button
-            type="button"
-            onClick={() => navigate('/dashboard')}
-            className={navClass('dashboard')}
+          <NavItem
+            active={activePage === 'dashboard'}
             title="Overview"
-          >
-            <LayoutGrid className="w-5 h-5" />
-          </button>
+            label="Overview"
+            icon={<LayoutGrid className="w-5 h-5" />}
+            onClick={() => go('/dashboard')}
+          />
         )}
-        {(user?.role === 'owner' || user?.role === 'manager') && (
-          <button
-            type="button"
-            onClick={() => navigate('/dashboard/charts')}
-            className={navClass('charts')}
+        {isManager && (
+          <NavItem
+            active={activePage === 'charts'}
             title="Charts"
-          >
-            <LineChart className="w-5 h-5" />
-          </button>
+            label="Charts"
+            icon={<LineChart className="w-5 h-5" />}
+            onClick={() => go('/dashboard/charts')}
+          />
         )}
-        {(user?.role === 'owner' || user?.role === 'manager') && (
-          <button
-            type="button"
-            onClick={() => navigate('/dashboard/creator-analytics')}
-            className={navClass('creatorAnalytics')}
+        {isManager && (
+          <NavItem
+            active={activePage === 'creatorAnalytics'}
             title="Creator Analytics"
-          >
-            <Users className="w-5 h-5" />
-          </button>
+            label="Creator Analytics"
+            icon={<Users className="w-5 h-5" />}
+            onClick={() => go('/dashboard/creator-analytics')}
+          />
         )}
         {hasPermission('analytics.view') && (
-          <button
-            type="button"
-            onClick={() => navigate('/dashboard/messaging')}
-            className={navClass('analytics')}
+          <NavItem
+            active={activePage === 'analytics'}
             title="Messaging Analytics"
-          >
-            <BarChart2 className="w-5 h-5" />
-          </button>
+            label="Messaging Analytics"
+            icon={<BarChart2 className="w-5 h-5" />}
+            onClick={() => go('/dashboard/messaging')}
+          />
+        )}
+
+        {canSendMass && (
+          <>
+            <GroupTitle>Operations</GroupTitle>
+            <NavItem
+              active={activePage === 'schedule'}
+              title="Content Schedule"
+              label="Content Schedule"
+              icon={<CalendarDays className="w-5 h-5" />}
+              onClick={() => go('/chatter/schedule')}
+            />
+          </>
+        )}
+
+        {(hasPermission('analytics.view') || isManager) && (
+          <GroupTitle>Logs & Activity</GroupTitle>
         )}
         {hasPermission('analytics.view') && (
-          <button
-            type="button"
-            onClick={() => navigate('/dashboard/sales-logs')}
-            className={navClass('salesLogs')}
+          <NavItem
+            active={activePage === 'salesLogs'}
             title="Sales Logs"
-          >
-            <Receipt className="w-5 h-5" />
-          </button>
+            label="Sales Logs"
+            icon={<Receipt className="w-5 h-5" />}
+            onClick={() => go('/dashboard/sales-logs')}
+          />
         )}
         {hasPermission('analytics.view') && (
-          <button
-            type="button"
-            onClick={() => navigate('/dashboard/crm-activity')}
-            className={navClass('crmActivity')}
+          <NavItem
+            active={activePage === 'crmActivity'}
             title="CRM Activity"
-          >
-            <ClipboardList className="w-5 h-5" />
-          </button>
+            label="CRM Activity"
+            icon={<ClipboardList className="w-5 h-5" />}
+            onClick={() => go('/dashboard/crm-activity')}
+          />
         )}
         {hasPermission('analytics.view') && (
-          <button
-            type="button"
-            onClick={() => navigate('/dashboard/login-activity')}
-            className={navClass('loginActivity')}
+          <NavItem
+            active={activePage === 'loginActivity'}
             title="Login Activity"
-          >
-            <LogIn className="w-5 h-5" />
-          </button>
+            label="Login Activity"
+            icon={<LogIn className="w-5 h-5" />}
+            onClick={() => go('/dashboard/login-activity')}
+          />
         )}
-        {(user?.role === 'owner' || user?.role === 'manager') && (
-          <button
-            type="button"
-            onClick={() => navigate('/dashboard/false-sales')}
-            className={navClass('falseSales')}
+        {isManager && (
+          <NavItem
+            active={activePage === 'falseSales'}
             title="False Sales Review"
-          >
-            <ShieldAlert className="w-5 h-5" />
-          </button>
+            label="False Sales Review"
+            icon={<ShieldAlert className="w-5 h-5" />}
+            onClick={() => go('/dashboard/false-sales')}
+          />
         )}
-        {hasPermission('mass_messages.send') && (
-          <button
-            type="button"
-            onClick={() => navigate('/chatter/schedule')}
-            className={navClass('schedule')}
-            title="Content schedule"
-          >
-            <CalendarDays className="w-5 h-5" />
-          </button>
-        )}
-        {hasPermission('creators.view') && (
-          <div ref={maloumMenuRef} className="relative">
-            <button
-              type="button"
-              onClick={() => {
-                setFourBasedMenuOpen(false);
-                setTelegramMenuOpen(false);
-                setMaloumMenuOpen((open) => !open);
-              }}
-              className={`relative ${
-                isMaloumActive
-                  ? 'text-gray-900 dark:text-white'
-                  : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
-              } group`}
-              title={
-                unreadTotals.maloum.messages > 0
-                  ? `Maloum (${formatUnreadCount(unreadTotals.maloum.messages)} unread)`
-                  : 'Maloum'
-              }
-              aria-haspopup="menu"
-              aria-expanded={maloumMenuOpen}
-            >
-              <img
-                src={maloumIcon}
-                alt=""
-                className={`w-5 h-5 rounded object-cover transition-opacity ${
-                  isMaloumActive
-                    ? 'opacity-100'
-                    : 'opacity-50 group-hover:opacity-100'
-                }`}
-              />
-              <SidebarUnreadPill count={unreadTotals.maloum.messages} />
-            </button>
 
-            {maloumMenuOpen && (
-              <div
-                role="menu"
-                className="absolute left-full top-1/2 -translate-y-1/2 ml-3 z-50 min-w-[160px] rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => void handleMaloumNavigate('chat')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                >
-                  <MessageSquare className="w-4 h-4 shrink-0" />
-                  Chat
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => void handleMaloumNavigate('notifications')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                >
-                  <Bell className="w-4 h-4 shrink-0" />
-                  Notifications
-                  <FlyoutUnreadCount count={unreadTotals.maloum.notifications} />
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => void handleMaloumNavigate('message-pro')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                >
-                  <PanelsTopLeft className="w-4 h-4 shrink-0" />
-                  Message Pro
-                </button>
-                {hasPermission('mass_messages.send') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleMaloumNavigate('mass-message')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <Megaphone className="w-4 h-4 shrink-0" />
-                    Mass Message
-                  </button>
-                )}
-                {hasPermission('mass_messages.send') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleMaloumNavigate('feed')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <Newspaper className="w-4 h-4 shrink-0" />
-                    Feed
-                  </button>
-                )}
-                {hasPermission('mass_messages.send') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleMaloumNavigate('schedule')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <CalendarDays className="w-4 h-4 shrink-0" />
-                    Schedule
-                  </button>
-                )}
-                {hasPermission('fan_scraper.use') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleMaloumNavigate('fan-scraper')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <UserSearch className="w-4 h-4 shrink-0" />
-                    Fan Scraper
-                  </button>
-                )}
-                {hasPermission('mass_messages.send') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleMaloumNavigate('lists')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <List className="w-4 h-4 shrink-0" />
-                    Lists
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-        {hasPermission('creators.view') && (
-          <div ref={fourBasedMenuRef} className="relative">
-            <button
-              type="button"
-              onClick={() => {
-                setMaloumMenuOpen(false);
-                setTelegramMenuOpen(false);
-                setFourBasedMenuOpen((open) => !open);
-              }}
-              className={`relative ${
-                isFourBasedActive
-                  ? 'text-gray-900 dark:text-white'
-                  : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
-              } group`}
-              title={
-                unreadTotals['4based'].messages > 0
-                  ? `4based (${formatUnreadCount(unreadTotals['4based'].messages)} unread)`
-                  : '4based'
-              }
-              aria-haspopup="menu"
-              aria-expanded={fourBasedMenuOpen}
-            >
-              <img
-                src={fourBasedIcon}
-                alt=""
-                className={`w-5 h-5 rounded object-cover transition-opacity ${
-                  isFourBasedActive
-                    ? 'opacity-100'
-                    : 'opacity-50 group-hover:opacity-100'
-                }`}
-              />
-              <SidebarUnreadPill count={unreadTotals['4based'].messages} />
-            </button>
-
-            {fourBasedMenuOpen && (
-              <div
-                role="menu"
-                className="absolute left-full top-1/2 -translate-y-1/2 ml-3 z-50 min-w-[160px] rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => void handleFourBasedNavigate('chat')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                >
-                  <MessageSquare className="w-4 h-4 shrink-0" />
-                  Chat
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => void handleFourBasedNavigate('notifications')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                >
-                  <Bell className="w-4 h-4 shrink-0" />
-                  Notifications
-                  <FlyoutUnreadCount count={unreadTotals['4based'].notifications} />
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => void handleFourBasedNavigate('message-pro')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                >
-                  <PanelsTopLeft className="w-4 h-4 shrink-0" />
-                  Message Pro
-                </button>
-                {hasPermission('mass_messages.send') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleFourBasedNavigate('mass-message')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <Megaphone className="w-4 h-4 shrink-0" />
-                    Mass Message
-                  </button>
-                )}
-                {hasPermission('mass_messages.send') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleFourBasedNavigate('feed')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <Newspaper className="w-4 h-4 shrink-0" />
-                    Feed
-                  </button>
-                )}
-                {hasPermission('mass_messages.send') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleFourBasedNavigate('schedule')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <CalendarDays className="w-4 h-4 shrink-0" />
-                    Schedule
-                  </button>
-                )}
-                {hasPermission('fan_scraper.use') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleFourBasedNavigate('fan-scraper')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <UserSearch className="w-4 h-4 shrink-0" />
-                    Fan Scraper
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-        {hasPermission('creators.view') && (
-          <div ref={telegramMenuRef} className="relative">
-            <button
-              type="button"
-              onClick={() => {
-                setMaloumMenuOpen(false);
-                setFourBasedMenuOpen(false);
-                setTelegramMenuOpen((open) => !open);
-              }}
-              className={`relative ${
-                isTelegramActive
-                  ? 'text-gray-900 dark:text-white'
-                  : 'text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors'
-              } group`}
-              title={
-                unreadTotals.telegram.messages > 0
-                  ? `Telegram (${formatUnreadCount(unreadTotals.telegram.messages)} unread)`
-                  : 'Telegram'
-              }
-              aria-haspopup="menu"
-              aria-expanded={telegramMenuOpen}
-            >
-              <img
-                src={telegramIcon}
-                alt=""
-                className={`w-5 h-5 rounded-full transition-opacity ${
-                  isTelegramActive
-                    ? 'opacity-100'
-                    : 'opacity-50 group-hover:opacity-100'
-                }`}
-              />
-              <SidebarUnreadPill count={unreadTotals.telegram.messages} />
-            </button>
-
-            {telegramMenuOpen && (
-              <div
-                role="menu"
-                className="absolute left-full top-1/2 -translate-y-1/2 ml-3 z-50 min-w-[180px] rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => void handleTelegramNavigate('chat')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                >
-                  <MessageSquare className="w-4 h-4 shrink-0" />
-                  Chat
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => void handleTelegramNavigate('notifications')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                >
-                  <Bell className="w-4 h-4 shrink-0" />
-                  Notifications
-                  <FlyoutUnreadCount count={throneUnread} />
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => void handleTelegramNavigate('message-pro')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                >
-                  <PanelsTopLeft className="w-4 h-4 shrink-0" />
-                  Message Pro
-                </button>
-                {hasPermission('mass_messages.send') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleTelegramNavigate('mass-message')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <Megaphone className="w-4 h-4 shrink-0" />
-                    Mass Message
-                  </button>
-                )}
-                {hasPermission('mass_messages.send') && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => void handleTelegramNavigate('lists')}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                  >
-                    <List className="w-4 h-4 shrink-0" />
-                    Lists
-                  </button>
-                )}
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => void handleTelegramNavigate('sexting-session')}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-white/5"
-                >
-                  <Sparkles className="w-4 h-4 shrink-0" />
-                  Sexting Session
-                </button>
-              </div>
-            )}
-          </div>
-        )}
+        {(hasPermission('marketing.view') ||
+          hasPermission('creators.manage') ||
+          hasPermission('staff.view') ||
+          hasPermission('moderation.manage') ||
+          hasPermission('moderation.review')) && <GroupTitle>Management</GroupTitle>}
         {hasPermission('marketing.view') && (
-          <button
-            type="button"
-            onClick={() => navigate('/marketing')}
-            className={navClass('marketing')}
+          <NavItem
+            active={activePage === 'marketing'}
             title="Marketing"
-          >
-            <Monitor className="w-5 h-5" />
-          </button>
+            label="Marketing"
+            icon={<Monitor className="w-5 h-5" />}
+            onClick={() => go('/marketing')}
+          />
         )}
         {hasPermission('creators.manage') && (
-          <button
-            type="button"
-            onClick={() => navigate('/creators/manage')}
-            className={navClass('creators')}
+          <NavItem
+            active={activePage === 'creators'}
             title="Creators"
-          >
-            <Users className="w-5 h-5" />
-          </button>
+            label="Creators"
+            icon={<Users className="w-5 h-5" />}
+            onClick={() => go('/creators/manage')}
+          />
         )}
         {hasPermission('staff.view') && (
-          <button
-            type="button"
-            onClick={() => navigate('/staff/manage')}
-            className={navClass('staff')}
+          <NavItem
+            active={activePage === 'staff'}
             title="Manage Staff"
-          >
-            <UserCog className="w-5 h-5" />
-          </button>
+            label="Manage Staff"
+            icon={<UserCog className="w-5 h-5" />}
+            onClick={() => go('/staff/manage')}
+          />
         )}
-        {(hasPermission('moderation.manage') ||
-          hasPermission('moderation.review')) && (
-          <button
-            type="button"
-            onClick={() => navigate('/staff/moderation')}
-            className={navClass('moderation')}
+        {(hasPermission('moderation.manage') || hasPermission('moderation.review')) && (
+          <NavItem
+            active={activePage === 'moderation'}
             title="Keyword Moderation"
-          >
-            <ShieldAlert className="w-5 h-5" />
-          </button>
+            label="Keyword Moderation"
+            icon={<ShieldCheck className="w-5 h-5" />}
+            onClick={() => go('/staff/moderation')}
+          />
+        )}
+
+        {hasPermission('creators.view') && visiblePlatforms.length > 0 && (
+          <>
+            <GroupTitle>Platforms</GroupTitle>
+            {visiblePlatforms.includes('maloum') &&
+              platformBlock({
+                id: 'maloum',
+                label: 'Maloum',
+                icon: <img src={maloumIcon} alt="" className="w-5 h-5 rounded object-cover" />,
+                unread: unreadTotals.maloum.messages,
+                menuRef: maloumMenuRef,
+                tools: maloumTools,
+              })}
+            {visiblePlatforms.includes('4based') &&
+              platformBlock({
+                id: '4based',
+                label: '4based',
+                icon: <img src={fourBasedIcon} alt="" className="w-5 h-5 rounded object-cover" />,
+                unread: unreadTotals['4based'].messages,
+                menuRef: fourBasedMenuRef,
+                tools: fourBasedTools,
+              })}
+            {visiblePlatforms.includes('fansly') &&
+              platformBlock({
+                id: 'fansly',
+                label: 'Fansly',
+                icon: <img src={fanslyIcon} alt="" className="w-5 h-5 object-contain" />,
+                unread: unreadTotals.fansly.messages,
+                menuRef: fanslyMenuRef,
+                tools: fanslyTools,
+              })}
+            {visiblePlatforms.includes('telegram') &&
+              platformBlock({
+                id: 'telegram',
+                label: 'Telegram',
+                icon: (
+                  <img src={telegramIcon} alt="" className="w-5 h-5 rounded-full object-cover" />
+                ),
+                unread: unreadTotals.telegram.messages,
+                menuRef: telegramMenuRef,
+                tools: telegramTools,
+              })}
+          </>
         )}
       </nav>
 
-      <div className="mt-auto flex flex-col gap-4 items-center">
-        <GermanTimeClock compact />
-        <ThemeToggle className="p-0 hover:bg-transparent dark:hover:bg-transparent focus:ring-0" />
+      <div className="px-3 pt-3 mt-auto border-t border-gray-200 dark:border-white/10 space-y-1 shrink-0">
+        <div className="nav-link flex items-center px-3 py-2 text-gray-500 dark:text-gray-400" title="Berlin time">
+          <Clock3 className="w-5 h-5 shrink-0 opacity-70" />
+          <span className="sidebar-text ml-3 text-[11px] font-mono tracking-wider">
+            <GermanTimeClock compact />
+          </span>
+        </div>
         <button
           type="button"
-          onClick={() => navigate('/account/settings')}
-          className={navClass('account')}
+          onClick={toggleTheme}
+          title="Toggle theme"
+          className="nav-link w-full flex items-center px-3 py-2 rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-900 hover:bg-gray-50 dark:hover:text-white dark:hover:bg-white/5 text-left"
+        >
+          {isDark ? <Sun className="w-5 h-5 shrink-0" /> : <Moon className="w-5 h-5 shrink-0" />}
+          <span className="sidebar-text ml-3 text-sm font-medium">Toggle Theme</span>
+        </button>
+        <NavItem
+          active={activePage === 'account'}
           title="Account Settings"
-        >
-          <Settings className="w-5 h-5" />
-        </button>
-        <button
-          type="button"
-          onClick={handleLogout}
-          className="text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+          label="Settings"
+          icon={<Settings className="w-5 h-5" />}
+          onClick={() => go('/account/settings')}
+        />
+        <NavItem
           title="Log out"
-        >
-          <LogOut className="w-5 h-5" />
-        </button>
-        <div className="w-8 h-8 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-xs font-medium">
-          {initial}
+          label="Log out"
+          danger
+          icon={<LogOut className="w-5 h-5" />}
+          onClick={() => void handleLogout()}
+        />
+        <div className="nav-link flex items-center px-3 py-3 mt-1 border-t border-gray-100 dark:border-white/5">
+          <div className="w-7 h-7 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-xs font-semibold shrink-0">
+            {initial}
+          </div>
+          <div className="sidebar-text ml-3 min-w-0">
+            <div className="text-sm font-medium truncate">{user?.name || 'User'}</div>
+            <div className="text-[10px] text-gray-500 truncate">{user?.email || ''}</div>
+          </div>
         </div>
       </div>
     </aside>

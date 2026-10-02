@@ -1,3 +1,5 @@
+import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
+import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   CalendarClock,
@@ -12,7 +14,6 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import ScheduleDateTimePicker from '@/components/ScheduleDateTimePicker';
@@ -377,17 +378,16 @@ export default function TelegramMassMessage() {
   const liveLabel = progressLabel(progress);
 
   return (
-    <div className="h-screen flex bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 antialiased overflow-hidden">
-      <Sidebar activePage="chatter" />
+    <AppShell title="Telegram Mass Message" activePage="chatter" bleed headerExtras={<><WorkspaceDrawerButton id="telegram-mass-accounts" size="lg" label="Creators" className="lg:hidden" /></>}>
 
-      <aside className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50">
+      <WorkspaceDrawer id="telegram-mass-accounts" size="lg" className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50">
         <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center gap-2">
           <img src={telegramIcon} alt="" className="w-5 h-5 rounded-full" />
           <span className="text-sm font-semibold text-gray-900 dark:text-white">
             Mass Message
           </span>
         </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+        <div data-drawer-list className="flex-1 overflow-y-auto p-3 space-y-1.5">
           {creatorsLoading && (
             <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">Loading creators…</p>
           )}
@@ -423,7 +423,7 @@ export default function TelegramMassMessage() {
             );
           })}
         </div>
-      </aside>
+      </WorkspaceDrawer>
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col">
         {!selectedCreatorId ? (
@@ -732,6 +732,6 @@ export default function TelegramMassMessage() {
           onClose={() => setVaultOpen(false)}
         />
       )}
-    </div>
+    </AppShell>
   );
 }

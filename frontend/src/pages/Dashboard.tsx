@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Navigate, Link } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
+import PlatformIcon from '@/components/PlatformIcon';
 import PeriodDaysToggle, {
   DEFAULT_TIMEZONE,
   formatPeriodRangeLabel,
@@ -133,7 +134,7 @@ function MetricCard({
   breakdown?: { label: string; value: string }[];
 }) {
   return (
-    <div className="p-5 border border-gray-200 dark:border-white/5 rounded-lg bg-gray-50/50 dark:bg-transparent">
+    <div className="surface-card shadow-soft p-5">
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-1" title={hint}>
         {label}
       </p>
@@ -626,7 +627,7 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="space-y-12">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               <MetricCard
                 label="Total Sales"
                 value={formatCurrencyAmounts(totalSalesAmounts)}
@@ -784,7 +785,7 @@ export default function Dashboard() {
                   </Link>
                 </div>
                 <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden">
-                  <div className="overflow-x-auto">
+                  <div className="table-scroll overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead className="bg-gray-50 dark:bg-white/[0.02] text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
                         <tr>
@@ -820,16 +821,19 @@ export default function Dashboard() {
                                 className="border-t border-gray-100 dark:border-white/5"
                               >
                                 <td className="px-4 py-3 font-medium whitespace-nowrap">
-                                  {creator.creatorId ? (
-                                    <Link
-                                      to={`/dashboard/creator-analytics?creatorId=${creator.creatorId}`}
-                                      className="hover:underline"
-                                    >
-                                      {creator.creatorName}
-                                    </Link>
-                                  ) : (
-                                    creator.creatorName
-                                  )}
+                                  <span className="inline-flex items-center gap-2">
+                                    <PlatformIcon platform={creator.platform} />
+                                    {creator.creatorId ? (
+                                      <Link
+                                        to={`/dashboard/creator-analytics?creatorId=${creator.creatorId}`}
+                                        className="hover:underline"
+                                      >
+                                        {creator.creatorName}
+                                      </Link>
+                                    ) : (
+                                      creator.creatorName
+                                    )}
+                                  </span>
                                 </td>
                                 <td className="px-4 py-3 whitespace-nowrap">
                                   {formatCurrencyAmounts(creator.totalSales)}
@@ -938,7 +942,7 @@ export default function Dashboard() {
                   that window.
                 </p>
                 <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden">
-                  <div className="overflow-x-auto">
+                  <div className="table-scroll overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead className="bg-gray-50 dark:bg-white/[0.02] text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
                         <tr>

@@ -346,7 +346,7 @@ export default function ManageStaff() {
               </div>
             )}
 
-            <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden">
+            <div className="table-scroll border border-gray-200 dark:border-white/10 rounded-lg overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5">
@@ -508,7 +508,7 @@ export default function ManageStaff() {
               </div>
             )}
 
-            <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-x-auto">
+            <div className="table-scroll border border-gray-200 dark:border-white/10 rounded-lg overflow-x-auto">
               <table className="w-full text-sm min-w-[640px]">
                 <thead>
                   <tr className="border-b border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5">

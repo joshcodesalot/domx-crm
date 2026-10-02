@@ -1,7 +1,8 @@
+import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
+import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import { Bell, MessageSquare } from 'lucide-react';
-import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import {
   FourBasedChatList,
@@ -166,19 +167,18 @@ export default function Chatter4Based() {
   }, [onSyncEvent, selectedCreatorId, pollEnabled, refreshBadges]);
 
   return (
-    <div className="bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 h-screen flex antialiased overflow-hidden">
-      <Sidebar activePage="chatter" />
+    <AppShell title="4based Chat" activePage="chatter" bleed headerExtras={<><WorkspaceDrawerButton id="4based-creators" size="lg" label="Creators" className="lg:hidden" /><WorkspaceDrawerButton id="4based-inbox" size="md" label="Inbox" className="md:hidden" /></>}>
 
       <main className="flex-1 flex min-w-0 overflow-hidden">
         {/* Creators column */}
-        <aside className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50 glass-panel">
+        <WorkspaceDrawer id="4based-creators" size="lg" className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50 glass-panel">
           <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center gap-2">
             <img src={fourBasedIcon} alt="" className="w-5 h-5 rounded" />
             <span className="text-sm font-semibold text-gray-900 dark:text-white">
               4based
             </span>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-1.5 animate-fade-in">
+          <div data-drawer-list className="flex-1 overflow-y-auto p-3 space-y-1.5 animate-fade-in">
             {creatorsLoading && (
               <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">
                 Loading creators…
@@ -248,10 +248,10 @@ export default function Chatter4Based() {
           <div className="shrink-0 border-t border-gray-200 dark:border-zinc-800/60 p-4 bg-white/80 dark:bg-zinc-950/80">
             <FourBasedTranslationToggles />
           </div>
-        </aside>
+        </WorkspaceDrawer>
 
         {/* Conversations */}
-        <aside className="w-80 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-[#F7F8FA] dark:bg-[#0a0a0c] glass-panel">
+        <WorkspaceDrawer id="4based-inbox" size="md" className="w-80 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-[#F7F8FA] dark:bg-[#0a0a0c] glass-panel">
           {selectedCreatorId ? (
             <FourBasedChatList
               creatorId={selectedCreatorId}
@@ -273,7 +273,7 @@ export default function Chatter4Based() {
               Select a creator
             </p>
           )}
-        </aside>
+        </WorkspaceDrawer>
 
         {/* Thread */}
         {selectedCreator && selectedChatId ? (
@@ -297,6 +297,6 @@ export default function Chatter4Based() {
           </div>
         )}
       </main>
-    </div>
+    </AppShell>
   );
 }

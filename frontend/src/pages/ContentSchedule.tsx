@@ -1,6 +1,6 @@
+import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CalendarDays,
   Check,
   Loader2,
   RefreshCw,
@@ -8,7 +8,6 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import ToggleSwitch from '@/components/ToggleSwitch';
 import ScheduleDateTimePicker, {
@@ -718,17 +717,13 @@ export default function ContentSchedule() {
   }, [jobs, platformFilter, kindFilter]);
 
   return (
-    <div className="h-screen flex bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 antialiased overflow-hidden">
-      <Sidebar activePage="schedule" />
-      <main className="flex-1 min-w-0 flex flex-col">
-        <div className="h-16 px-5 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <CalendarDays className="w-5 h-5 text-domx-500" />
-            <h1 className="text-sm font-semibold text-gray-900 dark:text-white">
-              Content schedule
-            </h1>
-            <span className="text-[11px] text-gray-500">{timeZone}</span>
-          </div>
+    <AppShell
+      title="Content Schedule"
+      activePage="schedule"
+      bleed
+      headerExtras={
+        <>
+          <span className="hidden md:inline text-[11px] text-gray-500">{timeZone}</span>
           <button
             type="button"
             onClick={() => void loadAll()}
@@ -737,7 +732,10 @@ export default function ContentSchedule() {
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
-        </div>
+        </>
+      }
+    >
+      <main className="flex-1 min-w-0 flex flex-col">
 
         <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
           <div className="min-h-0 overflow-y-auto p-5 space-y-6 border-r border-gray-200 dark:border-zinc-800/60">
@@ -819,7 +817,7 @@ export default function ContentSchedule() {
                     Confirm schedule
                   </button>
                 </div>
-                <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-zinc-800">
+                <div className="table-scroll overflow-x-auto rounded-xl border border-gray-200 dark:border-zinc-800 surface-card">
                   <table className="w-full text-xs min-w-[860px]">
                     <thead className="bg-gray-50 dark:bg-zinc-900 text-left text-[10px] uppercase tracking-wider text-gray-500">
                       <tr>
@@ -1552,6 +1550,6 @@ export default function ContentSchedule() {
           }}
         />
       )}
-    </div>
+    </AppShell>
   );
 }

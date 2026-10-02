@@ -88,9 +88,9 @@ export default function AccountSettings() {
           </div>
         </div>
 
-        <form
+          <form
           onSubmit={handleSubmit}
-          className="rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] p-5 space-y-4"
+          className="surface-card shadow-soft p-5 space-y-4"
         >
           {error && (
             <div className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-3 py-2">

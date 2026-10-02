@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
+import PlatformIcon from '@/components/PlatformIcon';
 import {
   getCreators,
   getReconcileAllStatus,
@@ -351,7 +352,7 @@ export default function FalseSalesReview() {
           </div>
         ) : null}
 
-        <div className="overflow-x-auto border border-gray-200 dark:border-white/10 rounded-xl">
+        <div className="table-scroll overflow-x-auto border border-gray-200 dark:border-white/10 rounded-xl surface-card">
           <table className="min-w-full text-sm">
             <thead className="bg-gray-50 dark:bg-white/[0.03] text-left text-xs text-gray-500">
               <tr>
@@ -388,7 +389,12 @@ export default function FalseSalesReview() {
                     <td className="px-4 py-3 whitespace-nowrap">
                       {formatUnlocked(event.createdAt, timeZone)}
                     </td>
-                    <td className="px-4 py-3">{event.creatorName || '--'}</td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center gap-1.5">
+                        <PlatformIcon platform={event.platform} />
+                        {event.creatorName || '--'}
+                      </span>
+                    </td>
                     <td className="px-4 py-3">{event.platform}</td>
                     <td className="px-4 py-3">{event.eventType}</td>
                     <td className="px-4 py-3">

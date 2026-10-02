@@ -1,3 +1,5 @@
+import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
+import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AtSign,
@@ -12,7 +14,6 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
-import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
@@ -207,17 +208,16 @@ export default function FourBasedNotifications() {
   }
 
   return (
-    <div className="h-screen flex bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 antialiased overflow-hidden">
-      <Sidebar activePage="chatter" />
+    <AppShell title="4based Notifications" activePage="chatter" bleed headerExtras={<><WorkspaceDrawerButton id="4based-notif-accounts" size="lg" label="Creators" className="lg:hidden" /></>}>
 
-      <aside className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50">
+      <WorkspaceDrawer id="4based-notif-accounts" size="lg" className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50">
         <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center gap-2">
           <img src={fourBasedIcon} alt="" className="w-5 h-5 rounded" />
           <span className="text-sm font-semibold text-gray-900 dark:text-white">
             Notifications
           </span>
         </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+        <div data-drawer-list className="flex-1 overflow-y-auto p-3 space-y-1.5">
           {creatorsLoading && (
             <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">Loading creators…</p>
           )}
@@ -267,7 +267,7 @@ export default function FourBasedNotifications() {
             );
           })}
         </div>
-      </aside>
+      </WorkspaceDrawer>
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col">
         {!selectedCreatorId ? (
@@ -487,6 +487,6 @@ export default function FourBasedNotifications() {
           />
         </div>
       )}
-    </div>
+    </AppShell>
   );
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Monitor } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import PlatformIcon from '@/components/PlatformIcon';
 import EditBrowserProxyModal from '@/components/EditBrowserProxyModal';
 import { useAuth } from '@/context/AuthContext';
 import {
@@ -101,7 +102,7 @@ export default function Marketing() {
           </div>
         )}
 
-        <div className="border border-gray-200 dark:border-white/10 rounded-xl overflow-x-auto">
+        <div className="table-scroll border border-gray-200 dark:border-white/10 rounded-xl overflow-x-auto surface-card">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/[0.02]">
@@ -143,7 +144,10 @@ export default function Marketing() {
                             avatarUrl={profile.avatarUrl}
                             displayName={profile.displayName}
                           />
-                          <span className="font-medium">{profile.displayName}</span>
+                          <span className="font-medium inline-flex items-center gap-1.5">
+                            <PlatformIcon platform={profile.platform} />
+                            {profile.displayName}
+                          </span>
                         </div>
                       </td>
                       <td className="px-4 py-3">

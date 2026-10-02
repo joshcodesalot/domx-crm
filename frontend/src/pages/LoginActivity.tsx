@@ -264,7 +264,7 @@ export default function LoginActivity() {
 
   return (
     <AppLayout title="Login Activity" activePage="loginActivity">
-      <div className="max-w-[1600px] mx-auto space-y-0 -m-8">
+      <div className="max-w-[1600px] mx-auto space-y-0 -m-4 sm:-m-6 md:-m-8">
         <div className="flex flex-col gap-4 border-b border-gray-200 dark:border-white/10 px-6 py-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
@@ -466,7 +466,7 @@ export default function LoginActivity() {
           </div>
         </div>
 
-        <div className="overflow-auto border-t border-gray-200 dark:border-white/10">
+        <div className="table-scroll overflow-auto border-t border-gray-200 dark:border-white/10">
           <table className="w-full min-w-[860px] text-sm">
             <thead className="bg-gray-50 dark:bg-white/5 text-xs uppercase text-gray-500 dark:text-gray-400">
               <tr>

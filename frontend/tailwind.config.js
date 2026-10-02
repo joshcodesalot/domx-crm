@@ -20,8 +20,12 @@ export default {
         brand: {
           50: '#eff6ff',
           100: '#dbeafe',
+          300: '#93c5fd',
+          400: '#60a5fa',
           500: '#3b82f6',
           600: '#2563eb',
+          700: '#1d4ed8',
+          800: '#1e40af',
           900: '#1e3a8a',
         },
         darkbase: {
@@ -52,6 +56,9 @@ export default {
       animation: {
         'fade-in': 'fadeIn 0.2s ease-out',
         'slide-up': 'slideUp 0.3s ease-out',
+      },
+      boxShadow: {
+        soft: '0 8px 30px rgba(15, 23, 42, 0.06)',
       },
       keyframes: {
         fadeIn: {

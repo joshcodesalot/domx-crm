@@ -1,7 +1,8 @@
+import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
+import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useState } from 'react';
 import { Image as ImageIcon, Loader2, Plus, Send, Trash2, X } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
-import Sidebar from '@/components/Sidebar';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import TelegramVaultModal from '@/components/telegram/TelegramVaultModal';
 import { TelegramVoiceTile } from '@/components/telegram/TelegramAudioPlayer';
@@ -269,10 +270,9 @@ export default function TelegramSextingSession() {
   const vaultBlock = session?.blocks?.find((block) => block.id === vaultBlockId) || null;
 
   return (
-    <div className="bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 h-screen flex antialiased overflow-hidden">
-      <Sidebar activePage="chatter" />
+    <AppShell title="Sexting Session" activePage="chatter" bleed headerExtras={<><WorkspaceDrawerButton id="telegram-sessions" size="md" label="Sessions" className="md:hidden" /></>}>
       <main className="flex-1 flex min-w-0 overflow-hidden">
-        <aside className="w-80 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50">
+        <WorkspaceDrawer id="telegram-sessions" size="md" className="w-80 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50">
           <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 min-w-0">
               <img src={telegramIcon} alt="" className="w-5 h-5 rounded-full" />
@@ -289,7 +289,7 @@ export default function TelegramSextingSession() {
               New
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+          <div data-drawer-list className="flex-1 overflow-y-auto p-3 space-y-1.5">
             {sessionsLoading && (
               <p className="text-xs text-gray-500 dark:text-zinc-500 p-3">Loading…</p>
             )}
@@ -334,7 +334,7 @@ export default function TelegramSextingSession() {
               );
             })}
           </div>
-        </aside>
+        </WorkspaceDrawer>
 
         <section className="flex-1 min-w-0 overflow-y-auto">
           {selectedId === NEW_SESSION_ID ? (
@@ -524,6 +524,6 @@ export default function TelegramSextingSession() {
           onClose={() => setVaultBlockId(null)}
         />
       )}
-    </div>
+    </AppShell>
   );
 }

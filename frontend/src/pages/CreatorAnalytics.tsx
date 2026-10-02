@@ -541,7 +541,7 @@ export default function CreatorAnalytics() {
                 <div className="px-4 py-3 border-b border-gray-100 dark:border-white/5 text-sm font-medium">
                   Sales by chatter
                 </div>
-                <div className="overflow-x-auto">
+                <div className="table-scroll overflow-x-auto">
                   <table className="w-full text-sm">
                     <tbody>
                       {(summary?.salesByChatter || []).length === 0 ? (
@@ -575,7 +575,7 @@ export default function CreatorAnalytics() {
                 <div className="px-4 py-3 border-b border-gray-100 dark:border-white/5 text-sm font-medium">
                   Sales by platform
                 </div>
-                <div className="overflow-x-auto">
+                <div className="table-scroll overflow-x-auto">
                   <table className="w-full text-sm">
                     <tbody>
                       {(summary?.salesByPlatform || []).length === 0 ? (
@@ -606,7 +606,7 @@ export default function CreatorAnalytics() {
                 <div className="px-4 py-3 border-b border-gray-100 dark:border-white/5 text-sm font-medium">
                   Unlock rate by price band
                 </div>
-                <div className="overflow-x-auto">
+                <div className="table-scroll overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead className="text-xs uppercase text-gray-500">
                       <tr>
@@ -637,7 +637,7 @@ export default function CreatorAnalytics() {
                 <div className="px-4 py-3 border-b border-gray-100 dark:border-white/5 text-sm font-medium">
                   Top fans by spend
                 </div>
-                <div className="overflow-x-auto">
+                <div className="table-scroll overflow-x-auto">
                   <table className="w-full text-sm">
                     <tbody>
                       {(summary?.topFans || []).length === 0 ? (
@@ -671,7 +671,7 @@ export default function CreatorAnalytics() {
               <div>
                 <h3 className="text-sm font-medium mb-3">Creator comparison</h3>
                 <div className="border border-gray-200 dark:border-white/10 rounded-lg overflow-hidden">
-                  <div className="overflow-x-auto">
+                  <div className="table-scroll overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead className="bg-gray-50 dark:bg-white/[0.02] text-left text-xs uppercase tracking-wide text-gray-500">
                         <tr>

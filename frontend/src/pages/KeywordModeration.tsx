@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Plus, ShieldAlert } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
+import PlatformIcon from '@/components/PlatformIcon';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useToast } from '@/context/ToastContext';
@@ -321,7 +322,7 @@ export default function KeywordModeration() {
         {loading ? (
           <p className="text-sm text-gray-400">Loading...</p>
         ) : activeTab === 'rules' && canManage ? (
-          <div className="overflow-x-auto border border-gray-200 dark:border-white/10 rounded-xl">
+          <div className="table-scroll overflow-x-auto border border-gray-200 dark:border-white/10 rounded-xl surface-card">
             <table className="w-full text-sm text-left">
               <thead className="bg-gray-50 dark:bg-white/5 text-gray-500 dark:text-gray-400">
                 <tr>
@@ -429,7 +430,7 @@ export default function KeywordModeration() {
               />
             </div>
 
-            <div className="overflow-x-auto border border-gray-200 dark:border-white/10 rounded-xl">
+            <div className="table-scroll overflow-x-auto border border-gray-200 dark:border-white/10 rounded-xl surface-card">
               <table className="w-full text-sm text-left">
                 <thead className="bg-gray-50 dark:bg-white/5 text-gray-500 dark:text-gray-400">
                   <tr>
@@ -466,7 +467,10 @@ export default function KeywordModeration() {
                             {event.chatterName || '—'}
                           </td>
                           <td className="px-4 py-3 text-gray-900 dark:text-gray-100 whitespace-nowrap">
-                            {event.creatorName || '—'}
+                            <span className="inline-flex items-center gap-1.5">
+                              <PlatformIcon platform={event.platform} />
+                              {event.creatorName || '—'}
+                            </span>
                           </td>
                           <td className="px-4 py-3 text-gray-600 dark:text-gray-300 whitespace-nowrap">
                             {event.platform}

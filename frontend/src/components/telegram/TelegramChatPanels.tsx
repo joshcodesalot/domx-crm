@@ -33,6 +33,7 @@ import {
 import GermanTimeClock from '@/components/GermanTimeClock';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
+import { useSyncedDrawer } from '@/context/ShellContext';
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import TelegramFanPanel from '@/components/telegram/TelegramFanPanel';
 import TelegramReactionPicker, {
@@ -91,7 +92,6 @@ import { telegramMessageIsLocked } from '@/lib/massMessageLock';
 const AUTO_TRANSLATE_OUTGOING_KEY = 'domx_auto_translate_outgoing';
 const AUTO_TRANSLATE_HISTORY_KEY = 'domx_auto_translate_history';
 const FAN_PANEL_OPEN_KEY = 'domx-telegram-fan-panel';
-const THREAD_WIDE_BREAKPOINT = 1000;
 const MAX_TRANSLATION_HISTORY = 8;
 const TYPING_REFRESH_MS = 4000;
 const TYPING_IDLE_MS = 5000;
@@ -911,14 +911,10 @@ export function TelegramChatThread({
   const [messagesNext, setMessagesNext] = useState<TelegramHistoryCursor | null>(
     null
   );
-  const threadRootRef = useRef<HTMLDivElement | null>(null);
-  const [threadWide, setThreadWide] = useState(true);
   const [fanPanelOpen, setFanPanelOpen] = useState(() =>
     readStoredBoolean(FAN_PANEL_OPEN_KEY, true)
   );
-  const fanPanelUserOverrideRef = useRef(
-    localStorage.getItem(FAN_PANEL_OPEN_KEY) != null
-  );
+  useSyncedDrawer(`telegram-fan-${peerId}`, 'xl', fanPanelOpen, setFanPanelOpen);
   const [autoTranslateOutgoing, setAutoTranslateOutgoing] = useState(() =>
     readStoredBoolean(AUTO_TRANSLATE_OUTGOING_KEY, true)
   );
@@ -993,30 +989,9 @@ export function TelegramChatThread({
     return () => window.removeEventListener(TRANSLATION_SETTINGS_EVENT, sync);
   }, []);
 
-  useEffect(() => {
-    const el = threadRootRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const applyWidth = (width: number) => {
-      const wide = width >= THREAD_WIDE_BREAKPOINT;
-      setThreadWide(wide);
-      if (!fanPanelUserOverrideRef.current) {
-        setFanPanelOpen(wide);
-      }
-    };
-    applyWidth(el.getBoundingClientRect().width);
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      applyWidth(entry.contentRect.width);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
   const toggleFanPanel = useCallback(() => {
     setFanPanelOpen((prev) => {
       const next = !prev;
-      fanPanelUserOverrideRef.current = true;
       localStorage.setItem(FAN_PANEL_OPEN_KEY, String(next));
       return next;
     });
@@ -1788,10 +1763,7 @@ export function TelegramChatThread({
   }, []);
 
   return (
-    <div
-      ref={threadRootRef}
-      className="flex-1 flex h-full min-w-0 min-h-0 overflow-hidden relative"
-    >
+    <div className="flex-1 flex h-full min-w-0 min-h-0 overflow-hidden relative">
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden chatter-thread-bg relative">
       <div className="absolute inset-0 bg-white/95 dark:bg-zinc-950/95 z-0 pointer-events-none" />
       <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 bg-white/80 dark:bg-zinc-950/80 relative z-10 shrink-0">
@@ -2574,33 +2546,17 @@ export function TelegramChatThread({
       )}
       </div>
 
-      {fanPanelOpen && threadWide && (
-        <TelegramFanPanel
-          creatorId={creatorId}
-          fan={fan}
-          showUsername={showUsername}
-          onFanUpdated={handleFanUpdated}
-          className="w-72 shrink-0"
-        />
-      )}
-
-      {fanPanelOpen && !threadWide && (
-        <>
-          <button
-            type="button"
-            className="absolute inset-0 z-20 bg-black/40 animate-fade-in"
-            aria-label="Close fan info"
-            onClick={toggleFanPanel}
-          />
+      {fanPanelOpen && (
+        <div className="workspace-drawer drawer-xl workspace-open w-72 shrink-0 flex flex-col min-h-0 bg-white dark:bg-zinc-950">
           <TelegramFanPanel
             creatorId={creatorId}
             fan={fan}
             showUsername={showUsername}
             onFanUpdated={handleFanUpdated}
             onClose={toggleFanPanel}
-            className="absolute right-0 top-0 bottom-0 w-72 z-30 shadow-2xl animate-slide-up"
+            className="w-full flex-1 min-h-0"
           />
-        </>
+        </div>
       )}
     </div>
   );

@@ -1,3 +1,4 @@
+import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Bell, Home, MessageSquare, X } from 'lucide-react';
@@ -174,7 +175,8 @@ export default function MessageProTelegram() {
   }, [activeWorkspace]);
 
   return (
-    <div className="h-screen flex flex-col bg-white dark:bg-[#0a0a0a] text-gray-900 dark:text-gray-100">
+    <AppShell title="Telegram Message Pro" activePage="chatter" bleed>
+    <div className="flex-1 min-h-0 min-w-0 flex flex-col bg-white dark:bg-[#0a0a0a] text-gray-900 dark:text-gray-100">
       <header className="h-12 shrink-0 border-b border-gray-200 dark:border-white/10 flex items-center gap-2 px-3">
         <span className="text-sm font-semibold mr-2">Message Pro</span>
         <div className="flex-1 flex items-center gap-1 overflow-x-auto min-w-0">
@@ -344,5 +346,6 @@ export default function MessageProTelegram() {
         </>
       )}
     </div>
+    </AppShell>
   );
 }

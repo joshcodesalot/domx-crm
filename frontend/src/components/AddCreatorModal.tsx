@@ -8,11 +8,14 @@ import {
 import CreatorAvatar from '@/components/CreatorAvatar';
 import CreatorProxyFields from '@/components/CreatorProxyFields';
 import fourBasedIcon from '@/assets/4based_icon.ico';
+import fanslyIcon from '@/assets/fansly.svg';
 import maloumIcon from '@/assets/maloum_icon.png';
 import telegramIcon from '@/assets/telegram_icon.svg';
 import {
+  connectFanslyAccount,
   connectFourBasedAccount,
   connectMaloumAccount,
+  reconnectFanslyAccount,
   reconnectFourBasedAccount,
   reconnectMaloumAccount,
   createCreator,
@@ -60,12 +63,14 @@ export default function AddCreatorModal({
 }: AddCreatorModalProps) {
   const isReconnect = Boolean(reconnectCreator?.accountId);
   const [step, setStep] = useState(isReconnect ? 2 : 1);
-  const [platform, setPlatform] = useState<'maloum' | '4based' | 'telegram'>(
+  const [platform, setPlatform] = useState<'maloum' | '4based' | 'telegram' | 'fansly'>(
     reconnectCreator?.platform === '4based'
       ? '4based'
       : reconnectCreator?.platform === 'telegram'
         ? 'telegram'
-        : 'maloum'
+        : reconnectCreator?.platform === 'fansly'
+          ? 'fansly'
+          : 'maloum'
   );
   const [loginEmail, setLoginEmail] = useState(reconnectCreator?.loginEmail || '');
   const [loginPassword, setLoginPassword] = useState('');
@@ -100,18 +105,22 @@ export default function AddCreatorModal({
   const proxyEnvLabel =
     platform === '4based'
       ? 'FOURBASED_PROXY_URL'
-      : platform === 'telegram'
-        ? ''
-        : 'MALOUM_PROXY_URL';
+      : platform === 'fansly'
+        ? 'FANSLY_PROXY_URL'
+        : platform === 'telegram'
+          ? ''
+          : 'MALOUM_PROXY_URL';
 
   const [title, subtitle] =
     isReconnect && step === 2
       ? ([
           platform === '4based'
             ? 'Reconnect 4based account'
-            : platform === 'telegram'
-              ? 'Reconnect Telegram account'
-              : 'Reconnect Maloum account',
+            : platform === 'fansly'
+              ? 'Reconnect Fansly account'
+              : platform === 'telegram'
+                ? 'Reconnect Telegram account'
+                : 'Reconnect Maloum account',
           platform === 'telegram'
             ? `Sign in with the phone number for ${reconnectCreator?.displayName || 'this creator'}.`
             : `Sign in again to refresh the session for ${reconnectCreator?.displayName || 'this creator'}.`,
@@ -120,9 +129,11 @@ export default function AddCreatorModal({
         ? ([
             platform === '4based'
               ? 'Connect 4based account'
-              : platform === 'telegram'
-                ? 'Connect Telegram account'
-                : 'Connect Maloum account',
+              : platform === 'fansly'
+                ? 'Connect Fansly account'
+                : platform === 'telegram'
+                  ? 'Connect Telegram account'
+                  : 'Connect Maloum account',
             platform === 'telegram'
               ? 'Enter the account phone number. Telegram will send a login code.'
               : `Enter credentials. Login uses the dedicated ${proxyEnvLabel} proxy from the server (.env).`,
@@ -184,6 +195,12 @@ export default function AddCreatorModal({
 
   function handleSelectFourBased() {
     setPlatform('4based');
+    setStep(2);
+    setLoginError(null);
+  }
+
+  function handleSelectFansly() {
+    setPlatform('fansly');
     setStep(2);
     setLoginError(null);
   }
@@ -345,6 +362,63 @@ export default function AddCreatorModal({
     }
   }
 
+  async function handleConnectFansly() {
+    if (!loginEmail.trim() || !loginPassword.trim()) {
+      setLoginError('Username and password are required.');
+      return;
+    }
+    if (!accountId && !isReconnect) {
+      setLoginError('Session is not ready. Please try again.');
+      return;
+    }
+
+    setLoginError(null);
+    setConnecting(true);
+
+    try {
+      const optionalProxy = optionalCustomProxyUrl();
+      if (optionalProxy === false) {
+        return;
+      }
+      if (isReconnect && reconnectCreator) {
+        await reconnectFanslyAccount(reconnectCreator.id, {
+          email: loginEmail.trim(),
+          password: loginPassword,
+          ...(optionalProxy ? { proxyUrl: optionalProxy } : {}),
+        });
+        setConnectSucceeded(false);
+        connectSucceededRef.current = false;
+        onSaved();
+        onClose();
+        return;
+      }
+
+      const result = await connectFanslyAccount({
+        accountId: accountId!,
+        email: loginEmail.trim(),
+        password: loginPassword,
+        ...(optionalProxy ? { proxyUrl: optionalProxy } : {}),
+      });
+
+      setAccountToken(result.accountToken);
+      setSession({
+        displayName: result.displayName,
+        username: result.username || '',
+        postLoginUrl: result.postLoginUrl,
+        avatarUrl: result.avatarUrl,
+        profileImageUrl: result.avatarUrl,
+      });
+      setDisplayNameOverride(result.displayName);
+      setConnectSucceeded(true);
+      connectSucceededRef.current = true;
+      setStep(3);
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : 'Failed to connect Fansly account');
+    } finally {
+      setConnecting(false);
+    }
+  }
+
   async function handleConnectMaloum() {
     if (!loginEmail.trim() || !loginPassword.trim()) {
       setLoginError('Email or username and password are required.');
@@ -415,6 +489,10 @@ export default function AddCreatorModal({
     }
     if (platform === '4based') {
       await handleConnectFourBased();
+      return;
+    }
+    if (platform === 'fansly') {
+      await handleConnectFansly();
       return;
     }
     await handleConnectMaloum();
@@ -563,6 +641,22 @@ export default function AddCreatorModal({
 
               <button
                 type="button"
+                onClick={handleSelectFansly}
+                className="w-full flex items-center gap-4 p-4 border-2 border-gray-200 dark:border-white/10 rounded-lg hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/10 transition-colors text-left"
+              >
+                <div className="w-10 h-10 rounded-lg bg-sky-50 flex items-center justify-center shrink-0 overflow-hidden">
+                  <img src={fanslyIcon} alt="Fansly" className="w-7 h-7 object-contain" />
+                </div>
+                <div>
+                  <p className="font-medium text-sm">Fansly</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    API-based connect with residential proxy
+                  </p>
+                </div>
+              </button>
+
+              <button
+                type="button"
                 onClick={handleSelectTelegram}
                 className="w-full flex items-center gap-4 p-4 border-2 border-gray-200 dark:border-white/10 rounded-lg hover:border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-900/10 transition-colors text-left"
               >
@@ -649,7 +743,8 @@ export default function AddCreatorModal({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium mb-1.5">
-                    Email or username <span className="text-red-500">*</span>
+                    {platform === 'fansly' ? 'Username' : 'Email or username'}{' '}
+                    <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="text"
@@ -658,7 +753,9 @@ export default function AddCreatorModal({
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && !connecting) void handleConnectAccount();
                     }}
-                    placeholder="Enter your email or username"
+                    placeholder={
+                      platform === 'fansly' ? 'Enter your Fansly username' : 'Enter your email or username'
+                    }
                     className={inputClassName}
                     disabled={connecting}
                   />

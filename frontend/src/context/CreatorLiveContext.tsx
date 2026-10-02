@@ -13,6 +13,7 @@ import { useStaffSync } from '@/context/StaffSyncContext';
 import { useDocumentVisible } from '@/hooks/useDocumentVisible';
 import {
   getCreators,
+  getFanslyUnread,
   getFourBasedBadges,
   getMaloumBadges,
   getTelegramBadges,
@@ -160,7 +161,9 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
               ? await getMaloumBadges(id)
               : creator.platform === 'telegram'
                 ? await getTelegramBadges(id)
-                : null;
+                : creator.platform === 'fansly'
+                  ? await getFanslyUnread(id)
+                  : null;
         if (!result) return;
         updates[id] = {
           messages: Number(result.messages) || 0,
@@ -286,7 +289,7 @@ export function CreatorLiveProvider({ children }: { children: ReactNode }) {
 }
 
 export function useCreatorLive(opts?: {
-  platform?: 'maloum' | '4based' | 'telegram';
+  platform?: 'maloum' | '4based' | 'telegram' | 'fansly';
   wantBadges?: boolean;
   pollEnabled?: boolean;
 }) {

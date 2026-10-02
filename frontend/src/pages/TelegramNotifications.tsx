@@ -1,3 +1,4 @@
+import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useState } from 'react';
 import {
   Check,
@@ -7,7 +8,6 @@ import {
   Loader2,
   RefreshCw,
 } from 'lucide-react';
-import Sidebar from '@/components/Sidebar';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
@@ -158,8 +158,7 @@ export default function TelegramNotifications() {
   }
 
   return (
-    <div className="h-screen flex bg-white dark:bg-zinc-950 text-gray-700 dark:text-zinc-300 antialiased overflow-hidden">
-      <Sidebar activePage="chatter" />
+    <AppShell title="Telegram Notifications" activePage="chatter" bleed>
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col">
         <div className="h-16 px-4 md:px-6 border-b border-gray-200 dark:border-zinc-800/60 flex items-center justify-between gap-3 shrink-0 bg-white/80 dark:bg-zinc-950/80">
@@ -334,6 +333,6 @@ export default function TelegramNotifications() {
           )}
         </div>
       </main>
-    </div>
+    </AppShell>
   );
 }

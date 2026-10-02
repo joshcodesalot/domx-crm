@@ -3,6 +3,7 @@ import { useDocumentVisible } from '@/hooks/useDocumentVisible';
 import { ImageIcon, RefreshCw, VideoIcon } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import PlatformIcon from '@/components/PlatformIcon';
 import {
   getCreators,
   getMessagingDashboard,
@@ -84,7 +85,10 @@ function MessagingDashboardRow({
             initialsClassName="w-8 h-8 rounded-full bg-gray-200 dark:bg-white/10 flex items-center justify-center text-xs font-medium shrink-0"
           />
           <div className="min-w-0">
-            <div className="font-medium truncate">{entry.creatorName}</div>
+            <div className="font-medium truncate inline-flex items-center gap-1.5">
+              <PlatformIcon platform={entry.platform} />
+              <span className="truncate">{entry.creatorName}</span>
+            </div>
             {entry.creatorUsername ? (
               <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
                 @{entry.creatorUsername}
@@ -297,7 +301,7 @@ export default function MessagingDashboard() {
 
   return (
     <AppLayout title="Messaging Dashboard" activePage="analytics">
-      <div className="max-w-[1600px] mx-auto space-y-0 -m-8">
+      <div className="max-w-[1600px] mx-auto space-y-0 -m-4 sm:-m-6 md:-m-8">
         <div className="flex flex-col gap-4 border-b border-gray-200 dark:border-white/10 px-6 py-4 md:flex-row md:items-center md:justify-between">
           <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
             Messaging Dashboard
@@ -505,7 +509,7 @@ export default function MessagingDashboard() {
           </div>
         </div>
 
-        <div className="overflow-auto border-t border-gray-200 dark:border-white/10">
+        <div className="table-scroll overflow-auto border-t border-gray-200 dark:border-white/10">
           <table className="w-full min-w-[1200px] text-sm">
             <thead className="bg-gray-50 dark:bg-white/5 text-xs uppercase text-gray-500 dark:text-gray-400">
               <tr>
