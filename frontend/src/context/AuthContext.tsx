@@ -58,7 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               await new Promise((resolve) => setTimeout(resolve, delays[i]));
             }
             try {
-              const { user } = await getMe();
+              const { user } = await getMe(getOrCreateDeviceId());
               setUser(user);
               return;
             } catch (err) {

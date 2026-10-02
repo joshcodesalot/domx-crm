@@ -215,6 +215,13 @@ router.get('/me', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    await recordLoginEvent({
+      user: result.rows[0],
+      ipAddress: getClientIp(req),
+      deviceId: req.get('x-domx-device-id'),
+      userAgent: req.get('user-agent'),
+    });
+
     const userInfo = await getUserById(req.user.id);
     const permissions = await getUserPermissions(req.user.id);
     const safeUser = toSafeUser(

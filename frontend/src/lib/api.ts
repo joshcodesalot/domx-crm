@@ -540,8 +540,10 @@ export async function getHealth(): Promise<{ status: string; database: string }>
   return request<{ status: string; database: string }>('/api/health');
 }
 
-export async function getMe(): Promise<MeResponse> {
-  return request<MeResponse>('/api/auth/me');
+export async function getMe(deviceId?: string): Promise<MeResponse> {
+  return request<MeResponse>('/api/auth/me', {
+    headers: deviceId ? { 'X-Domx-Device-Id': deviceId } : {},
+  });
 }
 
 export async function updateMyTimezone(timezone: string): Promise<MeResponse> {
