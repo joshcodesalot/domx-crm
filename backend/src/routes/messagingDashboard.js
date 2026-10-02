@@ -30,6 +30,7 @@ const {
   weekStartDateString,
   resolveAnalyticsPeriod,
   parseBusinessDateTime,
+  normalizeTimeZone,
 } = require('../services/businessTimezone');
 const {
   EXTENDED_MESSAGE_STATS_SELECT,
@@ -55,9 +56,11 @@ const {
 } = require('../services/messagingAnalyticsHelpers');
 const {
   loadSchedulesByUserId,
+  scheduleTimeZoneFor,
   shiftLabelInTimeZone,
   expandShiftWindows,
   buildWindowValuesClause,
+  buildInstantRangeClause,
   duringScheduledHoursPredicate,
   scheduleDowJoin,
   nextCalendarDate,
@@ -3451,44 +3454,66 @@ router.get(
   requirePermission('analytics.view', 'analytics.self'),
   async (req, res) => {
     try {
-      const tz = await getUserTimeZone(req.user.id);
       const viewerId = req.user.id;
-      const periodStart = monthStartDateString(new Date(), tz);
-      const periodEnd = calendarDateString(new Date(), tz);
-      const rangeStart = parseBusinessDateTime(`${periodStart}T00:00:00`, tz);
-      const rangeEnd = parseBusinessDateTime(
-        `${nextCalendarDate(periodEnd)}T00:00:00`,
-        tz
-      );
-      if (!rangeStart || !rangeEnd) {
-        return res.status(500).json({ error: 'Invalid leaderboard period' });
-      }
+      const now = new Date();
 
       const staffResult = await pool.query(
-        `SELECT u.id AS "userId", u.name AS "userName"
+        `SELECT u.id AS "userId", u.name AS "userName", u.timezone
          FROM users u
          WHERE u.role = ANY($1::text[]) AND u.status = 'active'
          ORDER BY u.name ASC`,
         [TRACKED_STAFF_ROLES]
       );
 
-      const onBerlinShift = duringScheduledHoursPredicate('m', 'uws');
+      const onShift = duringScheduledHoursPredicate('m', 'uws');
       const scheduleJoin = scheduleDowJoin('m', 'uws');
-      const inViewerMonth = `m."sentAt" >= $2::timestamptz AND m."sentAt" < $3::timestamptz`;
-      const leaderboardParams = [
-        TRACKED_STAFF_ROLES,
-        rangeStart.toISOString(),
-        rangeEnd.toISOString(),
-      ];
       const staffIds = staffResult.rows.map((row) => row.userId);
       const schedulesByUser = await loadSchedulesByUserId(staffIds);
-      const periodWindows = await expandShiftWindows(
-        staffIds,
-        periodStart,
-        periodEnd,
-        schedulesByUser
-      );
-      const periodWindowClause = buildWindowValuesClause(periodWindows, 4);
+      const monthRanges = [];
+      const periodWindows = [];
+      for (const row of staffResult.rows) {
+        const staffTz = normalizeTimeZone(row.timezone);
+        const periodStart = monthStartDateString(now, staffTz);
+        const periodEnd = calendarDateString(now, staffTz);
+        const rangeStart = parseBusinessDateTime(`${periodStart}T00:00:00`, staffTz);
+        const rangeEnd = parseBusinessDateTime(
+          `${nextCalendarDate(periodEnd)}T00:00:00`,
+          staffTz
+        );
+        if (rangeStart && rangeEnd) {
+          monthRanges.push({
+            userId: row.userId,
+            rangeStart: rangeStart.toISOString(),
+            rangeEnd: rangeEnd.toISOString(),
+          });
+        }
+        const week = schedulesByUser.get(row.userId);
+        const windowTz =
+          week && week.size > 0
+            ? scheduleTimeZoneFor(schedulesByUser, row.userId)
+            : staffTz;
+        const windows = await expandShiftWindows(
+          [row.userId],
+          periodStart,
+          periodEnd,
+          schedulesByUser,
+          windowTz
+        );
+        periodWindows.push(...windows);
+      }
+      const monthClause = buildInstantRangeClause(monthRanges, 2);
+      const periodWindowClause = monthClause
+        ? buildWindowValuesClause(periodWindows, monthClause.nextParamIndex)
+        : null;
+      const inStaffMonth = `EXISTS (
+        SELECT 1 FROM months mo
+        WHERE mo."userId" = m."chatterId"
+          AND m."sentAt" >= mo."rangeStart"
+          AND m."sentAt" < mo."rangeEnd"
+      )`;
+      const leaderboardParams = monthClause
+        ? [TRACKED_STAFF_ROLES, ...monthClause.params]
+        : [TRACKED_STAFF_ROLES];
 
       const revealLeaderboard = isTeamAnalyticsRole(req.user.role);
 
@@ -3497,11 +3522,18 @@ router.get(
           `SELECT NULL::uuid AS "userId", NULL::float AS "avgResponseTimeSeconds" WHERE false`
         );
 
+      const monthsCte = monthClause
+        ? `months("userId", "rangeStart", "rangeEnd") AS (
+             VALUES ${monthClause.sql}
+           )`
+        : null;
+
       const [responseResult, salesResult, messageStatsResult] = await Promise.all([
-        !periodWindowClause
+        !periodWindowClause || !monthsCte
           ? emptyResponseQuery()
           : pool.query(
-          `WITH windows("userId", "windowStart", "windowEnd") AS (
+          `WITH ${monthsCte},
+           windows("userId", "windowStart", "windowEnd") AS (
              VALUES ${periodWindowClause.sql}
            )
            SELECT m."chatterId" AS "userId",
@@ -3511,13 +3543,24 @@ router.get(
            ${scheduleJoin}
            WHERE u.role = ANY($1::text[])
              AND m."responseTimeSeconds" IS NOT NULL
-             AND ${inViewerMonth}
-             AND ${onBerlinShift}
+             AND ${inStaffMonth}
+             AND EXISTS (
+               SELECT 1 FROM windows w
+               WHERE w."userId" = m."chatterId"
+                 AND m."sentAt" >= w."windowStart"
+                 AND m."sentAt" < w."windowEnd"
+             )
+             AND ${onShift}
            GROUP BY m."chatterId"`,
           [...leaderboardParams, ...periodWindowClause.params]
         ),
-        pool.query(
-          `SELECT m."chatterId" AS "userId",
+        !monthsCte
+          ? pool.query(
+              `SELECT NULL::uuid AS "userId", NULL::text AS currency, NULL::float AS amount WHERE false`
+            )
+          : pool.query(
+          `WITH ${monthsCte}
+           SELECT m."chatterId" AS "userId",
                   UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
                   COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
            FROM messaging_dashboard_entries m
@@ -3525,13 +3568,18 @@ router.get(
            ${scheduleJoin}
            WHERE u.role = ANY($1::text[])
              AND ${COUNTED_SALES_FILTER}
-             AND ${inViewerMonth}
-             AND ${onBerlinShift}
+             AND ${inStaffMonth}
+             AND ${onShift}
            GROUP BY m."chatterId", 2`,
           leaderboardParams
         ),
-        pool.query(
-          `SELECT m."chatterId" AS "userId",
+        !monthsCte
+          ? pool.query(
+              `SELECT NULL::uuid AS "userId", NULL::int AS "messagesSent", NULL::int AS "ppvsSent", NULL::int AS "ppvsUnlocked" WHERE false`
+            )
+          : pool.query(
+          `WITH ${monthsCte}
+           SELECT m."chatterId" AS "userId",
                   COUNT(*) FILTER (
                     WHERE m."contentType" IN ('text', 'media', 'chat_product')
                   )::int AS "messagesSent",
@@ -3543,8 +3591,8 @@ router.get(
            JOIN users u ON u.id = m."chatterId"
            ${scheduleJoin}
            WHERE u.role = ANY($1::text[])
-             AND ${inViewerMonth}
-             AND ${onBerlinShift}
+             AND ${inStaffMonth}
+             AND ${onShift}
            GROUP BY m."chatterId"`,
           leaderboardParams
         ),
@@ -3700,11 +3748,8 @@ router.get(
         },
         valuesRevealed: revealLeaderboard,
         period: {
-          startDate: periodStart,
-          endDate: periodEnd,
-          timeZone: tz,
           usesScheduledHours: true,
-          window: 'calendar_month',
+          window: 'staff_calendar_month',
         },
         lastUpdated: new Date().toISOString(),
       });

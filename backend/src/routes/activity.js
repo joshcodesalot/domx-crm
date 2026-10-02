@@ -122,7 +122,7 @@ router.post('/heartbeat', authenticate, async (req, res) => {
         if (hadRecentInput) {
           activeSecondsToday += intervalSeconds;
         } else {
-          // Idle only accrues during the staff PHT shift (or all day if none).
+          // Idle only accrues during the saved shift (or all day if none).
           const schedules = await loadSchedulesByUserId([userId]);
           if (isDateWithinWeekSchedule(now, schedules.get(userId))) {
             idleSecondsToday += intervalSeconds;

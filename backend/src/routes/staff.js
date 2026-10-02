@@ -12,13 +12,14 @@ const {
   canDeleteUser,
   toSafeUser,
   getUserPermissions,
+  getUserTimeZone,
 } = require('../services/rbac');
 const { emitToUser } = require('../services/userEventBus');
 const { invalidateCreatorAccessCache } = require('../services/creatorAccess');
 const { generateTempPassword } = require('../services/passwordUtils');
 const {
-  BUSINESS_TZ,
   loadSchedulesByUserId,
+  scheduleTimeZoneFor,
   parseScheduleDaysPayload,
   formatTimeShort,
   isOvernight,
@@ -413,7 +414,7 @@ router.get(
 
       res.json({
         userId: id,
-        timeZone: BUSINESS_TZ,
+        timeZone: scheduleTimeZoneFor(byUser, id),
         days,
       });
     } catch (err) {
@@ -447,6 +448,8 @@ router.put(
         return res.status(404).json({ error: 'User not found' });
       }
 
+      const actorTimeZone = await getUserTimeZone(req.user.id);
+
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -459,6 +462,11 @@ router.put(
             [id, day.dayOfWeek, day.startTime, day.endTime]
           );
         }
+
+        await client.query(
+          `UPDATE users SET "scheduleTimeZone" = $2 WHERE id = $1`,
+          [id, actorTimeZone]
+        );
 
         await client.query('COMMIT');
       } catch (err) {
@@ -477,7 +485,7 @@ router.put(
 
       res.json({
         userId: id,
-        timeZone: BUSINESS_TZ,
+        timeZone: actorTimeZone,
         days,
       });
     } catch (err) {

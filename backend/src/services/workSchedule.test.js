@@ -56,6 +56,21 @@ describe('shift windows', () => {
     assert.doesNotMatch(windows[0].windowStartSql, /Asia\/Manila/);
   });
 
+  it('stamps windows in a saved Asia/Manila schedule timezone', async () => {
+    const schedules = overnightWeek();
+    schedules.timeZones = new Map([[userId, SCHEDULE_TZ]]);
+    const windows = await expandShiftWindows(
+      [userId],
+      '2026-09-01',
+      '2026-09-01',
+      schedules
+    );
+    assert.equal(windows.length, 1);
+    assert.match(windows[0].windowStartSql, /Asia\/Manila/);
+    assert.match(windows[0].windowStartSql, /2026-09-01 23:00:00/);
+    assert.match(windows[0].windowEndSql, /2026-09-02 08:00:00/);
+  });
+
   it('converts a September Berlin 23:00–08:00 shift to Manila 05:00–14:00', () => {
     const at = new Date('2026-09-15T12:00:00.000Z');
     const week = overnightDays();
@@ -66,6 +81,16 @@ describe('shift windows', () => {
     assert.equal(
       shiftLabelInTimeZone(week, SCHEDULE_TZ, at).shiftLabel,
       '05:00–14:00'
+    );
+  });
+
+  it('converts a saved Manila 23:00–08:00 shift into Berlin 17:00–02:00', () => {
+    const at = new Date('2026-09-15T12:00:00.000Z');
+    const week = overnightDays();
+    week.scheduleTimeZone = SCHEDULE_TZ;
+    assert.equal(
+      shiftLabelInTimeZone(week, BUSINESS_TZ, at).shiftLabel,
+      '17:00–02:00'
     );
   });
 
@@ -81,9 +106,24 @@ describe('shift windows', () => {
     );
   });
 
-  it('leaves the dashboard scheduled-hours check on Europe/Berlin', () => {
+  it('reads a saved Manila shift instead of Berlin', () => {
+    const week = overnightDays();
+    week.scheduleTimeZone = SCHEDULE_TZ;
+    assert.equal(
+      isDateWithinWeekSchedule(new Date('2026-09-15T16:00:00.000Z'), week),
+      true
+    );
+    assert.equal(
+      isDateWithinWeekSchedule(new Date('2026-09-16T01:00:00.000Z'), week),
+      false
+    );
+  });
+
+  it('reads each chatter schedule timezone and falls back to Europe/Berlin', () => {
     const predicate = duringScheduledHoursPredicate('m', 'uws');
     const join = scheduleDowJoin('m', 'uws');
+    assert.match(predicate, /"scheduleTimeZone"/);
+    assert.match(join, /"scheduleTimeZone"/);
     assert.match(predicate, /Europe\/Berlin/);
     assert.match(join, /Europe\/Berlin/);
     assert.match(predicate, /_uws_prev/);

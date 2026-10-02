@@ -5,6 +5,7 @@ import {
   type StaffScheduleDay,
   type User,
 } from '@/lib/api';
+import { useStaffTimeZone } from '@/lib/berlinTime';
 
 const DAY_LABELS = [
   'Sunday',
@@ -63,9 +64,11 @@ export default function StaffScheduleModal({
   canEdit,
   onClose,
 }: StaffScheduleModalProps) {
+  const editorTimeZone = useStaffTimeZone();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scheduleTimeZone, setScheduleTimeZone] = useState('Europe/Berlin');
   const [week, setWeek] = useState<Record<number, DayDraft>>(emptyWeek);
 
   useEffect(() => {
@@ -75,7 +78,10 @@ export default function StaffScheduleModal({
       setError(null);
       try {
         const result = await getStaffSchedule(member.id);
-        if (!cancelled) setWeek(daysToDraft(result.days || []));
+        if (!cancelled) {
+          setScheduleTimeZone(result.timeZone || 'Europe/Berlin');
+          setWeek(daysToDraft(result.days || []));
+        }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load schedule');
@@ -155,11 +161,14 @@ export default function StaffScheduleModal({
         <div className="p-6">
           <h3 className="text-lg font-semibold mb-1">Work schedule</h3>
           <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">
-            {member.name} — hours in Europe/Berlin
+            {member.name} — hours in {scheduleTimeZone}
           </p>
           <p className="text-xs text-gray-400 mb-4">
             Overnight shifts are supported (e.g. 23:00–08:00). Cleared days count as
             days off. No schedule means all-day stats.
+            {canEdit
+              ? ` Saving records these times in your timezone (${editorTimeZone}).`
+              : ''}
           </p>
 
           {error ? (

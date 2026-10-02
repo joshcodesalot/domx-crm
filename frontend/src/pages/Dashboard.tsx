@@ -859,11 +859,8 @@ export default function Dashboard() {
             <div>
               <h3 className="text-sm font-medium mb-1">Leaderboard</h3>
               <p className="text-xs text-gray-400 mb-4">
-                Monthly rankings (calendar month
-                {leaderboard?.period?.startDate && leaderboard?.period?.endDate
-                  ? `: ${leaderboard.period.startDate} → ${leaderboard.period.endDate}`
-                  : ''}
-                ).{' '}
+                Monthly rankings use each staff member&apos;s calendar month in their
+                timezone.{' '}
                 {leaderboard?.valuesRevealed || isTeamScope
                   ? 'Full totals visible to managers. '
                   : 'Values are partially hidden. '}
@@ -936,7 +933,7 @@ export default function Dashboard() {
                 <h3 className="text-sm font-medium mb-1">Staff Performance</h3>
                 <p className="text-xs text-gray-400 mb-4">
                   Period and lifetime sales; messages and idle count only during
-                  scheduled hours (PHT). Period/Weekly/Total Rev/hr and Msg/hr use
+                  scheduled hours. Period/Weekly/Total Rev/hr and Msg/hr use
                   sales ÷ total tracked time (active + schedule-capped idle) for
                   that window.
                 </p>

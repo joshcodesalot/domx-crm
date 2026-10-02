@@ -1203,11 +1203,11 @@ export interface LeaderboardResponse {
   /** True when owner/manager sees unmasked peer values. */
   valuesRevealed?: boolean;
   period?: {
-    startDate: string;
-    endDate: string;
-    timeZone: string;
+    startDate?: string;
+    endDate?: string;
+    timeZone?: string;
     usesScheduledHours?: boolean;
-    window?: 'calendar_month' | string;
+    window?: 'calendar_month' | 'staff_calendar_month' | string;
   };
   responseWindow?: { startDate: string; endDate: string };
   lastUpdated: string;

@@ -1,6 +1,7 @@
 /**
  * Per-staff weekly work schedules.
- * Idle on-shift checks use Philippine Time (PHT, Asia/Manila, no DST).
+ * Clock times are wall times in the timezone of the person who saved the schedule
+ * (`users.scheduleTimeZone`). Rows saved before that column stay Europe/Berlin.
  * Overnight: endTime <= startTime (e.g. 23:00 → 08:00).
  * Shift-start attribution: events in [D+start, end) count toward calendar date D.
  */
@@ -99,7 +100,18 @@ function wallClockInTimeZone(date, timeZone = SCHEDULE_TZ) {
 }
 
 /**
- * True when `date` falls inside the weekly schedule (Europe/Berlin).
+ * Timezone the stored clock times were entered in.
+ * Missing zone stays Europe/Berlin so older schedules do not move.
+ * @param {Map<number, ScheduleDay>|undefined|null} week
+ * @returns {string}
+ */
+function scheduleZoneOf(week) {
+  return normalizeTimeZone(week?.scheduleTimeZone || BUSINESS_TZ);
+}
+
+/**
+ * True when `date` falls inside the weekly schedule.
+ * Clocks are read in the zone stored on the week (`scheduleTimeZone`).
  * No schedule rows → all day (same as messaging analytics).
  * Overnight spill from the previous weekday still counts.
  * @param {Date} date
@@ -108,7 +120,7 @@ function wallClockInTimeZone(date, timeZone = SCHEDULE_TZ) {
 function isDateWithinWeekSchedule(date, week) {
   if (!week || week.size === 0) return true;
 
-  const wall = wallClockInTimeZone(date, BUSINESS_TZ);
+  const wall = wallClockInTimeZone(date, scheduleZoneOf(week));
   const localTime = wall.time;
   const today = week.get(wall.dow);
   if (today) {
@@ -223,26 +235,47 @@ function manilaTimestampSql(dateStr, timeStr, timeZone = BUSINESS_TZ) {
 
 /**
  * Load schedules for user IDs.
+ * The returned map also has `timeZones`: userId → scheduleTimeZone.
+ * Each week map has `scheduleTimeZone` for the same value.
  * @param {string[]} userIds
- * @returns {Promise<ScheduleMap>}
+ * @returns {Promise<ScheduleMap & { timeZones?: Map<string, string> }>}
  */
 async function loadSchedulesByUserId(userIds) {
-  /** @type {ScheduleMap} */
+  /** @type {ScheduleMap & { timeZones?: Map<string, string> }} */
   const byUser = new Map();
+  /** @type {Map<string, string>} */
+  const timeZones = new Map();
+  byUser.timeZones = timeZones;
   if (!userIds || userIds.length === 0) return byUser;
 
-  const result = await pool.query(
-    `SELECT "userId", "dayOfWeek",
-            to_char("startTime", 'HH24:MI:SS') AS "startTime",
-            to_char("endTime", 'HH24:MI:SS') AS "endTime"
-     FROM user_work_schedules
-     WHERE "userId" = ANY($1::uuid[])
-     ORDER BY "userId", "dayOfWeek"`,
-    [userIds]
-  );
+  const [result, zoneResult] = await Promise.all([
+    pool.query(
+      `SELECT "userId", "dayOfWeek",
+              to_char("startTime", 'HH24:MI:SS') AS "startTime",
+              to_char("endTime", 'HH24:MI:SS') AS "endTime"
+       FROM user_work_schedules
+       WHERE "userId" = ANY($1::uuid[])
+       ORDER BY "userId", "dayOfWeek"`,
+      [userIds]
+    ),
+    pool.query(
+      `SELECT id, "scheduleTimeZone"
+       FROM users
+       WHERE id = ANY($1::uuid[])`,
+      [userIds]
+    ),
+  ]);
+
+  for (const row of zoneResult.rows) {
+    timeZones.set(row.id, normalizeTimeZone(row.scheduleTimeZone));
+  }
 
   for (const row of result.rows) {
-    if (!byUser.has(row.userId)) byUser.set(row.userId, new Map());
+    if (!byUser.has(row.userId)) {
+      const week = new Map();
+      week.scheduleTimeZone = timeZones.get(row.userId) || BUSINESS_TZ;
+      byUser.set(row.userId, week);
+    }
     byUser.get(row.userId).set(Number(row.dayOfWeek), {
       dayOfWeek: Number(row.dayOfWeek),
       startTime: row.startTime,
@@ -250,6 +283,18 @@ async function loadSchedulesByUserId(userIds) {
     });
   }
   return byUser;
+}
+
+/**
+ * Stored schedule timezone for a user, or Europe/Berlin when none was saved.
+ * @param {ScheduleMap & { timeZones?: Map<string, string> } | undefined} schedules
+ * @param {string} userId
+ * @returns {string}
+ */
+function scheduleTimeZoneFor(schedules, userId) {
+  const fromMap = schedules?.timeZones?.get(userId);
+  if (fromMap) return normalizeTimeZone(fromMap);
+  return scheduleZoneOf(schedules?.get(userId));
 }
 
 /**
@@ -292,12 +337,12 @@ function leadingOvernightSpill(week, startDate, timeZone) {
 /**
  * Expand shift windows for users over inclusive date range.
  * Users with no schedule get full calendar days.
- * Default clock is Europe/Berlin. The leaderboard passes Asia/Manila and
- * includeLeadingOvernightSpill so 00:00–08:00 on the first day still counts.
+ * Omit `timeZone` to stamp each user in their saved schedule timezone.
+ * Pass `timeZone` to force one zone for every user in this call.
  * @param {string[]} userIds
  * @param {string} startDate
  * @param {string} endDate
- * @param {ScheduleMap} [schedules]
+ * @param {ScheduleMap & { timeZones?: Map<string, string> }} [schedules]
  * @param {string} [timeZone]
  * @param {{ includeLeadingOvernightSpill?: boolean }} [options]
  * @returns {Promise<Array<{ userId: string, windowStartSql: string, windowEndSql: string }>>}
@@ -307,20 +352,24 @@ async function expandShiftWindows(
   startDate,
   endDate,
   schedules,
-  timeZone = BUSINESS_TZ,
+  timeZone,
   options = {}
 ) {
   const ids = [...new Set((userIds || []).filter(Boolean))];
   if (ids.length === 0) return [];
 
-  const tz = normalizeTimeZone(timeZone);
+  const explicitTz = timeZone ? normalizeTimeZone(timeZone) : null;
   const byUser = schedules || (await loadSchedulesByUserId(ids));
+  const zoneByUser = byUser.timeZones instanceof Map ? byUser.timeZones : new Map();
   const dates = buildDateRangeBetween(startDate, endDate);
   /** @type {Array<{ userId: string, windowStartSql: string, windowEndSql: string }>} */
   const windows = [];
 
   for (const userId of ids) {
     const week = byUser.get(userId);
+    const tz =
+      explicitTz ||
+      normalizeTimeZone(zoneByUser.get(userId) || week?.scheduleTimeZone || BUSINESS_TZ);
     if (options.includeLeadingOvernightSpill) {
       const spill = leadingOvernightSpill(week, startDate, tz);
       if (spill) windows.push({ userId, ...spill });
@@ -386,7 +435,16 @@ function buildWindowValuesClause(windows, startParamIndex = 1) {
 }
 
 /**
- * SQL predicate: entry sentAt falls inside a scheduled Berlin work hour.
+ * SQL expression: the chatter's saved schedule timezone, or Europe/Berlin.
+ * @param {string} entryAlias
+ */
+function scheduleTimeZoneSql(entryAlias) {
+  return `COALESCE((SELECT u_sched_tz."scheduleTimeZone" FROM users u_sched_tz WHERE u_sched_tz.id = ${entryAlias}."chatterId"), '${BUSINESS_TZ}')`;
+}
+
+/**
+ * SQL predicate: entry sentAt falls inside a scheduled work hour.
+ * Clocks are read in that chatter's scheduleTimeZone.
  * Users with no schedule rows always match (full day).
  * A morning after midnight also matches the previous weekday's overnight row.
  *
@@ -394,9 +452,10 @@ function buildWindowValuesClause(windows, startParamIndex = 1) {
  * @param {string} [schedAlias='uws']
  */
 function duringScheduledHoursPredicate(entryAlias = 'm', schedAlias = 'uws') {
-  const localTime = `(${entryAlias}."sentAt" AT TIME ZONE '${BUSINESS_TZ}')::time`;
-  const berlinDow = `EXTRACT(DOW FROM (${entryAlias}."sentAt" AT TIME ZONE '${BUSINESS_TZ}'))::int`;
-  const prevDow = `(${berlinDow} + 6) % 7`;
+  const tzExpr = scheduleTimeZoneSql(entryAlias);
+  const localTime = `(${entryAlias}."sentAt" AT TIME ZONE (${tzExpr}))::time`;
+  const localDow = `EXTRACT(DOW FROM (${entryAlias}."sentAt" AT TIME ZONE (${tzExpr})))::int`;
+  const prevDow = `(${localDow} + 6) % 7`;
   return `(
     NOT EXISTS (
       SELECT 1 FROM user_work_schedules _uws_any
@@ -430,10 +489,11 @@ function duringScheduledHoursPredicate(entryAlias = 'm', schedAlias = 'uws') {
 }
 
 /**
- * Shift label converted from Berlin wall-clock hours into `timeZone`.
+ * Shift label converted from the stored schedule zone into `timeZone`.
  * A single weekly pattern uses the offset in effect at `at`. Mixed weeks stay "Custom week".
+ * Weeks without `scheduleTimeZone` are treated as Europe/Berlin.
  * @param {Map<number, ScheduleDay>|undefined} week
- * @param {string} [timeZone]
+ * @param {string} [timeZone] zone to display the label in
  * @param {Date} [at]
  * @returns {{ scheduleApplied: boolean, shiftLabel: string|null }}
  */
@@ -447,9 +507,10 @@ function shiftLabelInTimeZone(week, timeZone = BUSINESS_TZ, at = new Date()) {
   const end = normalizeTime(day.endTime);
   if (!start || !end) return meta;
 
+  const sourceTz = scheduleZoneOf(week);
   const tz = normalizeTimeZone(timeZone);
-  const berlinDate = wallClockInTimeZone(at, BUSINESS_TZ).dateStr;
-  const [year, month, date] = berlinDate.split('-').map(Number);
+  const sourceDate = wallClockInTimeZone(at, sourceTz).dateStr;
+  const [year, month, date] = sourceDate.split('-').map(Number);
   const [startHour, startMinute] = start.split(':').map(Number);
   const [endHour, endMinute] = end.split(':').map(Number);
   const startInstant = zonedWallTimeToUtc(
@@ -458,9 +519,9 @@ function shiftLabelInTimeZone(week, timeZone = BUSINESS_TZ, at = new Date()) {
     date,
     startHour,
     startMinute,
-    BUSINESS_TZ
+    sourceTz
   );
-  const endDate = isOvernight(start, end) ? nextCalendarDate(berlinDate) : berlinDate;
+  const endDate = isOvernight(start, end) ? nextCalendarDate(sourceDate) : sourceDate;
   const [endYear, endMonth, endDay] = endDate.split('-').map(Number);
   const endInstant = zonedWallTimeToUtc(
     endYear,
@@ -468,7 +529,7 @@ function shiftLabelInTimeZone(week, timeZone = BUSINESS_TZ, at = new Date()) {
     endDay,
     endHour,
     endMinute,
-    BUSINESS_TZ
+    sourceTz
   );
   const formatter = new Intl.DateTimeFormat('en-GB', {
     timeZone: tz,
@@ -483,16 +544,40 @@ function shiftLabelInTimeZone(week, timeZone = BUSINESS_TZ, at = new Date()) {
 }
 
 /**
- * LEFT JOIN fragment for schedule on the entry's Berlin day of week.
+ * LEFT JOIN fragment for schedule on the entry's day of week in the chatter's schedule timezone.
  * @param {string} [entryAlias='m']
  * @param {string} [schedAlias='uws']
  */
 function scheduleDowJoin(entryAlias = 'm', schedAlias = 'uws') {
+  const tzExpr = scheduleTimeZoneSql(entryAlias);
   return `LEFT JOIN user_work_schedules ${schedAlias}
             ON ${schedAlias}."userId" = ${entryAlias}."chatterId"
            AND ${schedAlias}."dayOfWeek" = EXTRACT(
-             DOW FROM (${entryAlias}."sentAt" AT TIME ZONE '${BUSINESS_TZ}')
+             DOW FROM (${entryAlias}."sentAt" AT TIME ZONE (${tzExpr}))
            )::int`;
+}
+
+/**
+ * SQL VALUES list of (userId, rangeStart, rangeEnd) timestamptz bounds.
+ * @param {Array<{ userId: string, rangeStart: string, rangeEnd: string }>} ranges
+ * @param {number} [startParamIndex=1]
+ * @returns {{ sql: string, params: string[], nextParamIndex: number } | null}
+ */
+function buildInstantRangeClause(ranges, startParamIndex = 1) {
+  if (!ranges || ranges.length === 0) return null;
+  const params = [];
+  const parts = [];
+  let i = startParamIndex;
+  for (const range of ranges) {
+    params.push(range.userId, range.rangeStart, range.rangeEnd);
+    parts.push(`($${i}::uuid, $${i + 1}::timestamptz, $${i + 2}::timestamptz)`);
+    i += 3;
+  }
+  return {
+    sql: parts.join(',\n'),
+    params,
+    nextParamIndex: i,
+  };
 }
 
 /**
@@ -565,11 +650,13 @@ module.exports = {
   nextCalendarDate,
   manilaTimestampSql,
   loadSchedulesByUserId,
+  scheduleTimeZoneFor,
   scheduleMetaForWeek,
   shiftLabelInTimeZone,
   expandShiftWindows,
   expandTodayWindows,
   buildWindowValuesClause,
+  buildInstantRangeClause,
   duringScheduledHoursPredicate,
   scheduleDowJoin,
   parseScheduleDaysPayload,
