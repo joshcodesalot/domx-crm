@@ -8,6 +8,7 @@ const {
   listAllDmPeers,
   TelegramWorkerError,
 } = require('../services/telegramWorker');
+const fanCrmActivity = require('../services/fanCrmActivity');
 
 const router = express.Router();
 
@@ -282,6 +283,19 @@ router.post(
         added = inserted.rowCount || 0;
       }
       const list = await loadListForCreator(creator.id, listId);
+      if (added > 0) {
+        await fanCrmActivity.recordFanCrmEvents([
+          {
+            ...fanCrmActivity.actorFrom(req.user),
+            creatorId: creator.id,
+            platform: 'telegram',
+            action: 'list_bulk_add',
+            listId,
+            listName: existing.name || '',
+            nextValue: String(added),
+          },
+        ]);
+      }
       return res.json({
         list,
         added,
@@ -336,15 +350,26 @@ router.put(
       if (checked.error) {
         return res.status(checked.error.status).json({ error: checked.error.message });
       }
+      let requestedLists = [];
       if (listIds.length > 0) {
         const owned = await pool.query(
-          `SELECT id FROM telegram_lists WHERE "creatorId" = $1 AND id = ANY($2::uuid[])`,
+          `SELECT id::text AS id, name
+           FROM telegram_lists
+           WHERE "creatorId" = $1 AND id = ANY($2::uuid[])`,
           [creator.id, listIds]
         );
         if (owned.rows.length !== listIds.length) {
           return res.status(400).json({ error: 'One or more lists were not found' });
         }
+        requestedLists = owned.rows;
       }
+      const beforeMembership = await pool.query(
+        `SELECT l.id::text AS id, l.name
+         FROM telegram_lists l
+         JOIN telegram_list_members m ON m."listId" = l.id
+         WHERE l."creatorId" = $1 AND m."telegramUserId" = $2`,
+        [creator.id, checked.fan.telegramUserId]
+      );
 
       const client = await pool.connect();
       try {
@@ -373,6 +398,35 @@ router.put(
       } finally {
         client.release();
       }
+
+      const fan = checked.fan;
+      const fanLabel =
+        fanCrmActivity.textValue(fan.nickname).trim() ||
+        fanCrmActivity.textValue(fan.displayName).trim() ||
+        fanCrmActivity.textValue(fan.username).trim();
+      const changes = fanCrmActivity.membershipChanges(
+        beforeMembership.rows.map((row) => ({
+          id: String(row.id).toLowerCase(),
+          name: fanCrmActivity.textValue(row.name).trim(),
+        })),
+        requestedLists.map((row) => ({
+          id: String(row.id).toLowerCase(),
+          name: fanCrmActivity.textValue(row.name).trim(),
+        }))
+      );
+      await fanCrmActivity.recordFanCrmEvents(
+        fanCrmActivity.listChangeEvents(
+          {
+            ...fanCrmActivity.actorFrom(req.user),
+            creatorId: creator.id,
+            platform: 'telegram',
+            fanId: fan.telegramUserId,
+            fanLabel,
+          },
+          changes.added,
+          changes.removed
+        )
+      );
 
       const result = await pool.query(
         `SELECT l.*, COUNT(m2."telegramUserId")::int AS "memberCount"

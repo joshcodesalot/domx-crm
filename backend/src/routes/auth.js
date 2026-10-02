@@ -19,6 +19,7 @@ const {
   BUSINESS_TZ,
   normalizeTimeZone,
 } = require('../services/businessTimezone');
+const { recordLoginEvent } = require('../services/loginActivity');
 
 const router = express.Router();
 
@@ -174,6 +175,12 @@ router.post('/login', loginLimiter, async (req, res) => {
     }
 
     const clientIp = getClientIp(req);
+    await recordLoginEvent({
+      user,
+      ipAddress: clientIp,
+      deviceId: req.body?.deviceId,
+      userAgent: req.get('user-agent'),
+    });
 
     const updated = await pool.query(
       `UPDATE users

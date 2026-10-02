@@ -1,13 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const { pipeline } = require('stream/promises');
-const {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  DeleteObjectCommand,
-} = require('@aws-sdk/client-s3');
-const { Upload } = require('@aws-sdk/lib-storage');
 
 const MULTIPART_THRESHOLD = 100 * 1024 * 1024;
 
@@ -20,6 +13,30 @@ class B2StorageError extends Error {
 }
 
 let client;
+let sdk;
+
+function loadSdk() {
+  if (sdk) return sdk;
+  try {
+    const s3 = require('@aws-sdk/client-s3');
+    const storage = require('@aws-sdk/lib-storage');
+    const presigner = require('@aws-sdk/s3-request-presigner');
+    sdk = {
+      S3Client: s3.S3Client,
+      PutObjectCommand: s3.PutObjectCommand,
+      GetObjectCommand: s3.GetObjectCommand,
+      DeleteObjectCommand: s3.DeleteObjectCommand,
+      Upload: storage.Upload,
+      getSignedUrl: presigner.getSignedUrl,
+    };
+  } catch (err) {
+    throw new B2StorageError(
+      'Backblaze storage is not available. Install backend dependencies and set the B2 env vars.',
+      503
+    );
+  }
+  return sdk;
+}
 
 function requireEnv(name) {
   const value = String(process.env[name] || '').trim();
@@ -35,6 +52,7 @@ function bucket() {
 
 function getS3() {
   if (client) return client;
+  const { S3Client } = loadSdk();
   client = new S3Client({
     endpoint: requireEnv('B2_ENDPOINT'),
     region: requireEnv('B2_REGION'),
@@ -64,6 +82,7 @@ async function putVaultObject(key, filePath, contentType) {
   const size = fs.statSync(abs).size;
   const Bucket = bucket();
   const ContentType = contentType || 'application/octet-stream';
+  const { PutObjectCommand, Upload } = loadSdk();
   if (size > MULTIPART_THRESHOLD) {
     const upload = new Upload({
       client: getS3(),
@@ -97,6 +116,7 @@ function isMissingObject(err) {
 }
 
 async function getVaultObject(key) {
+  const { GetObjectCommand } = loadSdk();
   try {
     return await getS3().send(
       new GetObjectCommand({
@@ -125,6 +145,25 @@ async function downloadVaultObjectToFile(key, destPath) {
   return destPath;
 }
 
+const PRESIGN_SECONDS = 60 * 60;
+
+async function presignVaultObject(key, { contentType, filename, expiresIn = PRESIGN_SECONDS } = {}) {
+  const { GetObjectCommand, getSignedUrl } = loadSdk();
+  const name = String(filename || 'media').replace(/"/g, '');
+  const command = new GetObjectCommand({
+    Bucket: bucket(),
+    Key: key,
+    ResponseContentType: contentType || 'application/octet-stream',
+    ResponseContentDisposition: `inline; filename="${name}"`,
+  });
+  try {
+    return await getSignedUrl(getS3(), command, { expiresIn });
+  } catch (err) {
+    if (err instanceof B2StorageError) throw err;
+    throw new B2StorageError(err.message || 'Failed to sign vault storage', 502);
+  }
+}
+
 async function streamVaultObject(res, key, { contentType, filename } = {}) {
   const obj = await getVaultObject(key);
   const name = String(filename || 'media').replace(/"/g, '');
@@ -150,6 +189,7 @@ async function streamVaultObject(res, key, { contentType, filename } = {}) {
 async function deleteVaultObjects(keys) {
   const unique = [...new Set((keys || []).map((key) => String(key || '').trim()).filter(Boolean))];
   if (!unique.length) return;
+  const { DeleteObjectCommand } = loadSdk();
   const s3 = getS3();
   const Bucket = bucket();
   for (const Key of unique) {
@@ -169,6 +209,7 @@ module.exports = {
   putVaultObject,
   getVaultObject,
   downloadVaultObjectToFile,
+  presignVaultObject,
   streamVaultObject,
   deleteVaultObjects,
 };

@@ -42,6 +42,8 @@ const TelegramMassMessage = lazy(() => import('@/pages/TelegramMassMessage'));
 const TelegramLists = lazy(() => import('@/pages/TelegramLists'));
 const MessagingDashboard = lazy(() => import('@/pages/MessagingDashboard'));
 const SalesLogs = lazy(() => import('@/pages/SalesLogs'));
+const CrmActivity = lazy(() => import('@/pages/CrmActivity'));
+const LoginActivity = lazy(() => import('@/pages/LoginActivity'));
 const FalseSalesReview = lazy(() => import('@/pages/FalseSalesReview'));
 const AnalyticsCharts = lazy(() => import('@/pages/AnalyticsCharts'));
 const CreatorAnalytics = lazy(() => import('@/pages/CreatorAnalytics'));
@@ -322,6 +324,8 @@ function AppRoutes() {
                   <Route element={<PermissionRoute permission="analytics.view" />}>
                     <Route path="/dashboard/messaging" element={<MessagingDashboard />} />
                     <Route path="/dashboard/sales-logs" element={<SalesLogs />} />
+                    <Route path="/dashboard/crm-activity" element={<CrmActivity />} />
+                    <Route path="/dashboard/login-activity" element={<LoginActivity />} />
                   </Route>
                   <Route element={<PermissionRoute permission="staff.view" />}>
                     <Route path="/staff/manage" element={<ManageStaff />} />

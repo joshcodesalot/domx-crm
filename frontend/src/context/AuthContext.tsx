@@ -20,6 +20,7 @@ import {
   updateMyTimezone as apiUpdateMyTimezone,
   type User,
 } from '@/lib/api';
+import { getOrCreateDeviceId } from '@/lib/deviceId';
 
 interface AuthContextValue {
   user: User | null;
@@ -79,7 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
-    const { token, user } = await apiLogin(email, password);
+    const { token, user } = await apiLogin(email, password, getOrCreateDeviceId());
     setToken(token);
     setUser(user);
   }, []);

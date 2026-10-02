@@ -508,11 +508,16 @@ async function request<T>(
 
 export async function login(
   email: string,
-  password: string
+  password: string,
+  deviceId?: string
 ): Promise<LoginResponse> {
   return request<LoginResponse>('/api/auth/login', {
     method: 'POST',
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({
+      email,
+      password,
+      ...(deviceId ? { deviceId } : {}),
+    }),
   });
 }
 
@@ -1509,6 +1514,160 @@ export async function createMessagingDashboardEntry(
     method: 'POST',
     body: JSON.stringify(entry),
   });
+}
+
+export type FanCrmActivityAction =
+  | 'rename'
+  | 'note_add'
+  | 'note_remove'
+  | 'note_edit'
+  | 'list_add'
+  | 'list_remove'
+  | 'list_bulk_add';
+
+export interface FanCrmActivityEvent {
+  id: string;
+  createdAt: string;
+  chatterId: string | null;
+  chatterName: string;
+  creatorId: string | null;
+  creatorName: string;
+  creatorUsername: string | null;
+  creatorAvatarUrl: string | null;
+  platform: 'maloum' | '4based' | 'telegram';
+  fanId: string;
+  fanLabel: string;
+  chatId: string | null;
+  action: FanCrmActivityAction;
+  previousValue: string;
+  nextValue: string;
+  listId: string | null;
+  listName: string;
+}
+
+export interface FanCrmActivitySummary {
+  rename: number;
+  noteAdd: number;
+  noteRemove: number;
+  noteEdit: number;
+  listAdd: number;
+  listRemove: number;
+  listBulkAdd: number;
+}
+
+export interface FanCrmActivityResponse {
+  data: FanCrmActivityEvent[];
+  summary: FanCrmActivitySummary;
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    from: number;
+    to: number;
+  };
+  lastUpdated: string;
+}
+
+export async function getFanCrmActivity(filters: {
+  startDate?: string;
+  endDate?: string;
+  chatterId?: string;
+  creatorId?: string;
+  platform?: 'maloum' | '4based' | 'telegram';
+  action?: FanCrmActivityAction;
+  page?: number;
+  limit?: number;
+} = {}): Promise<FanCrmActivityResponse> {
+  const params = new URLSearchParams();
+  if (filters.startDate) params.set('startDate', filters.startDate);
+  if (filters.endDate) params.set('endDate', filters.endDate);
+  if (filters.chatterId) params.set('chatterId', filters.chatterId);
+  if (filters.creatorId) params.set('creatorId', filters.creatorId);
+  if (filters.platform) params.set('platform', filters.platform);
+  if (filters.action) params.set('action', filters.action);
+  if (filters.page) params.set('page', String(filters.page));
+  if (filters.limit) params.set('limit', String(filters.limit));
+  const query = params.toString();
+  const path = query ? `/api/fan-crm-activity?${query}` : '/api/fan-crm-activity';
+  return request<FanCrmActivityResponse>(path);
+}
+
+export type LoginActivityChange = 'ip' | 'device' | 'either';
+
+export interface LoginActivityEvent {
+  id: string;
+  createdAt: string;
+  userId: string | null;
+  userName: string;
+  userEmail: string;
+  ipAddress: string;
+  previousIp: string;
+  ipChanged: boolean;
+  deviceId: string;
+  previousDeviceId: string;
+  deviceChanged: boolean;
+  deviceLabel: string;
+  previousDeviceLabel: string;
+}
+
+export interface LoginActivitySummary {
+  logins: number;
+  ipChanged: number;
+  deviceChanged: number;
+  eitherChanged: number;
+}
+
+export interface LoginShareUser {
+  userId: string | null;
+  userName: string;
+  userEmail: string;
+  lastSeenAt: string;
+}
+
+export interface SharedDeviceGroup {
+  deviceId: string;
+  deviceLabel: string;
+  users: LoginShareUser[];
+}
+
+export interface SharedIpGroup {
+  ipAddress: string;
+  users: LoginShareUser[];
+}
+
+export interface LoginActivityResponse {
+  data: LoginActivityEvent[];
+  sharedDevices: SharedDeviceGroup[];
+  sharedIps: SharedIpGroup[];
+  summary: LoginActivitySummary;
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    from: number;
+    to: number;
+  };
+  lastUpdated: string;
+}
+
+export async function getLoginActivity(filters: {
+  startDate?: string;
+  endDate?: string;
+  userId?: string;
+  change?: LoginActivityChange;
+  page?: number;
+  limit?: number;
+} = {}): Promise<LoginActivityResponse> {
+  const params = new URLSearchParams();
+  if (filters.startDate) params.set('startDate', filters.startDate);
+  if (filters.endDate) params.set('endDate', filters.endDate);
+  if (filters.userId) params.set('userId', filters.userId);
+  if (filters.change) params.set('change', filters.change);
+  if (filters.page) params.set('page', String(filters.page));
+  if (filters.limit) params.set('limit', String(filters.limit));
+  const query = params.toString();
+  const path = query ? `/api/login-activity?${query}` : '/api/login-activity';
+  return request<LoginActivityResponse>(path);
 }
 
 export async function getMessagingDashboardSenders(filters: {

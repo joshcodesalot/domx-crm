@@ -58,6 +58,7 @@ const {
 const fourBasedMediaCache = require('../services/fourBasedMediaCache');
 const maloumMediaCache = require('../services/maloumMediaCache');
 const { randomUUID } = require('crypto');
+const fanCrmActivity = require('../services/fanCrmActivity');
 
 const router = express.Router();
 
@@ -3615,6 +3616,26 @@ router.get(
   }
 );
 
+async function resolveFourBasedListName(creator, listId) {
+  const target = String(listId);
+  let offset = 0;
+  for (let page = 0; page < 5; page += 1) {
+    const lists = await fourBasedClient.listUserLists(creator, { limit: 100, offset });
+    if (!Array.isArray(lists) || lists.length === 0) return '';
+    const match = lists.find((list) => String(list?._id || list?.id || '') === target);
+    if (match) return fanCrmActivity.textValue(match.name).trim();
+    if (lists.length < 100) return '';
+    offset += lists.length;
+  }
+  return '';
+}
+
+async function fourBasedFanListIds(creator, fanId) {
+  const membership = await fourBasedClient.getUserListsForFan(creator, fanId);
+  const ids = Array.isArray(membership?.userListIds) ? membership.userListIds : [];
+  return new Set(ids.map((value) => String(value)));
+}
+
 router.post(
   '/:id/4based/user-lists/:listId/add',
   authenticate,
@@ -3640,11 +3661,39 @@ router.post(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
+      let wasMember = null;
+      try {
+        const ids = await fourBasedFanListIds(loaded.creator, fanId);
+        wasMember = ids.has(String(listId));
+      } catch (err) {
+        console.error('fan crm activity: 4based list membership read failed:', err);
+      }
+
       const result = await fourBasedClient.addUserToList(
         loaded.creator,
         listId,
         fanId
       );
+      if (wasMember !== true) {
+        let listName = '';
+        try {
+          listName = await resolveFourBasedListName(loaded.creator, listId);
+        } catch (err) {
+          console.error('fan crm activity: 4based list name lookup failed:', err);
+        }
+        await fanCrmActivity.recordFanCrmEvents([
+          {
+            ...fanCrmActivity.actorFrom(req.user),
+            creatorId: id,
+            platform: '4based',
+            fanId,
+            action: 'list_add',
+            listId: String(listId),
+            listName,
+            nextValue: listName || String(listId),
+          },
+        ]);
+      }
       res.json({ ok: true, result: result || null });
     } catch (err) {
       return handleFourBasedError(res, err, 'Add 4based fan to list error:');
@@ -3677,11 +3726,39 @@ router.post(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
+      let wasMember = null;
+      try {
+        const ids = await fourBasedFanListIds(loaded.creator, fanId);
+        wasMember = ids.has(String(listId));
+      } catch (err) {
+        console.error('fan crm activity: 4based list membership read failed:', err);
+      }
+
       const result = await fourBasedClient.removeUserFromList(
         loaded.creator,
         listId,
         fanId
       );
+      if (wasMember !== false) {
+        let listName = '';
+        try {
+          listName = await resolveFourBasedListName(loaded.creator, listId);
+        } catch (err) {
+          console.error('fan crm activity: 4based list name lookup failed:', err);
+        }
+        await fanCrmActivity.recordFanCrmEvents([
+          {
+            ...fanCrmActivity.actorFrom(req.user),
+            creatorId: id,
+            platform: '4based',
+            fanId,
+            action: 'list_remove',
+            listId: String(listId),
+            listName,
+            previousValue: listName || String(listId),
+          },
+        ]);
+      }
       res.json({ ok: true, result: result || null });
     } catch (err) {
       return handleFourBasedError(res, err, 'Remove 4based fan from list error:');
@@ -3760,7 +3837,57 @@ router.put(
         return res.status(400).json({ error: 'alias or note is required' });
       }
 
+      let previousPivot = null;
+      try {
+        previousPivot = await fourBasedClient.getPivot(loaded.creator, fanId);
+      } catch (err) {
+        console.error('fan crm activity: 4based pivot read failed:', err);
+      }
+
       const pivot = await fourBasedClient.updatePivot(loaded.creator, fanId, patch);
+      const events = [];
+      const base = {
+        ...fanCrmActivity.actorFrom(req.user),
+        creatorId: id,
+        platform: '4based',
+        fanId,
+        chatId:
+          typeof previousPivot?.chat_id === 'string'
+            ? previousPivot.chat_id
+            : typeof pivot?.chat_id === 'string'
+              ? pivot.chat_id
+              : null,
+      };
+      if (Object.prototype.hasOwnProperty.call(patch, 'alias')) {
+        const previous = fanCrmActivity.textValue(previousPivot?.alias);
+        const next = fanCrmActivity.textValue(pivot?.alias ?? patch.alias);
+        if (!previousPivot || previous !== next) {
+          events.push({
+            ...base,
+            action: 'rename',
+            previousValue: previous,
+            nextValue: next,
+          });
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, 'note')) {
+        const previous = fanCrmActivity.textValue(previousPivot?.note);
+        const next = fanCrmActivity.textValue(pivot?.note ?? patch.note);
+        const action = previousPivot
+          ? fanCrmActivity.noteAction(previous, next)
+          : next.trim()
+            ? 'note_add'
+            : 'note_remove';
+        if (action) {
+          events.push({
+            ...base,
+            action,
+            previousValue: previous,
+            nextValue: next,
+          });
+        }
+      }
+      await fanCrmActivity.recordFanCrmEvents(events);
       res.json({
         pivot: pivot || null,
         alias: typeof pivot?.alias === 'string' ? pivot.alias : '',
@@ -3799,6 +3926,13 @@ router.delete(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
+      let previousPivot = null;
+      try {
+        previousPivot = await fourBasedClient.getPivot(loaded.creator, fanId);
+      } catch (err) {
+        console.error('fan crm activity: 4based pivot read failed:', err);
+      }
+
       await fourBasedClient.deletePivotField(loaded.creator, fanId, field);
       // Also clear via PUT so subsequent GET is consistent (HAR does both).
       await fourBasedClient.updatePivot(
@@ -3807,6 +3941,26 @@ router.delete(
         field === 'alias' ? { alias: '' } : { note: '' }
       );
       const pivot = await fourBasedClient.getPivot(loaded.creator, fanId);
+      const previous =
+        field === 'alias'
+          ? fanCrmActivity.textValue(previousPivot?.alias)
+          : fanCrmActivity.textValue(previousPivot?.note);
+      if (!previousPivot || previous.trim()) {
+        const base = {
+          ...fanCrmActivity.actorFrom(req.user),
+          creatorId: id,
+          platform: '4based',
+          fanId,
+          chatId: typeof previousPivot?.chat_id === 'string' ? previousPivot.chat_id : null,
+          previousValue: previous,
+          nextValue: '',
+        };
+        await fanCrmActivity.recordFanCrmEvents([
+          field === 'alias'
+            ? { ...base, action: 'rename' }
+            : { ...base, action: 'note_remove' },
+        ]);
+      }
       res.json({
         ok: true,
         pivot: pivot || null,
@@ -6586,12 +6740,55 @@ router.post(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
+      let beforeLists = null;
+      try {
+        beforeLists = fanCrmActivity.normalizeListEntries(
+          await maloumClient.getMemberChatLists(loaded.creator, memberId)
+        );
+      } catch (err) {
+        console.error('fan crm activity: Maloum list membership read failed:', err);
+      }
+
       await maloumClient.setMemberChatLists(
         loaded.creator,
         memberId,
         Array.isArray(chatListIds) ? chatListIds : []
       );
       const lists = await maloumClient.getMemberChatLists(loaded.creator, memberId);
+      if (beforeLists) {
+        let changes = fanCrmActivity.membershipChanges(
+          beforeLists,
+          fanCrmActivity.normalizeListEntries(lists)
+        );
+        const needsName = [...changes.added, ...changes.removed].some((item) => !item.name);
+        if (needsName) {
+          try {
+            const catalog = fanCrmActivity.normalizeListEntries(
+              await maloumClient.listAllChatLists(loaded.creator)
+            );
+            const names = new Map(catalog.map((item) => [item.id, item.name]));
+            const fill = (item) => ({ ...item, name: item.name || names.get(item.id) || '' });
+            changes = {
+              added: changes.added.map(fill),
+              removed: changes.removed.map(fill),
+            };
+          } catch (err) {
+            console.error('fan crm activity: Maloum list name lookup failed:', err);
+          }
+        }
+        await fanCrmActivity.recordFanCrmEvents(
+          fanCrmActivity.listChangeEvents(
+            {
+              ...fanCrmActivity.actorFrom(req.user),
+              creatorId: id,
+              platform: 'maloum',
+              fanId: String(memberId),
+            },
+            changes.added,
+            changes.removed
+          )
+        );
+      }
       res.json({
         ok: true,
         lists: Array.isArray(lists) ? lists : [],
@@ -6631,8 +6828,34 @@ router.patch(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
+      let beforeChat = null;
+      try {
+        beforeChat = await maloumClient.getChat(loaded.creator, chatId);
+      } catch (err) {
+        console.error('fan crm activity: Maloum chat read failed:', err);
+      }
+
       await maloumClient.updateFanNickname(loaded.creator, chatId, nickname);
       const chat = await maloumClient.getChat(loaded.creator, chatId);
+      const beforeFan = fanCrmActivity.extractMaloumFan(beforeChat);
+      const afterFan = fanCrmActivity.extractMaloumFan(chat);
+      const previous = beforeChat ? beforeFan.nickname : '';
+      const next = nickname;
+      if (!beforeChat || previous !== next) {
+        await fanCrmActivity.recordFanCrmEvents([
+          {
+            ...fanCrmActivity.actorFrom(req.user),
+            creatorId: id,
+            platform: 'maloum',
+            fanId: afterFan.fanId || beforeFan.fanId,
+            fanLabel: afterFan.fanLabel || beforeFan.fanLabel,
+            chatId,
+            action: 'rename',
+            previousValue: previous,
+            nextValue: next,
+          },
+        ]);
+      }
       res.json({ ok: true, chat, providerUserId: loaded.creator.providerUserId });
     } catch (err) {
       return handleMaloumError(res, err, 'Update Maloum fan nickname error:');
@@ -6668,8 +6891,39 @@ router.patch(
         return res.status(loaded.error.status).json({ error: loaded.error.message });
       }
 
+      let beforeChat = null;
+      try {
+        beforeChat = await maloumClient.getChat(loaded.creator, chatId);
+      } catch (err) {
+        console.error('fan crm activity: Maloum chat read failed:', err);
+      }
+
       await maloumClient.updateFanNotes(loaded.creator, chatId, notes);
       const chat = await maloumClient.getChat(loaded.creator, chatId);
+      const beforeFan = fanCrmActivity.extractMaloumFan(beforeChat);
+      const afterFan = fanCrmActivity.extractMaloumFan(chat);
+      const previous = beforeChat ? beforeFan.notes : '';
+      const next = notes;
+      const action = beforeChat
+        ? fanCrmActivity.noteAction(previous, next)
+        : next.trim()
+          ? 'note_add'
+          : 'note_remove';
+      if (action) {
+        await fanCrmActivity.recordFanCrmEvents([
+          {
+            ...fanCrmActivity.actorFrom(req.user),
+            creatorId: id,
+            platform: 'maloum',
+            fanId: afterFan.fanId || beforeFan.fanId,
+            fanLabel: afterFan.fanLabel || beforeFan.fanLabel,
+            chatId,
+            action,
+            previousValue: previous,
+            nextValue: next,
+          },
+        ]);
+      }
       res.json({ ok: true, chat, providerUserId: loaded.creator.providerUserId });
     } catch (err) {
       return handleMaloumError(res, err, 'Update Maloum fan notes error:');

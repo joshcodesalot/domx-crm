@@ -3,7 +3,9 @@ import {
   BarChart2,
   Bell,
   CalendarDays,
+  ClipboardList,
   LayoutGrid,
+  LogIn,
   LineChart,
   List,
   LogOut,
@@ -59,6 +61,8 @@ interface SidebarProps {
     | 'creatorAnalytics'
     | 'falseSales'
     | 'salesLogs'
+    | 'crmActivity'
+    | 'loginActivity'
     | 'chatter'
     | 'creators'
     | 'staff'
@@ -353,6 +357,26 @@ export default function Sidebar({ activePage = 'dashboard' }: SidebarProps) {
             title="Sales Logs"
           >
             <Receipt className="w-5 h-5" />
+          </button>
+        )}
+        {hasPermission('analytics.view') && (
+          <button
+            type="button"
+            onClick={() => navigate('/dashboard/crm-activity')}
+            className={navClass('crmActivity')}
+            title="CRM Activity"
+          >
+            <ClipboardList className="w-5 h-5" />
+          </button>
+        )}
+        {hasPermission('analytics.view') && (
+          <button
+            type="button"
+            onClick={() => navigate('/dashboard/login-activity')}
+            className={navClass('loginActivity')}
+            title="Login Activity"
+          >
+            <LogIn className="w-5 h-5" />
           </button>
         )}
         {(user?.role === 'owner' || user?.role === 'manager') && (

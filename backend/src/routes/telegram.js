@@ -44,6 +44,7 @@ const {
   loadFanProfile,
   upsertFanNotes,
 } = require('../services/telegramWorker');
+const fanCrmActivity = require('../services/fanCrmActivity');
 const {
   canOpenChatByUsername,
   canSeeTelegramServiceChats,
@@ -57,6 +58,7 @@ const {
   vaultOriginalKey,
   vaultThumbKey,
   putVaultObject,
+  presignVaultObject,
   streamVaultObject,
   deleteVaultObjects,
 } = require('../services/b2Storage');
@@ -1022,12 +1024,15 @@ router.patch(
       }
 
       const existing = await pool.query(
-        `SELECT "telegramUserId"
-         FROM telegram_fan_profiles
-         WHERE "creatorId" = $1 AND "telegramUserId" = $2`,
+        `SELECT p."telegramUserId", p.nickname, p."displayName", p.username,
+                COALESCE(n.notes, '') AS notes
+         FROM telegram_fan_profiles p
+         LEFT JOIN telegram_fan_notes n ON n."telegramUserId" = p."telegramUserId"
+         WHERE p."creatorId" = $1 AND p."telegramUserId" = $2`,
         [id, fanId]
       );
-      if (existing.rows.length === 0) {
+      const previous = existing.rows[0] || null;
+      if (!previous) {
         await pool.query(
           `INSERT INTO telegram_fan_profiles (
              "creatorId", "telegramUserId", "displayName", nickname
@@ -1047,6 +1052,50 @@ router.patch(
       if (notes !== undefined) {
         await upsertFanNotes(fanId, notes);
       }
+
+      const events = [];
+      const fanLabel =
+        (nickname !== undefined && nickname.trim()) ||
+        fanCrmActivity.textValue(previous?.nickname).trim() ||
+        fanCrmActivity.textValue(previous?.displayName).trim() ||
+        fanCrmActivity.textValue(previous?.username).trim();
+      const base = {
+        ...fanCrmActivity.actorFrom(req.user),
+        creatorId: id,
+        platform: 'telegram',
+        fanId,
+        fanLabel,
+      };
+      if (nickname !== undefined) {
+        const prevName = previous ? fanCrmActivity.textValue(previous.nickname) : '';
+        if (!previous || prevName !== nickname) {
+          if (previous || nickname) {
+            events.push({
+              ...base,
+              action: 'rename',
+              previousValue: prevName,
+              nextValue: nickname,
+            });
+          }
+        }
+      }
+      if (notes !== undefined) {
+        const prevNotes = previous ? fanCrmActivity.textValue(previous.notes) : '';
+        const action = previous
+          ? fanCrmActivity.noteAction(prevNotes, notes)
+          : notes.trim()
+            ? 'note_add'
+            : null;
+        if (action) {
+          events.push({
+            ...base,
+            action,
+            previousValue: prevNotes,
+            nextValue: notes,
+          });
+        }
+      }
+      await fanCrmActivity.recordFanCrmEvents(events);
 
       const row = await loadFanProfile(id, fanId);
       return res.json({ fan: redactFan(row, req.user) });
@@ -1617,6 +1666,14 @@ router.get(
       }
       if (variant === 'thumb' && row.kind !== 'photo') {
         return res.status(404).json({ error: 'No thumbnail' });
+      }
+      if (row.kind === 'video' && variant === 'full') {
+        const url = await presignVaultObject(row.storageKey, {
+          contentType: row.mimeType || 'video/mp4',
+          filename: row.fileName || 'video',
+        });
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        return res.redirect(url);
       }
       return streamVaultObject(res, row.storageKey, {
         contentType: row.mimeType || (row.kind === 'photo' ? 'image/jpeg' : 'application/octet-stream'),

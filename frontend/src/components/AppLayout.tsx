@@ -10,6 +10,8 @@ interface AppLayoutProps {
     | 'creatorAnalytics'
     | 'falseSales'
     | 'salesLogs'
+    | 'crmActivity'
+    | 'loginActivity'
     | 'creators'
     | 'staff'
     | 'moderation'

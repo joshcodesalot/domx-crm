@@ -3480,12 +3480,31 @@ router.get(
         rangeStart.toISOString(),
         rangeEnd.toISOString(),
       ];
+      const staffIds = staffResult.rows.map((row) => row.userId);
+      const schedulesByUser = await loadSchedulesByUserId(staffIds);
+      const periodWindows = await expandShiftWindows(
+        staffIds,
+        periodStart,
+        periodEnd,
+        schedulesByUser
+      );
+      const periodWindowClause = buildWindowValuesClause(periodWindows, 4);
 
       const revealLeaderboard = isTeamAnalyticsRole(req.user.role);
 
-      const [responseResult, salesResult, messageStatsResult] = await Promise.all([
+      const emptyResponseQuery = () =>
         pool.query(
-          `SELECT m."chatterId" AS "userId",
+          `SELECT NULL::uuid AS "userId", NULL::float AS "avgResponseTimeSeconds" WHERE false`
+        );
+
+      const [responseResult, salesResult, messageStatsResult] = await Promise.all([
+        !periodWindowClause
+          ? emptyResponseQuery()
+          : pool.query(
+          `WITH windows("userId", "windowStart", "windowEnd") AS (
+             VALUES ${periodWindowClause.sql}
+           )
+           SELECT m."chatterId" AS "userId",
                   AVG(${EFFECTIVE_RESPONSE_SECONDS_SQL})::float AS "avgResponseTimeSeconds"
            FROM messaging_dashboard_entries m
            JOIN users u ON u.id = m."chatterId"
@@ -3495,7 +3514,7 @@ router.get(
              AND ${inViewerMonth}
              AND ${onBerlinShift}
            GROUP BY m."chatterId"`,
-          leaderboardParams
+          [...leaderboardParams, ...periodWindowClause.params]
         ),
         pool.query(
           `SELECT m."chatterId" AS "userId",

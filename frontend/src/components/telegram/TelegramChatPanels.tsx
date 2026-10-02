@@ -1984,7 +1984,7 @@ export function TelegramChatThread({
       <div
         ref={messagesScrollRef}
         onScroll={handleMessagesScroll}
-        className="flex-1 min-h-0 overflow-y-auto px-4 py-3 relative z-10 chat-thread-scroll"
+        className="flex-1 min-h-0 min-w-0 w-full overflow-x-hidden overflow-y-auto px-4 py-3 relative z-10 chat-thread-scroll"
       >
         {(loadingOlder || (messagesNext && messages.length > 0)) && (
           <div className="flex justify-center py-1">
@@ -2061,7 +2061,7 @@ export function TelegramChatThread({
                 </div>
               )}
               <div
-                className={`group/msg flex ${msg.isOutgoing ? 'justify-end' : 'justify-start'} ${
+                className={`group/msg flex w-full min-w-0 ${msg.isOutgoing ? 'justify-end' : 'justify-start'} ${
                   isNewDay ? '' : index === 0 ? '' : isClusterStart ? 'mt-3' : 'mt-0.5'
                 }`}
               >
@@ -2168,7 +2168,7 @@ export function TelegramChatThread({
                       </p>
                     )}
                     <div
-                      className={`${bubbleRadius} px-3 py-2 text-sm ${
+                      className={`${bubbleRadius} max-w-full px-3 py-2 text-sm [overflow-wrap:anywhere] ${
                         msg.deleted
                           ? 'bg-gray-100 dark:bg-zinc-800/80 text-gray-500 dark:text-zinc-400 border border-dashed border-gray-300 dark:border-zinc-700'
                           : msg.isOutgoing
@@ -2262,7 +2262,7 @@ export function TelegramChatThread({
                           !messageHasSticker(msg) &&
                           !messageHasGif(msg) &&
                           (msg.placeholder || '—'))) && (
-                        <p className="whitespace-pre-wrap break-words">
+                        <p className="max-w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                           {msgText ||
                             (messageHasVisualMedia(msg) ||
                             messageHasPlayableAudio(msg) ||
@@ -2285,7 +2285,7 @@ export function TelegramChatThread({
                           {!msg.isOutgoing && (
                             <Languages className="w-3 h-3 shrink-0 mt-0.5" />
                           )}
-                          <span className="whitespace-pre-wrap break-words">{historyEn}</span>
+                          <span className="min-w-0 max-w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{historyEn}</span>
                         </p>
                       )}
                       <p
