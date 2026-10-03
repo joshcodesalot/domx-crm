@@ -57,6 +57,26 @@ function changeText(previous: string, current: string, changed: boolean): string
   return `${prior} → ${next}`;
 }
 
+function shortDeviceId(value: string): string {
+  return value.trim().slice(0, 8);
+}
+
+function deviceIdLine(previous: string, current: string, changed: boolean): string {
+  const next = shortDeviceId(current);
+  if (!changed) return next;
+  const prior = shortDeviceId(previous);
+  if (!prior && !next) return '';
+  return `${prior || '(none)'} → ${next || '(none)'}`;
+}
+
+function deviceIdTitle(previous: string, current: string, changed: boolean): string {
+  const next = current.trim();
+  if (!changed) return next;
+  const prior = previous.trim();
+  if (!prior && !next) return '';
+  return `${prior || '(none)'} → ${next || '(none)'}`;
+}
+
 function sameAccount(user: LoginShareUser, event: LoginActivityEvent): boolean {
   if (user.userId && event.userId) return user.userId === event.userId;
   return user.userEmail.toLowerCase() === event.userEmail.toLowerCase();
@@ -106,6 +126,8 @@ function LoginActivityRow({
   const when = formatSentTime(event.createdAt, timeZone);
   const ip = changeText(event.previousIp, event.ipAddress, event.ipChanged);
   const device = changeText(event.previousDeviceLabel, event.deviceLabel, event.deviceChanged);
+  const deviceIds = deviceIdLine(event.previousDeviceId, event.deviceId, event.deviceChanged);
+  const deviceIdHint = deviceIdTitle(event.previousDeviceId, event.deviceId, event.deviceChanged);
 
   return (
     <tr className="border-b border-gray-100 dark:border-white/5 hover:bg-gray-50/60 dark:hover:bg-white/[0.02]">
@@ -122,8 +144,11 @@ function LoginActivityRow({
       <td className="px-4 py-3 align-top whitespace-nowrap" title={ip}>
         {ip}
       </td>
-      <td className="px-4 py-3 align-top" title={device}>
-        {device}
+      <td className="px-4 py-3 align-top" title={deviceIdHint || device}>
+        <div>{device}</div>
+        {deviceIds ? (
+          <div className="mt-0.5 font-mono text-xs text-gray-500 dark:text-gray-400">{deviceIds}</div>
+        ) : null}
       </td>
       <td className="px-4 py-3 align-top max-w-[320px]">
         <div className="flex flex-wrap gap-1">
@@ -264,7 +289,7 @@ export default function LoginActivity() {
 
   return (
     <AppLayout title="Login Activity" activePage="loginActivity">
-      <div className="max-w-[1600px] mx-auto space-y-0 -m-4 sm:-m-6 md:-m-8">
+      <div className="space-y-0 -m-4 sm:-m-6 md:-m-8">
         <div className="flex flex-col gap-4 border-b border-gray-200 dark:border-white/10 px-6 py-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
@@ -391,8 +416,13 @@ export default function LoginActivity() {
               ? null
               : sharedDevices.map((group) => (
                   <div key={group.deviceId}>
-                    <div className="font-medium text-gray-900 dark:text-gray-100">
+                    <div className="font-medium text-gray-900 dark:text-gray-100" title={group.deviceId}>
                       {group.deviceLabel || 'Unknown device'}
+                      {shortDeviceId(group.deviceId) ? (
+                        <span className="ml-2 font-mono text-xs font-normal text-gray-500 dark:text-gray-400">
+                          {shortDeviceId(group.deviceId)}
+                        </span>
+                      ) : null}
                     </div>
                     <div className="text-xs text-gray-500 dark:text-gray-400">
                       {group.users.map((user) => accountLine(user, timeZone)).join(' · ')}

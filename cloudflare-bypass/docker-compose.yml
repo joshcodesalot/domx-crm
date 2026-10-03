@@ -1,0 +1,11 @@
+services:
+  cloudflare-bypass:
+    build: .
+    container_name: cloudflare-bypass
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - WORKERS=3
+    mem_limit: 4g
+    shm_size: 2g
+    restart: unless-stopped

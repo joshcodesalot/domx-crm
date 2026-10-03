@@ -418,14 +418,18 @@ Install whatever that list names. On a headless Debian box the usual ones are `l
 The agent starts Xvfb, attaches TigerVNC on localhost, and serves noVNC itself. It does not use a separate websockify package. `tigervnc-scraping-server` provides `X0tigervnc`, which is the process the agent supervises. `x0vncserver` is only the session wrapper. `tigervnc-standalone-server` provides `Xtigervnc` (fallback).
 
 ```bash
-sudo apt install -y xvfb tigervnc-scraping-server tigervnc-standalone-server novnc
+sudo apt install -y xvfb tigervnc-scraping-server tigervnc-standalone-server novnc bubblewrap
+mkdir -p /home/debian/Downloads
 ```
+
+`bubblewrap` is required. Marketing download and upload dialogs are jailed to `/home/debian/Downloads`. Without it, Open browser fails instead of showing the rest of the disk.
 
 The host folder is self-contained. It does not need a frontend checkout beside it:
 
 ```text
 /home/debian/domx_browser_host/agent.js
 /home/debian/domx_browser_host/clearcote/launchArgs.js
+/home/debian/domx_browser_host/clearcote/fileJail.js
 /home/debian/domx_browser_host/clearcote/profileArchive.js
 /home/debian/domx_browser_host/package.json
 ```
@@ -445,6 +449,8 @@ BROWSER_HOST_BIND=127.0.0.1
 BROWSER_HOST_PORT=6090
 CLEARCOTE_EXECUTABLE=/opt/clearcote/chrome
 BROWSER_HOST_DATA=/var/lib/domx-browser
+# Optional. Download and upload dialogs use this folder. Default: /home/debian/Downloads
+# BROWSER_HOST_FILES=/home/debian/Downloads
 ```
 
 The API in this guide is on the same machine, so the agent listens on `127.0.0.1` and `BROWSER_HOST_URL` is `http://127.0.0.1:6090`. Use the same secret string on the API. Generate a long random value. Do not keep the placeholder.
@@ -457,6 +463,15 @@ curl -s http://127.0.0.1:6090/health
 ```
 
 A healthy response is `{"ok":true,"novnc":true,"clearcote":true}`. `clearcote: false` means `CLEARCOTE_EXECUTABLE` does not point at a real file. `novnc: false` means the `novnc` package is missing.
+
+After you replace `agent.js` or `clearcote/fileJail.js`, restart the host. An already-open Marketing browser closes.
+
+```bash
+screen -S domx-browser -X quit
+cd /home/debian/domx_browser_host
+set -a && source .env && set +a
+screen -S domx-browser -dm bash -c 'node agent.js'
+```
 
 Do not publish port 6090 on the internet. It only needs to answer on localhost. Macs should only reach nginx on 443.
 
@@ -526,7 +541,7 @@ Restart the API after saving that file. From the API server, `curl -s http://127
 ### What a Mac open does
 
 1. The API locks the creator and asks `http://127.0.0.1:6090` to start a session.
-2. The agent downloads that creator’s zip from `https://api.low7labs.cloud`, starts Xvfb on display `:100` or higher, starts VNC on `127.0.0.1` only, and launches Clearcote at `https://x.com`.
+2. The agent downloads that creator’s zip from `https://api.low7labs.cloud`, starts Xvfb on display `:100` or higher, starts VNC on `127.0.0.1` only, and launches Clearcote at `https://x.com`. Download and upload dialogs in that window can list only `/home/debian/Downloads`.
 3. The Mac app opens `https://browser.domx-agency.com/vnc.html?...`. nginx forwards the page and the `/websockify` socket to port 6090. The socket is accepted only when the token matches the lock holder.
 4. Closing the view stops Clearcote and uploads the zip, so the next open can be on Windows.
 
@@ -578,6 +593,7 @@ screen -S domx-api -dm bash -c 'node src/index.js'
 | List screen sessions | `screen -ls` |
 | Health check | `curl https://api.low7labs.cloud/api/health` |
 | Browser host health | `curl -s http://127.0.0.1:6090/health` |
+| Restart browser host | `screen -S domx-browser -X quit`, then start it again from `/home/debian/domx_browser_host` |
 | Reload nginx | `nginx -t && nginx -s reload` |
 
 ---
@@ -601,9 +617,17 @@ screen -S domx-api -dm bash -c 'node src/index.js'
 - Set `CORS_ORIGIN` to the exact client origin (scheme + host, no trailing slash)
 - Restart the API in screen after changing `.env`
 
+**Marketing Open browser says bubblewrap could not start a file jail**
+- Install it: `sudo apt install -y bubblewrap`
+- Confirm the folder exists: `mkdir -p /home/debian/Downloads`
+- Restart the browser host (`screen -S domx-browser -X quit`, then start `node agent.js` again)
+
 **API not running after server reboot**
 - Screen sessions do not survive reboots. Re-run:
   ```bash
   cd /home/debian/domx_backend
   screen -S domx-api -dm bash -c 'node src/index.js'
+  cd /home/debian/domx_browser_host
+  set -a && source .env && set +a
+  screen -S domx-browser -dm bash -c 'node agent.js'
   ```

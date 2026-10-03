@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import {
   BarChart2,
   Bell,
@@ -160,6 +161,8 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
     'maloum' | '4based' | 'telegram' | 'fansly' | null
   >(null);
   const [flyoutTop, setFlyoutTop] = useState(0);
+  const [flyoutLeft, setFlyoutLeft] = useState(0);
+  const flyoutRef = useRef<HTMLDivElement>(null);
   const maloumMenuRef = useRef<HTMLDivElement>(null);
   const fourBasedMenuRef = useRef<HTMLDivElement>(null);
   const telegramMenuRef = useRef<HTMLDivElement>(null);
@@ -196,7 +199,9 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
             : openPlatform === 'fansly'
               ? fanslyMenuRef
               : telegramMenuRef;
-      if (ref.current && !ref.current.contains(target)) {
+      const insideButton = ref.current?.contains(target) ?? false;
+      const insideFlyout = flyoutRef.current?.contains(target) ?? false;
+      if (!insideButton && !insideFlyout) {
         setOpenPlatform(null);
       }
     }
@@ -298,6 +303,7 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
           onClick={(event) => {
             const rect = event.currentTarget.getBoundingClientRect();
             setFlyoutTop(rect.top);
+            setFlyoutLeft(rect.right + 8);
             setOpenPlatform((current) => (current === options.id ? null : options.id));
           }}
           className={`nav-link relative flex items-center w-full px-3 py-2 rounded-lg text-left transition-colors ${
@@ -324,15 +330,19 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
             {renderTools(options.tools)}
           </div>
         )}
-        {expanded && !labeled && (
-          <div
-            role="menu"
-            className="fixed z-[60] min-w-[180px] rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1"
-            style={{ top: flyoutTop, left: '4.25rem' }}
-          >
-            {renderTools(options.tools)}
-          </div>
-        )}
+        {expanded &&
+          !labeled &&
+          createPortal(
+            <div
+              ref={flyoutRef}
+              role="menu"
+              className="fixed z-[60] min-w-[180px] rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#111] shadow-lg py-1"
+              style={{ top: flyoutTop, left: flyoutLeft }}
+            >
+              {renderTools(options.tools)}
+            </div>,
+            document.body
+          )}
       </div>
     );
   }

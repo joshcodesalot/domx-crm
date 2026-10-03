@@ -14,6 +14,12 @@ const {
   MISSING_CLEARCOTE_MESSAGE,
 } = require('./clearcote/launchArgs');
 const { packProfile, unpackProfile } = require('./clearcote/profileArchive');
+const {
+  ensureDownloadsDir,
+  pinDownloadDirectory,
+  writeUserDirs,
+  clearcoteCommand,
+} = require('./clearcote/fileJail');
 
 const sessions = new Map();
 let nextDisplay = 100;
@@ -479,6 +485,9 @@ async function startSession(body) {
   try {
     await downloadArchive(session);
     pinWindowPlacement(userDataDir);
+    const downloadsDir = ensureDownloadsDir();
+    pinDownloadDirectory(userDataDir, downloadsDir);
+    writeUserDirs(userDataDir, downloadsDir);
     const displayProcs = await startDisplay(display, vncPort);
     session.xvfb = displayProcs.xvfb;
     session.vnc = displayProcs.vnc;
@@ -489,9 +498,11 @@ async function startSession(body) {
         code: 'BROWSER_HOST_UNAVAILABLE',
       });
     }
-    const chrome = spawnGroup(
+    const launch = clearcoteCommand({
       executable,
-      buildClearcoteArgs({
+      userDataDir,
+      downloadsDir,
+      chromeArgs: buildClearcoteArgs({
         userDataDir,
         fingerprintSeed: body.fingerprintSeed,
         fingerprintPlatform: body.fingerprintPlatform,
@@ -502,8 +513,12 @@ async function startSession(body) {
         virtualDisplay: true,
         localProxyServer: session.proxyForwarder ? session.proxyForwarder.proxyServer : undefined,
       }),
-      { ...process.env, DISPLAY: `:${display}` }
-    );
+    });
+    const chrome = spawnGroup(launch.command, launch.args, {
+      ...process.env,
+      DISPLAY: `:${display}`,
+      ...launch.env,
+    });
     session.chrome = chrome;
     sessions.set(creatorId, session);
     await assertStaysUp(chrome, 'Clearcote', capture(chrome));
