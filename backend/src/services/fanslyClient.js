@@ -1049,13 +1049,18 @@ function mapPurchase(row) {
 
 async function listFanNotes(session, fanId) {
   const id = requireFanId(fanId);
-  const result = await requestJson({
-    method: 'GET',
-    path: '/notes',
-    session,
-    query: { contentIds: id, contentType: FAN_NOTE_CONTENT_TYPE },
-  });
-  return noteRows(result.data);
+  try {
+    const result = await requestJson({
+      method: 'GET',
+      path: '/notes',
+      session,
+      query: { contentIds: id, contentType: FAN_NOTE_CONTENT_TYPE },
+    });
+    return noteRows(result.data);
+  } catch (err) {
+    if (err instanceof FanslyApiError && err.status === 404) return [];
+    throw err;
+  }
 }
 
 async function saveFanNickname(session, { fanId, nickname, noteId } = {}) {
