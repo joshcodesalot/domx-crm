@@ -572,7 +572,7 @@ export default function ChatterFansly() {
         </>
       }
     >
-      <div className="flex h-full min-h-0">
+      <div className="flex-1 flex min-w-0 min-h-0">
         <WorkspaceDrawer
           id="fansly-creators"
           size="lg"
