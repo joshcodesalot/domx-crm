@@ -33,6 +33,51 @@ const CREATOR_RETURNING = `
   ("encryptedProxy" IS NOT NULL) AS "hasCustomProxy"
 `;
 
+const fanSpendCache = new Map();
+const FAN_SPEND_TTL_MS = 5 * 60 * 1000;
+const FAN_SPEND_CONCURRENCY = 4;
+
+function rememberFanSpend(key, mills) {
+  if (fanSpendCache.size > 1000) {
+    const now = Date.now();
+    for (const [cachedKey, cached] of fanSpendCache) {
+      if (cached.expiresAt <= now) fanSpendCache.delete(cachedKey);
+    }
+  }
+  fanSpendCache.set(key, { mills, expiresAt: Date.now() + FAN_SPEND_TTL_MS });
+}
+
+async function mapWithLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const index = next;
+      next += 1;
+      results[index] = await fn(items[index]);
+    }
+  }
+  const workers = Math.min(limit, items.length);
+  await Promise.all(Array.from({ length: workers }, () => worker()));
+  return results;
+}
+
+async function lifetimeGrossForFan(session, creatorId, fanId) {
+  const key = `${creatorId}:${fanId}`;
+  const cached = fanSpendCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.mills;
+  try {
+    const stats = await fanslyClient.getFanStats(session, fanId);
+    const mills = Number(stats.lifetimeGrossMills) || 0;
+    rememberFanSpend(key, mills);
+    return mills;
+  } catch (err) {
+    console.warn('[fansly] fan spend failed:', err.message);
+    rememberFanSpend(key, null);
+    return null;
+  }
+}
+
 function isValidUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value
@@ -451,10 +496,16 @@ router.get(
         }
       }
       const byId = new Map(previews.map((message) => [message.id, message]));
+      const spend = await mapWithLimit(chats, FAN_SPEND_CONCURRENCY, (chat) =>
+        chat.partnerAccountId
+          ? lifetimeGrossForFan(session, creator.id, chat.partnerAccountId)
+          : null
+      );
       res.json({
-        chats: chats.map((chat) => ({
+        chats: chats.map((chat, index) => ({
           ...chat,
           lastMessage: byId.get(chat.lastMessageId) || null,
+          lifetimeGrossMills: spend[index],
         })),
         providerUserId: creator.providerUserId,
       });

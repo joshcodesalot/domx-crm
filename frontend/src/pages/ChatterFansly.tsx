@@ -1,7 +1,7 @@
 import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
 import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowUpDown, Eye, ImagePlus, Loader2, Lock, Play, RefreshCw, Search, Send, Trash2, UserRound, X } from 'lucide-react';
+import { ArrowUpDown, Eye, ImagePlus, Loader2, Lock, PanelRight, PanelRightClose, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import FanslyFanPanel from '@/components/fansly/FanslyFanPanel';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
@@ -45,6 +45,20 @@ function formatTime(value: number | null | undefined): string {
 function attachmentCount(message: FanslyMessage): number {
   if (Array.isArray(message.media) && message.media.length > 0) return message.media.length;
   return Array.isArray(message.attachments) ? message.attachments.length : 0;
+}
+
+function formatFanslySpend(mills: number | null | undefined): string | null {
+  const dollars = (Number(mills) || 0) / 1000;
+  if (!Number.isFinite(dollars) || dollars <= 0) return null;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: 'USD',
+      maximumFractionDigits: 0,
+    }).format(dollars);
+  } catch {
+    return `$${Math.round(dollars)}`;
+  }
 }
 
 function formatFanslyPrice(price: number): string {
@@ -720,6 +734,7 @@ export default function ChatterFansly() {
             {chats.map((chat) => {
               const active = chat.groupId === selectedGroupId;
               const preview = inboxPreview(chat.lastMessage);
+              const spend = formatFanslySpend(chat.lifetimeGrossMills);
               return (
                 <button
                   key={chat.groupId}
@@ -748,8 +763,15 @@ export default function ChatterFansly() {
                           {formatRelativeTime(chat.lastMessage?.createdAt)}
                         </span>
                       </span>
-                      <span className="block text-xs text-gray-500 dark:text-zinc-400 truncate pr-4">
-                        {preview}
+                      <span className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500 dark:text-zinc-400 truncate flex-1">
+                          {preview}
+                        </span>
+                        {spend && (
+                          <span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            {spend}
+                          </span>
+                        )}
                       </span>
                     </span>
                   </span>
@@ -782,9 +804,16 @@ export default function ChatterFansly() {
                   url={selectedChat.partnerAvatarUrl}
                 />
                 <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-sm text-gray-900 dark:text-white truncate">
-                    {fanNickname.trim() || selectedChat.partnerUsername}
-                  </p>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <p className="font-semibold text-sm text-gray-900 dark:text-white truncate">
+                      {fanNickname.trim() || selectedChat.partnerUsername}
+                    </p>
+                    {formatFanslySpend(selectedChat.lifetimeGrossMills) && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+                        LTV: {formatFanslySpend(selectedChat.lifetimeGrossMills)}
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-gray-500 dark:text-zinc-500 truncate">
                     @{selectedChat.partnerUsername.replace(/^@/, '')}
                   </p>
@@ -793,21 +822,40 @@ export default function ChatterFansly() {
                   type="button"
                   aria-label="Refresh messages"
                   onClick={() => void loadThread()}
-                  className="p-2 rounded-xl text-gray-500 dark:text-zinc-400 hover:bg-gray-100 dark:hover:bg-zinc-800"
+                  className="p-2 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all border border-transparent hover:border-gray-300 dark:hover:border-zinc-700"
                 >
                   <RefreshCw className={`w-4 h-4 ${threadLoading ? 'animate-spin' : ''}`} />
                 </button>
                 <button
                   type="button"
-                  aria-label="Fan info"
                   onClick={() => setFanPanelOpen((open) => !open)}
-                  className={`p-2 rounded-xl ${
+                  className={`p-2 rounded-lg transition-all border ${
                     fanPanelOpen
-                      ? 'bg-sky-500 text-white'
-                      : 'text-gray-500 dark:text-zinc-400 hover:bg-gray-100 dark:hover:bg-zinc-800'
+                      ? 'text-orange-500 bg-orange-500/10 border-orange-500/30'
+                      : 'text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 border-transparent hover:border-gray-300 dark:hover:border-zinc-700'
                   }`}
+                  title={fanPanelOpen ? 'Hide fan info' : 'Show fan info'}
+                  aria-label={fanPanelOpen ? 'Hide fan info' : 'Show fan info'}
+                  aria-pressed={fanPanelOpen}
                 >
-                  <UserRound className="w-4 h-4" />
+                  {fanPanelOpen ? (
+                    <PanelRightClose className="w-4 h-4" />
+                  ) : (
+                    <PanelRight className="w-4 h-4" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedGroupId(null);
+                    setMessages([]);
+                    setFanPanelOpen(false);
+                  }}
+                  className="p-2 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all border border-transparent hover:border-gray-300 dark:hover:border-zinc-700"
+                  title="Close chat"
+                  aria-label="Close chat"
+                >
+                  <X className="w-4 h-4" />
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">

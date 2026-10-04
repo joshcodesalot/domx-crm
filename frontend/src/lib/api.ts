@@ -2229,6 +2229,7 @@ export interface FanslyChat {
   unreadCount: number;
   lastMessageId: string | null;
   lastMessage: FanslyMessage | null;
+  lifetimeGrossMills?: number | null;
 }
 
 export interface FanslyAttachmentMedia {
