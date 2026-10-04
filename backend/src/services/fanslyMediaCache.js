@@ -27,10 +27,10 @@ function isCacheableUrl(url) {
   return /\.(jpe?g|png|webp|gif)$/.test(pathName);
 }
 
-function cacheKey(creatorId, mediaId) {
+function cacheKey(creatorId, mediaId, url) {
   return crypto
     .createHash('sha256')
-    .update(`${creatorId}\n${mediaId}`)
+    .update(`${creatorId}\n${mediaId}\n${url || ''}`)
     .digest('hex');
 }
 
@@ -47,10 +47,10 @@ async function ensureCacheDir() {
   ensuredDir = true;
 }
 
-async function readCache(creatorId, mediaId) {
-  if (!creatorId || !mediaId) return null;
+async function readCache(creatorId, mediaId, url) {
+  if (!creatorId || !mediaId || !url) return null;
   await ensureCacheDir();
-  const { bin, meta } = pathsFor(cacheKey(creatorId, mediaId));
+  const { bin, meta } = pathsFor(cacheKey(creatorId, mediaId, url));
   try {
     const raw = await fsp.readFile(meta, 'utf8');
     const info = JSON.parse(raw);
@@ -79,7 +79,7 @@ async function writeCache(creatorId, mediaId, { buffer, contentType, etag, url }
   if (buffer.length > MAX_IMAGE_BYTES) return;
   if (url && !isCacheableUrl(url)) return;
   await ensureCacheDir();
-  const { bin, meta } = pathsFor(cacheKey(creatorId, mediaId));
+  const { bin, meta } = pathsFor(cacheKey(creatorId, mediaId, url));
   const tmpBin = `${bin}.${process.pid}.tmp`;
   const tmpMeta = `${meta}.${process.pid}.tmp`;
   try {
@@ -146,4 +146,5 @@ module.exports = {
   writeCache,
   CACHE_DIR,
   TTL_MS,
+  MAX_IMAGE_BYTES,
 };

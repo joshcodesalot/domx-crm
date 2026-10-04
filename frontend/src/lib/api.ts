@@ -2225,9 +2225,27 @@ export interface FanslyChat {
   groupId: string;
   partnerAccountId: string | null;
   partnerUsername: string;
+  partnerAvatarUrl?: string | null;
   unreadCount: number;
   lastMessageId: string | null;
   lastMessage: FanslyMessage | null;
+}
+
+export interface FanslyAttachmentMedia {
+  mediaId: string;
+  kind: 'image' | 'video';
+  previewUrl: string | null;
+  previewLocked?: boolean;
+  fullUrl: string | null;
+  fullLocked?: boolean;
+  playlistUrl: string | null;
+  price: number | null;
+}
+
+export interface FanslyLockedText {
+  id: string;
+  content: string;
+  price: number | null;
 }
 
 export interface FanslyMessage {
@@ -2239,7 +2257,14 @@ export interface FanslyMessage {
   createdAt: number | null;
   deletedAt?: number | null;
   attachments: unknown[];
+  media?: FanslyAttachmentMedia[];
+  lockedText?: FanslyLockedText[];
   totalTipAmount: number;
+}
+
+export interface FanslyFanList {
+  id: string;
+  label: string;
 }
 
 export interface FanslyVaultAlbum {
@@ -2254,8 +2279,12 @@ export interface FanslyVaultMedia {
   mediaId: string;
   mediaType: number;
   filename: string;
+  kind?: 'image' | 'video';
   previewUrl: string | null;
   previewLocked?: boolean;
+  fullUrl?: string | null;
+  fullLocked?: boolean;
+  playlistUrl?: string | null;
 }
 
 export interface FanslySubscriptionTier {
@@ -2312,15 +2341,67 @@ export interface FanslyNotificationsResponse {
 
 export async function listFanslyChats(
   creatorId: string,
-  options: { flags?: 0 | 32; limit?: number; offset?: number } = {}
+  options: {
+    flags?: 0 | 2 | 4 | 32;
+    sortOrder?: 1 | 2 | 3;
+    search?: string;
+    subscriptionTierId?: string;
+    listIds?: string;
+    limit?: number;
+    offset?: number;
+  } = {}
 ): Promise<{ chats: FanslyChat[]; providerUserId: string }> {
   const params = new URLSearchParams();
   if (options.flags) params.set('flags', String(options.flags));
+  if (options.sortOrder) params.set('sortOrder', String(options.sortOrder));
+  if (options.search) params.set('search', options.search);
+  if (options.subscriptionTierId) params.set('subscriptionTierId', options.subscriptionTierId);
+  if (options.listIds) params.set('listIds', options.listIds);
   if (options.limit) params.set('limit', String(options.limit));
   if (options.offset) params.set('offset', String(options.offset));
   const query = params.toString();
   return request(
     `/api/creators/${creatorId}/fansly/chats${query ? `?${query}` : ''}`
+  );
+}
+
+export async function listFanslyLists(
+  creatorId: string
+): Promise<{ lists: FanslyFanList[] }> {
+  return request(`/api/creators/${creatorId}/fansly/lists`);
+}
+
+export async function getFanslyFanLists(
+  creatorId: string,
+  fanId: string
+): Promise<{ lists: FanslyFanList[] }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/fans/${encodeURIComponent(fanId)}/lists`
+  );
+}
+
+export async function addFanslyFanToList(
+  creatorId: string,
+  fanId: string,
+  listId: string
+): Promise<{ lists: FanslyFanList[] }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/fans/${encodeURIComponent(fanId)}/lists`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ listId }),
+    }
+  );
+}
+
+export async function removeFanslyFanFromList(
+  creatorId: string,
+  fanId: string,
+  listId: string
+): Promise<{ lists: FanslyFanList[] }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/fans/${encodeURIComponent(fanId)}/lists/${encodeURIComponent(listId)}`,
+    { method: 'DELETE' }
   );
 }
 
@@ -2340,16 +2421,27 @@ export async function sendFanslyMessage(
   options?: {
     media?: { mediaId: string; mediaType: number }[];
     permissions?: FanslyMediaPermissions;
+    lockedText?: {
+      content: string;
+      permissionSets: FanslyMediaPermissions[];
+    };
   }
 ): Promise<{ message: FanslyMessage }> {
   const media = options?.media?.filter((item) => item.mediaId) || [];
+  const lockedText = options?.lockedText?.content.trim()
+    ? {
+        content: options.lockedText.content.trim(),
+        permissionSets: options.lockedText.permissionSets,
+      }
+    : null;
   return request(
     `/api/creators/${creatorId}/fansly/chats/${encodeURIComponent(groupId)}/messages`,
     {
       method: 'POST',
       body: JSON.stringify({
-        content,
-        ...(media.length
+        content: lockedText ? '' : content,
+        ...(lockedText ? { lockedText } : {}),
+        ...(media.length && !lockedText
           ? { media, permissions: options?.permissions }
           : {}),
       }),
@@ -2470,6 +2562,43 @@ export function fanslyVaultPreviewSrc(
     return fanslyMediaUrl(creatorId, item.mediaId, item.previewUrl);
   }
   return item.previewUrl;
+}
+
+export function fanslyOpenSrc(
+  creatorId: string,
+  item: {
+    mediaId: string;
+    kind?: 'image' | 'video';
+    mediaType?: number;
+    previewUrl?: string | null;
+    previewLocked?: boolean;
+    fullUrl?: string | null;
+    fullLocked?: boolean;
+    playlistUrl?: string | null;
+  }
+): { url: string; kind: 'picture' | 'video'; poster: string | null } | null {
+  const poster = fanslyVaultPreviewSrc(creatorId, {
+    mediaId: item.mediaId,
+    previewUrl: item.previewUrl ?? null,
+    previewLocked: item.previewLocked,
+  });
+  const video = item.kind === 'video' || item.mediaType === 2;
+  if (video && item.playlistUrl && item.mediaId) {
+    return {
+      url: fanslyMediaUrl(creatorId, item.mediaId, item.playlistUrl),
+      kind: 'video',
+      poster,
+    };
+  }
+  if (item.fullUrl && item.mediaId) {
+    return {
+      url: item.fullLocked ? fanslyMediaUrl(creatorId, item.mediaId, item.fullUrl) : item.fullUrl,
+      kind: 'picture',
+      poster,
+    };
+  }
+  if (!video && poster) return { url: poster, kind: 'picture', poster };
+  return null;
 }
 
 export async function listFanslySubscriptionTiers(

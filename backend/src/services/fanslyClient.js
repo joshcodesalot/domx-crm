@@ -386,10 +386,19 @@ function collectHttpLocations(node, out) {
 }
 
 function avatarUrlFromAccount(account) {
+  const avatar = account?.avatar;
+  if (!avatar) return null;
+  const variants = Array.isArray(avatar.variants) ? [...avatar.variants] : [];
+  variants.sort((a, b) => (Number(a?.width) || 0) - (Number(b?.width) || 0));
+  for (const variant of variants) {
+    if (Number(variant?.type) === 3) continue;
+    const url = httpLocation(variant);
+    if (url) return url;
+  }
   const urls = [];
-  collectHttpLocations(account?.avatar, urls);
+  collectHttpLocations(avatar, urls);
   const small = urls.find((url) => /_(240|360)\./.test(url));
-  return small || urls[0] || null;
+  return small || httpLocation(avatar) || urls[0] || null;
 }
 
 async function finishAuthenticatedSession({
@@ -521,30 +530,62 @@ async function getMe(session) {
   return result.data;
 }
 
-async function listGroups(session, { flags = 0, search = '', limit = 20, offset = 0 } = {}) {
+function messagingGroupsQuery({
+  sortOrder = 1,
+  flags = 0,
+  subscriptionTierId = '',
+  listIds = '',
+  search = '',
+  limit = 20,
+  offset = 0,
+} = {}) {
+  const sort = Number(sortOrder);
+  const flag = Number(flags);
+  const tier = subscriptionTierId == null ? '' : String(subscriptionTierId).trim();
+  const lists = Array.isArray(listIds)
+    ? listIds.map((id) => String(id).trim()).filter((id) => /^\d+$/.test(id))
+    : String(listIds || '')
+        .split(',')
+        .map((id) => id.trim())
+        .filter((id) => /^\d+$/.test(id));
+  return {
+    sortOrder: sort === 2 || sort === 3 ? sort : 1,
+    flags: flag === 2 || flag === 4 || flag === 32 ? flag : 0,
+    subscriptionTierId: /^\d+$/.test(tier) ? tier : '',
+    listIds: lists.join(','),
+    search: typeof search === 'string' ? search : '',
+    limit,
+    offset,
+  };
+}
+
+function mapGroupChats(data) {
+  const rows = Array.isArray(data?.data) ? data.data : [];
+  const accounts = Array.isArray(data?.aggregationData?.accounts) ? data.aggregationData.accounts : [];
+  const byId = new Map(accounts.map((account) => [String(account.id), account]));
+  return rows.map((row) => {
+    const account = byId.get(String(row.partnerAccountId || ''));
+    return {
+      groupId: row.groupId,
+      partnerAccountId: row.partnerAccountId || null,
+      partnerUsername: row.partnerUsername || account?.username || 'Fan',
+      partnerAvatarUrl: avatarUrlFromAccount(account),
+      unreadCount: Number(row.unreadCount) || 0,
+      lastMessageId: row.lastMessageId || null,
+      flags: row.flags,
+    };
+  });
+}
+
+async function listGroups(session, options = {}) {
+  const query = messagingGroupsQuery(options);
   const result = await requestJson({
     method: 'GET',
     path: '/messaging/groups',
     session,
-    query: {
-      sortOrder: 1,
-      flags,
-      subscriptionTierId: '',
-      listIds: '',
-      search: search || '',
-      limit,
-      offset,
-    },
+    query,
   });
-  const rows = Array.isArray(result.data?.data) ? result.data.data : [];
-  return rows.map((row) => ({
-    groupId: row.groupId,
-    partnerAccountId: row.partnerAccountId || null,
-    partnerUsername: row.partnerUsername || 'Fan',
-    unreadCount: Number(row.unreadCount) || 0,
-    lastMessageId: row.lastMessageId || null,
-    flags: row.flags,
-  }));
+  return mapGroupChats(result.data);
 }
 
 async function getGroup(session, groupId) {
@@ -566,6 +607,12 @@ const PERMISSION_PURCHASE = 1;
 const PERMISSION_FOLLOW = 2;
 const PERMISSION_SUBSCRIPTION_TIER = 4;
 const PERMISSION_SUBSCRIPTION_ANY = 8;
+
+/** Message attachment content types. Vault media type is separate (1 image, 2 video). */
+const MESSAGE_CONTENT_MEDIA = 1;
+const MESSAGE_CONTENT_BUNDLE = 2;
+const MESSAGE_CONTENT_STORY = 32001;
+const VARIANT_HLS = 302;
 
 function albumTitle(album) {
   const title = typeof album?.title === 'string' ? album.title.trim() : '';
@@ -591,6 +638,28 @@ function previewUrlFromMedia(media) {
     if (url) return url;
   }
   return httpLocation(media);
+}
+
+function hlsPlaylistUrl(media) {
+  const variants = Array.isArray(media?.variants) ? media.variants : [];
+  const hls = variants.find((variant) => Number(variant?.type) === VARIANT_HLS);
+  return hls ? httpLocation(hls) : null;
+}
+
+function fanslyMediaView(media) {
+  const kind = Number(media?.type) === 2 ? 'video' : 'image';
+  const previewUrl = previewUrlFromMedia(media);
+  const fullUrl = kind === 'image' && media ? httpLocation(media) : null;
+  const playlistUrl = kind === 'video' ? hlsPlaylistUrl(media) : null;
+  return {
+    kind,
+    previewUrl,
+    previewLocked:
+      Boolean(previewUrl) && fanslyPreviewLocksToIp(previewUrl) && isFanslyImagePreview(previewUrl),
+    fullUrl,
+    fullLocked: Boolean(fullUrl) && fanslyPreviewLocksToIp(fullUrl) && isFanslyImagePreview(fullUrl),
+    playlistUrl,
+  };
 }
 
 function decodeCloudFrontPolicy(policy) {
@@ -652,6 +721,43 @@ function isAllowedFanslyCdnUrl(url) {
   }
 }
 
+function fanslyCdnPath(url) {
+  try {
+    return new URL(url).pathname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function isFanslyPlaylistUrl(url) {
+  return isAllowedFanslyCdnUrl(url) && fanslyCdnPath(url).endsWith('.m3u8');
+}
+
+function isFanslySegmentUrl(url) {
+  return isAllowedFanslyCdnUrl(url) && fanslyCdnPath(url).endsWith('.ts');
+}
+
+function rewriteHlsPlaylist(body, playlistUrl, toProxyUrl) {
+  const base = new URL(playlistUrl);
+  const text = typeof body === 'string' ? body : '';
+  return text
+    .split(/\r?\n/)
+    .map((line) => {
+      if (line.trim().startsWith('#')) {
+        return line.replace(/URI="([^"]+)"/gi, (_, uri) => {
+          const absolute = new URL(uri, base).href;
+          return `URI="${toProxyUrl(absolute)}"`;
+        });
+      }
+      const trimmed = line.trim();
+      if (!trimmed) return line;
+      const absolute = new URL(trimmed, base).href;
+      const leading = line.match(/^\s*/)[0];
+      return `${leading}${toProxyUrl(absolute)}`;
+    })
+    .join('\n');
+}
+
 function mapVaultAlbum(album) {
   return {
     id: album.id,
@@ -663,18 +769,17 @@ function mapVaultAlbum(album) {
 
 function mapVaultMedia(item, mediaById) {
   const media = mediaById.get(String(item.mediaId)) || null;
-  const previewUrl = previewUrlFromMedia(media);
+  const view = fanslyMediaView(media);
   return {
     id: item.id,
     mediaId: item.mediaId,
     mediaType: Number(item.mediaType) || Number(media?.type) || 1,
     filename: item.customFilename || media?.filename || '',
-    previewUrl,
-    previewLocked: fanslyPreviewLocksToIp(previewUrl) && isFanslyImagePreview(previewUrl),
+    ...view,
   };
 }
 
-async function fetchCdnMedia(session, url) {
+async function fetchCdnMedia(session, url, { accept } = {}) {
   if (!isAllowedFanslyCdnUrl(url)) {
     throw new FanslyApiError('Invalid or disallowed media URL', 400);
   }
@@ -684,7 +789,7 @@ async function fetchCdnMedia(session, url) {
     return await undiciFetch(url, {
       method: 'GET',
       headers: {
-        accept: 'image/avif,image/webp,image/*,*/*;q=0.8',
+        accept: accept || 'image/avif,image/webp,image/*,*/*;q=0.8',
         'user-agent': USER_AGENT,
         origin: APP_ORIGIN,
         referer: `${APP_ORIGIN}/`,
@@ -756,6 +861,57 @@ function buildAccountMediaBody({ mediaId, fanId, creatorId, permissions } = {}) 
   ];
 }
 
+function buildAccountMediaBundleBody({ mediaIds, fanId, creatorId, permissions } = {}) {
+  const ids = Array.isArray(mediaIds) ? mediaIds : [];
+  if (ids.length < 2) {
+    throw new FanslyApiError('At least two media ids are required', 400);
+  }
+  const models = ids.map((mediaId) => {
+    const [item] = buildAccountMediaBody({ mediaId, fanId, creatorId, permissions });
+    return {
+      mediaId: item.mediaId,
+      previewId: null,
+      permissionFlags: item.permissionFlags,
+      price: item.price,
+      whitelist: item.whitelist,
+    };
+  });
+  const [sample] = buildAccountMediaBody({
+    mediaId: models[0].mediaId,
+    fanId,
+    creatorId,
+    permissions,
+  });
+  return {
+    previewId: null,
+    permissionFlags: sample.permissionFlags,
+    price: 0,
+    accountMediaModels: models,
+    whitelist: sample.whitelist,
+    permissions: sample.permissions,
+    tags: [],
+  };
+}
+
+function buildLockedTextBody({ content, permissions } = {}) {
+  const text = typeof content === 'string' ? content.trim() : '';
+  if (!text) {
+    throw new FanslyApiError('Locked text is required', 400);
+  }
+  const [sample] = buildAccountMediaBody({
+    mediaId: '1',
+    fanId: '1',
+    creatorId: '1',
+    permissions,
+  });
+  return {
+    title: '',
+    description: '',
+    content: text,
+    permissions: { permissionFlags: sample.permissions.permissionFlags },
+  };
+}
+
 function buildDeleteMessageBody(messageId) {
   const id = messageId == null ? '' : String(messageId).trim();
   if (!/^\d+$/.test(id)) {
@@ -781,6 +937,101 @@ function mapMessage(row) {
   };
 }
 
+function indexById(rows) {
+  const map = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (row && row.id != null) map.set(String(row.id), row);
+  }
+  return map;
+}
+
+function purchasePriceDollars(node) {
+  const rows = Array.isArray(node?.permissions?.permissionFlags) ? node.permissions.permissionFlags : [];
+  for (const row of rows) {
+    const mills = Number(row?.price);
+    if (Number.isFinite(mills) && mills > 0) return mills / 1000;
+  }
+  return null;
+}
+
+function viewFromAccountMedia(row, price) {
+  if (!row?.media) return null;
+  const view = fanslyMediaView(row.media);
+  const mediaId = row.media.id == null ? '' : String(row.media.id);
+  if (!mediaId) return null;
+  return {
+    mediaId,
+    ...view,
+    price: price == null ? purchasePriceDollars(row) : price,
+  };
+}
+
+function lockedTextForMessage(message, storiesById) {
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  const items = [];
+  for (const attachment of attachments) {
+    if (Number(attachment?.contentType) !== MESSAGE_CONTENT_STORY) continue;
+    const contentId = attachment?.contentId == null ? '' : String(attachment.contentId);
+    const story = storiesById.get(contentId);
+    items.push({
+      id: story?.id == null ? contentId : String(story.id),
+      content: typeof story?.content === 'string' ? story.content : '',
+      price: purchasePriceDollars(story),
+    });
+  }
+  return items;
+}
+
+function mediaForMessage(message, accountMediaById, bundlesById) {
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  const items = [];
+  for (const attachment of attachments) {
+    const contentId = attachment?.contentId == null ? '' : String(attachment.contentId);
+    const contentType = Number(attachment?.contentType);
+    if (contentType === MESSAGE_CONTENT_BUNDLE) {
+      const bundle = bundlesById.get(contentId);
+      if (!bundle) continue;
+      const price = purchasePriceDollars(bundle);
+      const ids = Array.isArray(bundle.accountMediaIds) ? bundle.accountMediaIds : [];
+      for (const id of ids) {
+        const view = viewFromAccountMedia(accountMediaById.get(String(id)), price);
+        if (view) items.push(view);
+      }
+      continue;
+    }
+    const view = viewFromAccountMedia(accountMediaById.get(contentId), null);
+    if (view) items.push(view);
+  }
+  return items;
+}
+
+function mapMessageThread(data) {
+  const rows = Array.isArray(data?.messages) ? data.messages : [];
+  const accountMediaById = indexById(data?.accountMedia);
+  const bundlesById = indexById(data?.accountMediaBundles);
+  const storiesById = indexById(data?.stories);
+  return rows
+    .map((row) => {
+      const message = mapMessage(row);
+      if (!message) return null;
+      return {
+        ...message,
+        media: mediaForMessage(message, accountMediaById, bundlesById),
+        lockedText: lockedTextForMessage(message, storiesById),
+      };
+    })
+    .filter(Boolean);
+}
+
+function hydrateMessageMedia(message, { accountMedia, accountMediaBundles, stories } = {}) {
+  if (!message) return message;
+  return {
+    ...message,
+    media: mediaForMessage(message, indexById(accountMedia), indexById(accountMediaBundles)),
+    lockedText: lockedTextForMessage(message, indexById(stories)),
+  };
+}
+
 async function listMessages(session, groupId, { limit = 25 } = {}) {
   const result = await requestJson({
     method: 'GET',
@@ -788,8 +1039,7 @@ async function listMessages(session, groupId, { limit = 25 } = {}) {
     session,
     query: { groupId, limit },
   });
-  const rows = Array.isArray(result.data?.messages) ? result.data.messages : [];
-  return rows.map(mapMessage).filter(Boolean);
+  return mapMessageThread(result.data || {});
 }
 
 function messageAttachments(attachments) {
@@ -874,6 +1124,65 @@ function subscriptionTierRows(data) {
   return [];
 }
 
+function listRows(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.lists)) return data.lists;
+  return [];
+}
+
+function mapListRows(data) {
+  return listRows(data)
+    .map((row) => ({
+      id: row?.id == null ? '' : String(row.id),
+      label: typeof row?.label === 'string' && row.label.trim() ? row.label.trim() : 'List',
+    }))
+    .filter((row) => /^\d+$/.test(row.id));
+}
+
+async function listCreatorLists(session) {
+  const result = await requestJson({ method: 'GET', path: '/lists', session });
+  return mapListRows(result.data);
+}
+
+async function listAccountLists(session, fanId) {
+  const id = fanId == null ? '' : String(fanId).trim();
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError('Fan id is required', 400);
+  }
+  const result = await requestJson({
+    method: 'GET',
+    path: '/lists/account',
+    session,
+    query: { itemId: id },
+  });
+  return mapListRows(result.data);
+}
+
+function buildListCommands({ action, fanId, listId } = {}) {
+  const fan = fanId == null ? '' : String(fanId).trim();
+  const list = listId == null ? '' : String(listId).trim();
+  if (!/^\d+$/.test(fan) || !/^\d+$/.test(list)) {
+    throw new FanslyApiError('Fan id and list id are required', 400);
+  }
+  if (action === 'add') {
+    return { listCommands: [{ type: 1, listItem: { id: fan, listId: list } }] };
+  }
+  if (action === 'remove') {
+    return { listCommands: [{ type: 2, listId: list, itemIds: [fan] }] };
+  }
+  throw new FanslyApiError('List action is required', 400);
+}
+
+async function applyListCommands(session, body) {
+  const result = await requestJson({
+    method: 'POST',
+    path: '/lists/commands',
+    session,
+    body,
+  });
+  return result.data;
+}
+
 async function listSubscriptionTiers(session) {
   const result = await requestJson({ method: 'GET', path: '/subscriptions/tiers', session });
   return subscriptionTierRows(result.data)
@@ -893,6 +1202,39 @@ async function createAccountMedia(session, body) {
   });
   const rows = Array.isArray(result.data) ? result.data : result.data ? [result.data] : [];
   return rows;
+}
+
+async function createStory(session, body) {
+  const result = await requestJson({
+    method: 'POST',
+    path: '/stories',
+    session,
+    body,
+  });
+  const rows = Array.isArray(result.data) ? result.data : result.data ? [result.data] : [];
+  const id = rows[0]?.id == null ? '' : String(rows[0].id);
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError('Fansly did not return locked text', 502);
+  }
+  return { id, story: rows[0] };
+}
+
+async function createAccountMediaBundle(session, body) {
+  const result = await requestJson({
+    method: 'POST',
+    path: '/account/media/bundle',
+    session,
+    body,
+  });
+  const accountMediaBundles = Array.isArray(result.data?.accountMediaBundles)
+    ? result.data.accountMediaBundles
+    : [];
+  const accountMedia = Array.isArray(result.data?.accountMedia) ? result.data.accountMedia : [];
+  const id = accountMediaBundles[0]?.id == null ? '' : String(accountMediaBundles[0].id);
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError('Fansly did not return media', 502);
+  }
+  return { id, accountMedia, accountMediaBundles };
 }
 
 async function ackMessages(session, messageIds) {
@@ -1155,12 +1497,24 @@ module.exports = {
   verifyTwofa,
   getMe,
   listGroups,
+  messagingGroupsQuery,
+  mapGroupChats,
   getGroup,
   listMessages,
   sendMessage,
   deleteMessage,
+  MESSAGE_CONTENT_MEDIA,
+  MESSAGE_CONTENT_BUNDLE,
+  MESSAGE_CONTENT_STORY,
   buildAccountMediaBody,
+  buildAccountMediaBundleBody,
+  buildLockedTextBody,
   buildDeleteMessageBody,
+  mapMessageThread,
+  hydrateMessageMedia,
+  rewriteHlsPlaylist,
+  isFanslyPlaylistUrl,
+  isFanslySegmentUrl,
   listVaultAlbums,
   listVaultMedia,
   fanslyPreviewLocksToIp,
@@ -1168,7 +1522,14 @@ module.exports = {
   isAllowedFanslyCdnUrl,
   fetchCdnMedia,
   listSubscriptionTiers,
+  listCreatorLists,
+  listAccountLists,
+  mapListRows,
+  buildListCommands,
+  applyListCommands,
   createAccountMedia,
+  createAccountMediaBundle,
+  createStory,
   ackMessages,
   listNotifications,
   ackNotifications,

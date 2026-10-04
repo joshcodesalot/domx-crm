@@ -1,5 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import Hls from 'hls.js';
 import { Loader2, X } from 'lucide-react';
+
+function isHlsUrl(value: string): boolean {
+  const path = value.split('?')[0].toLowerCase();
+  if (path.endsWith('.m3u8')) return true;
+  try {
+    const inner = new URL(value, 'http://localhost').searchParams.get('url') || '';
+    return inner.split('?')[0].toLowerCase().endsWith('.m3u8');
+  } catch {
+    return false;
+  }
+}
 
 export type VaultMediaLightboxKind = 'picture' | 'video' | 'embed';
 
@@ -24,16 +36,39 @@ export default function VaultMediaLightbox({
 }: VaultMediaLightboxProps) {
   const [useFallback, setUseFallback] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const hlsPlayback = kind === 'video' && isHlsUrl(url);
   useEffect(() => {
     setUseFallback(false);
     setVideoReady(false);
   }, [url]);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!hlsPlayback || !video) return;
+    let hls: Hls | null = null;
+    if (Hls.isSupported()) {
+      hls = new Hls();
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        video.play().catch(() => {});
+      });
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) setVideoReady(true);
+      });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = url;
+    }
+    return () => {
+      hls?.destroy();
+    };
+  }, [hlsPlayback, url]);
   const pictureSrc =
     useFallback && fallbackUrl && fallbackUrl !== url ? fallbackUrl : url;
 
   return (
     <div
-      className={`fixed inset-0 ${zClassName} flex items-center justify-center bg-black/20 dark:bg-black/70 p-6 animate-fade-in`}
+      className={`fixed inset-0 ${zClassName} flex min-h-0 min-w-0 items-center justify-center overflow-hidden bg-black/20 dark:bg-black/70 p-6 animate-fade-in`}
     >
       <button
         type="button"
@@ -45,13 +80,13 @@ export default function VaultMediaLightbox({
         <iframe
           src={url}
           title="Video"
-          className="relative z-10 w-full max-w-3xl aspect-[9/16] max-h-full rounded-lg bg-gray-900 dark:bg-black animate-slide-up"
+          className="relative z-10 min-h-0 min-w-0 h-[calc(100dvh-3rem)] w-[calc(100dvw-3rem)] max-h-[calc(100dvh-3rem)] max-w-[calc(100dvw-3rem)] rounded-lg bg-gray-900 dark:bg-black animate-slide-up"
           allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
           allowFullScreen
         />
       ) : kind === 'video' ? (
         <div
-          className={`relative z-10 max-w-full max-h-full ${
+          className={`relative z-10 flex min-h-0 min-w-0 items-center justify-center max-h-[calc(100dvh-3rem)] max-w-[calc(100dvw-3rem)] ${
             videoReady ? '' : 'min-w-[240px] min-h-[160px]'
           }`}
         >
@@ -61,7 +96,8 @@ export default function VaultMediaLightbox({
             </div>
           )}
           <video
-            src={url}
+            ref={videoRef}
+            src={hlsPlayback ? undefined : url}
             controls
             autoPlay
             playsInline
@@ -69,7 +105,7 @@ export default function VaultMediaLightbox({
             onCanPlay={() => setVideoReady(true)}
             onPlaying={() => setVideoReady(true)}
             onError={() => setVideoReady(true)}
-            className="max-w-full max-h-full rounded-lg bg-gray-900 dark:bg-black animate-slide-up"
+            className="h-auto w-auto max-h-[calc(100dvh-3rem)] max-w-[calc(100dvw-3rem)] object-contain rounded-lg bg-gray-900 dark:bg-black animate-slide-up"
           >
             <track kind="captions" />
           </video>
@@ -87,7 +123,7 @@ export default function VaultMediaLightbox({
               setUseFallback(true);
             }
           }}
-          className="relative z-10 max-w-full max-h-full rounded-lg object-contain animate-slide-up"
+          className="relative z-10 min-h-0 min-w-0 h-auto w-auto max-h-[calc(100dvh-3rem)] max-w-[calc(100dvw-3rem)] object-contain rounded-lg animate-slide-up"
         />
       )}
       <button

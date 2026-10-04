@@ -1,6 +1,6 @@
 {
   "name": "domx-frontend",
-  "version": "1.8.22",
+  "version": "1.8.23",
   "description": "DomX Electron Frontend",
   "author": "Low7 Labs",
   "main": "electron/main.js",
@@ -15,6 +15,7 @@
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.9",
     "electron-updater": "^6.8.9",
+    "hls.js": "^1.7.3",
     "lucide-react": "^0.469.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

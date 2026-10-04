@@ -467,7 +467,7 @@ export default function FourBasedNotifications() {
 
       {previewUrl && (
         <div
-          className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-4"
+          className="fixed inset-0 z-[100] bg-black/80 flex min-h-0 min-w-0 items-center justify-center overflow-hidden p-4"
           onClick={() => setPreviewUrl(null)}
           role="presentation"
         >
@@ -482,7 +482,7 @@ export default function FourBasedNotifications() {
           <img
             src={previewUrl}
             alt=""
-            className="max-w-full max-h-full object-contain rounded-lg"
+            className="h-auto w-auto max-h-[calc(100dvh-3rem)] max-w-[calc(100dvw-3rem)] object-contain rounded-lg"
             onClick={(e) => e.stopPropagation()}
           />
         </div>

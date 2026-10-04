@@ -2,7 +2,10 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   buildAccountMediaBody,
+  buildAccountMediaBundleBody,
   buildDeleteMessageBody,
+  buildListCommands,
+  buildLockedTextBody,
   buildFanNicknameBody,
   lifetimeGrossMills,
   pickCustomUsername,
@@ -11,7 +14,15 @@ const {
   fanslyFailureError,
   fanslyPreviewLocksToIp,
   FanslyApiError,
+  mapGroupChats,
+  mapListRows,
+  mapMessageThread,
+  messagingGroupsQuery,
+  MESSAGE_CONTENT_MEDIA,
+  MESSAGE_CONTENT_BUNDLE,
+  MESSAGE_CONTENT_STORY,
   notificationUnreadCount,
+  rewriteHlsPlaylist,
   sanitizeNotificationType,
   WrongPasswordError,
 } = require('./fanslyClient');
@@ -249,6 +260,392 @@ describe('fansly locked media body', () => {
           creatorId: '3',
           permissions: { requirePurchase: true, price: 0 },
         }),
+      (err) => err instanceof FanslyApiError && err.status === 400
+    );
+  });
+});
+
+describe('fansly media bundle', () => {
+  const fanId = '927528690898714626';
+  const creatorId = '948650325143744512';
+  const mediaIds = [
+    '951262775047372800',
+    '951257047284858881',
+    '951256925947850752',
+    '951257099587842048',
+  ];
+  const whitelist = [
+    { accountId: fanId, permissionFlags: 0 },
+    { accountId: creatorId, permissionFlags: 0 },
+  ];
+
+  it('matches the captured multi-media $10 purchase bundle', () => {
+    const body = buildAccountMediaBundleBody({
+      mediaIds,
+      fanId,
+      creatorId,
+      permissions: {
+        requirePurchase: true,
+        price: 10,
+        requireSubscription: true,
+        subscriptionTierId: null,
+        requireFollow: false,
+      },
+    });
+    assert.equal(body.permissionFlags, 8);
+    assert.equal(body.price, 0);
+    assert.deepEqual(body.whitelist, whitelist);
+    assert.deepEqual(body.permissions.permissionFlags, [
+      {
+        type: 0,
+        flags: 1,
+        price: 10000,
+        metadata: '{"1":"{\\"price\\":10000}"}',
+      },
+    ]);
+    assert.deepEqual(body.tags, []);
+    assert.equal(body.accountMediaModels.length, 4);
+    assert.deepEqual(
+      body.accountMediaModels.map((row) => row.mediaId),
+      mediaIds
+    );
+    for (const row of body.accountMediaModels) {
+      assert.equal(row.previewId, null);
+      assert.equal(row.permissionFlags, 8);
+      assert.equal(row.price, 0);
+      assert.deepEqual(row.whitelist, whitelist);
+      assert.equal(row.permissions, undefined);
+    }
+  });
+
+  it('rejects a bundle with one item', () => {
+    assert.throws(
+      () =>
+        buildAccountMediaBundleBody({
+          mediaIds: ['1'],
+          fanId: '2',
+          creatorId: '3',
+          permissions: {},
+        }),
+      (err) => err instanceof FanslyApiError && err.status === 400
+    );
+  });
+});
+
+describe('fansly message media', () => {
+  const poster = 'https://cdn3.fansly.com/acct/poster.jpeg?Policy=locked';
+  const full = 'https://cdn3.fansly.com/acct/photo.jpeg?Signature=abc';
+  const playlist = 'https://cdn3.fansly.com/new/acct/vid/vid.m3u8';
+
+  it('joins a single account-media attachment as content type 1', () => {
+    const [message] = mapMessageThread({
+      messages: [
+        {
+          id: 'm1',
+          content: 'photo',
+          senderId: 'creator',
+          createdAt: 10,
+          attachments: [{ contentType: MESSAGE_CONTENT_MEDIA, contentId: 'am-photo', pos: 0 }],
+        },
+      ],
+      accountMedia: [
+        {
+          id: 'am-photo',
+          permissions: { permissionFlags: [{ type: 0, flags: 1, price: 5000 }] },
+          media: {
+            id: 'photo-1',
+            type: 1,
+            locations: [{ location: full }],
+            variants: [{ type: 1, width: 240, locations: [{ location: poster }] }],
+          },
+        },
+      ],
+    });
+    assert.equal(message.attachments[0].contentType, MESSAGE_CONTENT_MEDIA);
+    assert.equal(message.media.length, 1);
+    assert.equal(message.media[0].kind, 'image');
+    assert.equal(message.media[0].mediaId, 'photo-1');
+    assert.equal(message.media[0].previewUrl, poster);
+    assert.equal(message.media[0].fullUrl, full);
+    assert.equal(message.media[0].playlistUrl, null);
+    assert.equal(message.media[0].price, 5);
+  });
+
+  it('expands a bundle attachment in accountMediaIds order', () => {
+    const [message] = mapMessageThread({
+      messages: [
+        {
+          id: 'm2',
+          content: 'bundle',
+          senderId: 'creator',
+          createdAt: 11,
+          attachments: [{ contentType: MESSAGE_CONTENT_BUNDLE, contentId: 'bundle-1', pos: 0 }],
+        },
+      ],
+      accountMediaBundles: [
+        {
+          id: 'bundle-1',
+          accountMediaIds: ['am-video', 'am-photo'],
+          permissions: { permissionFlags: [{ type: 0, flags: 1, price: 10000 }] },
+        },
+      ],
+      accountMedia: [
+        {
+          id: 'am-photo',
+          media: {
+            id: 'photo-1',
+            type: 1,
+            locations: [{ location: full }],
+            variants: [{ type: 1, width: 240, locations: [{ location: poster }] }],
+          },
+        },
+        {
+          id: 'am-video',
+          media: {
+            id: 'video-1',
+            type: 2,
+            mimetype: 'video/mp4',
+            locations: [{ location: 'https://cdn3.fansly.com/acct/video-1.mp4' }],
+            variants: [
+              { type: 1, width: 480, locations: [{ location: poster }] },
+              { type: 302, mimetype: 'application/vnd.apple.mpegurl', locations: [{ location: playlist }] },
+              { type: 303, locations: [{ location: 'https://cdn3.fansly.com/new/acct/vid/vid.mpd' }] },
+            ],
+          },
+        },
+      ],
+    });
+    assert.equal(message.attachments[0].contentType, MESSAGE_CONTENT_BUNDLE);
+    assert.deepEqual(
+      message.media.map((item) => item.mediaId),
+      ['video-1', 'photo-1']
+    );
+    assert.equal(message.media[0].kind, 'video');
+    assert.equal(message.media[0].playlistUrl, playlist);
+    assert.equal(message.media[0].fullUrl, null);
+    assert.equal(message.media[0].previewUrl, poster);
+    assert.equal(message.media[0].price, 10);
+    assert.equal(message.media[1].kind, 'image');
+    assert.equal(message.media[1].price, 10);
+  });
+});
+
+describe('fansly hls playlist rewrite', () => {
+  it('rewrites relative playlists, segments, and URI attributes', () => {
+    const playlist = [
+      '#EXTM3U',
+      '#EXT-X-STREAM-INF:BANDWIDTH=1',
+      'media-2/stream.m3u8',
+      '#EXTINF:2.000000,',
+      'segment-0.ts',
+      '#EXT-X-MAP:URI="init.mp4"',
+    ].join('\n');
+    const rewritten = rewriteHlsPlaylist(
+      playlist,
+      'https://cdn3.fansly.com/new/acct/vid/vid.m3u8',
+      (absolute) => `proxy:${absolute}`
+    );
+    assert.match(
+      rewritten,
+      /proxy:https:\/\/cdn3\.fansly\.com\/new\/acct\/vid\/media-2\/stream\.m3u8/
+    );
+    assert.match(rewritten, /proxy:https:\/\/cdn3\.fansly\.com\/new\/acct\/vid\/segment-0\.ts/);
+    assert.match(
+      rewritten,
+      /URI="proxy:https:\/\/cdn3\.fansly\.com\/new\/acct\/vid\/init\.mp4"/
+    );
+    assert.doesNotMatch(rewritten, /video-1\.mp4/);
+  });
+});
+
+describe('fansly locked text', () => {
+  it('matches the captured $1 story', () => {
+    assert.deepEqual(
+      buildLockedTextBody({
+        content: 'test',
+        permissions: {
+          requirePurchase: true,
+          price: 1,
+          requireSubscription: false,
+          requireFollow: false,
+        },
+      }),
+      {
+        title: '',
+        description: '',
+        content: 'test',
+        permissions: {
+          permissionFlags: [
+            {
+              type: 0,
+              flags: 1,
+              price: 1000,
+              metadata: '{"1":"{\\"price\\":1000}"}',
+            },
+          ],
+        },
+      }
+    );
+  });
+
+  it('rejects empty locked text', () => {
+    assert.throws(
+      () => buildLockedTextBody({ content: '  ', permissions: { requirePurchase: true, price: 1 } }),
+      (err) => err instanceof FanslyApiError && err.status === 400
+    );
+  });
+});
+
+describe('fansly inbox groups', () => {
+  it('passes sort, subscriber tier, and numeric list ids', () => {
+    assert.deepEqual(
+      messagingGroupsQuery({
+        sortOrder: 2,
+        flags: 4,
+        subscriptionTierId: '950775164264538112',
+        listIds: '123,abc,456',
+        search: 'dc',
+        limit: 20,
+        offset: 20,
+      }),
+      {
+        sortOrder: 2,
+        flags: 4,
+        subscriptionTierId: '950775164264538112',
+        listIds: '123,456',
+        search: 'dc',
+        limit: 20,
+        offset: 20,
+      }
+    );
+  });
+
+  it('keeps unread sort and drops unknown flags', () => {
+    const query = messagingGroupsQuery({ sortOrder: 3, flags: 7, search: '' });
+    assert.equal(query.sortOrder, 3);
+    assert.equal(query.flags, 0);
+    assert.equal(query.search, '');
+  });
+
+  it('picks the smallest non-blur avatar from aggregation accounts', () => {
+    const small = 'https://cdn3.fansly.com/small.jpg?Expires=1&Signature=c';
+    const [chat] = mapGroupChats({
+      data: [
+        {
+          groupId: 'g1',
+          partnerAccountId: '927528690898714626',
+          partnerUsername: 'dc2cool',
+          unreadCount: 1,
+          lastMessageId: 'm1',
+          flags: 2,
+        },
+      ],
+      aggregationData: {
+        accounts: [
+          {
+            id: '927528690898714626',
+            username: 'dc2cool',
+            avatar: {
+              variants: [
+                {
+                  type: 3,
+                  width: 80,
+                  locations: [{ location: 'https://cdn3.fansly.com/blur.jpg?Expires=1&Signature=a' }],
+                },
+                {
+                  type: 1,
+                  width: 720,
+                  locations: [{ location: 'https://cdn3.fansly.com/large.jpg?Expires=1&Signature=b' }],
+                },
+                {
+                  type: 1,
+                  width: 240,
+                  locations: [{ location: small }],
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    assert.equal(chat.partnerAccountId, '927528690898714626');
+    assert.equal(chat.partnerAvatarUrl, small);
+  });
+
+  it('leaves the avatar empty when the account has none', () => {
+    const [chat] = mapGroupChats({
+      data: [{ groupId: 'g2', partnerAccountId: '1', partnerUsername: 'fan' }],
+      aggregationData: { accounts: [{ id: '1', username: 'fan' }] },
+    });
+    assert.equal(chat.partnerAvatarUrl, null);
+  });
+});
+
+describe('fansly locked text thread', () => {
+  it('joins a 32001 story onto the message', () => {
+    const [message] = mapMessageThread({
+      messages: [
+        {
+          id: 'm-lock',
+          content: '',
+          senderId: 'creator',
+          createdAt: 12,
+          attachments: [
+            { contentType: MESSAGE_CONTENT_STORY, contentId: '963202346916007936', pos: 0 },
+          ],
+        },
+      ],
+      stories: [
+        {
+          id: '963202346916007936',
+          content: 'test',
+          permissions: { permissionFlags: [{ type: 0, flags: 1, price: 1000 }] },
+        },
+      ],
+    });
+    assert.equal(message.attachments[0].contentType, MESSAGE_CONTENT_STORY);
+    assert.deepEqual(message.lockedText, [
+      { id: '963202346916007936', content: 'test', price: 1 },
+    ]);
+    assert.deepEqual(message.media, []);
+  });
+});
+
+describe('fansly fan lists', () => {
+  const fanId = '927528690898714626';
+  const listId = '951713542833184769';
+
+  it('matches the captured add command', () => {
+    assert.deepEqual(buildListCommands({ action: 'add', fanId, listId }), {
+      listCommands: [{ type: 1, listItem: { id: fanId, listId } }],
+    });
+  });
+
+  it('matches the captured remove command', () => {
+    assert.deepEqual(buildListCommands({ action: 'remove', fanId, listId }), {
+      listCommands: [{ type: 2, listId, itemIds: [fanId] }],
+    });
+  });
+
+  it('maps account lists to ids and labels', () => {
+    assert.deepEqual(
+      mapListRows([
+        {
+          id: '951713542833184769',
+          accountId: '948650325143744512',
+          type: 1,
+          label: 'ACTIVELY CHATTING',
+          itemCount: 2,
+        },
+        { id: 'not-a-list', label: 'Skip' },
+      ]),
+      [{ id: '951713542833184769', label: 'ACTIVELY CHATTING' }]
+    );
+  });
+
+  it('rejects a list command without ids', () => {
+    assert.throws(
+      () => buildListCommands({ action: 'add', fanId: '', listId }),
       (err) => err instanceof FanslyApiError && err.status === 400
     );
   });

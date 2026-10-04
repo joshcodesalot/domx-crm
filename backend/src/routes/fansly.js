@@ -123,6 +123,16 @@ function readOutgoingMedia(body) {
   return items;
 }
 
+function readLockedText(body) {
+  const raw = body?.lockedText;
+  if (!raw || typeof raw !== 'object') return null;
+  const content = typeof raw.content === 'string' ? raw.content.trim() : '';
+  if (!content) return null;
+  const sets = Array.isArray(raw.permissionSets) ? raw.permissionSets : [];
+  const permissionSets = (sets.length > 0 ? sets : [{}]).slice(0, 5).map((set) => readMediaPermissions({ permissions: set }));
+  return { content, permissionSets };
+}
+
 function readMediaPermissions(body) {
   const raw = body?.permissions && typeof body.permissions === 'object' ? body.permissions : {};
   const tier = raw.subscriptionTierId == null ? '' : String(raw.subscriptionTierId).trim();
@@ -133,6 +143,19 @@ function readMediaPermissions(body) {
     subscriptionTierId: tier || null,
     requireFollow: Boolean(raw.requireFollow),
   };
+}
+
+function fanslyProxyMediaUrl(req, creatorId, mediaId, cdnUrl) {
+  const proto = req.get('x-forwarded-proto') || req.protocol;
+  const host = req.get('host');
+  const params = new URLSearchParams({
+    mediaId: String(mediaId),
+    url: cdnUrl,
+  });
+  if (typeof req.query.access_token === 'string' && req.query.access_token) {
+    params.set('access_token', req.query.access_token);
+  }
+  return `${proto}://${host}/api/creators/${creatorId}/fansly/media?${params}`;
 }
 
 function handleFanslyError(res, err, label) {
@@ -396,11 +419,28 @@ router.get(
     try {
       const creator = await requireFansly(req, res);
       if (!creator) return;
-      const flags = Number(req.query.flags) === 32 ? 32 : 0;
-      const limit = Math.min(Math.max(Number(req.query.limit) || (flags === 32 ? 10 : 20), 1), 50);
+      const flags = Number(req.query.flags);
+      const sortOrder = Number(req.query.sortOrder);
+      const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 100) : '';
+      const subscriptionTierId =
+        typeof req.query.subscriptionTierId === 'string' ? req.query.subscriptionTierId.trim() : '';
+      const listIds = typeof req.query.listIds === 'string' ? req.query.listIds.trim() : '';
+      const resolvedFlags = flags === 2 || flags === 4 || flags === 32 ? flags : 0;
+      const limit = Math.min(
+        Math.max(Number(req.query.limit) || (resolvedFlags === 32 ? 10 : 20), 1),
+        50
+      );
       const offset = Math.max(Number(req.query.offset) || 0, 0);
       const session = fanslySession(creator);
-      const chats = await fanslyClient.listGroups(session, { flags, limit, offset });
+      const chats = await fanslyClient.listGroups(session, {
+        flags: resolvedFlags,
+        sortOrder: sortOrder === 2 || sortOrder === 3 ? sortOrder : 1,
+        search,
+        subscriptionTierId,
+        listIds,
+        limit,
+        offset,
+      });
       const previewIds = chats.map((chat) => chat.lastMessageId).filter(Boolean);
       let previews = [];
       if (previewIds.length > 0) {
@@ -484,19 +524,40 @@ router.post(
       if (!creator) return;
       const session = fanslySession(creator);
       const media = readOutgoingMedia(req.body);
+      const lockedText = readLockedText(req.body);
       const attachments = [];
-      if (media.length > 0) {
+      let sentMedia;
+      if (lockedText) {
+        const stories = [];
+        for (const permissions of lockedText.permissionSets) {
+          const created = await fanslyClient.createStory(
+            session,
+            fanslyClient.buildLockedTextBody({
+              content: lockedText.content,
+              permissions,
+            })
+          );
+          attachments.push({
+            contentId: created.id,
+            contentType: fanslyClient.MESSAGE_CONTENT_STORY,
+          });
+          stories.push(created.story);
+        }
+        sentMedia = { stories };
+      } else if (media.length > 0) {
         const group = await fanslyClient.getGroup(session, req.params.groupId);
         const fanId = partnerAccountId(group, creator.providerUserId);
         if (!fanId) {
           return res.status(400).json({ error: 'Chat partner is required' });
         }
         const permissions = readMediaPermissions(req.body);
-        for (const item of media) {
+        const createdAccountMedia = [];
+        const createdBundles = [];
+        if (media.length === 1) {
           const created = await fanslyClient.createAccountMedia(
             session,
             fanslyClient.buildAccountMediaBody({
-              mediaId: item.mediaId,
+              mediaId: media[0].mediaId,
               fanId,
               creatorId: creator.providerUserId,
               permissions,
@@ -506,14 +567,35 @@ router.post(
           if (!/^\d+$/.test(contentId)) {
             throw new fanslyClient.FanslyApiError('Fansly did not return media', 502);
           }
-          attachments.push({ contentId, contentType: item.mediaType });
+          attachments.push({ contentId, contentType: fanslyClient.MESSAGE_CONTENT_MEDIA });
+          createdAccountMedia.push(...created);
+        } else {
+          const bundle = await fanslyClient.createAccountMediaBundle(
+            session,
+            fanslyClient.buildAccountMediaBundleBody({
+              mediaIds: media.map((item) => item.mediaId),
+              fanId,
+              creatorId: creator.providerUserId,
+              permissions,
+            })
+          );
+          attachments.push({
+            contentId: bundle.id,
+            contentType: fanslyClient.MESSAGE_CONTENT_BUNDLE,
+          });
+          createdAccountMedia.push(...bundle.accountMedia);
+          createdBundles.push(...bundle.accountMediaBundles);
         }
+        sentMedia = { accountMedia: createdAccountMedia, accountMediaBundles: createdBundles };
       }
-      const message = await fanslyClient.sendMessage(session, {
-        groupId: req.params.groupId,
-        content: req.body?.content,
-        attachments,
-      });
+      const message = fanslyClient.hydrateMessageMedia(
+        await fanslyClient.sendMessage(session, {
+          groupId: req.params.groupId,
+          content: lockedText ? '' : req.body?.content,
+          attachments,
+        }),
+        sentMedia
+      );
       res.json({ message });
     } catch (err) {
       return handleFanslyError(res, err, 'Send Fansly message error:');
@@ -594,49 +676,86 @@ router.get(
       const creator = await requireFansly(req, res);
       if (!creator) return;
 
-      const cached = await fanslyMediaCache.readCache(creator.id, mediaId);
-      if (cached) {
-        res.setHeader('Content-Type', cached.contentType);
-        res.setHeader('Content-Length', String(cached.buffer.length));
-        res.setHeader('Cache-Control', 'private, max-age=86400, stale-while-revalidate=604800');
-        res.setHeader('X-DomX-Media-Cache', 'HIT');
-        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-        if (cached.etag) res.setHeader('ETag', cached.etag);
-        return res.status(200).end(cached.buffer);
-      }
-
       if (!mediaUrl) {
         return res.status(400).json({ error: 'url is required when media is not cached' });
       }
-      if (
-        !fanslyClient.isAllowedFanslyCdnUrl(mediaUrl) ||
-        !fanslyClient.fanslyPreviewLocksToIp(mediaUrl) ||
-        !fanslyMediaCache.isCacheableUrl(mediaUrl)
-      ) {
+
+      const playlist = fanslyClient.isFanslyPlaylistUrl(mediaUrl);
+      const segment = fanslyClient.isFanslySegmentUrl(mediaUrl);
+      const lockedImage =
+        fanslyClient.isAllowedFanslyCdnUrl(mediaUrl) &&
+        fanslyClient.fanslyPreviewLocksToIp(mediaUrl) &&
+        fanslyMediaCache.isCacheableUrl(mediaUrl);
+      if (!playlist && !segment && !lockedImage) {
         return res.status(400).json({ error: 'Media URL is not an IP-locked Fansly thumbnail' });
       }
 
-      const upstream = await fanslyClient.fetchCdnMedia(fanslySession(creator), mediaUrl);
+      if (lockedImage) {
+        const cached = await fanslyMediaCache.readCache(creator.id, mediaId, mediaUrl);
+        if (cached) {
+          res.setHeader('Content-Type', cached.contentType);
+          res.setHeader('Content-Length', String(cached.buffer.length));
+          res.setHeader('Cache-Control', 'private, max-age=86400, stale-while-revalidate=604800');
+          res.setHeader('X-DomX-Media-Cache', 'HIT');
+          res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+          if (cached.etag) res.setHeader('ETag', cached.etag);
+          return res.status(200).end(cached.buffer);
+        }
+      }
+
+      const upstream = await fanslyClient.fetchCdnMedia(fanslySession(creator), mediaUrl, {
+        accept: playlist || segment ? '*/*' : undefined,
+      });
       if (!upstream.ok) {
         return res.status(upstream.status || 502).json({ error: 'Failed to fetch media' });
       }
 
-      const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
-      const etag = upstream.headers.get('etag') || null;
-      res.setHeader('Cache-Control', 'private, max-age=86400, stale-while-revalidate=604800');
-      res.setHeader('X-DomX-Media-Cache', 'MISS');
-      res.setHeader('Content-Type', contentType);
       res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+
+      if (playlist) {
+        const text = await upstream.text();
+        const rewritten = fanslyClient.rewriteHlsPlaylist(text, mediaUrl, (cdnUrl) =>
+          fanslyProxyMediaUrl(req, creator.id, mediaId, cdnUrl)
+        );
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.setHeader('Cache-Control', 'private, no-store');
+        return res.status(200).send(rewritten);
+      }
+
+      const contentType =
+        upstream.headers.get('content-type') ||
+        (segment ? 'video/mp2t' : 'application/octet-stream');
+      const etag = upstream.headers.get('etag') || null;
+      res.setHeader('Content-Type', contentType);
       if (etag) res.setHeader('ETag', etag);
+      res.setHeader(
+        'Cache-Control',
+        segment ? 'private, no-store' : 'private, max-age=86400, stale-while-revalidate=604800'
+      );
+      if (!segment) res.setHeader('X-DomX-Media-Cache', 'MISS');
       res.status(upstream.status);
 
       if (!upstream.body) return res.end();
 
       const { Readable } = require('stream');
       const nodeStream = Readable.fromWeb(upstream.body);
+      if (segment) {
+        nodeStream.on('error', (err) => {
+          console.warn('Fansly media stream error:', err.message);
+          if (!res.headersSent) res.status(502).end();
+          else res.destroy(err);
+        });
+        nodeStream.pipe(res);
+        return;
+      }
+
       const chunks = [];
+      let total = 0;
+      let overCap = false;
       nodeStream.on('data', (chunk) => {
-        chunks.push(chunk);
+        total += chunk.length;
+        if (!overCap && total <= fanslyMediaCache.MAX_IMAGE_BYTES) chunks.push(chunk);
+        else overCap = true;
         if (!res.writableEnded) res.write(chunk);
       });
       nodeStream.on('error', (err) => {
@@ -646,7 +765,7 @@ router.get(
       });
       nodeStream.on('end', () => {
         if (!res.writableEnded) res.end();
-        if (upstream.status === 200) {
+        if (upstream.status === 200 && !overCap) {
           void fanslyMediaCache.writeCache(creator.id, mediaId, {
             buffer: Buffer.concat(chunks),
             contentType,
@@ -657,6 +776,22 @@ router.get(
       });
     } catch (err) {
       return handleFanslyError(res, err, 'Fansly media error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/fansly/lists',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const lists = await fanslyClient.listCreatorLists(fanslySession(creator));
+      res.json({ lists });
+    } catch (err) {
+      return handleFanslyError(res, err, 'List Fansly lists error:');
     }
   }
 );
@@ -805,6 +940,72 @@ router.get(
       });
     } catch (err) {
       return handleFanslyError(res, err, 'Get Fansly fan error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/fansly/fans/:fanId/lists',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const fanId = requireFanAccountId(req, res);
+      if (!fanId) return;
+      const lists = await fanslyClient.listAccountLists(fanslySession(creator), fanId);
+      res.json({ lists });
+    } catch (err) {
+      return handleFanslyError(res, err, 'List Fansly fan lists error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/fansly/fans/:fanId/lists',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const fanId = requireFanAccountId(req, res);
+      if (!fanId) return;
+      const body = fanslyClient.buildListCommands({
+        action: 'add',
+        fanId,
+        listId: req.body?.listId,
+      });
+      await fanslyClient.applyListCommands(fanslySession(creator), body);
+      const lists = await fanslyClient.listAccountLists(fanslySession(creator), fanId);
+      res.json({ lists });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Add Fansly fan to list error:');
+    }
+  }
+);
+
+router.delete(
+  '/:id/fansly/fans/:fanId/lists/:listId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const fanId = requireFanAccountId(req, res);
+      if (!fanId) return;
+      const body = fanslyClient.buildListCommands({
+        action: 'remove',
+        fanId,
+        listId: req.params.listId,
+      });
+      await fanslyClient.applyListCommands(fanslySession(creator), body);
+      const lists = await fanslyClient.listAccountLists(fanslySession(creator), fanId);
+      res.json({ lists });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Remove Fansly fan from list error:');
     }
   }
 );
