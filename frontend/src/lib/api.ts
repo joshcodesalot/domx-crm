@@ -2137,17 +2137,38 @@ export async function connectFourBasedAccount(
   });
 }
 
+export interface FanslyTwofaRequired {
+  status: 'twofa_required';
+  twofaToken: string;
+  deviceId: string;
+  twofaType?: number;
+  email?: string;
+}
+
+export function isFanslyTwofaRequired(value: unknown): value is FanslyTwofaRequired {
+  if (!value || typeof value !== 'object') return false;
+  const challenge = value as FanslyTwofaRequired;
+  return (
+    challenge.status === 'twofa_required' &&
+    typeof challenge.twofaToken === 'string' &&
+    typeof challenge.deviceId === 'string'
+  );
+}
+
 export interface ConnectFanslyInput {
   accountId: string;
   email: string;
   password: string;
   proxyUrl?: string;
+  twofaToken?: string;
+  twofaCode?: string;
+  deviceId?: string;
 }
 
 export async function connectFanslyAccount(
   input: ConnectFanslyInput
-): Promise<ConnectFourBasedResponse> {
-  return request<ConnectFourBasedResponse>('/api/creators/connect', {
+): Promise<ConnectFourBasedResponse | FanslyTwofaRequired> {
+  return request<ConnectFourBasedResponse | FanslyTwofaRequired>('/api/creators/connect', {
     method: 'POST',
     body: JSON.stringify({
       accountId: input.accountId,
@@ -2155,20 +2176,47 @@ export async function connectFanslyAccount(
       email: input.email,
       password: input.password,
       ...(input.proxyUrl ? { proxyUrl: input.proxyUrl } : {}),
+      ...(input.twofaToken ? { twofaToken: input.twofaToken } : {}),
+      ...(input.twofaCode ? { twofaCode: input.twofaCode } : {}),
+      ...(input.deviceId ? { deviceId: input.deviceId } : {}),
     }),
   });
 }
 
 export async function reconnectFanslyAccount(
   creatorId: string,
-  input: { email: string; password: string; proxyUrl?: string }
-): Promise<{ creator: Creator }> {
+  input: {
+    email: string;
+    password: string;
+    proxyUrl?: string;
+    twofaToken?: string;
+    twofaCode?: string;
+    deviceId?: string;
+  }
+): Promise<{ creator: Creator } | FanslyTwofaRequired> {
   return request(`/api/creators/${creatorId}/fansly/reconnect`, {
     method: 'POST',
     body: JSON.stringify({
       email: input.email,
       password: input.password,
       ...(input.proxyUrl ? { proxyUrl: input.proxyUrl } : {}),
+      ...(input.twofaToken ? { twofaToken: input.twofaToken } : {}),
+      ...(input.twofaCode ? { twofaCode: input.twofaCode } : {}),
+      ...(input.deviceId ? { deviceId: input.deviceId } : {}),
+    }),
+  });
+}
+
+export async function reconnectFanslyAccountSaved(
+  creatorId: string,
+  input?: { twofaToken?: string; twofaCode?: string; deviceId?: string }
+): Promise<{ creator: Creator } | FanslyTwofaRequired> {
+  return request(`/api/creators/${creatorId}/fansly/reconnect-saved`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...(input?.twofaToken ? { twofaToken: input.twofaToken } : {}),
+      ...(input?.twofaCode ? { twofaCode: input.twofaCode } : {}),
+      ...(input?.deviceId ? { deviceId: input.deviceId } : {}),
     }),
   });
 }
@@ -2189,8 +2237,38 @@ export interface FanslyMessage {
   groupId: string | null;
   senderId: string | null;
   createdAt: number | null;
+  deletedAt?: number | null;
   attachments: unknown[];
   totalTipAmount: number;
+}
+
+export interface FanslyVaultAlbum {
+  id: string;
+  title: string;
+  type: number | null;
+  itemCount: number;
+}
+
+export interface FanslyVaultMedia {
+  id: string;
+  mediaId: string;
+  mediaType: number;
+  filename: string;
+  previewUrl: string | null;
+  previewLocked?: boolean;
+}
+
+export interface FanslySubscriptionTier {
+  id: string;
+  name: string;
+}
+
+export interface FanslyMediaPermissions {
+  requirePurchase: boolean;
+  price?: number;
+  requireSubscription: boolean;
+  subscriptionTierId?: string | null;
+  requireFollow: boolean;
 }
 
 export interface FanslyNotification {
@@ -2200,6 +2278,7 @@ export interface FanslyNotification {
   correlationId: string | null;
   correlationGroupId: string | null;
   createdAt: number;
+  acknowledgedAt: number | null;
   metadata: string | null;
 }
 
@@ -2257,15 +2336,146 @@ export async function listFanslyMessages(
 export async function sendFanslyMessage(
   creatorId: string,
   groupId: string,
-  content: string
+  content: string,
+  options?: {
+    media?: { mediaId: string; mediaType: number }[];
+    permissions?: FanslyMediaPermissions;
+  }
 ): Promise<{ message: FanslyMessage }> {
+  const media = options?.media?.filter((item) => item.mediaId) || [];
   return request(
     `/api/creators/${creatorId}/fansly/chats/${encodeURIComponent(groupId)}/messages`,
     {
       method: 'POST',
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+        ...(media.length
+          ? { media, permissions: options?.permissions }
+          : {}),
+      }),
     }
   );
+}
+
+export interface FanslyFanPurchase {
+  id: string;
+  type: number;
+  grossMills: number;
+  netMills: number;
+  status: number;
+  createdAt: number | null;
+}
+
+export interface FanslyFanProfile {
+  fanId: string;
+  username: string | null;
+  displayName: string | null;
+  nickname: string;
+  noteId: string | null;
+  lifetimeGrossMills: number;
+  purchases: FanslyFanPurchase[];
+  hasMorePurchases: boolean;
+  notes: string;
+}
+
+export async function getFanslyGroup(
+  creatorId: string,
+  groupId: string
+): Promise<{ group: { users?: { userId?: string }[] }; providerUserId: string }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/chats/${encodeURIComponent(groupId)}`
+  );
+}
+
+export async function getFanslyFan(
+  creatorId: string,
+  fanId: string
+): Promise<FanslyFanProfile> {
+  return request(
+    `/api/creators/${creatorId}/fansly/fans/${encodeURIComponent(fanId)}`
+  );
+}
+
+export async function saveFanslyNickname(
+  creatorId: string,
+  fanId: string,
+  input: { nickname: string; noteId?: string | null }
+): Promise<{ nickname: string; noteId: string | null }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/fans/${encodeURIComponent(fanId)}/nickname`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({
+        nickname: input.nickname,
+        noteId: input.noteId || null,
+      }),
+    }
+  );
+}
+
+export async function saveFanslyFanNotes(
+  creatorId: string,
+  fanId: string,
+  notes: string
+): Promise<{ notes: string }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/fans/${encodeURIComponent(fanId)}/notes`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ notes }),
+    }
+  );
+}
+
+export async function deleteFanslyMessage(
+  creatorId: string,
+  groupId: string,
+  messageId: string
+): Promise<{ message: FanslyMessage | null }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/chats/${encodeURIComponent(groupId)}/messages/${encodeURIComponent(messageId)}/delete`,
+    { method: 'POST' }
+  );
+}
+
+export async function listFanslyVaultAlbums(
+  creatorId: string
+): Promise<{ albums: FanslyVaultAlbum[] }> {
+  return request(`/api/creators/${creatorId}/fansly/vault/albums`);
+}
+
+export async function listFanslyVaultMedia(
+  creatorId: string,
+  albumId: string
+): Promise<{ media: FanslyVaultMedia[] }> {
+  const params = new URLSearchParams({ albumId });
+  return request(`/api/creators/${creatorId}/fansly/vault/media?${params.toString()}`);
+}
+
+export function fanslyMediaUrl(creatorId: string, mediaId: string, url: string): string {
+  const token = getToken() || '';
+  const params = new URLSearchParams({
+    access_token: token,
+    mediaId,
+    url,
+  });
+  return `${API_URL}/api/creators/${creatorId}/fansly/media?${params.toString()}`;
+}
+
+export function fanslyVaultPreviewSrc(
+  creatorId: string,
+  item: Pick<FanslyVaultMedia, 'mediaId' | 'previewUrl' | 'previewLocked'>
+): string | null {
+  if (item.previewLocked && item.previewUrl && item.mediaId) {
+    return fanslyMediaUrl(creatorId, item.mediaId, item.previewUrl);
+  }
+  return item.previewUrl;
+}
+
+export async function listFanslySubscriptionTiers(
+  creatorId: string
+): Promise<{ tiers: FanslySubscriptionTier[] }> {
+  return request(`/api/creators/${creatorId}/fansly/subscription-tiers`);
 }
 
 export async function listFanslyNotifications(
@@ -2279,6 +2489,19 @@ export async function listFanslyNotifications(
   return request(
     `/api/creators/${creatorId}/fansly/notifications${query ? `?${query}` : ''}`
   );
+}
+
+export async function ackFanslyNotifications(
+  creatorId: string,
+  input: { beforeAnd: string; type?: string }
+): Promise<{ ok: true }> {
+  return request(`/api/creators/${creatorId}/fansly/notifications/ack`, {
+    method: 'POST',
+    body: JSON.stringify({
+      beforeAnd: input.beforeAnd,
+      type: input.type ?? '',
+    }),
+  });
 }
 
 export async function getFanslyUnread(

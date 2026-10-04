@@ -21,12 +21,15 @@ import { useAuth } from '@/context/AuthContext';
 import {
   deleteCreator,
   getCreators,
+  isFanslyTwofaRequired,
+  reconnectFanslyAccountSaved,
   reconnectFourBasedAccountSaved,
   reconnectMaloumAccountSaved,
   refreshMaloumAvatar,
   verifyMaloumSession,
   setCreatorMarketing,
   type Creator,
+  type FanslyTwofaRequired,
 } from '@/lib/api';
 import fourBasedIcon from '@/assets/4based_icon.ico';
 import maloumIcon from '@/assets/maloum_icon.png';
@@ -70,6 +73,7 @@ export default function ManageCreators() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [fanslyTwofa, setFanslyTwofa] = useState<FanslyTwofaRequired | null>(null);
   const [reconnectCreator, setReconnectCreator] = useState<Creator | null>(null);
   const [removeTarget, setRemoveTarget] = useState<Creator | null>(null);
   const [staffTarget, setStaffTarget] = useState<Creator | null>(null);
@@ -150,6 +154,7 @@ export default function ManageCreators() {
   async function handleReconnect(creator: Creator) {
     if (!creator.accountId) return;
 
+    setFanslyTwofa(null);
     if (!creator.hasSavedCredentials) {
       setReconnectCreator(creator);
       setShowAddModal(true);
@@ -162,6 +167,17 @@ export default function ManageCreators() {
       if (creator.platform === 'telegram') {
         setReconnectCreator(creator);
         setShowAddModal(true);
+        return;
+      }
+      if (creator.platform === 'fansly') {
+        const result = await reconnectFanslyAccountSaved(creator.id);
+        if (isFanslyTwofaRequired(result)) {
+          setReconnectCreator(creator);
+          setFanslyTwofa(result);
+          setShowAddModal(true);
+          return;
+        }
+        await loadCreators();
         return;
       }
       if (creator.platform === '4based') {
@@ -510,9 +526,11 @@ export default function ManageCreators() {
       {showAddModal && (
         <AddCreatorModal
           reconnectCreator={reconnectCreator}
+          fanslyTwofa={fanslyTwofa}
           onClose={() => {
             setShowAddModal(false);
             setReconnectCreator(null);
+            setFanslyTwofa(null);
           }}
           onSaved={loadCreators}
         />

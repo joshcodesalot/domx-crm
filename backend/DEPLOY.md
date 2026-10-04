@@ -1,24 +1,28 @@
 # DomX Backend — Debian Production Hosting
 
-Deploy the DomX Express API on a Debian server at **https://api.low7labs.cloud**, listening on port **4001** behind nginx with TLS.
+Deploy the DomX Express API on a Debian server at **[https://api.low7labs.cloud](https://api.low7labs.cloud)**, listening on port **4001** behind nginx with TLS.
 
 ## Overview
 
-| Item | Value |
-| --- | --- |
-| Domain | `api.low7labs.cloud` |
-| App directory | `/home/debian/domx_backend` |
-| App port | `4001` (local only; nginx handles 443) |
-| Runtime | Node.js 20 LTS |
-| Process manager | `screen` |
-| Database | PostgreSQL |
-| TLS | Let's Encrypt (Certbot) |
+
+| Item            | Value                                  |
+| --------------- | -------------------------------------- |
+| Domain          | `api.low7labs.cloud`                   |
+| App directory   | `/home/debian/domx_backend`            |
+| App port        | `4001` (local only; nginx handles 443) |
+| Runtime         | Node.js 20 LTS                         |
+| Process manager | `screen`                               |
+| Database        | PostgreSQL                             |
+| TLS             | Let's Encrypt (Certbot)                |
+
 
 There is no build step — the backend is plain JavaScript and runs `node src/index.js` directly. You do **not** run `yarn build` or copy a compiled output folder.
 
 All commands below assume you are logged in as **root** on the server.
 
 ---
+
+
 
 ## Quick deploy (copy from your machine)
 
@@ -28,15 +32,18 @@ This is the simplest workflow: copy source from your dev machine, install depend
 
 From the `backend/` folder, copy to `/home/debian/domx_backend` on the server:
 
-| Copy | Required |
-| --- | --- |
-| `package.json` | Yes |
-| `package-lock.json` or `yarn.lock` | Yes |
-| `src/` (entire folder) | Yes |
-| `.env` (production values) | Yes |
-| `data/` | Optional — file caches and Telegram sessions; can create empty on server. Copy this folder when moving servers. |
+
+| Copy                               | Required                                                                                                        |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `package.json`                     | Yes                                                                                                             |
+| `package-lock.json` or `yarn.lock` | Yes                                                                                                             |
+| `src/` (entire folder)             | Yes                                                                                                             |
+| `.env` (production values)         | Yes                                                                                                             |
+| `data/`                            | Optional — file caches and Telegram sessions; can create empty on server. Copy this folder when moving servers. |
+
 
 **Do not copy:**
+
 - `node_modules/` — must be installed on the server (native deps are OS-specific)
 - Any `dist/` or build output — the backend has none
 
@@ -49,6 +56,8 @@ rsync -av --exclude node_modules backend/package.json backend/package-lock.json 
 # Copy your production .env separately (do not commit secrets to git)
 scp backend/.env root@your-server:/home/debian/domx_backend/.env
 ```
+
+
 
 ### On the server — install, migrate, start
 
@@ -73,6 +82,8 @@ curl https://api.low7labs.cloud/api/health
 
 ---
 
+
+
 ## Prerequisites
 
 - Debian server with root access
@@ -81,12 +92,16 @@ curl https://api.low7labs.cloud/api/health
 
 ---
 
+
+
 ## 1. Install system packages
 
 ```bash
 apt update
 apt install -y curl gnupg ca-certificates lsb-release nginx postgresql postgresql-contrib certbot python3-certbot-nginx git screen
 ```
+
+
 
 ### Node.js 20 LTS
 
@@ -97,6 +112,8 @@ node -v   # should be v20.x
 ```
 
 ---
+
+
 
 ## 2. App directory (alternative: git clone)
 
@@ -114,6 +131,8 @@ Then continue from section 3 below.
 
 ---
 
+
+
 ## 3. Install Node dependencies
 
 ```bash
@@ -128,6 +147,8 @@ mkdir -p /home/debian/domx_backend/data
 ```
 
 ---
+
+
 
 ## 4. PostgreSQL setup
 
@@ -146,6 +167,8 @@ CREATE DATABASE domx;
 ```
 
 ---
+
+
 
 ## 5. Production environment file
 
@@ -185,13 +208,17 @@ Lock down permissions:
 chmod 600 /home/debian/domx_backend/.env
 ```
 
+
+
 ### Notes
 
-- **`CORS_ORIGIN`**: Set to your actual client origin(s). Avoid `*` in production — the API uses `credentials: true`, which does not work reliably with a wildcard origin in browsers.
-- **`DOMX_ELECTRON_SERVICE_KEY`**: Must match the same value in the Electron app's environment (`frontend/.env` / build config).
+- `CORS_ORIGIN`: Set to your actual client origin(s). Avoid `*` in production — the API uses `credentials: true`, which does not work reliably with a wildcard origin in browsers.
+- `DOMX_ELECTRON_SERVICE_KEY`: Must match the same value in the Electron app's environment (`frontend/.env` / build config).
 - **Client API URL**: Point desktop builds at `https://api.low7labs.cloud` via `VITE_API_URL` and `DOMX_API_URL`.
 
 ---
+
+
 
 ## 6. Migrate and seed the database
 
@@ -204,6 +231,8 @@ yarn seed                   # first time only — or: npm run seed
 `seed` creates roles and permissions. The owner account is created on first app launch.
 
 ---
+
+
 
 ## 7. Run the API with screen
 
@@ -221,15 +250,19 @@ curl http://127.0.0.1:4001/api/health
 # {"status":"ok","database":"connected"}
 ```
 
+
+
 ### Screen commands
 
-| Task | Command |
-| --- | --- |
-| List sessions | `screen -ls` |
-| Attach (view logs) | `screen -r domx-api` |
-| Detach (leave running) | `Ctrl+A` then `D` |
-| Stop the API | Attach, then `Ctrl+C` |
-| Start again | `screen -S domx-api -dm bash -c 'node src/index.js'` |
+
+| Task                   | Command                                              |
+| ---------------------- | ---------------------------------------------------- |
+| List sessions          | `screen -ls`                                         |
+| Attach (view logs)     | `screen -r domx-api`                                 |
+| Detach (leave running) | `Ctrl+A` then `D`                                    |
+| Stop the API           | Attach, then `Ctrl+C`                                |
+| Start again            | `screen -S domx-api -dm bash -c 'node src/index.js'` |
+
 
 To restart after a code or `.env` change:
 
@@ -240,6 +273,8 @@ screen -S domx-api -dm bash -c 'node src/index.js'
 ```
 
 ---
+
+
 
 ## 8. nginx reverse proxy
 
@@ -284,6 +319,8 @@ The app sets `trust proxy` and sends `X-Accel-Buffering: no` on SSE responses, s
 
 ---
 
+
+
 ## 9. TLS with Let's Encrypt
 
 ```bash
@@ -304,6 +341,8 @@ curl https://api.low7labs.cloud/api/health
 
 ---
 
+
+
 ## 10. Firewall (optional)
 
 If using `ufw`:
@@ -318,27 +357,34 @@ Port **4001** does not need to be exposed publicly — nginx proxies to it on lo
 
 ---
 
+
+
 ## Data directory (shared / movable volume)
 
 All backend files that should survive a restart or a server move live under one root:
 
-| Subdir / file | Contents |
-| --- | --- |
-| `avatars/` | Creator avatars |
-| `telegram/` | Telegram MTProto sessions |
-| `telegram-fans/` | Fan/group avatar cache |
-| `telegram-vault/` | Vault photo/video thumbs |
-| `scheduled-media/` | Scheduled mass-message media |
-| `maloum-media-cache/` | Maloum vault/chat thumbs |
-| `4based-media-cache/` | 4based vault/chat media |
-| `jwt-secret` | Fallback JWT secret if `JWT_SECRET` is unset |
-| `browser-profiles/` | Clearcote profile archives, one zip per creator |
+
+| Subdir / file         | Contents                                        |
+| --------------------- | ----------------------------------------------- |
+| `avatars/`            | Creator avatars                                 |
+| `telegram/`           | Telegram MTProto sessions                       |
+| `telegram-fans/`      | Fan/group avatar cache                          |
+| `telegram-vault/`     | Vault photo/video thumbs                        |
+| `scheduled-media/`    | Scheduled mass-message media                    |
+| `maloum-media-cache/` | Maloum vault/chat thumbs                        |
+| `4based-media-cache/` | 4based vault/chat media                         |
+| `fansly-media-cache/` | Fansly vault thumbs locked to the proxy IP      |
+| `jwt-secret`          | Fallback JWT secret if `JWT_SECRET` is unset    |
+| `browser-profiles/`   | Clearcote profile archives, one zip per creator |
+
 
 Root: `data/` next to the API (`/home/debian/domx_backend/data` in this guide). `MALOUM_MEDIA_CACHE_DIR` and `FOURBASED_MEDIA_CACHE_DIR` still win if set.
 
 ```bash
 mkdir -p /home/debian/domx_backend/data
 ```
+
+
 
 ### Moving to a new server
 
@@ -356,6 +402,8 @@ pg_restore -d domx /tmp/domx.dump
 ```
 
 ---
+
+
 
 ## Clearcote browser host
 
@@ -529,12 +577,14 @@ BROWSER_HOST_SECRET=long-random-string
 DOMX_API_URL=https://api.low7labs.cloud
 ```
 
-| Variable | Who uses it |
-| --- | --- |
-| `BROWSER_HOST_URL` | The API calls `POST /sessions` and `DELETE /sessions/:id` here, with header `X-Domx-Host-Secret`. |
-| `BROWSER_HOST_PUBLIC_URL` | The Mac app loads this plus `/vnc.html?...&path=websockify?token=...`. |
-| `BROWSER_HOST_SECRET` | Must match the browser machine exactly. |
-| `DOMX_API_URL` | The API tells the agent to download and upload the profile zip at `https://api.low7labs.cloud/api/browser-profiles/<creatorId>/archive`. `BROWSER_PROFILE_API_URL` is the same setting. |
+
+| Variable                  | Who uses it                                                                                                                                                                             |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BROWSER_HOST_URL`        | The API calls `POST /sessions` and `DELETE /sessions/:id` here, with header `X-Domx-Host-Secret`.                                                                                       |
+| `BROWSER_HOST_PUBLIC_URL` | The Mac app loads this plus `/vnc.html?...&path=websockify?token=...`.                                                                                                                  |
+| `BROWSER_HOST_SECRET`     | Must match the browser machine exactly.                                                                                                                                                 |
+| `DOMX_API_URL`            | The API tells the agent to download and upload the profile zip at `https://api.low7labs.cloud/api/browser-profiles/<creatorId>/archive`. `BROWSER_PROFILE_API_URL` is the same setting. |
+
 
 Restart the API after saving that file. From the API server, `curl -s http://127.0.0.1:6090/health` must succeed before a Mac open will work.
 
@@ -549,16 +599,19 @@ A missed heartbeat (about 45 seconds) releases the lock. Port 6090 is the privat
 
 ---
 
+
+
 ## 4based / Maloum media disk cache
 
 Vault thumbs, chat previews, and videos fetched through the creator media routes are stored on disk so the residential proxy is not hit again for the same path.
 
-By default they live under `data/` (`maloum-media-cache/` and `4based-media-cache/`). You can still override:
+By default they live under `data/` (`maloum-media-cache/`, `4based-media-cache/`, and `fansly-media-cache/`). Fansly only stores thumbs whose CDN link is locked to the proxy IP. You can still override:
 
 ```env
 # Optional — only if you want caches outside data/
 # MALOUM_MEDIA_CACHE_DIR=/home/debian/domx_backend/data/maloum-media-cache
 # FOURBASED_MEDIA_CACHE_DIR=/home/debian/domx_backend/data/4based-media-cache
+# FANSLY_MEDIA_CACHE_DIR=/home/debian/domx_backend/data/fansly-media-cache
 # FOURBASED_MEDIA_CACHE_TTL_MS=604800000
 # FOURBASED_MEDIA_CACHE_MAX_BYTES=10737418240
 # FOURBASED_MEDIA_UPSTREAM_CONCURRENCY=5
@@ -568,6 +621,8 @@ Restart the API after changing these env vars. Response header
 `X-DomX-Media-Cache: HIT|MISS|BYPASS` shows whether a 4based request used the cache.
 
 ---
+
+
 
 ## Updating the deployment
 
@@ -583,46 +638,58 @@ screen -S domx-api -dm bash -c 'node src/index.js'
 
 ---
 
+
+
 ## Operations cheatsheet
 
-| Task | Command |
-| --- | --- |
-| Start API | `screen -S domx-api -dm bash -c 'node src/index.js'` (from app dir) |
-| Stop API | `screen -S domx-api -X quit` |
-| View live output | `screen -r domx-api` |
-| List screen sessions | `screen -ls` |
-| Health check | `curl https://api.low7labs.cloud/api/health` |
-| Browser host health | `curl -s http://127.0.0.1:6090/health` |
+
+| Task                 | Command                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| Start API            | `screen -S domx-api -dm bash -c 'node src/index.js'` (from app dir)                         |
+| Stop API             | `screen -S domx-api -X quit`                                                                |
+| View live output     | `screen -r domx-api`                                                                        |
+| List screen sessions | `screen -ls`                                                                                |
+| Health check         | `curl https://api.low7labs.cloud/api/health`                                                |
+| Browser host health  | `curl -s http://127.0.0.1:6090/health`                                                      |
 | Restart browser host | `screen -S domx-browser -X quit`, then start it again from `/home/debian/domx_browser_host` |
-| Reload nginx | `nginx -t && nginx -s reload` |
+| Reload nginx         | `nginx -t && nginx -s reload`                                                               |
+
 
 ---
+
+
 
 ## Troubleshooting
 
 **502 Bad Gateway**
+
 - Check the screen session exists: `screen -ls`
 - Confirm port: `curl http://127.0.0.1:4001/api/health`
 - Attach and check for errors: `screen -r domx-api`
 
 **Database connection errors**
+
 - Check Postgres is accepting connections: `pg_isready`
 - Test credentials: `psql "$DATABASE_URL" -c 'SELECT 1'`
 
 **SSE / live events disconnect**
+
 - Confirm nginx has `proxy_buffering off` and long `proxy_read_timeout`
 - Check that Certbot did not overwrite SSE-related settings in the nginx config
 
 **CORS errors in browser**
+
 - Set `CORS_ORIGIN` to the exact client origin (scheme + host, no trailing slash)
 - Restart the API in screen after changing `.env`
 
 **Marketing Open browser says bubblewrap could not start a file jail**
+
 - Install it: `sudo apt install -y bubblewrap`
 - Confirm the folder exists: `mkdir -p /home/debian/Downloads`
 - Restart the browser host (`screen -S domx-browser -X quit`, then start `node agent.js` again)
 
 **API not running after server reboot**
+
 - Screen sessions do not survive reboots. Re-run:
   ```bash
   cd /home/debian/domx_backend
@@ -631,3 +698,4 @@ screen -S domx-api -dm bash -c 'node src/index.js'
   set -a && source .env && set +a
   screen -S domx-browser -dm bash -c 'node agent.js'
   ```
+

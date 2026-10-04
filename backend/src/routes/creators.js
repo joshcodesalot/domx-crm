@@ -762,14 +762,36 @@ router.post(
           );
         }
 
+        const twofaToken =
+          typeof req.body?.twofaToken === 'string' ? req.body.twofaToken.trim() : '';
+        const twofaCode =
+          typeof req.body?.twofaCode === 'string' ? req.body.twofaCode.trim() : '';
+        const deviceId = typeof req.body?.deviceId === 'string' ? req.body.deviceId.trim() : '';
         let loginResult;
         try {
-          loginResult = await fanslyClient.login({
-            username: email.trim(),
-            password,
-            proxyUrl: resolvedProxy,
-          });
+          loginResult =
+            twofaToken && twofaCode
+              ? await fanslyClient.verifyTwofa({
+                  twofaToken,
+                  code: twofaCode,
+                  deviceId,
+                  proxyUrl: resolvedProxy,
+                })
+              : await fanslyClient.login({
+                  username: email.trim(),
+                  password,
+                  proxyUrl: resolvedProxy,
+                });
         } catch (err) {
+          if (err instanceof fanslyClient.TwoFactorRequiredError) {
+            return res.json({
+              status: 'twofa_required',
+              twofaToken: err.twofaToken,
+              deviceId: err.deviceId,
+              ...(Number.isInteger(err.twofaType) ? { twofaType: err.twofaType } : {}),
+              ...(typeof err.email === 'string' && err.email ? { email: err.email } : {}),
+            });
+          }
           if (err instanceof fanslyClient.WrongPasswordError || err.code === 'WRONG_PASSWORD') {
             return res.status(400).json({ error: 'Password not correct' });
           }

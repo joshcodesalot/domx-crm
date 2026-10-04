@@ -21,23 +21,23 @@ You should see `Dockerfile` and `docker-compose.yml` in this directory. If unzip
 The old container is the one leaking Playwright drivers. Remove it before the new build starts.
 
 ```bash
-docker rm -f cloudflare-bypass
+sudo docker rm -f cloudflare-bypass
 ```
 
-If Docker says the container does not exist, continue.
+If Docker says the container does not exist, continue. Run the Docker commands with `sudo`.
 
 ## 3. Build and start
 
 The first build downloads Ubuntu packages, Python libraries, and the CloakBrowser binary. It takes several minutes.
 
 ```bash
-docker compose up -d --build
+sudo docker compose up -d --build
 ```
 
 If that command is not found:
 
 ```bash
-docker-compose up -d --build
+sudo docker-compose up -d --build
 ```
 
 The container listens on `127.0.0.1:8000` only, allows 2 GB of shared memory, and stops at 4 GB of RAM.
@@ -45,11 +45,11 @@ The container listens on `127.0.0.1:8000` only, allows 2 GB of shared memory, an
 ## 4. Check that it is running
 
 ```bash
-docker ps --filter name=cloudflare-bypass
-docker logs --tail 30 cloudflare-bypass
+sudo docker ps --filter name=cloudflare-bypass
+sudo docker logs --tail 30 cloudflare-bypass
 ```
 
-`docker ps` should show `cloudflare-bypass` with status `Up`. The log should show the server listening on port 8000.
+`sudo docker ps` should show `cloudflare-bypass` with status `Up`. The log should show the server listening on port 8000.
 
 ## 5. Confirm the old drivers are gone
 

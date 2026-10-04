@@ -27,6 +27,46 @@ const NOTIFICATION_FILTERS = [
   { id: 'tickets', label: 'Stream Ticket Purchases', types: '45012' },
 ];
 
+const NOTIFICATION_TYPE_CODES = new Set(
+  NOTIFICATION_FILTERS.flatMap((filter) =>
+    String(filter.types || '')
+      .split(',')
+      .map((code) => code.trim())
+      .filter((code) => /^\d+$/.test(code))
+  )
+);
+
+function notificationUnreadCount(unack) {
+  if (Array.isArray(unack)) {
+    const hasTotals = unack.some(
+      (row) => row && typeof row === 'object' && typeof row.total === 'number'
+    );
+    if (hasTotals) {
+      return unack.reduce((sum, row) => {
+        const total = Number(row && row.total);
+        return sum + (Number.isFinite(total) ? total : 0);
+      }, 0);
+    }
+    return unack.length;
+  }
+  if (Array.isArray(unack?.notifications)) return unack.notifications.length;
+  if (typeof unack?.total === 'number') return unack.total;
+  return 0;
+}
+
+function sanitizeNotificationType(type) {
+  const raw = typeof type === 'string' ? type : '';
+  const seen = new Set();
+  const codes = [];
+  for (const part of raw.split(',')) {
+    const code = part.trim();
+    if (!NOTIFICATION_TYPE_CODES.has(code) || seen.has(code)) continue;
+    seen.add(code);
+    codes.push(code);
+  }
+  return codes.join(',');
+}
+
 class WrongPasswordError extends Error {
   constructor(message = 'Password not correct') {
     super(message);
@@ -42,6 +82,71 @@ class FanslyApiError extends Error {
     this.status = status;
     this.body = body;
   }
+}
+
+class TwoFactorRequiredError extends Error {
+  constructor(twofaToken, deviceId, { twofaType = null, email = null } = {}) {
+    super('Two-factor authentication required');
+    this.name = 'TwoFactorRequiredError';
+    this.code = 'TWOFA_REQUIRED';
+    this.twofaToken = twofaToken;
+    this.deviceId = deviceId;
+    this.twofaType = Number.isInteger(twofaType) ? twofaType : null;
+    this.email = typeof email === 'string' && email.trim() ? email.trim() : null;
+  }
+}
+
+function fanslyErrorText(parsed, status) {
+  const err = parsed?.error;
+  if (err && typeof err === 'object') {
+    if (typeof err.details === 'string' && err.details.trim()) return err.details.trim();
+    if (typeof err.message === 'string' && err.message.trim()) return err.message.trim();
+  }
+  if (typeof err === 'string' && err.trim()) return err.trim();
+  if (typeof parsed?.message === 'string' && parsed.message.trim()) return parsed.message.trim();
+  return `Fansly request failed (${status})`;
+}
+
+function isInvalidTwofaCode(parsed, status, path) {
+  if (path !== '/login/twofa' || status !== 400) return false;
+  const err = parsed?.error;
+  if (!err || typeof err !== 'object') return false;
+  const details = typeof err.details === 'string' ? err.details : '';
+  return err.code === 3 || /error verifying session/i.test(details);
+}
+
+function fanslyFailureError(parsed, status, path) {
+  if (isInvalidTwofaCode(parsed, status, path)) {
+    return new FanslyApiError('Invalid authentication code', 400, parsed);
+  }
+  const asText = fanslyErrorText(parsed, status);
+  if (status === 401 || /password|invalid credentials|unauthorized/i.test(asText)) {
+    if (path === '/login') return new WrongPasswordError('Password not correct');
+  }
+  return new FanslyApiError(asText, status || 502, parsed);
+}
+
+function classifyLoginBody(data) {
+  const twofa = data?.twofa;
+  const twofaToken = twofa?.token;
+  if (typeof twofaToken === 'string' && twofaToken) {
+    const twofaType = Number(twofa.type);
+    const email = typeof twofa.email === 'string' ? twofa.email.trim() : '';
+    return {
+      kind: 'twofa',
+      twofaToken,
+      twofaType: Number.isInteger(twofaType) ? twofaType : null,
+      email: email || null,
+    };
+  }
+  const nested = data?.session;
+  if (nested?.token && nested?.id && nested?.accountId) {
+    return { kind: 'session', session: nested };
+  }
+  if (data?.token && data?.id && data?.accountId) {
+    return { kind: 'session', session: data };
+  }
+  return { kind: 'missing' };
 }
 
 function normalizeProxyUrl(proxyUrl) {
@@ -255,19 +360,7 @@ async function requestJson({ method = 'GET', path, query, body, session }) {
   const setCookies = parseSetCookieHeaders(response.headers);
 
   if (!response.ok || parsed?.success === false) {
-    const message =
-      parsed?.error?.message ||
-      parsed?.error ||
-      parsed?.message ||
-      `Fansly request failed (${response.status})`;
-    const asText = typeof message === 'string' ? message : `Fansly request failed (${response.status})`;
-    if (
-      response.status === 401 ||
-      /password|invalid credentials|unauthorized/i.test(asText)
-    ) {
-      if (path === '/login') throw new WrongPasswordError('Password not correct');
-    }
-    throw new FanslyApiError(asText, response.status || 502, parsed);
+    throw fanslyFailureError(parsed, response.status, path);
   }
 
   return {
@@ -299,6 +392,60 @@ function avatarUrlFromAccount(account) {
   return small || urls[0] || null;
 }
 
+async function finishAuthenticatedSession({
+  data,
+  raw,
+  preCookies,
+  setCookies,
+  resolvedDeviceId,
+  resolvedProxy,
+  identifier,
+}) {
+  const outcome = classifyLoginBody(data);
+  if (outcome.kind === 'twofa') {
+    throw new TwoFactorRequiredError(outcome.twofaToken, resolvedDeviceId, {
+      twofaType: outcome.twofaType,
+      email: outcome.email,
+    });
+  }
+  if (outcome.kind !== 'session') {
+    throw new FanslyApiError('Login response missing session', 502, raw);
+  }
+
+  const token = outcome.session.token;
+  const sessionId = outcome.session.id;
+  const accountId = outcome.session.accountId;
+  const authed = {
+    deviceId: resolvedDeviceId,
+    token,
+    sessionId: String(sessionId),
+    proxyUrl: resolvedProxy,
+    cookies: {
+      ...(preCookies || {}),
+      ...(setCookies || {}),
+      'fansly-d': resolvedDeviceId,
+      'f-d': resolvedDeviceId,
+    },
+  };
+
+  const me = await getMe(authed);
+  const account = me?.account || me || {};
+  const fallbackName = identifier || account.username || '';
+
+  return {
+    token,
+    sessionId: String(sessionId),
+    deviceId: resolvedDeviceId,
+    providerUserId: String(accountId),
+    cookies: authed.cookies,
+    displayName: account.displayName || account.username || fallbackName,
+    username: account.username || fallbackName,
+    avatarUrl: avatarUrlFromAccount(account),
+    postLoginUrl: POST_LOGIN_URL,
+    account,
+  };
+}
+
 async function login({ username, password, proxyUrl, deviceId }) {
   const identifier = typeof username === 'string' ? username.trim() : '';
   if (!identifier || !password) {
@@ -323,42 +470,50 @@ async function login({ username, password, proxyUrl, deviceId }) {
     },
   });
 
-  const fanslySession = result.data?.session || {};
-  const token = fanslySession.token;
-  const sessionId = fanslySession.id;
-  const accountId = fanslySession.accountId;
-  if (!token || !sessionId || !accountId) {
-    throw new FanslyApiError('Login response missing session', 502, result.raw);
+  return finishAuthenticatedSession({
+    data: result.data,
+    raw: result.raw,
+    preCookies: session.cookies,
+    setCookies: result.setCookies,
+    resolvedDeviceId,
+    resolvedProxy,
+    identifier,
+  });
+}
+
+async function verifyTwofa({ twofaToken, code, deviceId, proxyUrl }) {
+  const token = typeof twofaToken === 'string' ? twofaToken.trim() : '';
+  const otp = typeof code === 'string' ? code.trim() : '';
+  if (!token || !otp) {
+    throw new FanslyApiError('Authentication code is required', 400);
   }
-
-  const authed = {
+  const resolvedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
+  if (!resolvedDeviceId) {
+    throw new FanslyApiError('Fansly session is missing a device id', 400);
+  }
+  const resolvedProxy = resolveFanslyProxyUrl(proxyUrl);
+  const session = {
     deviceId: resolvedDeviceId,
-    token,
-    sessionId: String(sessionId),
     proxyUrl: resolvedProxy,
-    cookies: {
-      ...session.cookies,
-      ...result.setCookies,
-      'fansly-d': resolvedDeviceId,
-      'f-d': resolvedDeviceId,
-    },
+    cookies: {},
   };
 
-  const me = await getMe(authed);
-  const account = me?.account || me || {};
+  const result = await requestJson({
+    method: 'POST',
+    path: '/login/twofa',
+    session,
+    body: { token, code: otp },
+  });
 
-  return {
-    token,
-    sessionId: String(sessionId),
-    deviceId: resolvedDeviceId,
-    providerUserId: String(accountId),
-    cookies: authed.cookies,
-    displayName: account.displayName || account.username || identifier,
-    username: account.username || identifier,
-    avatarUrl: avatarUrlFromAccount(account),
-    postLoginUrl: POST_LOGIN_URL,
-    account,
-  };
+  return finishAuthenticatedSession({
+    data: result.data,
+    raw: result.raw,
+    preCookies: session.cookies,
+    setCookies: result.setCookies,
+    resolvedDeviceId,
+    resolvedProxy,
+    identifier: '',
+  });
 }
 
 async function getMe(session) {
@@ -401,6 +556,214 @@ async function getGroup(session, groupId) {
   return result.data;
 }
 
+const ALBUM_TYPE_LABELS = {
+  1000: 'Photos',
+  5000: 'Videos',
+  38000: 'All',
+};
+
+const PERMISSION_PURCHASE = 1;
+const PERMISSION_FOLLOW = 2;
+const PERMISSION_SUBSCRIPTION_TIER = 4;
+const PERMISSION_SUBSCRIPTION_ANY = 8;
+
+function albumTitle(album) {
+  const title = typeof album?.title === 'string' ? album.title.trim() : '';
+  if (title) return title;
+  return ALBUM_TYPE_LABELS[album?.type] || 'Album';
+}
+
+function httpLocation(node) {
+  const locations = Array.isArray(node?.locations) ? node.locations : [];
+  const hit = locations.find(
+    (loc) => loc && typeof loc.location === 'string' && /^https?:\/\//i.test(loc.location)
+  );
+  return hit ? hit.location : null;
+}
+
+function previewUrlFromMedia(media) {
+  if (!media) return null;
+  const variants = Array.isArray(media.variants) ? [...media.variants] : [];
+  variants.sort((a, b) => (Number(a?.width) || 0) - (Number(b?.width) || 0));
+  for (const variant of variants) {
+    if (variant?.type !== 1) continue;
+    const url = httpLocation(variant);
+    if (url) return url;
+  }
+  return httpLocation(media);
+}
+
+function decodeCloudFrontPolicy(policy) {
+  const raw = typeof policy === 'string' ? policy.trim() : '';
+  if (!raw) return null;
+  const variants = [
+    raw,
+    raw.replace(/-/g, '+').replace(/_/g, '/'),
+    raw.replace(/-/g, '+').replace(/~/g, '/').replace(/_/g, '='),
+  ];
+  for (const value of variants) {
+    try {
+      const padded = value + '='.repeat((4 - (value.length % 4)) % 4);
+      const parsed = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch {
+      // Try the next CloudFront alphabet.
+    }
+  }
+  return null;
+}
+
+function statementLocksToIp(statement) {
+  const source = statement?.Condition?.IpAddress?.['AWS:SourceIp'];
+  if (Array.isArray(source)) {
+    return source.some((item) => typeof item === 'string' && item.trim());
+  }
+  return typeof source === 'string' && source.trim().length > 0;
+}
+
+function fanslyPreviewLocksToIp(url) {
+  if (!url || typeof url !== 'string') return false;
+  let policy;
+  try {
+    policy = new URL(url).searchParams.get('Policy');
+  } catch {
+    return false;
+  }
+  if (!policy) return false;
+  const json = decodeCloudFrontPolicy(policy);
+  const statements = Array.isArray(json?.Statement) ? json.Statement : [];
+  return statements.some(statementLocksToIp);
+}
+
+function isFanslyImagePreview(url) {
+  if (!url || typeof url !== 'string') return false;
+  const path = url.split('?')[0].toLowerCase();
+  if (path.endsWith('.mp4') || path.endsWith('.mov') || path.endsWith('.webm')) return false;
+  return /\.(jpe?g|png|webp|gif)$/.test(path);
+}
+
+function isAllowedFanslyCdnUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && /^cdn\d+\.fansly\.com$/i.test(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function mapVaultAlbum(album) {
+  return {
+    id: album.id,
+    title: albumTitle(album),
+    type: album.type ?? null,
+    itemCount: Number(album.itemCount) || 0,
+  };
+}
+
+function mapVaultMedia(item, mediaById) {
+  const media = mediaById.get(String(item.mediaId)) || null;
+  const previewUrl = previewUrlFromMedia(media);
+  return {
+    id: item.id,
+    mediaId: item.mediaId,
+    mediaType: Number(item.mediaType) || Number(media?.type) || 1,
+    filename: item.customFilename || media?.filename || '',
+    previewUrl,
+    previewLocked: fanslyPreviewLocksToIp(previewUrl) && isFanslyImagePreview(previewUrl),
+  };
+}
+
+async function fetchCdnMedia(session, url) {
+  if (!isAllowedFanslyCdnUrl(url)) {
+    throw new FanslyApiError('Invalid or disallowed media URL', 400);
+  }
+  const proxyUrl = resolveFanslyProxyUrl(session?.proxyUrl);
+  const dispatcher = createDispatcher(proxyUrl);
+  try {
+    return await undiciFetch(url, {
+      method: 'GET',
+      headers: {
+        accept: 'image/avif,image/webp,image/*,*/*;q=0.8',
+        'user-agent': USER_AGENT,
+        origin: APP_ORIGIN,
+        referer: `${APP_ORIGIN}/`,
+      },
+      dispatcher,
+    });
+  } catch (err) {
+    throw proxyFailureError(err);
+  }
+}
+
+function dollarsToMills(price) {
+  const amount = Number(price);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new FanslyApiError('Purchase price is required', 400);
+  }
+  return Math.round(amount * 1000);
+}
+
+function buildAccountMediaBody({ mediaId, fanId, creatorId, permissions } = {}) {
+  const id = mediaId == null ? '' : String(mediaId).trim();
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError('Media id is required', 400);
+  }
+  const perms = permissions && typeof permissions === 'object' ? permissions : {};
+  const requirePurchase = Boolean(perms.requirePurchase);
+  const requireFollow = Boolean(perms.requireFollow);
+  const requireSubscription = Boolean(perms.requireSubscription);
+  const tierId = perms.subscriptionTierId == null ? '' : String(perms.subscriptionTierId).trim();
+  const namedTier = requireSubscription && tierId.length > 0;
+  const anyTier = requireSubscription && !namedTier;
+
+  const metadata = {};
+  let flags = 0;
+  let priceMills = 0;
+  if (requirePurchase) {
+    priceMills = dollarsToMills(perms.price);
+    flags |= PERMISSION_PURCHASE;
+    metadata['1'] = JSON.stringify({ price: priceMills });
+  }
+  if (requireFollow) flags |= PERMISSION_FOLLOW;
+  if (namedTier) {
+    flags |= PERMISSION_SUBSCRIPTION_TIER;
+    metadata['4'] = JSON.stringify({ subscriptionTierId: tierId });
+  }
+
+  const whitelist = [];
+  if (fanId) whitelist.push({ accountId: String(fanId), permissionFlags: 0 });
+  if (creatorId) whitelist.push({ accountId: String(creatorId), permissionFlags: 0 });
+
+  const permissionFlags = [];
+  if (flags) {
+    const entry = { type: 0, flags };
+    if (requirePurchase) entry.price = priceMills;
+    entry.metadata = Object.keys(metadata).length ? JSON.stringify(metadata) : '';
+    permissionFlags.push(entry);
+  }
+
+  return [
+    {
+      mediaId: id,
+      previewId: null,
+      permissionFlags: anyTier ? PERMISSION_SUBSCRIPTION_ANY : 0,
+      price: 0,
+      whitelist,
+      permissions: { permissionFlags },
+      tags: [],
+    },
+  ];
+}
+
+function buildDeleteMessageBody(messageId) {
+  const id = messageId == null ? '' : String(messageId).trim();
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError('Message id is required', 400);
+  }
+  return { messageId: id };
+}
+
 function mapMessage(row) {
   if (!row) return null;
   return {
@@ -410,6 +773,7 @@ function mapMessage(row) {
     groupId: row.groupId || null,
     senderId: row.senderId || null,
     createdAt: row.createdAt ?? null,
+    deletedAt: row.deletedAt ?? null,
     attachments: Array.isArray(row.attachments) ? row.attachments : [],
     totalTipAmount: Number(row.totalTipAmount) || 0,
     inReplyTo: row.inReplyTo || null,
@@ -428,9 +792,28 @@ async function listMessages(session, groupId, { limit = 25 } = {}) {
   return rows.map(mapMessage).filter(Boolean);
 }
 
-async function sendMessage(session, { groupId, content }) {
+function messageAttachments(attachments) {
+  const rows = Array.isArray(attachments) ? attachments : [];
+  return rows
+    .map((row, index) => {
+      const contentId = row?.contentId == null ? '' : String(row.contentId).trim();
+      if (!/^\d+$/.test(contentId)) return null;
+      const contentType = Number(row.contentType);
+      return {
+        messageId: null,
+        pos: index,
+        contentId,
+        contentType: Number.isInteger(contentType) && contentType > 0 ? contentType : 1,
+      };
+    })
+    .filter(Boolean)
+    .map((row, index) => ({ ...row, pos: index }));
+}
+
+async function sendMessage(session, { groupId, content, attachments } = {}) {
   const text = typeof content === 'string' ? content.trim() : '';
-  if (!groupId || !text) {
+  const files = messageAttachments(attachments);
+  if (!groupId || (!text && files.length === 0)) {
     throw new FanslyApiError('Message text is required', 400);
   }
   const result = await requestJson({
@@ -439,7 +822,7 @@ async function sendMessage(session, { groupId, content }) {
     session,
     body: {
       type: 1,
-      attachments: [],
+      attachments: files,
       likes: [],
       content: text,
       groupId,
@@ -449,6 +832,67 @@ async function sendMessage(session, { groupId, content }) {
     },
   });
   return mapMessage(result.data);
+}
+
+async function deleteMessage(session, messageId) {
+  const result = await requestJson({
+    method: 'POST',
+    path: '/message/delete',
+    session,
+    body: buildDeleteMessageBody(messageId),
+  });
+  return mapMessage(result.data);
+}
+
+async function listVaultAlbums(session) {
+  const result = await requestJson({ method: 'GET', path: '/vault/albumsnew', session });
+  const albums = Array.isArray(result.data?.albums) ? result.data.albums : [];
+  return albums.map(mapVaultAlbum);
+}
+
+async function listVaultMedia(session, { albumId, before = 0, after = 0 } = {}) {
+  const id = albumId == null ? '' : String(albumId).trim();
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError('Album id is required', 400);
+  }
+  const result = await requestJson({
+    method: 'GET',
+    path: '/media/vaultnew',
+    session,
+    query: { albumId: id, mediaType: '', search: '', before, after },
+  });
+  const albumMedia = Array.isArray(result.data?.albumMedia) ? result.data.albumMedia : [];
+  const media = Array.isArray(result.data?.media) ? result.data.media : [];
+  const mediaById = new Map(media.map((row) => [String(row.id), row]));
+  return albumMedia.map((item) => mapVaultMedia(item, mediaById));
+}
+
+function subscriptionTierRows(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.subscriptionTiers)) return data.subscriptionTiers;
+  if (Array.isArray(data?.tiers)) return data.tiers;
+  return [];
+}
+
+async function listSubscriptionTiers(session) {
+  const result = await requestJson({ method: 'GET', path: '/subscriptions/tiers', session });
+  return subscriptionTierRows(result.data)
+    .map((row) => ({
+      id: row?.id == null ? '' : String(row.id),
+      name: typeof row?.name === 'string' && row.name.trim() ? row.name.trim() : 'Tier',
+    }))
+    .filter((row) => row.id);
+}
+
+async function createAccountMedia(session, body) {
+  const result = await requestJson({
+    method: 'POST',
+    path: '/account/media',
+    session,
+    body,
+  });
+  const rows = Array.isArray(result.data) ? result.data : result.data ? [result.data] : [];
+  return rows;
 }
 
 async function ackMessages(session, messageIds) {
@@ -468,9 +912,23 @@ async function listNotifications(session, { before = 0, after = 0, type = '' } =
     method: 'GET',
     path: '/notifications',
     session,
-    query: { before, after, type: type || '' },
+    query: { before, after, type: sanitizeNotificationType(type) },
   });
   return result.data || {};
+}
+
+async function ackNotifications(session, { beforeAnd, type = '' } = {}) {
+  const id = beforeAnd == null ? '' : String(beforeAnd).trim();
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError('Notification id is required', 400);
+  }
+  await requestJson({
+    method: 'POST',
+    path: '/notifications/ack',
+    session,
+    body: { beforeAnd: id, type: sanitizeNotificationType(type) },
+  });
+  return { ok: true };
 }
 
 async function getAccounts(session, ids) {
@@ -524,13 +982,146 @@ async function getBadges(session) {
   const total = Number(unreadResult.data?.total);
   const messages = Number.isFinite(total) && total > unreadFromRows ? total : unreadFromRows;
 
-  const unack = unackResult.data;
-  let notifications = 0;
-  if (Array.isArray(unack)) notifications = unack.length;
-  else if (Array.isArray(unack?.notifications)) notifications = unack.notifications.length;
-  else if (typeof unack?.total === 'number') notifications = unack.total;
+  return { messages, notifications: notificationUnreadCount(unackResult.data) };
+}
 
-  return { messages, notifications };
+const FAN_NOTE_CONTENT_TYPE = 12002;
+const CUSTOM_USERNAME_TITLE = 'Custom Username';
+const FAN_STATS_AFTER = 1559347200000;
+
+function requireFanId(fanId) {
+  const id = fanId == null ? '' : String(fanId).trim();
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError('Fan id is required', 400);
+  }
+  return id;
+}
+
+function noteRows(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.notes)) return data.notes;
+  if (Array.isArray(data?.data)) return data.data;
+  return [];
+}
+
+function pickCustomUsername(notes) {
+  const row = (Array.isArray(notes) ? notes : []).find(
+    (item) => item && String(item.title || '') === CUSTOM_USERNAME_TITLE
+  );
+  if (!row) return { noteId: null, nickname: '' };
+  return {
+    noteId: row.id == null ? null : String(row.id),
+    nickname: typeof row.note === 'string' ? row.note : '',
+  };
+}
+
+function buildFanNicknameBody({ fanId, nickname, noteId } = {}) {
+  const body = {
+    contentType: FAN_NOTE_CONTENT_TYPE,
+    contentId: requireFanId(fanId),
+    title: CUSTOM_USERNAME_TITLE,
+    note: typeof nickname === 'string' ? nickname.trim() : '',
+  };
+  const existing = noteId == null ? '' : String(noteId).trim();
+  if (/^\d+$/.test(existing)) body.id = existing;
+  return body;
+}
+
+function lifetimeGrossMills(stats) {
+  const rows = Array.isArray(stats?.byProductType) ? stats.byProductType : [];
+  return rows.reduce((sum, row) => {
+    const gross = Number(row?.grossMills);
+    return sum + (Number.isFinite(gross) ? gross : 0);
+  }, 0);
+}
+
+function mapPurchase(row) {
+  if (!row || row.transactionId == null) return null;
+  return {
+    id: String(row.transactionId),
+    type: Number(row.transactionType ?? row.type) || 0,
+    grossMills: Number(row.transactionAmount) || 0,
+    netMills: Number(row.amount) || 0,
+    status: Number(row.status) || 0,
+    createdAt: row.createdAt ?? null,
+  };
+}
+
+async function listFanNotes(session, fanId) {
+  const id = requireFanId(fanId);
+  const result = await requestJson({
+    method: 'GET',
+    path: '/notes',
+    session,
+    query: { contentIds: id, contentType: FAN_NOTE_CONTENT_TYPE },
+  });
+  return noteRows(result.data);
+}
+
+async function saveFanNickname(session, { fanId, nickname, noteId } = {}) {
+  const body = buildFanNicknameBody({ fanId, nickname, noteId });
+  if (!body.note && !body.id) {
+    return { noteId: null, nickname: '' };
+  }
+  const result = await requestJson({
+    method: 'POST',
+    path: '/notes/edit',
+    session,
+    body,
+  });
+  const saved = result.data && typeof result.data === 'object' ? result.data : {};
+  return {
+    noteId: saved.id == null ? body.id || null : String(saved.id),
+    nickname: typeof saved.note === 'string' ? saved.note : body.note,
+  };
+}
+
+async function getFanStats(session, fanId) {
+  const id = requireFanId(fanId);
+  const result = await requestJson({
+    method: 'GET',
+    path: '/account/stats/fans',
+    session,
+    query: {
+      fanId: id,
+      after: FAN_STATS_AFTER,
+      before: Date.now(),
+      granularity: 'month',
+    },
+  });
+  const stats = result.data || {};
+  const accounts = Array.isArray(stats.aggregationData?.accounts) ? stats.aggregationData.accounts : [];
+  const account = accounts.find((row) => String(row?.id) === id) || accounts[0] || null;
+  return {
+    lifetimeGrossMills: lifetimeGrossMills(stats),
+    username: account?.username || null,
+    displayName: account?.displayName || null,
+  };
+}
+
+async function listFanPurchases(session, fanId, { limit = 30 } = {}) {
+  const id = requireFanId(fanId);
+  const result = await requestJson({
+    method: 'GET',
+    path: '/account/wallets/earnings/transactions/accounts',
+    session,
+    query: {
+      correlationAccountId: id,
+      before: Date.now(),
+      after: FAN_STATS_AFTER,
+      cursor: 0,
+      limit,
+    },
+  });
+  const rows = Array.isArray(result.data?.data)
+    ? result.data.data
+    : Array.isArray(result.data)
+      ? result.data
+      : [];
+  return {
+    purchases: rows.map(mapPurchase).filter(Boolean),
+    hasMore: Boolean(result.data?.hasMore),
+  };
 }
 
 function sessionFromCreator(creator) {
@@ -549,20 +1140,45 @@ module.exports = {
   NOTIFICATION_FILTERS,
   WrongPasswordError,
   FanslyApiError,
+  TwoFactorRequiredError,
+  classifyLoginBody,
+  fanslyFailureError,
   resolveFanslyProxyUrl,
   generateDeviceId,
   clientCheck,
   login,
+  verifyTwofa,
   getMe,
   listGroups,
   getGroup,
   listMessages,
   sendMessage,
+  deleteMessage,
+  buildAccountMediaBody,
+  buildDeleteMessageBody,
+  listVaultAlbums,
+  listVaultMedia,
+  fanslyPreviewLocksToIp,
+  isFanslyImagePreview,
+  isAllowedFanslyCdnUrl,
+  fetchCdnMedia,
+  listSubscriptionTiers,
+  createAccountMedia,
   ackMessages,
   listNotifications,
+  ackNotifications,
+  notificationUnreadCount,
+  sanitizeNotificationType,
   getAccounts,
   getMessagesByIds,
   getBadges,
+  pickCustomUsername,
+  buildFanNicknameBody,
+  lifetimeGrossMills,
+  listFanNotes,
+  saveFanNickname,
+  getFanStats,
+  listFanPurchases,
   sessionFromCreator,
   avatarUrlFromAccount,
 };

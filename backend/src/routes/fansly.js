@@ -7,6 +7,7 @@ const { userCanAccessCreator, getUserIdsWithCreatorAccess } = require('../servic
 const { decryptJson, decryptSecret, encryptJson, encryptSecret } = require('../services/crypto');
 const { emitToUsers } = require('../services/userEventBus');
 const fanslyClient = require('../services/fanslyClient');
+const fanslyMediaCache = require('../services/fanslyMediaCache');
 const { loadFanslyCreator } = require('../services/platformCreatorSession');
 const {
   InvalidProxyError,
@@ -74,7 +75,70 @@ function readCustomProxy(body) {
   }
 }
 
+function twofaChallengeResponse(res, err) {
+  return res.json({
+    status: 'twofa_required',
+    twofaToken: err.twofaToken,
+    deviceId: err.deviceId,
+    ...(Number.isInteger(err.twofaType) ? { twofaType: err.twofaType } : {}),
+    ...(typeof err.email === 'string' && err.email ? { email: err.email } : {}),
+  });
+}
+
+function readTwofaCompletion(body) {
+  const twofaToken = typeof body?.twofaToken === 'string' ? body.twofaToken.trim() : '';
+  const twofaCode = typeof body?.twofaCode === 'string' ? body.twofaCode.trim() : '';
+  const deviceId = typeof body?.deviceId === 'string' ? body.deviceId.trim() : '';
+  return {
+    active: Boolean(twofaToken && twofaCode),
+    twofaToken,
+    twofaCode,
+    deviceId,
+  };
+}
+
+function partnerAccountId(group, creatorId) {
+  const users = Array.isArray(group?.users) ? group.users : [];
+  const other = users.find(
+    (user) => user && user.userId && String(user.userId) !== String(creatorId || '')
+  );
+  return other ? String(other.userId) : '';
+}
+
+function readOutgoingMedia(body) {
+  if (!Array.isArray(body?.media) || body.media.length === 0) return [];
+  const items = [];
+  for (const item of body.media) {
+    const mediaId = item?.mediaId == null ? '' : String(item.mediaId).trim();
+    if (!/^\d+$/.test(mediaId)) {
+      throw new fanslyClient.FanslyApiError('Media id is required', 400);
+    }
+    const mediaType = Number(item?.mediaType);
+    items.push({
+      mediaId,
+      mediaType: Number.isInteger(mediaType) && mediaType > 0 ? mediaType : 1,
+    });
+    if (items.length >= 10) break;
+  }
+  return items;
+}
+
+function readMediaPermissions(body) {
+  const raw = body?.permissions && typeof body.permissions === 'object' ? body.permissions : {};
+  const tier = raw.subscriptionTierId == null ? '' : String(raw.subscriptionTierId).trim();
+  return {
+    requirePurchase: Boolean(raw.requirePurchase),
+    price: raw.price,
+    requireSubscription: Boolean(raw.requireSubscription),
+    subscriptionTierId: tier || null,
+    requireFollow: Boolean(raw.requireFollow),
+  };
+}
+
 function handleFanslyError(res, err, label) {
+  if (err instanceof fanslyClient.TwoFactorRequiredError) {
+    return twofaChallengeResponse(res, err);
+  }
   if (err instanceof fanslyClient.WrongPasswordError) {
     return res.status(400).json({ error: 'Password not correct' });
   }
@@ -228,12 +292,20 @@ router.post(
       const resolvedProxy = fanslyClient.resolveFanslyProxyUrl(
         customProxy.provided ? customProxy.proxyUrl : storedProxy
       );
-      const loginResult = await fanslyClient.login({
-        username: email.trim(),
-        password,
-        proxyUrl: resolvedProxy,
-        deviceId,
-      });
+      const twofa = readTwofaCompletion(req.body);
+      const loginResult = twofa.active
+        ? await fanslyClient.verifyTwofa({
+            twofaToken: twofa.twofaToken,
+            code: twofa.twofaCode,
+            deviceId: twofa.deviceId || deviceId,
+            proxyUrl: resolvedProxy,
+          })
+        : await fanslyClient.login({
+            username: email.trim(),
+            password,
+            proxyUrl: resolvedProxy,
+            deviceId,
+          });
       const encryptedProxy = customProxy.provided ? encryptSecret(resolvedProxy) : null;
       const row = await saveLoginResult(id, loginResult, email.trim(), {
         password,
@@ -290,12 +362,20 @@ router.post(
 
       const storedProxy = row.encryptedProxy ? decryptSecret(row.encryptedProxy) : null;
       const resolvedProxy = fanslyClient.resolveFanslyProxyUrl(storedProxy);
-      const loginResult = await fanslyClient.login({
-        username: row.loginEmail.trim(),
-        password: loginPassword,
-        proxyUrl: resolvedProxy,
-        deviceId,
-      });
+      const twofa = readTwofaCompletion(req.body);
+      const loginResult = twofa.active
+        ? await fanslyClient.verifyTwofa({
+            twofaToken: twofa.twofaToken,
+            code: twofa.twofaCode,
+            deviceId: twofa.deviceId || deviceId,
+            proxyUrl: resolvedProxy,
+          })
+        : await fanslyClient.login({
+            username: row.loginEmail.trim(),
+            password: loginPassword,
+            proxyUrl: resolvedProxy,
+            deviceId,
+          });
       const updated = await saveLoginResult(id, loginResult, row.loginEmail.trim(), {
         password: null,
         encryptedProxy: null,
@@ -402,14 +482,197 @@ router.post(
     try {
       const creator = await requireFansly(req, res);
       if (!creator) return;
-      const content = req.body?.content;
-      const message = await fanslyClient.sendMessage(fanslySession(creator), {
+      const session = fanslySession(creator);
+      const media = readOutgoingMedia(req.body);
+      const attachments = [];
+      if (media.length > 0) {
+        const group = await fanslyClient.getGroup(session, req.params.groupId);
+        const fanId = partnerAccountId(group, creator.providerUserId);
+        if (!fanId) {
+          return res.status(400).json({ error: 'Chat partner is required' });
+        }
+        const permissions = readMediaPermissions(req.body);
+        for (const item of media) {
+          const created = await fanslyClient.createAccountMedia(
+            session,
+            fanslyClient.buildAccountMediaBody({
+              mediaId: item.mediaId,
+              fanId,
+              creatorId: creator.providerUserId,
+              permissions,
+            })
+          );
+          const contentId = created[0]?.id == null ? '' : String(created[0].id);
+          if (!/^\d+$/.test(contentId)) {
+            throw new fanslyClient.FanslyApiError('Fansly did not return media', 502);
+          }
+          attachments.push({ contentId, contentType: item.mediaType });
+        }
+      }
+      const message = await fanslyClient.sendMessage(session, {
         groupId: req.params.groupId,
-        content,
+        content: req.body?.content,
+        attachments,
       });
       res.json({ message });
     } catch (err) {
       return handleFanslyError(res, err, 'Send Fansly message error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/fansly/chats/:groupId/messages/:messageId/delete',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const message = await fanslyClient.deleteMessage(
+        fanslySession(creator),
+        req.params.messageId
+      );
+      res.json({ message });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Delete Fansly message error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/fansly/vault/albums',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const albums = await fanslyClient.listVaultAlbums(fanslySession(creator));
+      res.json({ albums });
+    } catch (err) {
+      return handleFanslyError(res, err, 'List Fansly vault albums error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/fansly/vault/media',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const media = await fanslyClient.listVaultMedia(fanslySession(creator), {
+        albumId: req.query.albumId,
+      });
+      res.json({ media });
+    } catch (err) {
+      return handleFanslyError(res, err, 'List Fansly vault media error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/fansly/media',
+  async (req, res, next) => {
+    if (!req.headers.authorization && typeof req.query.access_token === 'string') {
+      req.headers.authorization = `Bearer ${req.query.access_token}`;
+    }
+    return authenticate(req, res, next);
+  },
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const mediaId = req.query.mediaId == null ? '' : String(req.query.mediaId).trim();
+    const mediaUrl = typeof req.query.url === 'string' ? req.query.url : '';
+    if (!/^\d+$/.test(mediaId)) {
+      return res.status(400).json({ error: 'Media id is required' });
+    }
+
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+
+      const cached = await fanslyMediaCache.readCache(creator.id, mediaId);
+      if (cached) {
+        res.setHeader('Content-Type', cached.contentType);
+        res.setHeader('Content-Length', String(cached.buffer.length));
+        res.setHeader('Cache-Control', 'private, max-age=86400, stale-while-revalidate=604800');
+        res.setHeader('X-DomX-Media-Cache', 'HIT');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        if (cached.etag) res.setHeader('ETag', cached.etag);
+        return res.status(200).end(cached.buffer);
+      }
+
+      if (!mediaUrl) {
+        return res.status(400).json({ error: 'url is required when media is not cached' });
+      }
+      if (
+        !fanslyClient.isAllowedFanslyCdnUrl(mediaUrl) ||
+        !fanslyClient.fanslyPreviewLocksToIp(mediaUrl) ||
+        !fanslyMediaCache.isCacheableUrl(mediaUrl)
+      ) {
+        return res.status(400).json({ error: 'Media URL is not an IP-locked Fansly thumbnail' });
+      }
+
+      const upstream = await fanslyClient.fetchCdnMedia(fanslySession(creator), mediaUrl);
+      if (!upstream.ok) {
+        return res.status(upstream.status || 502).json({ error: 'Failed to fetch media' });
+      }
+
+      const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
+      const etag = upstream.headers.get('etag') || null;
+      res.setHeader('Cache-Control', 'private, max-age=86400, stale-while-revalidate=604800');
+      res.setHeader('X-DomX-Media-Cache', 'MISS');
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      if (etag) res.setHeader('ETag', etag);
+      res.status(upstream.status);
+
+      if (!upstream.body) return res.end();
+
+      const { Readable } = require('stream');
+      const nodeStream = Readable.fromWeb(upstream.body);
+      const chunks = [];
+      nodeStream.on('data', (chunk) => {
+        chunks.push(chunk);
+        if (!res.writableEnded) res.write(chunk);
+      });
+      nodeStream.on('error', (err) => {
+        console.warn('Fansly media stream error:', err.message);
+        if (!res.headersSent) res.status(502).end();
+        else res.destroy(err);
+      });
+      nodeStream.on('end', () => {
+        if (!res.writableEnded) res.end();
+        if (upstream.status === 200) {
+          void fanslyMediaCache.writeCache(creator.id, mediaId, {
+            buffer: Buffer.concat(chunks),
+            contentType,
+            etag,
+            url: mediaUrl,
+          });
+        }
+      });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Fansly media error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/fansly/subscription-tiers',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const tiers = await fanslyClient.listSubscriptionTiers(fanslySession(creator));
+      res.json({ tiers });
+    } catch (err) {
+      return handleFanslyError(res, err, 'List Fansly subscription tiers error:');
     }
   }
 );
@@ -439,7 +702,7 @@ router.get(
     try {
       const creator = await requireFansly(req, res);
       if (!creator) return;
-      const type = typeof req.query.type === 'string' ? req.query.type : '';
+      const type = fanslyClient.sanitizeNotificationType(req.query.type);
       const before = req.query.before || 0;
       const payload = await fanslyClient.listNotifications(fanslySession(creator), {
         before,
@@ -452,6 +715,140 @@ router.get(
       });
     } catch (err) {
       return handleFanslyError(res, err, 'List Fansly notifications error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/fansly/notifications/ack',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const beforeAnd = req.body?.beforeAnd;
+      const id = beforeAnd == null ? '' : String(beforeAnd).trim();
+      if (!/^\d+$/.test(id)) {
+        return res.status(400).json({ error: 'Notification id is required' });
+      }
+      await fanslyClient.ackNotifications(fanslySession(creator), {
+        beforeAnd: id,
+        type: fanslyClient.sanitizeNotificationType(req.body?.type),
+      });
+      res.json({ ok: true });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Ack Fansly notifications error:');
+    }
+  }
+);
+
+async function readFanslyFanNote(creatorId, fanId) {
+  const result = await pool.query(
+    `SELECT notes
+     FROM fansly_fan_notes
+     WHERE "creatorId" = $1 AND "fanAccountId" = $2`,
+    [creatorId, fanId]
+  );
+  return result.rows[0]?.notes || '';
+}
+
+async function saveFanslyFanNote(creatorId, fanId, notes, userId) {
+  const result = await pool.query(
+    `INSERT INTO fansly_fan_notes ("creatorId", "fanAccountId", notes, "updatedBy", "updatedAt")
+     VALUES ($1, $2, $3, $4, NOW())
+     ON CONFLICT ("creatorId", "fanAccountId")
+     DO UPDATE SET notes = EXCLUDED.notes, "updatedBy" = EXCLUDED."updatedBy", "updatedAt" = NOW()
+     RETURNING notes`,
+    [creatorId, fanId, notes, userId || null]
+  );
+  return result.rows[0]?.notes || '';
+}
+
+function requireFanAccountId(req, res) {
+  const fanId = req.params.fanId == null ? '' : String(req.params.fanId).trim();
+  if (!/^\d+$/.test(fanId)) {
+    res.status(400).json({ error: 'Fan id is required' });
+    return '';
+  }
+  return fanId;
+}
+
+router.get(
+  '/:id/fansly/fans/:fanId',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const fanId = requireFanAccountId(req, res);
+      if (!fanId) return;
+      const session = fanslySession(creator);
+      const [notes, stats, purchases, crmNotes] = await Promise.all([
+        fanslyClient.listFanNotes(session, fanId),
+        fanslyClient.getFanStats(session, fanId),
+        fanslyClient.listFanPurchases(session, fanId),
+        readFanslyFanNote(creator.id, fanId),
+      ]);
+      const nickname = fanslyClient.pickCustomUsername(notes);
+      res.json({
+        fanId,
+        username: stats.username,
+        displayName: stats.displayName,
+        nickname: nickname.nickname,
+        noteId: nickname.noteId,
+        lifetimeGrossMills: stats.lifetimeGrossMills,
+        purchases: purchases.purchases,
+        hasMorePurchases: purchases.hasMore,
+        notes: crmNotes,
+      });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Get Fansly fan error:');
+    }
+  }
+);
+
+router.put(
+  '/:id/fansly/fans/:fanId/nickname',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const fanId = requireFanAccountId(req, res);
+      if (!fanId) return;
+      const nickname = typeof req.body?.nickname === 'string' ? req.body.nickname : '';
+      const saved = await fanslyClient.saveFanNickname(fanslySession(creator), {
+        fanId,
+        nickname,
+        noteId: req.body?.noteId,
+      });
+      res.json(saved);
+    } catch (err) {
+      return handleFanslyError(res, err, 'Save Fansly nickname error:');
+    }
+  }
+);
+
+router.put(
+  '/:id/fansly/fans/:fanId/notes',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const fanId = requireFanAccountId(req, res);
+      if (!fanId) return;
+      if (typeof req.body?.notes !== 'string') {
+        return res.status(400).json({ error: 'Notes are required' });
+      }
+      const notes = await saveFanslyFanNote(creator.id, fanId, req.body.notes, req.user?.id);
+      res.json({ notes });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Save Fansly fan notes error:');
     }
   }
 );

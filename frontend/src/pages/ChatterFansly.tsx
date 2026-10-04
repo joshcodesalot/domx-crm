@@ -1,18 +1,28 @@
 import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
 import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, Send } from 'lucide-react';
+import { ImagePlus, Loader2, Send, Trash2, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import FanslyFanPanel from '@/components/fansly/FanslyFanPanel';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
+import { useSyncedDrawer } from '@/context/ShellContext';
 import { usePollEnabled } from '@/hooks/useDocumentVisible';
 import { useLocation } from 'react-router-dom';
 import fanslyIcon from '@/assets/fansly.svg';
 import {
+  deleteFanslyMessage,
   listFanslyChats,
   listFanslyMessages,
+  listFanslySubscriptionTiers,
+  fanslyVaultPreviewSrc,
+  listFanslyVaultAlbums,
+  listFanslyVaultMedia,
   sendFanslyMessage,
   type FanslyChat,
   type FanslyMessage,
+  type FanslySubscriptionTier,
+  type FanslyVaultAlbum,
+  type FanslyVaultMedia,
 } from '@/lib/api';
 
 function formatTime(value: number | null | undefined): string {
@@ -25,6 +35,10 @@ function formatTime(value: number | null | undefined): string {
     hour: 'numeric',
     minute: '2-digit',
   });
+}
+
+function attachmentCount(message: FanslyMessage): number {
+  return Array.isArray(message.attachments) ? message.attachments.length : 0;
 }
 
 export default function ChatterFansly() {
@@ -47,6 +61,32 @@ export default function ChatterFansly() {
   const [threadError, setThreadError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [hiddenMessageIds, setHiddenMessageIds] = useState<string[]>([]);
+  const [vaultOpen, setVaultOpen] = useState(false);
+  const [albums, setAlbums] = useState<FanslyVaultAlbum[]>([]);
+  const [albumsLoading, setAlbumsLoading] = useState(false);
+  const [vaultError, setVaultError] = useState<string | null>(null);
+  const [selectedAlbumId, setSelectedAlbumId] = useState<string | null>(null);
+  const [vaultMedia, setVaultMedia] = useState<FanslyVaultMedia[]>([]);
+  const [mediaLoading, setMediaLoading] = useState(false);
+  const [selectedMedia, setSelectedMedia] = useState<FanslyVaultMedia[]>([]);
+  const [requirePurchase, setRequirePurchase] = useState(false);
+  const [price, setPrice] = useState('');
+  const [requireSubscription, setRequireSubscription] = useState(false);
+  const [tierId, setTierId] = useState('');
+  const [requireFollow, setRequireFollow] = useState(false);
+  const [tiers, setTiers] = useState<FanslySubscriptionTier[]>([]);
+  const [fanPanelOpen, setFanPanelOpen] = useState(false);
+  const [fanNickname, setFanNickname] = useState('');
+  const fanScope = `${selectedCreatorId || ''}:${selectedGroupId || ''}`;
+  const [openFanScope, setOpenFanScope] = useState(fanScope);
+  if (fanScope !== openFanScope) {
+    setOpenFanScope(fanScope);
+    setFanPanelOpen(false);
+    setFanNickname('');
+  }
+  useSyncedDrawer('fansly-fan', 'xl', fanPanelOpen, setFanPanelOpen);
 
   useEffect(() => {
     setSelectedCreatorId((prev) => {
@@ -60,6 +100,22 @@ export default function ChatterFansly() {
     [creators, selectedCreatorId]
   );
   const selectedChat = chats.find((chat) => chat.groupId === selectedGroupId) || null;
+
+  useEffect(() => {
+    setVaultOpen(false);
+    setAlbums([]);
+    setSelectedAlbumId(null);
+    setVaultMedia([]);
+    setSelectedMedia([]);
+    setVaultError(null);
+    setTiers([]);
+    setHiddenMessageIds([]);
+    setRequirePurchase(false);
+    setPrice('');
+    setRequireSubscription(false);
+    setTierId('');
+    setRequireFollow(false);
+  }, [selectedCreatorId, selectedGroupId]);
 
   const loadChats = useCallback(async () => {
     if (!selectedCreatorId) {
@@ -124,13 +180,118 @@ export default function ChatterFansly() {
     return () => window.clearInterval(timer);
   }, [loadChats, loadThread, pollEnabled, selectedCreatorId, selectedGroupId]);
 
+  useEffect(() => {
+    if (!vaultOpen || !selectedCreatorId) return;
+    let cancelled = false;
+    setAlbumsLoading(true);
+    setVaultError(null);
+    listFanslyVaultAlbums(selectedCreatorId)
+      .then((result) => {
+        if (!cancelled) setAlbums(result.albums || []);
+      })
+      .catch((err) => {
+        if (!cancelled) setVaultError(err instanceof Error ? err.message : 'Failed to load vault');
+      })
+      .finally(() => {
+        if (!cancelled) setAlbumsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCreatorId, vaultOpen]);
+
+  useEffect(() => {
+    if (!vaultOpen || !selectedCreatorId || !selectedAlbumId) return;
+    let cancelled = false;
+    setMediaLoading(true);
+    setVaultError(null);
+    listFanslyVaultMedia(selectedCreatorId, selectedAlbumId)
+      .then((result) => {
+        if (!cancelled) setVaultMedia(result.media || []);
+      })
+      .catch((err) => {
+        if (!cancelled) setVaultError(err instanceof Error ? err.message : 'Failed to load media');
+      })
+      .finally(() => {
+        if (!cancelled) setMediaLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedAlbumId, selectedCreatorId, vaultOpen]);
+
+  useEffect(() => {
+    if (!selectedCreatorId || selectedMedia.length === 0) return;
+    let cancelled = false;
+    listFanslySubscriptionTiers(selectedCreatorId)
+      .then((result) => {
+        if (!cancelled) setTiers(result.tiers || []);
+      })
+      .catch(() => {
+        if (!cancelled) setTiers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCreatorId, selectedMedia.length > 0]);
+
+  function toggleMedia(item: FanslyVaultMedia) {
+    setSelectedMedia((prev) =>
+      prev.some((row) => row.mediaId === item.mediaId)
+        ? prev.filter((row) => row.mediaId !== item.mediaId)
+        : [...prev, item]
+    );
+  }
+
+  async function handleDelete(messageId: string) {
+    if (!selectedCreatorId || !selectedGroupId || deletingId) return;
+    setDeletingId(messageId);
+    setThreadError(null);
+    try {
+      await deleteFanslyMessage(selectedCreatorId, selectedGroupId, messageId);
+      setHiddenMessageIds((prev) => (prev.includes(messageId) ? prev : [...prev, messageId]));
+      setMessages((prev) => prev.filter((row) => row.id !== messageId));
+    } catch (err) {
+      setThreadError(err instanceof Error ? err.message : 'Failed to delete message');
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   async function handleSend() {
-    if (!selectedCreatorId || !selectedGroupId || !draft.trim() || sending) return;
+    const text = draft.trim();
+    if (!selectedCreatorId || !selectedGroupId || sending) return;
+    if (!text && selectedMedia.length === 0) return;
+    if (selectedMedia.length > 0 && requirePurchase && !(Number(price) > 0)) {
+      setThreadError('Enter a purchase price');
+      return;
+    }
     setSending(true);
     setThreadError(null);
     try {
-      const result = await sendFanslyMessage(selectedCreatorId, selectedGroupId, draft.trim());
+      const result = await sendFanslyMessage(
+        selectedCreatorId,
+        selectedGroupId,
+        text,
+        selectedMedia.length
+          ? {
+              media: selectedMedia.map((item) => ({
+                mediaId: item.mediaId,
+                mediaType: item.mediaType,
+              })),
+              permissions: {
+                requirePurchase,
+                price: Number(price),
+                requireSubscription,
+                subscriptionTierId: tierId || null,
+                requireFollow,
+              },
+            }
+          : undefined
+      );
       setDraft('');
+      setSelectedMedia([]);
+      setVaultOpen(false);
       if (result.message) {
         setMessages((prev) => [result.message, ...prev.filter((row) => row.id !== result.message.id)]);
       }
@@ -142,7 +303,10 @@ export default function ChatterFansly() {
     }
   }
 
-  const orderedMessages = [...messages].reverse();
+  const orderedMessages = [...messages]
+    .reverse()
+    .filter((message) => !message.deletedAt && !hiddenMessageIds.includes(message.id));
+  const canSend = !sending && (Boolean(draft.trim()) || selectedMedia.length > 0);
 
   return (
     <AppShell
@@ -276,8 +440,21 @@ export default function ChatterFansly() {
           )}
           {selectedChat && (
             <>
-              <div className="px-4 py-3 border-b border-gray-200 dark:border-white/10">
-                <p className="font-medium text-sm">{selectedChat.partnerUsername}</p>
+              <div className="px-4 py-3 border-b border-gray-200 dark:border-white/10 flex items-center justify-between gap-2">
+                <p className="font-medium text-sm truncate">
+                  {fanNickname.trim() || selectedChat.partnerUsername}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setFanPanelOpen((open) => !open)}
+                  className={`shrink-0 text-xs px-2.5 py-1 rounded-full ${
+                    fanPanelOpen
+                      ? 'bg-sky-500 text-white'
+                      : 'bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300'
+                  }`}
+                >
+                  Fan
+                </button>
               </div>
               <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
                 {threadLoading && (
@@ -287,9 +464,25 @@ export default function ChatterFansly() {
                 )}
                 {threadError && <p className="text-sm text-red-500">{threadError}</p>}
                 {orderedMessages.map((message) => {
-                  const mine = selfId && message.senderId === selfId;
+                  const mine = Boolean(selfId && message.senderId === selfId);
+                  const attachments = attachmentCount(message);
                   return (
-                    <div key={message.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                    <div key={message.id} className={`flex items-end gap-1 ${mine ? 'justify-end' : 'justify-start'}`}>
+                      {mine && (
+                        <button
+                          type="button"
+                          aria-label="Delete message"
+                          disabled={deletingId === message.id}
+                          onClick={() => void handleDelete(message.id)}
+                          className="p-1 text-gray-400 hover:text-red-500 disabled:opacity-50"
+                        >
+                          {deletingId === message.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      )}
                       <div
                         className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm ${
                           mine
@@ -297,7 +490,16 @@ export default function ChatterFansly() {
                             : 'bg-gray-100 dark:bg-white/10 text-gray-900 dark:text-gray-100'
                         }`}
                       >
-                        <p className="whitespace-pre-wrap break-words">{message.content || 'Attachment'}</p>
+                        {attachments > 0 && (
+                          <p className={`text-[11px] mb-1 ${mine ? 'text-white/80' : 'text-gray-500'}`}>
+                            {attachments === 1 ? 'Attachment' : `${attachments} attachments`}
+                          </p>
+                        )}
+                        {message.content ? (
+                          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+                        ) : attachments === 0 ? (
+                          <p>Attachment</p>
+                        ) : null}
                         <p className={`text-[10px] mt-1 ${mine ? 'text-white/80' : 'text-gray-500'}`}>
                           {formatTime(message.createdAt)}
                         </p>
@@ -306,6 +508,157 @@ export default function ChatterFansly() {
                   );
                 })}
               </div>
+              {vaultOpen && (
+                <div className="border-t border-gray-200 dark:border-white/10 max-h-72 overflow-y-auto p-3 space-y-3">
+                  {albumsLoading && (
+                    <p className="text-sm text-gray-500 flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Loading vault…
+                    </p>
+                  )}
+                  {vaultError && <p className="text-sm text-red-500">{vaultError}</p>}
+                  <div className="flex gap-2 overflow-x-auto">
+                    {albums.map((album) => (
+                      <button
+                        key={album.id}
+                        type="button"
+                        onClick={() => setSelectedAlbumId(album.id)}
+                        className={`shrink-0 text-xs px-2.5 py-1 rounded-full ${
+                          album.id === selectedAlbumId
+                            ? 'bg-sky-500 text-white'
+                            : 'bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300'
+                        }`}
+                      >
+                        {album.title}
+                        {album.itemCount > 0 ? ` (${album.itemCount})` : ''}
+                      </button>
+                    ))}
+                  </div>
+                  {mediaLoading && (
+                    <p className="text-sm text-gray-500 flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Loading media…
+                    </p>
+                  )}
+                  {selectedAlbumId && !mediaLoading && vaultMedia.length === 0 && (
+                    <p className="text-sm text-gray-500">This album is empty.</p>
+                  )}
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                    {vaultMedia.map((item) => {
+                      const selected = selectedMedia.some((row) => row.mediaId === item.mediaId);
+                      const previewSrc = selectedCreatorId
+                        ? fanslyVaultPreviewSrc(selectedCreatorId, item)
+                        : item.previewUrl;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => toggleMedia(item)}
+                          className={`text-left rounded-lg overflow-hidden border ${
+                            selected
+                              ? 'border-sky-500 ring-2 ring-sky-500'
+                              : 'border-gray-200 dark:border-white/10'
+                          }`}
+                        >
+                          {previewSrc ? (
+                            <img src={previewSrc} alt="" className="aspect-square w-full object-cover" />
+                          ) : (
+                            <span className="aspect-square w-full flex items-center justify-center text-[10px] text-gray-500 px-1">
+                              {item.filename || 'Media'}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {selectedMedia.length > 0 && (
+                <div className="border-t border-gray-200 dark:border-white/10 px-3 py-3 space-y-3">
+                  <div className="flex gap-2 overflow-x-auto">
+                    {selectedMedia.map((item) => {
+                      const previewSrc = selectedCreatorId
+                        ? fanslyVaultPreviewSrc(selectedCreatorId, item)
+                        : item.previewUrl;
+                      return (
+                        <div key={item.mediaId} className="relative shrink-0">
+                          {previewSrc ? (
+                            <img src={previewSrc} alt="" className="w-14 h-14 object-cover rounded-md" />
+                          ) : (
+                            <span className="w-14 h-14 rounded-md bg-gray-100 dark:bg-white/10 flex items-center justify-center text-[10px] text-gray-500 px-1">
+                              {item.filename || 'Media'}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            aria-label="Remove media"
+                            onClick={() =>
+                              setSelectedMedia((prev) => prev.filter((row) => row.mediaId !== item.mediaId))
+                            }
+                            className="absolute -top-1 -right-1 bg-black/70 text-white rounded-full p-0.5"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={requirePurchase}
+                      onChange={(event) => setRequirePurchase(event.target.checked)}
+                    />
+                    Require Purchase
+                  </label>
+                  {requirePurchase && (
+                    <label className="block text-xs text-gray-500">
+                      Amount
+                      <span className="mt-1 flex items-center gap-1 px-2 py-1.5 border border-gray-200 dark:border-white/10 rounded-lg">
+                        $
+                        <input
+                          value={price}
+                          onChange={(event) => setPrice(event.target.value)}
+                          inputMode="decimal"
+                          placeholder="10"
+                          className="flex-1 bg-transparent text-sm text-gray-900 dark:text-gray-100 outline-none"
+                        />
+                      </span>
+                    </label>
+                  )}
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={requireSubscription}
+                      onChange={(event) => setRequireSubscription(event.target.checked)}
+                    />
+                    Require Subscription
+                  </label>
+                  {requireSubscription && (
+                    <label className="block text-xs text-gray-500">
+                      Subscription Tier
+                      <select
+                        value={tierId}
+                        onChange={(event) => setTierId(event.target.value)}
+                        className="mt-1 w-full px-2 py-1.5 text-sm border border-gray-200 dark:border-white/10 rounded-lg bg-white dark:bg-white/5 text-gray-900 dark:text-gray-100"
+                      >
+                        <option value="">Any Tier</option>
+                        {tiers.map((tier) => (
+                          <option key={tier.id} value={tier.id}>
+                            {tier.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={requireFollow}
+                      onChange={(event) => setRequireFollow(event.target.checked)}
+                    />
+                    Require Follow
+                  </label>
+                </div>
+              )}
               <form
                 className="p-3 border-t border-gray-200 dark:border-white/10 flex gap-2"
                 onSubmit={(event) => {
@@ -313,6 +666,18 @@ export default function ChatterFansly() {
                   void handleSend();
                 }}
               >
+                <button
+                  type="button"
+                  aria-label="Vault"
+                  onClick={() => setVaultOpen((open) => !open)}
+                  className={`self-end px-3 py-2 rounded-lg border ${
+                    vaultOpen
+                      ? 'border-sky-500 text-sky-600'
+                      : 'border-gray-200 dark:border-white/10 text-gray-500'
+                  }`}
+                >
+                  <ImagePlus className="w-4 h-4" />
+                </button>
                 <textarea
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
@@ -328,7 +693,7 @@ export default function ChatterFansly() {
                 />
                 <button
                   type="submit"
-                  disabled={sending || !draft.trim()}
+                  disabled={!canSend}
                   className="self-end px-3 py-2 rounded-lg bg-sky-500 text-white disabled:opacity-50"
                 >
                   {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
@@ -337,6 +702,18 @@ export default function ChatterFansly() {
             </>
           )}
         </section>
+        {fanPanelOpen && selectedCreatorId && selectedChat && (
+          <div className="workspace-drawer drawer-xl workspace-open w-72 shrink-0 flex flex-col min-h-0">
+            <FanslyFanPanel
+              creatorId={selectedCreatorId}
+              groupId={selectedChat.groupId}
+              partnerAccountId={selectedChat.partnerAccountId}
+              partnerUsername={selectedChat.partnerUsername}
+              onNickname={setFanNickname}
+              onClose={() => setFanPanelOpen(false)}
+            />
+          </div>
+        )}
       </div>
     </AppShell>
   );

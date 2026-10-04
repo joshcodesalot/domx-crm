@@ -171,26 +171,35 @@ function hostSystemMounts() {
   return { dirs, symlinks };
 }
 
+function probeBwrapArgs({ systemDirs, systemSymlinks, chmod = false }) {
+  const args = ['--die-with-parent'];
+  for (const dir of systemDirs) {
+    args.push(chmod ? '--bind' : '--ro-bind', dir, dir);
+  }
+  for (const link of systemSymlinks) {
+    args.push('--symlink', link.target, link.path);
+  }
+  if (chmod && systemDirs.includes('/usr')) {
+    args.push('--chmod', '0511', '/usr');
+  }
+  args.push('--', '/usr/bin/true');
+  return args;
+}
+
 function probeBwrap() {
   if (cachedSupport) return cachedSupport;
   if (!commandExists('bwrap')) {
     cachedSupport = { ok: false, chmod: false };
     return cachedSupport;
   }
-  const chmodProbe = spawnSync(
-    'bwrap',
-    ['--die-with-parent', '--bind', '/usr', '/usr', '--chmod', '0511', '/usr', '--', 'true'],
-    { timeout: 8000 }
-  );
+  const mounts = hostSystemMounts();
+  const probeMounts = { systemDirs: mounts.dirs, systemSymlinks: mounts.symlinks };
+  const chmodProbe = spawnSync('bwrap', probeBwrapArgs({ ...probeMounts, chmod: true }), { timeout: 8000 });
   if (chmodProbe.status === 0) {
     cachedSupport = { ok: true, chmod: true };
     return cachedSupport;
   }
-  const plainProbe = spawnSync(
-    'bwrap',
-    ['--die-with-parent', '--ro-bind', '/usr', '/usr', '--', 'true'],
-    { timeout: 8000 }
-  );
+  const plainProbe = spawnSync('bwrap', probeBwrapArgs(probeMounts), { timeout: 8000 });
   cachedSupport = { ok: plainProbe.status === 0, chmod: false };
   return cachedSupport;
 }
@@ -239,5 +248,6 @@ module.exports = {
   writeUserDirs,
   withPortalDisabled,
   buildBwrapArgs,
+  probeBwrapArgs,
   clearcoteCommand,
 };

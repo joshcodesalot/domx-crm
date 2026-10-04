@@ -7,6 +7,7 @@ const {
   pinDownloadDirectory,
   writeUserDirs,
   buildBwrapArgs,
+  probeBwrapArgs,
 } = require('../../../browser-host/clearcote/fileJail');
 
 describe('browser file jail', () => {
@@ -57,5 +58,30 @@ describe('browser file jail', () => {
     );
     assert.equal(profileChmod, -1);
     assert.equal(args.at(-1), '--disable-features=Foo,XdgFileChooserPortal');
+  });
+
+  it('probes bubblewrap with the Debian loader links', () => {
+    const symlinks = [
+      { path: '/bin', target: 'usr/bin' },
+      { path: '/lib', target: 'usr/lib' },
+      { path: '/lib64', target: 'usr/lib64' },
+    ];
+    const plain = probeBwrapArgs({ systemDirs: ['/usr'], systemSymlinks: symlinks });
+    assert.equal(plain.at(-1), '/usr/bin/true');
+    assert.equal(plain.at(-2), '--');
+    assert.deepEqual(
+      symlinks.map((link) => {
+        const at = plain.indexOf(link.path);
+        return [plain[at - 2], plain[at - 1], plain[at]];
+      }),
+      symlinks.map((link) => ['--symlink', link.target, link.path])
+    );
+    assert.equal(plain.includes('--chmod'), false);
+
+    const chmod = probeBwrapArgs({ systemDirs: ['/usr'], systemSymlinks: symlinks, chmod: true });
+    assert.equal(chmod.at(-1), '/usr/bin/true');
+    const chmodAt = chmod.indexOf('--chmod');
+    assert.equal(chmod[chmodAt + 1], '0511');
+    assert.equal(chmod[chmodAt + 2], '/usr');
   });
 });

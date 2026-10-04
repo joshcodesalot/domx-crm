@@ -15,7 +15,9 @@ import {
   connectFanslyAccount,
   connectFourBasedAccount,
   connectMaloumAccount,
+  isFanslyTwofaRequired,
   reconnectFanslyAccount,
+  reconnectFanslyAccountSaved,
   reconnectFourBasedAccount,
   reconnectMaloumAccount,
   createCreator,
@@ -50,16 +52,25 @@ interface SessionData {
   profileImageUrl: string | null;
 }
 
+interface FanslyTwofaChallenge {
+  twofaToken: string;
+  deviceId: string;
+  twofaType?: number;
+  email?: string;
+}
+
 interface AddCreatorModalProps {
   onClose: () => void;
   onSaved: () => void;
   reconnectCreator?: Creator | null;
+  fanslyTwofa?: FanslyTwofaChallenge | null;
 }
 
 export default function AddCreatorModal({
   onClose,
   onSaved,
   reconnectCreator = null,
+  fanslyTwofa = null,
 }: AddCreatorModalProps) {
   const isReconnect = Boolean(reconnectCreator?.accountId);
   const [step, setStep] = useState(isReconnect ? 2 : 1);
@@ -80,6 +91,16 @@ export default function AddCreatorModal({
   const [telegramCode, setTelegramCode] = useState('');
   const [telegramPassword, setTelegramPassword] = useState('');
   const [telegramPhase, setTelegramPhase] = useState<'phone' | 'code' | '2fa'>('phone');
+  const [fanslyPhase, setFanslyPhase] = useState<'credentials' | '2fa'>(
+    fanslyTwofa?.twofaToken ? '2fa' : 'credentials'
+  );
+  const [fanslyCode, setFanslyCode] = useState('');
+  const [fanslyChallenge, setFanslyChallenge] = useState<FanslyTwofaChallenge | null>(
+    fanslyTwofa?.twofaToken ? fanslyTwofa : null
+  );
+  const [fanslySavedReconnect, setFanslySavedReconnect] = useState(
+    Boolean(fanslyTwofa?.twofaToken && reconnectCreator)
+  );
   const [proxyHost, setProxyHost] = useState('');
   const [proxyUsername, setProxyUsername] = useState('');
   const [proxyPassword, setProxyPassword] = useState('');
@@ -111,8 +132,21 @@ export default function AddCreatorModal({
           ? ''
           : 'MALOUM_PROXY_URL';
 
+  const fanslyEmailChallenge = fanslyChallenge?.twofaType === 2;
+  const fanslyCodeMax = fanslyEmailChallenge ? 8 : 6;
+
   const [title, subtitle] =
-    isReconnect && step === 2
+    platform === 'fansly' && fanslyPhase === '2fa' && step === 2
+      ? fanslyEmailChallenge
+        ? ([
+            'Login from a new device',
+            'Enter the verification code Fansly sent to your email.',
+          ] as [string, string])
+        : ([
+            'Verify Fansly account',
+            'Enter the 6-digit code from your authenticator app.',
+          ] as [string, string])
+      : isReconnect && step === 2
       ? ([
           platform === '4based'
             ? 'Reconnect 4based account'
@@ -362,8 +396,28 @@ export default function AddCreatorModal({
     }
   }
 
+  function resetFanslyTwofa() {
+    setFanslyPhase('credentials');
+    setFanslyChallenge(null);
+    setFanslyCode('');
+    setFanslySavedReconnect(false);
+    setLoginError(null);
+  }
+
+  function holdFanslyTwofa(challenge: FanslyTwofaChallenge) {
+    setFanslyChallenge(challenge);
+    setFanslyPhase('2fa');
+    setFanslyCode('');
+  }
+
   async function handleConnectFansly() {
-    if (!loginEmail.trim() || !loginPassword.trim()) {
+    const completingTwofa = fanslyPhase === '2fa' && fanslyChallenge;
+    if (completingTwofa) {
+      if (!fanslyCode.trim()) {
+        setLoginError('Authentication code is required.');
+        return;
+      }
+    } else if (!loginEmail.trim() || !loginPassword.trim()) {
       setLoginError('Username and password are required.');
       return;
     }
@@ -380,12 +434,28 @@ export default function AddCreatorModal({
       if (optionalProxy === false) {
         return;
       }
+      const twofaFields = completingTwofa
+        ? {
+            twofaToken: completingTwofa.twofaToken,
+            twofaCode: fanslyCode.trim(),
+            deviceId: completingTwofa.deviceId,
+          }
+        : {};
+
       if (isReconnect && reconnectCreator) {
-        await reconnectFanslyAccount(reconnectCreator.id, {
-          email: loginEmail.trim(),
-          password: loginPassword,
-          ...(optionalProxy ? { proxyUrl: optionalProxy } : {}),
-        });
+        const result =
+          fanslySavedReconnect && completingTwofa
+            ? await reconnectFanslyAccountSaved(reconnectCreator.id, twofaFields)
+            : await reconnectFanslyAccount(reconnectCreator.id, {
+                email: loginEmail.trim(),
+                password: loginPassword,
+                ...(optionalProxy ? { proxyUrl: optionalProxy } : {}),
+                ...twofaFields,
+              });
+        if (isFanslyTwofaRequired(result)) {
+          holdFanslyTwofa(result);
+          return;
+        }
         setConnectSucceeded(false);
         connectSucceededRef.current = false;
         onSaved();
@@ -398,7 +468,12 @@ export default function AddCreatorModal({
         email: loginEmail.trim(),
         password: loginPassword,
         ...(optionalProxy ? { proxyUrl: optionalProxy } : {}),
+        ...twofaFields,
       });
+      if (isFanslyTwofaRequired(result)) {
+        holdFanslyTwofa(result);
+        return;
+      }
 
       setAccountToken(result.accountToken);
       setSession({
@@ -733,7 +808,65 @@ export default function AddCreatorModal({
             </div>
           )}
 
-          {step === 2 && platform !== 'telegram' && (
+          {step === 2 && platform === 'fansly' && fanslyPhase === '2fa' && (
+            <div className="space-y-4">
+              {fanslyEmailChallenge ? (
+                <div className="space-y-2 text-sm text-gray-500 dark:text-gray-400">
+                  <p>
+                    In order to verify your identity, Fansly sent a verification code to
+                    the following email address:
+                  </p>
+                  {fanslyChallenge?.email ? (
+                    <p className="font-medium text-gray-900 dark:text-gray-100">
+                      {fanslyChallenge.email}
+                    </p>
+                  ) : null}
+                  <p>A wrong code stays on this step so you can try again.</p>
+                </div>
+              ) : (
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  Fansly sent an authenticator challenge. Enter the current 6-digit code.
+                  A wrong code stays on this step so you can try again.
+                </p>
+              )}
+              <div>
+                <label className="block text-sm font-medium mb-1.5">
+                  {fanslyEmailChallenge ? '2FA Code' : 'Authentication code'}{' '}
+                  <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={fanslyCode}
+                  maxLength={fanslyCodeMax}
+                  onChange={(e) =>
+                    setFanslyCode(e.target.value.replace(/\D/g, '').slice(0, fanslyCodeMax))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !connecting) void handleConnectAccount();
+                  }}
+                  placeholder={fanslyEmailChallenge ? 'Email code' : '6-digit code'}
+                  className={inputClassName}
+                  autoFocus
+                  disabled={connecting}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={resetFanslyTwofa}
+                disabled={connecting}
+                className="text-sm text-brand-600 hover:text-brand-500 disabled:opacity-50"
+              >
+                Use password instead
+              </button>
+              {loginError && (
+                <p className="text-sm text-red-600 dark:text-red-400">{loginError}</p>
+              )}
+            </div>
+          )}
+
+          {step === 2 && platform !== 'telegram' && !(platform === 'fansly' && fanslyPhase === '2fa') && (
             <div className="space-y-4">
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 Login uses {proxyEnvLabel} from the server (.env) unless you set a
@@ -878,7 +1011,10 @@ export default function AddCreatorModal({
           {step > 1 && !isReconnect ? (
             <button
               type="button"
-              onClick={() => setStep((s) => s - 1)}
+              onClick={() => {
+                if (platform === 'fansly' && fanslyPhase === '2fa') resetFanslyTwofa();
+                setStep((s) => s - 1);
+              }}
               disabled={connecting}
               className="px-4 py-2 text-sm font-medium border border-gray-200 dark:border-white/10 rounded-lg hover:bg-gray-50 dark:hover:bg-white/5 transition-colors disabled:opacity-50"
             >
@@ -905,8 +1041,8 @@ export default function AddCreatorModal({
                 className="px-4 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-500 rounded-lg transition-colors disabled:opacity-50"
               >
                 {connecting
-                  ? platform === 'telegram'
-                    ? telegramPhase === 'phone'
+                  ? platform === 'telegram' || (platform === 'fansly' && fanslyPhase === '2fa')
+                    ? platform === 'telegram' && telegramPhase === 'phone'
                       ? 'Sending code...'
                       : 'Verifying...'
                     : isReconnect
@@ -918,9 +1054,11 @@ export default function AddCreatorModal({
                       : telegramPhase === '2fa'
                         ? 'Verify password'
                         : 'Verify code'
-                    : isReconnect
-                      ? 'Reconnect Account'
-                      : 'Connect Account'}
+                    : platform === 'fansly' && fanslyPhase === '2fa'
+                      ? 'Verify code'
+                      : isReconnect
+                        ? 'Reconnect Account'
+                        : 'Connect Account'}
               </button>
             )}
 

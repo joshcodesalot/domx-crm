@@ -9,6 +9,7 @@ const DATA_SUBDIRS = [
   'scheduled-media',
   'maloum-media-cache',
   '4based-media-cache',
+  'fansly-media-cache',
   'browser-profiles',
 ];
 
