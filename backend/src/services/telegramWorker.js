@@ -1443,7 +1443,97 @@ async function getClient(creatorId) {
   return attachCreatorClient(creatorId);
 }
 
+const DIALOG_FLOOD_RETRY_MAX_SECONDS = 20;
+const dialogFloodUntil = new Map();
+const dialogListInflight = new Map();
+
+function floodWaitSeconds(err) {
+  const fromField = Number(err?.seconds);
+  if (Number.isFinite(fromField) && fromField > 0) return Math.ceil(fromField);
+  const raw = String(err?.message || '');
+  const match = raw.match(/FLOOD_WAIT[_ ]?(\d+)/i);
+  if (!match) return 0;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : 0;
+}
+
+function dialogFloodRemaining(creatorId) {
+  const until = dialogFloodUntil.get(creatorId) || 0;
+  const remainMs = until - Date.now();
+  if (remainMs <= 0) {
+    if (until) dialogFloodUntil.delete(creatorId);
+    return 0;
+  }
+  return Math.ceil(remainMs / 1000);
+}
+
+function assertDialogsAllowed(creatorId) {
+  const remain = dialogFloodRemaining(creatorId);
+  if (remain > 0) {
+    throw new TelegramWorkerError(`Telegram rate limit. Try again in ${remain}s`, 429);
+  }
+}
+
+function noteDialogFlood(creatorId, err) {
+  const seconds = floodWaitSeconds(err);
+  if (!seconds) return 0;
+  const until = Date.now() + seconds * 1000;
+  const prev = dialogFloodUntil.get(creatorId) || 0;
+  if (until > prev) dialogFloodUntil.set(creatorId, until);
+  return seconds;
+}
+
+function dialogFloodError(seconds) {
+  return new TelegramWorkerError(
+    seconds
+      ? `Telegram rate limit. Try again in ${seconds}s`
+      : 'Telegram rate limit. Try again later',
+    429
+  );
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function throwIfDialogFlood(creatorId, err) {
+  const seconds = noteDialogFlood(creatorId, err);
+  if (!seconds) throw err;
+  throw dialogFloodError(seconds);
+}
+
 async function listDialogs(creatorId, { limit = 80 } = {}) {
+  const existing = dialogListInflight.get(creatorId);
+  if (existing) return existing;
+  const work = listDialogsOnce(creatorId, { limit }).finally(() => {
+    if (dialogListInflight.get(creatorId) === work) dialogListInflight.delete(creatorId);
+  });
+  dialogListInflight.set(creatorId, work);
+  return work;
+}
+
+async function listDialogsOnce(creatorId, { limit = 80 } = {}) {
+  try {
+    return await collectDialogs(creatorId, limit);
+  } catch (err) {
+    const seconds = noteDialogFlood(creatorId, err);
+    if (!seconds) throw err;
+    if (seconds > DIALOG_FLOOD_RETRY_MAX_SECONDS) throw dialogFloodError(seconds);
+    const deadline = Date.now() + seconds * 1000;
+    await sleep(seconds * 1000);
+    if ((dialogFloodUntil.get(creatorId) || 0) <= deadline + 1000) {
+      dialogFloodUntil.delete(creatorId);
+    }
+    try {
+      return await collectDialogs(creatorId, limit);
+    } catch (retryErr) {
+      await throwIfDialogFlood(creatorId, retryErr);
+    }
+  }
+}
+
+async function collectDialogs(creatorId, limit = 80) {
+  assertDialogsAllowed(creatorId);
   const client = await getClient(creatorId);
   const dialogs = [];
   const peers = [];
@@ -1496,37 +1586,48 @@ function isPeerCacheMiss(err) {
   );
 }
 
-async function ensureCachedPeer(client, numericId) {
+async function ensureCachedPeer(client, creatorId, numericId) {
   try {
     return await client.resolvePeer(numericId);
   } catch (err) {
     if (!isPeerCacheMiss(err)) throw err;
   }
-  for await (const dialog of client.iterDialogs({ limit: ALL_DM_DIALOG_CAP })) {
-    if (String(dialog.peer?.id) !== String(numericId)) continue;
-    try {
-      return await client.resolvePeer(numericId);
-    } catch (err) {
-      if (!isPeerCacheMiss(err)) throw err;
-      break;
+  assertDialogsAllowed(creatorId);
+  try {
+    for await (const dialog of client.iterDialogs({ limit: ALL_DM_DIALOG_CAP })) {
+      if (String(dialog.peer?.id) !== String(numericId)) continue;
+      try {
+        return await client.resolvePeer(numericId);
+      } catch (err) {
+        if (!isPeerCacheMiss(err)) throw err;
+        break;
+      }
     }
+  } catch (err) {
+    if (err instanceof TelegramWorkerError) throw err;
+    await throwIfDialogFlood(creatorId, err);
   }
   throw new TelegramWorkerError('This chat is no longer available in Telegram', 404);
 }
 
 async function listAllDmPeers(creatorId) {
+  assertDialogsAllowed(creatorId);
   const client = await getClient(creatorId);
   const peers = [];
   const seen = new Set();
-  for await (const dialog of client.iterDialogs({ limit: ALL_DM_DIALOG_CAP })) {
-    const peer = dialog.peer;
-    if (!isInboxPeer(peer)) continue;
-    if (peerKind(peer) !== 'dm') continue;
-    if (isTelegramServicePeer(peer)) continue;
-    const peerId = String(peer.id || '').trim();
-    if (!peerId || seen.has(peerId)) continue;
-    seen.add(peerId);
-    peers.push(peer);
+  try {
+    for await (const dialog of client.iterDialogs({ limit: ALL_DM_DIALOG_CAP })) {
+      const peer = dialog.peer;
+      if (!isInboxPeer(peer)) continue;
+      if (peerKind(peer) !== 'dm') continue;
+      if (isTelegramServicePeer(peer)) continue;
+      const peerId = String(peer.id || '').trim();
+      if (!peerId || seen.has(peerId)) continue;
+      seen.add(peerId);
+      peers.push(peer);
+    }
+  } catch (err) {
+    await throwIfDialogFlood(creatorId, err);
   }
   for (let index = 0; index < peers.length; index += PROFILE_UPSERT_BATCH) {
     const batch = peers.slice(index, index + PROFILE_UPSERT_BATCH);
@@ -1562,7 +1663,7 @@ async function listMessages(
   if (!Number.isFinite(numericId)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
-  await ensureCachedPeer(client, numericId);
+  await ensureCachedPeer(client, creatorId, numericId);
   const clamped = Math.min(Math.max(Number(limit) || 50, 1), 100);
   const numericOffsetId = Number(offsetId);
   const hasOffset = Number.isFinite(numericOffsetId) && numericOffsetId > 0;
@@ -1662,7 +1763,7 @@ async function searchMessagesInChat(
   if (!Number.isFinite(numericId)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
-  await ensureCachedPeer(client, numericId);
+  await ensureCachedPeer(client, creatorId, numericId);
   const trimmed = String(query || '').trim();
   if (!trimmed) {
     throw new TelegramWorkerError('Search query is required', 400);
@@ -1839,7 +1940,7 @@ async function sendText(creatorId, peerId, text, { replyToMessageId } = {}) {
   if (!Number.isFinite(numericId)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
-  await ensureCachedPeer(client, numericId);
+  await ensureCachedPeer(client, creatorId, numericId);
   const trimmed = String(text || '').trim();
   if (!trimmed) {
     throw new TelegramWorkerError('Message text is required');
@@ -2001,7 +2102,7 @@ async function sendVaultToPeer(creatorId, peerId, { items, caption, replyToMessa
   if (!Number.isFinite(numericPeer)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
-  await ensureCachedPeer(client, numericPeer);
+  await ensureCachedPeer(client, creatorId, numericPeer);
   const list = Array.isArray(items) ? items.filter(Boolean) : [];
   if (!list.length) {
     throw new TelegramWorkerError('vaultIds are required');
@@ -2415,7 +2516,7 @@ async function sendReaction(creatorId, peerId, messageId, emoji) {
   if (!Number.isFinite(numericPeer) || !Number.isFinite(msgId)) {
     throw new TelegramWorkerError('Invalid chat or message id');
   }
-  await ensureCachedPeer(client, numericPeer);
+  await ensureCachedPeer(client, creatorId, numericPeer);
   const trimmed = emoji == null ? '' : String(emoji).trim();
   const reactionEmoji = trimmed || null;
   let sent = null;
@@ -2449,7 +2550,7 @@ async function deleteText(creatorId, peerId, messageId) {
   if (!Number.isFinite(numericId) || !Number.isFinite(msgId)) {
     throw new TelegramWorkerError('Invalid chat or message id');
   }
-  await ensureCachedPeer(client, numericId);
+  await ensureCachedPeer(client, creatorId, numericId);
 
   let found = null;
   try {
@@ -2516,12 +2617,17 @@ async function resolveUsername(creatorId, username) {
 }
 
 async function unreadCount(creatorId, { hideService = false } = {}) {
+  assertDialogsAllowed(creatorId);
   const client = await getClient(creatorId);
   let messages = 0;
-  for await (const dialog of client.iterDialogs({ limit: 80 })) {
-    if (!isInboxPeer(dialog.peer)) continue;
-    if (hideService && isTelegramServicePeer(dialog.peer)) continue;
-    messages += Number(dialog.unreadCount) || 0;
+  try {
+    for await (const dialog of client.iterDialogs({ limit: 80 })) {
+      if (!isInboxPeer(dialog.peer)) continue;
+      if (hideService && isTelegramServicePeer(dialog.peer)) continue;
+      messages += Number(dialog.unreadCount) || 0;
+    }
+  } catch (err) {
+    await throwIfDialogFlood(creatorId, err);
   }
   return { messages, notifications: 0 };
 }
@@ -3154,7 +3260,7 @@ async function sendGif(creatorId, peerId, { fileId, queryId, resultId, replyToMe
   if (!Number.isFinite(numericPeer)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
-  const resolvedPeer = await ensureCachedPeer(client, numericPeer);
+  const resolvedPeer = await ensureCachedPeer(client, creatorId, numericPeer);
   const id = String(fileId || '').trim();
   const inlineQueryId = String(queryId || '').trim();
   const inlineResultId = String(resultId || '').trim();
