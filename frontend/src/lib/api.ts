@@ -2240,6 +2240,8 @@ export interface FanslyAttachmentMedia {
   fullUrl: string | null;
   fullLocked?: boolean;
   playlistUrl: string | null;
+  playlistLocked?: boolean;
+  duration?: number | null;
   price: number | null;
   purchased?: boolean;
   access?: boolean;
@@ -2290,6 +2292,8 @@ export interface FanslyVaultMedia {
   fullUrl?: string | null;
   fullLocked?: boolean;
   playlistUrl?: string | null;
+  playlistLocked?: boolean;
+  duration?: number | null;
 }
 
 export interface FanslySubscriptionTier {
@@ -2313,6 +2317,8 @@ export interface FanslyFeedMedia {
   fullUrl: string | null;
   fullLocked?: boolean;
   playlistUrl: string | null;
+  playlistLocked?: boolean;
+  duration?: number | null;
   price: number | null;
 }
 
@@ -2599,8 +2605,9 @@ export function fanslyOpenSrc(
     fullUrl?: string | null;
     fullLocked?: boolean;
     playlistUrl?: string | null;
+    playlistLocked?: boolean;
   }
-): { url: string; kind: 'picture' | 'video'; poster: string | null } | null {
+): { url: string; kind: 'picture' | 'video'; poster: string | null; fallbackUrl?: string | null } | null {
   const poster = fanslyVaultPreviewSrc(creatorId, {
     mediaId: item.mediaId,
     previewUrl: item.previewUrl ?? null,
@@ -2608,8 +2615,11 @@ export function fanslyOpenSrc(
   });
   const video = item.kind === 'video' || item.mediaType === 2;
   if (video && item.playlistUrl && item.mediaId) {
+    const proxyUrl = fanslyMediaUrl(creatorId, item.mediaId, item.playlistUrl);
+    const locked = Boolean(item.playlistLocked);
     return {
-      url: fanslyMediaUrl(creatorId, item.mediaId, item.playlistUrl),
+      url: locked ? proxyUrl : item.playlistUrl,
+      fallbackUrl: locked ? null : proxyUrl,
       kind: 'video',
       poster,
     };
@@ -2679,6 +2689,8 @@ export interface FanslyMassMessageMedia {
   fullUrl: string | null;
   fullLocked?: boolean;
   playlistUrl: string | null;
+  playlistLocked?: boolean;
+  duration?: number | null;
   price: number | null;
 }
 

@@ -39,7 +39,7 @@ loadEnvFile(path.join(__dirname, '../.env'));
 loadEnvFile(path.join(__dirname, '../../backend/.env'));
 loadEnvFile(path.join(__dirname, '../.env.production'));
 
-const { app, BrowserWindow, Menu, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, session } = require('electron');
 const { getApiUrl } = require('./apiConfig');
 
 if (!process.env.DOMX_API_URL) {
@@ -69,6 +69,48 @@ const {
 const isDev = !app.isPackaged;
 
 let mainWindow = null;
+
+function isFanslyCdnRequest(url) {
+  try {
+    return /^cdn\d+\.fansly\.com$/i.test(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function allowDirectFanslyCdn() {
+  const filter = { urls: ['https://*.fansly.com/*'] };
+  session.defaultSession.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
+    if (!isFanslyCdnRequest(details.url)) {
+      callback({ requestHeaders: details.requestHeaders });
+      return;
+    }
+    const requestHeaders = { ...details.requestHeaders };
+    for (const key of Object.keys(requestHeaders)) {
+      if (key.toLowerCase() === 'referer') delete requestHeaders[key];
+    }
+    requestHeaders.Referer = 'https://fansly.com/';
+    callback({ requestHeaders });
+  });
+  session.defaultSession.webRequest.onHeadersReceived(filter, (details, callback) => {
+    if (!isFanslyCdnRequest(details.url)) {
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
+    const responseHeaders = { ...(details.responseHeaders || {}) };
+    for (const key of Object.keys(responseHeaders)) {
+      const lower = key.toLowerCase();
+      if (
+        lower === 'access-control-allow-origin' ||
+        lower === 'access-control-allow-credentials'
+      ) {
+        delete responseHeaders[key];
+      }
+    }
+    responseHeaders['Access-Control-Allow-Origin'] = ['*'];
+    callback({ responseHeaders });
+  });
+}
 
 function getMainWindow() {
   return mainWindow;
@@ -126,6 +168,7 @@ function createWindow() {
 }
 
 async function bootstrap() {
+  allowDirectFanslyCdn();
   Menu.setApplicationMenu(null);
   registerUpdaterIpc(ipcMain);
   registerMaloumSessionIpc();

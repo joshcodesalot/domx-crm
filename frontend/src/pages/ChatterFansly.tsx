@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpDown, Eye, ImagePlus, Loader2, Lock, PanelRight, PanelRightClose, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import FanslyFanPanel from '@/components/fansly/FanslyFanPanel';
+import QuickEmojiBar from '@/components/QuickEmojiBar';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import { useAuth } from '@/context/AuthContext';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
@@ -76,6 +77,13 @@ function messagePrice(message: FanslyMessage): number | null {
 
 function isFanslyVideo(item: { kind?: 'image' | 'video'; mediaType?: number }): boolean {
   return item.kind === 'video' || item.mediaType === 2;
+}
+
+function formatDuration(seconds?: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return '';
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.floor(seconds % 60);
+  return `${minutes}:${String(remainder).padStart(2, '0')}`;
 }
 
 function letterFromName(name: string): string {
@@ -255,6 +263,7 @@ export default function ChatterFansly() {
     url: string;
     kind: 'picture' | 'video';
     poster: string | null;
+    fallbackUrl?: string | null;
   } | null>(null);
   const [selectedMedia, setSelectedMedia] = useState<FanslyVaultMedia[]>([]);
   const [requirePurchase, setRequirePurchase] = useState(false);
@@ -1174,6 +1183,10 @@ export default function ChatterFansly() {
                   void handleSend();
                 }}
               >
+                <QuickEmojiBar
+                  disabled={sending}
+                  onInsert={(emoji) => setDraft((d) => d + emoji)}
+                />
                 <div className="flex items-end gap-2 bg-white/80 dark:bg-zinc-900/80 border border-gray-200 dark:border-zinc-800 rounded-2xl p-2 focus-within:border-sky-500/50">
                   <button
                     type="button"
@@ -1429,6 +1442,7 @@ export default function ChatterFansly() {
                             const selected = selectedMedia.some((row) => row.mediaId === item.mediaId);
                             const previewSrc = fanslyVaultPreviewSrc(selectedCreatorId, item);
                             const video = isFanslyVideo(item);
+                            const durationLabel = video ? formatDuration(item.duration) : '';
                             return (
                               <div
                                 key={item.id}
@@ -1454,6 +1468,11 @@ export default function ChatterFansly() {
                                 {video && (
                                   <span className="pointer-events-none absolute bottom-1 left-1 flex items-center justify-center rounded-full bg-black/55 p-1 text-white">
                                     <Play className="h-3 w-3 fill-white" />
+                                  </span>
+                                )}
+                                {durationLabel && (
+                                  <span className="pointer-events-none absolute bottom-1 right-1 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white">
+                                    {durationLabel}
                                   </span>
                                 )}
                                 <button
@@ -1494,6 +1513,7 @@ export default function ChatterFansly() {
           url={viewer.url}
           kind={viewer.kind}
           poster={viewer.poster}
+          fallbackUrl={viewer.fallbackUrl}
           onClose={() => setViewer(null)}
           zClassName="z-[100]"
         />

@@ -36,6 +36,13 @@ import {
   type FanslyVaultMedia,
 } from '@/lib/api';
 
+function formatDuration(seconds?: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return '';
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.floor(seconds % 60);
+  return `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
 function formatFeedTime(createdAt: number | null): string {
   if (createdAt == null || !Number.isFinite(createdAt)) return '';
   const ms = createdAt < 1e12 ? createdAt * 1000 : createdAt;
@@ -717,6 +724,8 @@ export default function FanslyFeed() {
                   {vaultMedia.map((item) => {
                     const src = previewSrc(selectedCreatorId, item);
                     const selected = selectedVaultItem?.mediaId === item.mediaId;
+                    const video = item.kind === 'video' || item.mediaType === 2;
+                    const durationLabel = video ? formatDuration(item.duration) : '';
                     return (
                       <button
                         key={item.id || item.mediaId}
@@ -743,9 +752,14 @@ export default function FanslyFeed() {
                             <Check className="w-3 h-3" />
                           </span>
                         )}
-                        {(item.kind === 'video' || item.mediaType === 2) && (
+                        {video && (
                           <span className="absolute bottom-2 left-2 text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-white">
                             Video
+                          </span>
+                        )}
+                        {durationLabel && (
+                          <span className="absolute bottom-2 right-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white pointer-events-none">
+                            {durationLabel}
                           </span>
                         )}
                       </button>

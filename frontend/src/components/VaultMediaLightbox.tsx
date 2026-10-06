@@ -20,7 +20,7 @@ export type VaultMediaLightboxProps = {
   kind: VaultMediaLightboxKind;
   onClose: () => void;
   poster?: string | null;
-  /** Used when the primary picture URL fails to load. */
+  /** Used when the primary picture or HLS URL fails to load. */
   fallbackUrl?: string | null;
   /** Raised when open above other modals (e.g. vault picker). */
   zClassName?: string;
@@ -34,37 +34,57 @@ export default function VaultMediaLightbox({
   fallbackUrl,
   zClassName = 'z-[60]',
 }: VaultMediaLightboxProps) {
+  const [trackedUrl, setTrackedUrl] = useState(url);
   const [useFallback, setUseFallback] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsPlayback = kind === 'video' && isHlsUrl(url);
-  useEffect(() => {
+  if (url !== trackedUrl) {
+    setTrackedUrl(url);
     setUseFallback(false);
     setVideoReady(false);
-  }, [url]);
+  }
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const playbackUrl =
+    useFallback && fallbackUrl && fallbackUrl !== url ? fallbackUrl : url;
+  const hlsPlayback = kind === 'video' && isHlsUrl(playbackUrl);
   useEffect(() => {
     const video = videoRef.current;
     if (!hlsPlayback || !video) return;
     let hls: Hls | null = null;
+    let fellBack = false;
+    const failOver = () => {
+      if (!fellBack && fallbackUrl && fallbackUrl !== playbackUrl) {
+        fellBack = true;
+        setVideoReady(false);
+        setUseFallback(true);
+        return;
+      }
+      setVideoReady(true);
+    };
+    const onVideoError = () => failOver();
     if (Hls.isSupported()) {
-      hls = new Hls();
-      hls.loadSource(url);
+      hls = new Hls({
+        xhrSetup: (xhr) => {
+          xhr.withCredentials = false;
+        },
+      });
+      hls.loadSource(playbackUrl);
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         video.play().catch(() => {});
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) setVideoReady(true);
+        if (data.fatal) failOver();
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = url;
+      video.src = playbackUrl;
+      video.addEventListener('error', onVideoError);
     }
     return () => {
+      video.removeEventListener('error', onVideoError);
       hls?.destroy();
     };
-  }, [hlsPlayback, url]);
-  const pictureSrc =
-    useFallback && fallbackUrl && fallbackUrl !== url ? fallbackUrl : url;
+  }, [hlsPlayback, playbackUrl, fallbackUrl]);
+  const pictureSrc = playbackUrl;
 
   return (
     <div
@@ -97,14 +117,16 @@ export default function VaultMediaLightbox({
           )}
           <video
             ref={videoRef}
-            src={hlsPlayback ? undefined : url}
+            src={hlsPlayback ? undefined : playbackUrl}
             controls
             autoPlay
             playsInline
             poster={poster || undefined}
             onCanPlay={() => setVideoReady(true)}
             onPlaying={() => setVideoReady(true)}
-            onError={() => setVideoReady(true)}
+            onError={() => {
+              if (!hlsPlayback) setVideoReady(true);
+            }}
             className="h-auto w-auto max-h-[calc(100dvh-3rem)] max-w-[calc(100dvw-3rem)] object-contain rounded-lg bg-gray-900 dark:bg-black animate-slide-up"
           >
             <track kind="captions" />

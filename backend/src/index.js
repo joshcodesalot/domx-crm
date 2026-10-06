@@ -1,6 +1,51 @@
 require('dotenv').config();
+const fs = require('fs');
 const { dataPath, ensureDataDirs } = require('./services/dataDir');
 ensureDataDirs();
+
+function crashDetails(reason) {
+  if (reason instanceof Error) {
+    return {
+      name: reason.name || 'Error',
+      message: reason.message || '',
+      stack: reason.stack || '',
+    };
+  }
+  return {
+    name: 'UnhandledRejection',
+    message: String(reason),
+    stack: '',
+  };
+}
+
+function writeCrashLog(kind, reason) {
+  const details = crashDetails(reason);
+  const entry = [
+    '---',
+    new Date().toISOString(),
+    kind,
+    `${details.name}: ${details.message}`,
+    details.stack,
+    '',
+  ].join('\n');
+  try {
+    fs.appendFileSync(dataPath('crash.log'), entry);
+  } catch (err) {
+    console.error('[crash] Failed to write crash log:', err.message || err);
+  }
+  console.error(`[crash] ${kind}: ${details.name}: ${details.message}`);
+  if (details.stack) console.error(details.stack);
+}
+
+process.on('uncaughtException', (err) => {
+  writeCrashLog('uncaughtException', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  writeCrashLog('unhandledRejection', reason);
+});
+
 require('./services/jwtSecret').resolveJwtSecret();
 
 const express = require('express');

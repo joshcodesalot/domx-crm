@@ -662,6 +662,22 @@ function hlsPlaylistUrl(media) {
   return hls ? httpLocation(hls) : null;
 }
 
+function fanslyDurationSeconds(media) {
+  const raw = media?.metadata;
+  let parsed = raw;
+  if (typeof raw === 'string') {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const duration = Number(parsed.duration);
+  if (!Number.isFinite(duration) || duration <= 0) return null;
+  return duration;
+}
+
 function fanslyMediaView(media) {
   const kind = Number(media?.type) === 2 ? 'video' : 'image';
   const previewUrl = previewUrlFromMedia(media);
@@ -675,6 +691,8 @@ function fanslyMediaView(media) {
     fullUrl,
     fullLocked: Boolean(fullUrl) && fanslyPreviewLocksToIp(fullUrl) && isFanslyImagePreview(fullUrl),
     playlistUrl,
+    playlistLocked: Boolean(playlistUrl) && fanslyPreviewLocksToIp(playlistUrl),
+    duration: kind === 'video' ? fanslyDurationSeconds(media) : null,
   };
 }
 
@@ -751,6 +769,10 @@ function isFanslyPlaylistUrl(url) {
 
 function isFanslySegmentUrl(url) {
   return isAllowedFanslyCdnUrl(url) && fanslyCdnPath(url).endsWith('.ts');
+}
+
+function isFanslyInitUrl(url) {
+  return isAllowedFanslyCdnUrl(url) && fanslyCdnPath(url).endsWith('/init.mp4');
 }
 
 function rewriteHlsPlaylist(body, playlistUrl, toProxyUrl) {
@@ -2090,6 +2112,7 @@ module.exports = {
   rewriteHlsPlaylist,
   isFanslyPlaylistUrl,
   isFanslySegmentUrl,
+  isFanslyInitUrl,
   listVaultAlbums,
   listVaultMedia,
   fanslyPreviewLocksToIp,

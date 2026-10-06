@@ -30,6 +30,7 @@ const {
   MESSAGE_CONTENT_BUNDLE,
   MESSAGE_CONTENT_STORY,
   notificationUnreadCount,
+  isFanslyInitUrl,
   rewriteHlsPlaylist,
   sanitizeNotificationType,
   WrongPasswordError,
@@ -544,11 +545,71 @@ describe('fansly message media', () => {
     );
     assert.equal(message.media[0].kind, 'video');
     assert.equal(message.media[0].playlistUrl, playlist);
+    assert.equal(message.media[0].playlistLocked, false);
     assert.equal(message.media[0].fullUrl, null);
     assert.equal(message.media[0].previewUrl, poster);
+    assert.equal(message.media[0].duration, null);
     assert.equal(message.media[0].price, 10);
     assert.equal(message.media[1].kind, 'image');
     assert.equal(message.media[1].price, 10);
+  });
+
+  it('marks an IP-locked playlist', () => {
+    const policy = Buffer.from(
+      JSON.stringify({
+        Statement: [{ Condition: { IpAddress: { 'AWS:SourceIp': '203.0.113.10/32' } } }],
+      })
+    ).toString('base64');
+    const lockedPlaylist = `https://cdn3.fansly.com/new/acct/vid/vid.m3u8?Policy=${encodeURIComponent(policy)}`;
+    const [message] = mapMessageThread({
+      messages: [
+        {
+          id: 'm3',
+          content: 'locked video',
+          senderId: 'creator',
+          createdAt: 12,
+          attachments: [{ contentType: MESSAGE_CONTENT_MEDIA, contentId: 'am-video', pos: 0 }],
+        },
+      ],
+      accountMedia: [
+        {
+          id: 'am-video',
+          media: {
+            id: 'video-locked',
+            type: 2,
+            variants: [{ type: 302, locations: [{ location: lockedPlaylist }] }],
+          },
+        },
+      ],
+    });
+    assert.equal(message.media[0].playlistUrl, lockedPlaylist);
+    assert.equal(message.media[0].playlistLocked, true);
+  });
+
+  it('reads video length from metadata', () => {
+    const [message] = mapMessageThread({
+      messages: [
+        {
+          id: 'm4',
+          content: 'timed',
+          senderId: 'creator',
+          createdAt: 13,
+          attachments: [{ contentType: MESSAGE_CONTENT_MEDIA, contentId: 'am-video', pos: 0 }],
+        },
+      ],
+      accountMedia: [
+        {
+          id: 'am-video',
+          media: {
+            id: 'video-timed',
+            type: 2,
+            metadata: '{"originalHeight":1920,"originalWidth":1080,"duration":9.25}',
+            variants: [{ type: 1, locations: [{ location: poster }] }],
+          },
+        },
+      ],
+    });
+    assert.equal(message.media[0].duration, 9.25);
   });
 });
 
@@ -577,6 +638,19 @@ describe('fansly hls playlist rewrite', () => {
       /URI="proxy:https:\/\/cdn3\.fansly\.com\/new\/acct\/vid\/init\.mp4"/
     );
     assert.doesNotMatch(rewritten, /video-1\.mp4/);
+  });
+
+  it('allows an HLS init segment and rejects other mp4 files', () => {
+    assert.equal(
+      isFanslyInitUrl('https://cdn3.fansly.com/new/acct/vid/init.mp4'),
+      true
+    );
+    assert.equal(
+      isFanslyInitUrl('https://cdn3.fansly.com/new/acct/vid/media-2/init.mp4'),
+      true
+    );
+    assert.equal(isFanslyInitUrl('https://cdn3.fansly.com/acct/video-1.mp4'), false);
+    assert.equal(isFanslyInitUrl('https://evil.example/init.mp4'), false);
   });
 });
 

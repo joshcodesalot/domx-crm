@@ -100,6 +100,13 @@ function readStoredBoolean(key: string, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
+function formatDuration(seconds?: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return '';
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.floor(seconds % 60);
+  return `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1706,6 +1713,7 @@ export default function MaloumMassMessage() {
                         (entry) => vaultUploadId(entry) === uploadId
                       );
                       const video = isVideoAsset(item.media?.type);
+                      const durationLabel = video ? formatDuration(item.media?.length) : '';
                       const openPreview = () => {
                         const next = vaultPreviewFromItem(item);
                         if (next) setVaultPreview(next);
@@ -1776,6 +1784,11 @@ export default function MaloumMassMessage() {
                                 <Play className="w-5 h-5 ml-0.5" />
                               </button>
                             </div>
+                          )}
+                          {durationLabel && (
+                            <span className="absolute bottom-2 right-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white pointer-events-none">
+                              {durationLabel}
+                            </span>
                           )}
                         </div>
                       );

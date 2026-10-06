@@ -87,7 +87,7 @@ async function lifetimeGrossForFan(session, creatorId, fanId) {
     rememberFanSpend(key, mills);
     return mills;
   } catch (err) {
-    console.warn('[fansly] fan spend failed:', err.message);
+    console.warn('[fanslyClient] fan spend failed:', err.message);
     rememberFanSpend(key, null);
     return null;
   }
@@ -619,7 +619,7 @@ router.get(
         try {
           previews = await fanslyClient.getMessagesByIds(session, previewIds);
         } catch (err) {
-          console.warn('[fansly] inbox preview failed:', err.message);
+          console.warn('[fanslyClient] inbox preview failed:', err.message);
         }
       }
       const byId = new Map(previews.map((message) => [message.id, message]));
@@ -682,7 +682,7 @@ router.get(
         try {
           await fanslyClient.ackMessages(session, unreadIds);
         } catch (err) {
-          console.warn('[fansly] ack on open failed:', err.message);
+          console.warn('[fanslyClient] ack on open failed:', err.message);
         }
       }
       res.json({ messages, providerUserId: creator.providerUserId });
@@ -860,11 +860,13 @@ router.get(
 
       const playlist = fanslyClient.isFanslyPlaylistUrl(mediaUrl);
       const segment = fanslyClient.isFanslySegmentUrl(mediaUrl);
+      const initSegment = fanslyClient.isFanslyInitUrl(mediaUrl);
+      const streamMedia = segment || initSegment;
       const lockedImage =
         fanslyClient.isAllowedFanslyCdnUrl(mediaUrl) &&
         fanslyClient.fanslyPreviewLocksToIp(mediaUrl) &&
         fanslyMediaCache.isCacheableUrl(mediaUrl);
-      if (!playlist && !segment && !lockedImage) {
+      if (!playlist && !streamMedia && !lockedImage) {
         return res.status(400).json({ error: 'Media URL is not an IP-locked Fansly thumbnail' });
       }
 
@@ -882,7 +884,7 @@ router.get(
       }
 
       const upstream = await fanslyClient.fetchCdnMedia(fanslySession(creator), mediaUrl, {
-        accept: playlist || segment ? '*/*' : undefined,
+        accept: playlist || streamMedia ? '*/*' : undefined,
       });
       if (!upstream.ok) {
         return res.status(upstream.status || 502).json({ error: 'Failed to fetch media' });
@@ -902,22 +904,22 @@ router.get(
 
       const contentType =
         upstream.headers.get('content-type') ||
-        (segment ? 'video/mp2t' : 'application/octet-stream');
+        (segment ? 'video/mp2t' : initSegment ? 'video/mp4' : 'application/octet-stream');
       const etag = upstream.headers.get('etag') || null;
       res.setHeader('Content-Type', contentType);
       if (etag) res.setHeader('ETag', etag);
       res.setHeader(
         'Cache-Control',
-        segment ? 'private, no-store' : 'private, max-age=86400, stale-while-revalidate=604800'
+        streamMedia ? 'private, no-store' : 'private, max-age=86400, stale-while-revalidate=604800'
       );
-      if (!segment) res.setHeader('X-DomX-Media-Cache', 'MISS');
+      if (!streamMedia) res.setHeader('X-DomX-Media-Cache', 'MISS');
       res.status(upstream.status);
 
       if (!upstream.body) return res.end();
 
       const { Readable } = require('stream');
       const nodeStream = Readable.fromWeb(upstream.body);
-      if (segment) {
+      if (streamMedia) {
         nodeStream.on('error', (err) => {
           console.warn('Fansly media stream error:', err.message);
           if (!res.headersSent) res.status(502).end();
@@ -1025,7 +1027,7 @@ router.get(
       try {
         await messagingDashboard.processFanslyPurchaseNotifications(payload.notifications);
       } catch (err) {
-        console.warn('[fansly] purchase log failed:', err.message);
+        console.warn('[fanslyClient] purchase log failed:', err.message);
       }
       res.json({
         filters: fanslyClient.NOTIFICATION_FILTERS,

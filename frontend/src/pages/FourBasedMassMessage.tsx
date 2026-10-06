@@ -118,6 +118,13 @@ function isVideoItem(item: FourBasedVaultItem | null | undefined): boolean {
   return type.includes('video');
 }
 
+function formatDuration(seconds?: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return '';
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.floor(seconds % 60);
+  return `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
 function nearScrollEnd(target: HTMLElement, thresholdPx = 80): boolean {
   return target.scrollHeight - target.scrollTop - target.clientHeight <= thresholdPx;
 }
@@ -1970,6 +1977,7 @@ export default function FourBasedMassMessage() {
                     (entry) => vaultItemId(entry) === id
                   );
                   const video = isVideoItem(item);
+                  const durationLabel = video ? formatDuration(item.duration) : '';
                   return (
                     <div
                       key={id || src || 'item'}
@@ -2033,6 +2041,11 @@ export default function FourBasedMassMessage() {
                             <Play className="w-5 h-5 ml-0.5" />
                           </button>
                         </div>
+                      )}
+                      {durationLabel && (
+                        <span className="absolute bottom-2 right-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white pointer-events-none">
+                          {durationLabel}
+                        </span>
                       )}
                     </div>
                   );
