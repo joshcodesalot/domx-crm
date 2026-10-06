@@ -13,6 +13,7 @@ import {
   type MessagingDashboardEntry,
   type User,
 } from '@/lib/api';
+import { formatPlatformLabel } from '@/lib/formatCreator';
 import {
   formatCalendarRangeLabel,
   formatInstant,
@@ -53,10 +54,7 @@ function formatCurrencyAmounts(amounts: CurrencyAmount[] | undefined): string {
 }
 
 function platformLabel(platform: MessagingDashboardEntry['platform']): string {
-  if (platform === '4based') return '4based';
-  if (platform === 'maloum') return 'Maloum';
-  if (platform === 'telegram') return 'Telegram';
-  return '--';
+  return formatPlatformLabel(platform) || '--';
 }
 
 function SalesLogRow({
@@ -358,16 +356,15 @@ export default function SalesLogs() {
                 className={selectClassName}
               >
                 <option value="">All</option>
-                {filteredCreators.map((creator) => (
-                  <option key={creator.id} value={creator.id}>
-                    {creator.platform === '4based'
-                      ? '4based · '
-                      : creator.platform === 'telegram'
-                        ? 'Telegram · '
-                        : 'Maloum · '}
-                    {creator.displayName}
-                  </option>
-                ))}
+                {filteredCreators.map((creator) => {
+                  const platform = formatPlatformLabel(creator.platform);
+                  return (
+                    <option key={creator.id} value={creator.id}>
+                      {platform ? `${platform} · ` : ''}
+                      {creator.displayName}
+                    </option>
+                  );
+                })}
               </select>
             </label>
 

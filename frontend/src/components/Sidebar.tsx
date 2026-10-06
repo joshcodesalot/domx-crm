@@ -510,6 +510,22 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
       active: toolActive('/chatter/fansly/notifications'),
       unread: unreadTotals.fansly.notifications,
     },
+    ...(canSendMass
+      ? [
+          {
+            label: 'Mass Message',
+            icon: <Megaphone className="w-4 h-4" />,
+            onClick: () => go('/chatter/fansly/mass-message'),
+            active: toolActive('/chatter/fansly/mass-message'),
+          },
+          {
+            label: 'Feed',
+            icon: <Newspaper className="w-4 h-4" />,
+            onClick: () => go('/chatter/fansly/feed'),
+            active: toolActive('/chatter/fansly/feed'),
+          },
+        ]
+      : []),
   ];
 
   function chatterCanSeePlatform(id: 'maloum' | '4based' | 'telegram' | 'fansly') {

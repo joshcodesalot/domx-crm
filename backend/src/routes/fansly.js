@@ -1,4 +1,5 @@
 const express = require('express');
+const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
@@ -15,6 +16,19 @@ const {
 } = require('../services/proxyUrl');
 
 const router = express.Router();
+
+const fanslyFeedUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024 },
+  fileFilter(_req, file, cb) {
+    const ok =
+      typeof file.mimetype === 'string' && /^(image|video)\//i.test(file.mimetype);
+    if (!ok) {
+      return cb(new Error('Only images and videos are allowed'));
+    }
+    return cb(null, true);
+  },
+});
 
 const connectLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -176,6 +190,118 @@ function readLockedText(body) {
   const sets = Array.isArray(raw.permissionSets) ? raw.permissionSets : [];
   const permissionSets = (sets.length > 0 ? sets : [{}]).slice(0, 5).map((set) => readMediaPermissions({ permissions: set }));
   return { content, permissionSets };
+}
+
+function readFeedPermissions(body) {
+  if (typeof body?.permissions === 'string' && body.permissions.trim()) {
+    let parsed;
+    try {
+      parsed = JSON.parse(body.permissions);
+    } catch {
+      throw new fanslyClient.FanslyApiError('Permissions are invalid', 400);
+    }
+    return readMediaPermissions({ permissions: parsed });
+  }
+  return readMediaPermissions(body);
+}
+
+async function publishFanslyFeed(session, creator, { content, mediaId, permissions }) {
+  const walls = await fanslyClient.listWalls(session, creator.providerUserId);
+  const wallId = fanslyClient.pickPostsWall(walls);
+  const created = await fanslyClient.createAccountMedia(
+    session,
+    fanslyClient.buildFeedAccountMediaBody({ mediaId, permissions })
+  );
+  const accountMediaId = created[0]?.id == null ? '' : String(created[0].id);
+  if (!/^\d+$/.test(accountMediaId)) {
+    throw new fanslyClient.FanslyApiError('Fansly did not return media', 502);
+  }
+  const post = await fanslyClient.createFeedPost(session, {
+    content,
+    accountMediaId,
+    wallId,
+  });
+  const mapped = fanslyClient.toFeedPost(post, created);
+  if (!mapped.createdAt) mapped.createdAt = Math.floor(Date.now() / 1000);
+  return mapped;
+}
+
+function readBroadcastAudience(body) {
+  let raw = body?.audience;
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      throw new fanslyClient.FanslyApiError('Audience is invalid', 400);
+    }
+  }
+  if (raw != null && (typeof raw !== 'object' || Array.isArray(raw))) {
+    throw new fanslyClient.FanslyApiError('Audience is invalid', 400);
+  }
+  const audience = raw && typeof raw === 'object' ? raw : {};
+  const tier =
+    audience.subscriptionTierId == null ? '' : String(audience.subscriptionTierId).trim();
+  return {
+    followers: Boolean(audience.followers),
+    subscribers: audience.subscribers !== false,
+    expiredSubscribers: Boolean(audience.expiredSubscribers),
+    excludeCreators: audience.excludeCreators !== false,
+    excludeOffline: Boolean(audience.excludeOffline),
+    includeListIds: Array.isArray(audience.includeListIds) ? audience.includeListIds : [],
+    excludeListIds: Array.isArray(audience.excludeListIds) ? audience.excludeListIds : [],
+    subscriptionTierId: tier || null,
+  };
+}
+
+function readBroadcastMediaIds(mediaIds) {
+  if (mediaIds == null) return [];
+  if (!Array.isArray(mediaIds)) {
+    throw new fanslyClient.FanslyApiError('Media is invalid', 400);
+  }
+  const ids = [];
+  const seen = new Set();
+  for (const value of mediaIds) {
+    const id = value == null ? '' : String(value).trim();
+    if (!id) continue;
+    if (!/^\d+$/.test(id)) {
+      throw new fanslyClient.FanslyApiError('Media id is required', 400);
+    }
+    if (seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  if (ids.length > fanslyClient.BROADCAST_MEDIA_CAP) {
+    throw new fanslyClient.FanslyApiError('At most 10 media items are allowed', 400);
+  }
+  return ids;
+}
+
+async function sendFanslyBroadcast(session, creator, { content, mediaIds, audience }) {
+  const ids = readBroadcastMediaIds(mediaIds);
+  const text = typeof content === 'string' ? content.trim() : '';
+  if (!text && ids.length === 0) {
+    throw new fanslyClient.FanslyApiError('Message text is required', 400);
+  }
+  const group = await fanslyClient.createBroadcastGroup(
+    session,
+    fanslyClient.buildBroadcastGroupBody({
+      creatorId: creator.providerUserId,
+      groupFlags: fanslyClient.broadcastGroupFlags(audience),
+      includeListIds: audience.includeListIds,
+      excludeListIds: audience.excludeListIds,
+      subscriptionTierId: audience.subscriptionTierId,
+    })
+  );
+  const attachments = await fanslyClient.attachUnlockedBroadcastMedia(session, ids);
+  await fanslyClient.sendBroadcastMessage(
+    session,
+    fanslyClient.buildBroadcastMessageBody({
+      groupId: group.id,
+      content: text,
+      attachments,
+    })
+  );
+  return { ok: true, groupId: String(group.id) };
 }
 
 function readMediaPermissions(body) {
@@ -1117,6 +1243,206 @@ router.get(
       res.json(badges);
     } catch (err) {
       return handleFanslyError(res, err, 'Fansly unread error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/fansly/feed',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const session = fanslySession(creator);
+      const walls = await fanslyClient.listWalls(session, creator.providerUserId);
+      const wallId = fanslyClient.pickPostsWall(walls);
+      const before = typeof req.query.before === 'string' ? req.query.before : '0';
+      const result = await fanslyClient.listWallPosts(session, {
+        accountId: creator.providerUserId,
+        wallId,
+        before,
+      });
+      res.json({ ...result, wallId, providerUserId: creator.providerUserId });
+    } catch (err) {
+      return handleFanslyError(res, err, 'List Fansly feed error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/fansly/feed',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const mediaId = req.body?.mediaId == null ? '' : String(req.body.mediaId).trim();
+      if (!/^\d+$/.test(mediaId)) {
+        return res.status(400).json({ error: 'mediaId is required' });
+      }
+      const content = typeof req.body?.content === 'string' ? req.body.content : '';
+      const post = await publishFanslyFeed(fanslySession(creator), creator, {
+        content,
+        mediaId,
+        permissions: readMediaPermissions(req.body),
+      });
+      res.status(201).json({ post, providerUserId: creator.providerUserId });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Create Fansly feed post error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/fansly/feed/uploads',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  (req, res, next) => {
+    fanslyFeedUpload.single('file')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message || 'Upload failed' });
+      }
+      return next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      if (!req.file?.buffer?.length) {
+        return res.status(400).json({ error: 'file is required' });
+      }
+      const session = fanslySession(creator);
+      const mediaId = await fanslyClient.uploadMedia(session, {
+        buffer: req.file.buffer,
+        fileName: req.file.originalname || 'upload',
+        mimeType: req.file.mimetype || 'application/octet-stream',
+      });
+      const content = typeof req.body?.content === 'string' ? req.body.content : '';
+      const post = await publishFanslyFeed(session, creator, {
+        content,
+        mediaId,
+        permissions: readFeedPermissions(req.body),
+      });
+      res.status(201).json({ post, providerUserId: creator.providerUserId });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Upload Fansly feed media error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/fansly/mass-messages',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const tab = typeof req.query.tab === 'string' ? req.query.tab : 'sent';
+      if (tab !== 'sent' && tab !== 'deleted') {
+        return res.status(400).json({ error: 'Tab is invalid' });
+      }
+      const before = typeof req.query.before === 'string' ? req.query.before : '0';
+      const result = await fanslyClient.listBroadcastMessages(fanslySession(creator), {
+        deleted: tab === 'deleted',
+        before,
+      });
+      res.json({ ...result, providerUserId: creator.providerUserId });
+    } catch (err) {
+      return handleFanslyError(res, err, 'List Fansly mass messages error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/fansly/mass-messages',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const sent = await sendFanslyBroadcast(fanslySession(creator), creator, {
+        content: req.body?.content,
+        mediaIds: req.body?.mediaIds,
+        audience: readBroadcastAudience(req.body),
+      });
+      res.status(201).json({ ...sent, providerUserId: creator.providerUserId });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Send Fansly mass message error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/fansly/mass-messages/uploads',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  (req, res, next) => {
+    fanslyFeedUpload.single('file')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message || 'Upload failed' });
+      }
+      return next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      if (!req.file?.buffer?.length) {
+        return res.status(400).json({ error: 'file is required' });
+      }
+      const session = fanslySession(creator);
+      const mediaId = await fanslyClient.uploadMedia(session, {
+        buffer: req.file.buffer,
+        fileName: req.file.originalname || 'upload',
+        mimeType: req.file.mimetype || 'application/octet-stream',
+      });
+      const sent = await sendFanslyBroadcast(session, creator, {
+        content: req.body?.content,
+        mediaIds: [mediaId],
+        audience: readBroadcastAudience(req.body),
+      });
+      res.status(201).json({ ...sent, providerUserId: creator.providerUserId });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Upload Fansly mass message error:');
+    }
+  }
+);
+
+router.delete(
+  '/:id/fansly/mass-messages/:messageId',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      await fanslyClient.deleteMessage(fanslySession(creator), req.params.messageId);
+      res.json({ ok: true });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Delete Fansly mass message error:');
+    }
+  }
+);
+
+router.delete(
+  '/:id/fansly/feed/:postId',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      await fanslyClient.deletePost(fanslySession(creator), req.params.postId);
+      res.json({ ok: true });
+    } catch (err) {
+      return handleFanslyError(res, err, 'Delete Fansly feed post error:');
     }
   }
 );

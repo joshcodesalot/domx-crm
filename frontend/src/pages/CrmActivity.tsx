@@ -14,6 +14,7 @@ import {
   type FanCrmActivitySummary,
   type User,
 } from '@/lib/api';
+import { formatPlatformLabel } from '@/lib/formatCreator';
 import {
   formatCalendarRangeLabel,
   formatInstant,
@@ -69,10 +70,7 @@ function actionLabel(action: FanCrmActivityAction): string {
 }
 
 function platformLabel(platform: FanCrmActivityEvent['platform']): string {
-  if (platform === '4based') return '4based';
-  if (platform === 'maloum') return 'Maloum';
-  if (platform === 'telegram') return 'Telegram';
-  return '--';
+  return formatPlatformLabel(platform) || '--';
 }
 
 function shownValue(value: string): string {
@@ -389,16 +387,15 @@ export default function CrmActivity() {
                 className={selectClassName}
               >
                 <option value="">All</option>
-                {filteredCreators.map((creator) => (
-                  <option key={creator.id} value={creator.id}>
-                    {creator.platform === '4based'
-                      ? '4based · '
-                      : creator.platform === 'telegram'
-                        ? 'Telegram · '
-                        : 'Maloum · '}
-                    {creator.displayName}
-                  </option>
-                ))}
+                {filteredCreators.map((creator) => {
+                  const platform = formatPlatformLabel(creator.platform);
+                  return (
+                    <option key={creator.id} value={creator.id}>
+                      {platform ? `${platform} · ` : ''}
+                      {creator.displayName}
+                    </option>
+                  );
+                })}
               </select>
             </label>
 

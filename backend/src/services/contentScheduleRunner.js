@@ -1,6 +1,7 @@
 const fsp = require('fs/promises');
 const pool = require('../db/pool');
 const { translateToGermanFemdom } = require('./germanTranslator');
+const { skipsGermanTranslation } = require('./germanTranslationPolicy');
 const { prepareFeedPhoto } = require('./imageOrient');
 const fourBasedClient = require('./fourBasedClient');
 const maloumClient = require('./maloumClient');
@@ -436,7 +437,10 @@ async function executeJob(job) {
   const settings = await loadSettings(job.creatorId);
   const english = String(job.bodyText || '').trim();
   const shouldTranslate =
-    job.platform !== 'telegram' && job.translateBody !== false && Boolean(english);
+    job.platform !== 'telegram' &&
+    !skipsGermanTranslation(job.platform) &&
+    job.translateBody !== false &&
+    Boolean(english);
   const text = shouldTranslate ? await translateCaption(english) : english;
 
   if (job.kind === 'mass_message') {

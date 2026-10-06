@@ -468,7 +468,7 @@ export default function FourBasedFeed() {
           const tags = parseHashtags(caption);
           const body = stripHashtags(caption);
           if (body) {
-            caption = reattachHashtags(await translateToGerman(body), tags);
+            caption = reattachHashtags(await translateToGerman(body, [], '4based'), tags);
           } else {
             caption = tags.map((tag) => `#${tag}`).join(' ');
           }

@@ -197,6 +197,11 @@ function jobStatusClass(status: ScheduledContentJob['status']): string {
   return 'text-gray-400';
 }
 
+function scheduleSendsAsTyped(platform: unknown): boolean {
+  const value = String(platform || '').trim().toLowerCase();
+  return value === 'telegram' || value === 'fansly';
+}
+
 function ScheduleJobCard({
   job,
   timeZone,
@@ -225,7 +230,7 @@ function ScheduleJobCard({
               {job.bodyText}
             </p>
           )}
-          {job.translateBody === false && job.platform !== 'telegram' && (
+          {job.translateBody === false && !scheduleSendsAsTyped(job.platform) && (
             <p className="text-[11px] text-gray-400 mt-1">Sent without translation</p>
           )}
           {job.lastError && (
@@ -616,7 +621,9 @@ export default function ContentSchedule() {
           date: row.date,
           time: row.time,
           bodyText: row.bodyText,
-          translateBody: row.translateBody !== false,
+          translateBody: scheduleSendsAsTyped(row.platform)
+            ? false
+            : row.translateBody !== false,
           imageSource: 'upload',
           assetId: row.assetId || matched?.id || null,
           imageFileName: row.imageFileName || matched?.originalFileName || '',
@@ -670,7 +677,7 @@ export default function ContentSchedule() {
           creatorId: row.creatorId,
           runAt: berlinWallToIso(row.date, row.time, timeZone),
           bodyText: row.bodyText,
-          translateBody: row.translateBody,
+          translateBody: scheduleSendsAsTyped(row.platform) ? false : row.translateBody,
           assetId: row.imageSource === 'upload' ? row.assetId : null,
           payload: row.imageSource === 'vault' ? row.payload : {},
         }))
@@ -872,6 +879,9 @@ export default function ContentSchedule() {
                                     ...(platform === 'telegram'
                                       ? { kind: 'mass_message' as const }
                                       : {}),
+                                    ...(scheduleSendsAsTyped(platform)
+                                      ? { translateBody: false }
+                                      : {}),
                                   });
                                 }}
                                 className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-1 py-1"
@@ -961,14 +971,16 @@ export default function ContentSchedule() {
                               <label className="inline-flex items-center gap-2 text-xs text-gray-600 dark:text-zinc-300">
                                 <input
                                   type="checkbox"
-                                  checked={row.translateBody && row.platform !== 'telegram'}
-                                  disabled={row.platform === 'telegram'}
+                                  checked={
+                                    row.translateBody && !scheduleSendsAsTyped(row.platform)
+                                  }
+                                  disabled={scheduleSendsAsTyped(row.platform)}
                                   onChange={(e) =>
                                     updateRow(row.key, { translateBody: e.target.checked })
                                   }
                                   aria-label="Translate scheduled text to German"
                                 />
-                                {row.platform === 'telegram' ? 'As typed' : 'German'}
+                                {scheduleSendsAsTyped(row.platform) ? 'As typed' : 'German'}
                               </label>
                             </td>
                             <td className="p-2 space-y-1">

@@ -1068,7 +1068,7 @@ export default function FourBasedMassMessage() {
       if (autoTranslateOutgoing && englishDraft) {
         setTranslatingOutgoing(true);
         try {
-          textToSend = await translateToGerman(englishDraft, []);
+          textToSend = await translateToGerman(englishDraft, [], '4based');
         } catch (err) {
           setSendError(
             err instanceof Error

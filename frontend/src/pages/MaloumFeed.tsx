@@ -801,7 +801,7 @@ export default function MaloumFeed() {
           const tags = parseHashtags(caption);
           const body = stripHashtags(caption);
           if (body) {
-            caption = reattachHashtags(await translateToGerman(body), tags);
+            caption = reattachHashtags(await translateToGerman(body, [], 'maloum'), tags);
           } else {
             caption = tags.map((tag) => `#${tag}`).join(' ');
           }

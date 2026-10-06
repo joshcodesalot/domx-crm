@@ -2,8 +2,15 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   buildAccountMediaBody,
+  buildFeedAccountMediaBody,
+  buildFeedPostBody,
+  pickPostsWall,
   buildAccountMediaBundleBody,
   buildDeleteMessageBody,
+  broadcastGroupFlags,
+  buildBroadcastGroupBody,
+  buildBroadcastMessageBody,
+  mapBroadcastMessages,
   buildListCommands,
   buildLockedTextBody,
   buildFanNicknameBody,
@@ -261,6 +268,98 @@ describe('fansly locked media body', () => {
           permissions: { requirePurchase: true, price: 0 },
         }),
       (err) => err instanceof FanslyApiError && err.status === 400
+    );
+  });
+});
+
+describe('fansly feed post body', () => {
+  const mediaId = '951257184874815488';
+  const accountMediaId = '963854195029463040';
+  const wallId = '950608551804416000';
+
+  it('posts free vault media with an empty whitelist', () => {
+    assert.deepEqual(buildFeedAccountMediaBody({ mediaId, permissions: {} }), [
+      {
+        mediaId,
+        previewId: null,
+        permissionFlags: 0,
+        price: 0,
+        whitelist: [],
+        permissions: { permissionFlags: [] },
+        tags: [],
+      },
+    ]);
+  });
+
+  it('keeps purchase, follow, and tier flags without a fan whitelist', () => {
+    const tierId = '941016206926692353';
+    const body = buildFeedAccountMediaBody({
+      mediaId,
+      permissions: {
+        requirePurchase: true,
+        price: 5,
+        requireFollow: true,
+        requireSubscription: true,
+        subscriptionTierId: tierId,
+      },
+    });
+    assert.deepEqual(body[0].whitelist, []);
+    assert.equal(body[0].permissionFlags, 0);
+    assert.equal(body[0].permissions.permissionFlags[0].flags, 1 | 2 | 4);
+    assert.equal(body[0].permissions.permissionFlags[0].price, 5000);
+  });
+
+  it('marks any subscription tier on the media row', () => {
+    const body = buildFeedAccountMediaBody({
+      mediaId,
+      permissions: { requireSubscription: true },
+    });
+    assert.equal(body[0].permissionFlags, 8);
+    assert.deepEqual(body[0].whitelist, []);
+    assert.deepEqual(body[0].permissions.permissionFlags, []);
+  });
+
+  it('matches the captured wall post body', () => {
+    assert.deepEqual(
+      buildFeedPostBody({
+        content: 'i know youll love this',
+        accountMediaId,
+        wallId,
+      }),
+      {
+        content: 'i know youll love this',
+        fypFlags: 0,
+        inReplyTo: null,
+        quotedPostId: null,
+        attachments: [{ contentId: accountMediaId, contentType: 1, pos: 0 }],
+        scheduledFor: 0,
+        expiresAt: 0,
+        postReplyPermissionFlags: [],
+        pinned: 0,
+        wallIds: [wallId],
+        pinWallIds: [],
+      }
+    );
+  });
+
+  it('prefers the Posts wall and falls back to the first position', () => {
+    assert.equal(
+      pickPostsWall([
+        { id: '2', name: 'Clips', pos: 1 },
+        { id: '1', name: 'Posts', pos: 0 },
+      ]),
+      '1'
+    );
+    assert.equal(
+      pickPostsWall([
+        { id: '9', name: 'Clips', pos: 2 },
+        { id: '3', name: 'Main', pos: 0 },
+      ]),
+      '3'
+    );
+    assert.throws(
+      () => pickPostsWall([]),
+      (err) => err instanceof FanslyApiError && err.status === 502
     );
   });
 });
@@ -742,5 +841,182 @@ describe('fansly delete message body', () => {
       () => buildDeleteMessageBody(''),
       (err) => err instanceof FanslyApiError && /Message id/.test(err.message)
     );
+  });
+});
+
+describe('fansly broadcast', () => {
+  const creatorId = '948650325143744512';
+  const excludeListId = '960343602666434560';
+  const includeListId = '951713542833184769';
+  const mediaId = '963851255938039808';
+  const accountMediaId = '963865913784807424';
+  const groupId = '960717172055744512';
+
+  it('defaults the audience to subscribers and exclude creators', () => {
+    assert.equal(broadcastGroupFlags({}), 4 | 8 | 32);
+    assert.equal(
+      broadcastGroupFlags({
+        followers: true,
+        subscribers: true,
+        expiredSubscribers: true,
+        excludeCreators: true,
+      }),
+      62
+    );
+  });
+
+  it('matches the captured exclude-list broadcast group', () => {
+    assert.deepEqual(
+      buildBroadcastGroupBody({
+        creatorId,
+        groupFlags: 62,
+        excludeListIds: [excludeListId],
+      }),
+      {
+        users: [{ userId: creatorId, permissionFlags: 65535 }],
+        recipients: [{ recipientId: excludeListId, type: 30001 }],
+        lastMessage: null,
+        userSettings: null,
+        type: 3,
+        groupFlags: 62,
+        groupFlagsMetadata: '',
+      }
+    );
+  });
+
+  it('includes lists, excluded users, and a subscription tier', () => {
+    const tierId = '941016206926692353';
+    const excludedUser = '927528690898714626';
+    const body = buildBroadcastGroupBody({
+      creatorId,
+      groupFlags: 4 | 8 | 32,
+      includeListIds: [includeListId],
+      excludeUserIds: [excludedUser, creatorId],
+      subscriptionTierId: tierId,
+    });
+    assert.deepEqual(body.users, [
+      { userId: creatorId, permissionFlags: 65535 },
+      { userId: excludedUser, permissionFlags: 0 },
+    ]);
+    assert.deepEqual(body.recipients, [{ recipientId: includeListId, type: 30000 }]);
+    assert.equal(
+      body.groupFlagsMetadata,
+      JSON.stringify({ 4: JSON.stringify({ subscriptionTierId: tierId }) })
+    );
+  });
+
+  it('rejects an audience with no recipients', () => {
+    assert.throws(
+      () =>
+        buildBroadcastGroupBody({
+          creatorId,
+          groupFlags: 32,
+        }),
+      (err) => err instanceof FanslyApiError && err.status === 400
+    );
+  });
+
+  it('allows a list-only audience', () => {
+    const body = buildBroadcastGroupBody({
+      creatorId,
+      groupFlags: 32,
+      includeListIds: [includeListId],
+    });
+    assert.equal(body.groupFlags, 32);
+    assert.equal(body.recipients[0].type, 30000);
+  });
+
+  it('sends unlocked media with an empty whitelist', () => {
+    assert.deepEqual(buildAccountMediaBody({ mediaId, permissions: {} }), [
+      {
+        mediaId,
+        previewId: null,
+        permissionFlags: 0,
+        price: 0,
+        whitelist: [],
+        permissions: { permissionFlags: [] },
+        tags: [],
+      },
+    ]);
+    const bundle = buildAccountMediaBundleBody({
+      mediaIds: [mediaId, '951255491411996672'],
+      permissions: {},
+    });
+    assert.deepEqual(bundle.whitelist, []);
+    assert.deepEqual(bundle.permissions.permissionFlags, []);
+    assert.equal(bundle.permissionFlags, 0);
+  });
+
+  it('matches a text-only broadcast and a media broadcast', () => {
+    assert.deepEqual(
+      buildBroadcastMessageBody({
+        groupId,
+        content: 'what are you doing right now?',
+        createdAt: 1791297901.15,
+      }),
+      {
+        type: 1,
+        attachments: [],
+        likes: [],
+        content: 'what are you doing right now?',
+        groupId,
+        scheduledFor: 0,
+        inReplyTo: null,
+        createdAt: 1791297901.15,
+      }
+    );
+    assert.deepEqual(
+      buildBroadcastMessageBody({
+        groupId,
+        content: 'what are you doing right now?',
+        attachments: [{ contentId: accountMediaId, contentType: 1 }],
+        createdAt: 1791297901.15,
+      }).attachments,
+      [{ messageId: null, pos: 0, contentId: accountMediaId, contentType: 1 }]
+    );
+  });
+
+  it('rejects an empty broadcast', () => {
+    assert.throws(
+      () => buildBroadcastMessageBody({ groupId, content: '   ' }),
+      (err) => err instanceof FanslyApiError && err.status === 400
+    );
+  });
+
+  it('maps broadcast stats and attached media', () => {
+    const [message] = mapBroadcastMessages({
+      messages: [
+        {
+          id: '963619324830949376',
+          type: 3,
+          content: 'Say please',
+          createdAt: 1791239109,
+          attachments: [
+            { messageId: '963619324830949376', contentType: 1, contentId: accountMediaId, pos: 0 },
+          ],
+          stats: { total: 50, delivered: 57, read: 1 },
+        },
+      ],
+      accountMedia: [
+        {
+          id: accountMediaId,
+          mediaId,
+          permissions: { permissionFlags: [] },
+          media: {
+            id: mediaId,
+            type: 1,
+            mimetype: 'image/jpeg',
+            locations: [{ location: 'https://cdn3.fansly.com/a.jpeg' }],
+          },
+        },
+      ],
+    });
+    assert.equal(message.id, '963619324830949376');
+    assert.equal(message.content, 'Say please');
+    assert.equal(message.createdAt, 1791239109);
+    assert.equal(message.deletedAt, null);
+    assert.deepEqual(message.stats, { total: 50, delivered: 57, read: 1 });
+    assert.equal(message.media[0].mediaId, mediaId);
+    assert.equal(message.media[0].kind, 'image');
   });
 });

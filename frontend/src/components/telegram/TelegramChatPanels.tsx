@@ -999,6 +999,7 @@ export function TelegramChatThread({
 
   useEffect(() => {
     const queue = createHistoryTranslateQueue({
+      platform: 'telegram',
       onStart: (key) => {
         setTranslatingKeys((prev) => ({ ...prev, [key]: true }));
       },
@@ -1492,7 +1493,7 @@ export function TelegramChatThread({
               role: m.isOutgoing ? 'assistant' : 'user',
               content: m.text.trim(),
             }));
-          messageToSend = await translateToGerman(text, history);
+          messageToSend = await translateToGerman(text, history, 'telegram');
         } catch (err) {
           setError(
             err instanceof Error ? err.message : 'Translation failed. Message was not sent.'

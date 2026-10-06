@@ -2,6 +2,7 @@ const { randomInt } = require('crypto');
 const { ProxyAgent, fetch: undiciFetch } = require('undici');
 
 const API_ORIGIN = 'https://apiv3.fansly.com';
+const MEDIA_ORIGIN = 'https://mediav2.fansly.com';
 const API_PREFIX = '/api/v1';
 const APP_ORIGIN = 'https://fansly.com';
 const POST_LOGIN_URL = 'https://fansly.com/';
@@ -331,9 +332,9 @@ function requestHeaders(session, url) {
   return headers;
 }
 
-async function requestJson({ method = 'GET', path, query, body, session }) {
+async function requestJson({ method = 'GET', path, query, body, session, origin = API_ORIGIN }) {
   const proxyUrl = resolveFanslyProxyUrl(session?.proxyUrl);
-  const url = new URL(`${API_ORIGIN}${API_PREFIX}${path}`);
+  const url = new URL(`${origin}${API_PREFIX}${path}`);
   url.searchParams.set('ngsw-bypass', 'true');
   if (query && typeof query === 'object') {
     for (const [key, value] of Object.entries(query)) {
@@ -614,6 +615,21 @@ const MESSAGE_CONTENT_BUNDLE = 2;
 const MESSAGE_CONTENT_STORY = 32001;
 const VARIANT_HLS = 302;
 
+const BROADCAST_FLAG_FOLLOWERS = 2;
+const BROADCAST_FLAG_SUBSCRIBERS_RENEW = 4;
+const BROADCAST_FLAG_SUBSCRIBERS_OFF = 8;
+const BROADCAST_FLAG_EXPIRED = 16;
+const BROADCAST_FLAG_EXCLUDE_CREATORS = 32;
+const BROADCAST_FLAG_EXCLUDE_OFFLINE = 64;
+const BROADCAST_INCLUDE_FLAGS =
+  BROADCAST_FLAG_FOLLOWERS |
+  BROADCAST_FLAG_SUBSCRIBERS_RENEW |
+  BROADCAST_FLAG_SUBSCRIBERS_OFF |
+  BROADCAST_FLAG_EXPIRED;
+const BROADCAST_LIST_INCLUDE = 30000;
+const BROADCAST_LIST_EXCLUDE = 30001;
+const BROADCAST_MEDIA_CAP = 10;
+
 function albumTitle(album) {
   const title = typeof album?.title === 'string' ? album.title.trim() : '';
   if (title) return title;
@@ -861,6 +877,58 @@ function buildAccountMediaBody({ mediaId, fanId, creatorId, permissions } = {}) 
   ];
 }
 
+function buildFeedAccountMediaBody({ mediaId, permissions } = {}) {
+  return buildAccountMediaBody({ mediaId, permissions });
+}
+
+function buildFeedPostBody({ content, accountMediaId, wallId } = {}) {
+  const text = typeof content === 'string' ? content.trim() : '';
+  const media = accountMediaId == null ? '' : String(accountMediaId).trim();
+  const wall = wallId == null ? '' : String(wallId).trim();
+  if (!/^\d+$/.test(media)) {
+    throw new FanslyApiError('Account media id is required', 400);
+  }
+  if (!/^\d+$/.test(wall)) {
+    throw new FanslyApiError('Wall id is required', 400);
+  }
+  return {
+    content: text,
+    fypFlags: 0,
+    inReplyTo: null,
+    quotedPostId: null,
+    attachments: [{ contentId: media, contentType: MESSAGE_CONTENT_MEDIA, pos: 0 }],
+    scheduledFor: 0,
+    expiresAt: 0,
+    postReplyPermissionFlags: [],
+    pinned: 0,
+    wallIds: [wall],
+    pinWallIds: [],
+  };
+}
+
+function wallRows(data, accountId) {
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== 'object') return [];
+  if (Array.isArray(data.walls)) return data.walls;
+  const id = accountId == null ? '' : String(accountId);
+  if (id && Array.isArray(data[id])) return data[id];
+  if (data.walls && typeof data.walls === 'object' && id && Array.isArray(data.walls[id])) {
+    return data.walls[id];
+  }
+  return [];
+}
+
+function pickPostsWall(walls) {
+  const rows = (Array.isArray(walls) ? walls : []).filter((row) =>
+    /^\d+$/.test(row?.id == null ? '' : String(row.id))
+  );
+  const named = rows.find((row) => String(row.name || '').trim().toLowerCase() === 'posts');
+  if (named) return String(named.id);
+  const sorted = [...rows].sort((a, b) => (Number(a.pos) || 0) - (Number(b.pos) || 0));
+  if (sorted[0]) return String(sorted[0].id);
+  throw new FanslyApiError('Fansly Posts wall was not found', 502);
+}
+
 function buildAccountMediaBundleBody({ mediaIds, fanId, creatorId, permissions } = {}) {
   const ids = Array.isArray(mediaIds) ? mediaIds : [];
   if (ids.length < 2) {
@@ -918,6 +986,137 @@ function buildDeleteMessageBody(messageId) {
     throw new FanslyApiError('Message id is required', 400);
   }
   return { messageId: id };
+}
+
+function broadcastGroupFlags(audience = {}) {
+  const raw = audience && typeof audience === 'object' ? audience : {};
+  const subscribers = raw.subscribers !== false;
+  const excludeCreators = raw.excludeCreators !== false;
+  let flags = 0;
+  if (raw.followers) flags |= BROADCAST_FLAG_FOLLOWERS;
+  if (subscribers) flags |= BROADCAST_FLAG_SUBSCRIBERS_RENEW | BROADCAST_FLAG_SUBSCRIBERS_OFF;
+  if (raw.expiredSubscribers) flags |= BROADCAST_FLAG_EXPIRED;
+  if (excludeCreators) flags |= BROADCAST_FLAG_EXCLUDE_CREATORS;
+  if (raw.excludeOffline) flags |= BROADCAST_FLAG_EXCLUDE_OFFLINE;
+  return flags;
+}
+
+function requireSnowflakeList(values, label) {
+  if (values == null) return [];
+  if (!Array.isArray(values)) {
+    throw new FanslyApiError(`${label} are invalid`, 400);
+  }
+  const ids = [];
+  const seen = new Set();
+  for (const value of values) {
+    const id = value == null ? '' : String(value).trim();
+    if (!id) continue;
+    if (!/^\d+$/.test(id)) {
+      throw new FanslyApiError(`${label} are invalid`, 400);
+    }
+    if (seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+function buildBroadcastGroupBody({
+  creatorId,
+  groupFlags,
+  includeListIds,
+  excludeListIds,
+  excludeUserIds,
+  subscriptionTierId,
+} = {}) {
+  const creator = requireSnowflake(creatorId, 'Creator id');
+  const flags = Number(groupFlags);
+  if (!Number.isInteger(flags) || flags < 0 || flags > 126) {
+    throw new FanslyApiError('Audience is required', 400);
+  }
+  const includeLists = requireSnowflakeList(includeListIds, 'Include lists');
+  const excludeLists = requireSnowflakeList(excludeListIds, 'Exclude lists');
+  const overlap = includeLists.find((id) => excludeLists.includes(id));
+  if (overlap) {
+    throw new FanslyApiError('A list cannot be included and excluded', 400);
+  }
+  if ((flags & BROADCAST_INCLUDE_FLAGS) === 0 && includeLists.length === 0) {
+    throw new FanslyApiError('Select at least one audience', 400);
+  }
+  const excludeUsers = requireSnowflakeList(excludeUserIds, 'Excluded users').filter(
+    (id) => id !== creator
+  );
+  const tier = subscriptionTierId == null ? '' : String(subscriptionTierId).trim();
+  if (tier && !/^\d+$/.test(tier)) {
+    throw new FanslyApiError('Subscription tier is invalid', 400);
+  }
+  const users = [{ userId: creator, permissionFlags: 65535 }];
+  for (const userId of excludeUsers) {
+    users.push({ userId, permissionFlags: 0 });
+  }
+  return {
+    users,
+    recipients: [
+      ...includeLists.map((recipientId) => ({ recipientId, type: BROADCAST_LIST_INCLUDE })),
+      ...excludeLists.map((recipientId) => ({ recipientId, type: BROADCAST_LIST_EXCLUDE })),
+    ],
+    lastMessage: null,
+    userSettings: null,
+    type: 3,
+    groupFlags: flags,
+    groupFlagsMetadata: tier
+      ? JSON.stringify({ 4: JSON.stringify({ subscriptionTierId: tier }) })
+      : '',
+  };
+}
+
+function buildBroadcastMessageBody({ groupId, content, attachments, createdAt } = {}) {
+  const group = requireSnowflake(groupId, 'Group id');
+  const text = typeof content === 'string' ? content.trim() : '';
+  const files = messageAttachments(attachments);
+  if (!text && files.length === 0) {
+    throw new FanslyApiError('Message text is required', 400);
+  }
+  const stamp = Number(createdAt);
+  return {
+    type: 1,
+    attachments: files,
+    likes: [],
+    content: text,
+    groupId: group,
+    scheduledFor: 0,
+    inReplyTo: null,
+    createdAt: Number.isFinite(stamp) && stamp > 0 ? stamp : Date.now() / 1000,
+  };
+}
+
+function mapBroadcastStats(row) {
+  const stats = row?.stats && typeof row.stats === 'object' ? row.stats : {};
+  return {
+    total: Number(stats.total) || 0,
+    delivered: Number(stats.delivered) || 0,
+    read: Number(stats.read) || 0,
+  };
+}
+
+function mapBroadcastMessages(data) {
+  const rows = Array.isArray(data?.messages) ? data.messages : [];
+  const accountMediaById = indexById(data?.accountMedia);
+  const bundlesById = indexById(data?.accountMediaBundles);
+  return rows
+    .map((row) => {
+      const message = mapMessage(row);
+      if (!message || !/^\d+$/.test(String(message.id || ''))) return null;
+      return {
+        id: String(message.id),
+        content: message.content,
+        createdAt: unixSeconds(message.createdAt),
+        deletedAt: unixSeconds(row?.deletedAt),
+        stats: mapBroadcastStats(row),
+        media: mediaForMessage(message, accountMediaById, bundlesById),
+      };
+    })
+    .filter(Boolean);
 }
 
 function mapMessage(row) {
@@ -1094,6 +1293,80 @@ async function deleteMessage(session, messageId) {
   return mapMessage(result.data);
 }
 
+function broadcastCursor(before) {
+  if (before == null || before === '' || before === 0 || before === '0') return '0';
+  const id = String(before).trim();
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError('Cursor is invalid', 400);
+  }
+  return id;
+}
+
+async function listBroadcastMessages(session, { deleted = false, before = 0, limit = 24 } = {}) {
+  const page = Math.min(Math.max(Number(limit) || 24, 1), 50);
+  const result = await requestJson({
+    method: 'GET',
+    path: deleted ? '/message/broadcast/stats/deleted' : '/message/broadcast/stats',
+    session,
+    query: { before: broadcastCursor(before), limit: page },
+  });
+  const messages = mapBroadcastMessages(result.data || {});
+  const last = messages[messages.length - 1];
+  return {
+    messages,
+    before: last ? last.id : null,
+    hasMore: messages.length >= page,
+  };
+}
+
+async function createBroadcastGroup(session, body) {
+  const result = await requestJson({
+    method: 'POST',
+    path: '/group',
+    session,
+    body,
+  });
+  const id = result.data?.id == null ? '' : String(result.data.id);
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError('Fansly did not return a broadcast group', 502);
+  }
+  return result.data;
+}
+
+async function sendBroadcastMessage(session, body) {
+  const result = await requestJson({
+    method: 'POST',
+    path: '/message/broadcast',
+    session,
+    body,
+  });
+  return result.data;
+}
+
+async function attachUnlockedBroadcastMedia(session, mediaIds) {
+  const ids = requireSnowflakeList(mediaIds, 'Media');
+  if (ids.length > BROADCAST_MEDIA_CAP) {
+    throw new FanslyApiError('At most 10 media items are allowed', 400);
+  }
+  if (ids.length === 0) return [];
+  if (ids.length === 1) {
+    const created = await createAccountMedia(
+      session,
+      buildAccountMediaBody({ mediaId: ids[0], permissions: {} })
+    );
+    const contentId = created[0]?.id == null ? '' : String(created[0].id);
+    if (!/^\d+$/.test(contentId)) {
+      throw new FanslyApiError('Fansly did not return media', 502);
+    }
+    return [{ contentId, contentType: MESSAGE_CONTENT_MEDIA }];
+  }
+  const bundle = await createAccountMediaBundle(
+    session,
+    buildAccountMediaBundleBody({ mediaIds: ids, permissions: {} })
+  );
+  return [{ contentId: bundle.id, contentType: MESSAGE_CONTENT_BUNDLE }];
+}
+
 async function listVaultAlbums(session) {
   const result = await requestJson({ method: 'GET', path: '/vault/albumsnew', session });
   const albums = Array.isArray(result.data?.albums) ? result.data.albums : [];
@@ -1202,6 +1475,282 @@ async function createAccountMedia(session, body) {
   });
   const rows = Array.isArray(result.data) ? result.data : result.data ? [result.data] : [];
   return rows;
+}
+
+const UPLOAD_PART_BYTES = 20 * 1024 * 1024;
+const UPLOAD_READY_STATUS = 6;
+const UPLOAD_POLL_ATTEMPTS = 90;
+const UPLOAD_POLL_MS = 1000;
+const UPLOAD_FORM_INPUTS = [
+  { type: 1001, value: 'false' },
+  { type: 1002, value: 'false' },
+  { type: 1003, value: '' },
+  { type: 1004, value: '' },
+  { type: 1005, value: '""' },
+];
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function requireSnowflake(value, label) {
+  const id = value == null ? '' : String(value).trim();
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError(`${label} is required`, 400);
+  }
+  return id;
+}
+
+function uploadMediaType(mimeType) {
+  const mime = String(mimeType || '').toLowerCase();
+  if (mime.startsWith('image/')) return 1;
+  if (mime.startsWith('video/')) return 2;
+  throw new FanslyApiError('Only images and videos can be posted', 400);
+}
+
+function isAllowedFanslyUploadUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.protocol === 'https:' &&
+      /^fansly-upload-[a-z0-9-]+\.s3\.amazonaws\.com$/i.test(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function unixSeconds(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n > 1e12) return Math.floor(n / 1000);
+  return Math.floor(n);
+}
+
+function permissionSummary(node) {
+  if (!node) return null;
+  const rows = Array.isArray(node?.permissions?.permissionFlags) ? node.permissions.permissionFlags : [];
+  const flags = rows.reduce((acc, row) => acc | (Number(row?.flags) || 0), 0);
+  const anyTier = Number(node.permissionFlags) === PERMISSION_SUBSCRIPTION_ANY;
+  const parts = [];
+  const price = purchasePriceDollars(node);
+  if (price) parts.push(`$${price}`);
+  if (flags & PERMISSION_FOLLOW) parts.push('Followers');
+  if ((flags & PERMISSION_SUBSCRIPTION_TIER) || anyTier) parts.push('Subscribers');
+  if (parts.length === 0) return 'Free';
+  return parts.join(' · ');
+}
+
+function mapFeedPost(post, accountMediaById) {
+  const id = post?.id == null ? '' : String(post.id);
+  const attachments = Array.isArray(post?.attachments) ? post.attachments : [];
+  const mediaAttachment = attachments.find(
+    (row) => Number(row?.contentType) === MESSAGE_CONTENT_MEDIA
+  );
+  const contentId = mediaAttachment?.contentId == null ? '' : String(mediaAttachment.contentId);
+  const accountMedia = contentId ? accountMediaById.get(contentId) || null : null;
+  const view = accountMedia?.media ? fanslyMediaView(accountMedia.media) : null;
+  const mediaId = accountMedia?.media?.id == null ? '' : String(accountMedia.media.id);
+  return {
+    id,
+    content: typeof post?.content === 'string' ? post.content : '',
+    createdAt: unixSeconds(post?.createdAt),
+    accessLabel: permissionSummary(accountMedia),
+    media:
+      view && mediaId
+        ? {
+            mediaId,
+            ...view,
+            price: purchasePriceDollars(accountMedia),
+          }
+        : null,
+  };
+}
+
+function timelinePosts(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.posts)) return data.posts;
+  if (Array.isArray(data?.items)) return data.items;
+  return [];
+}
+
+function timelineAccountMedia(data) {
+  if (Array.isArray(data?.accountMedia)) return data.accountMedia;
+  if (Array.isArray(data?.aggregationData?.accountMedia)) return data.aggregationData.accountMedia;
+  return [];
+}
+
+function snowflakeBefore(id, before) {
+  if (!before || before === '0') return true;
+  if (id.length !== before.length) return id.length < before.length;
+  return id < before;
+}
+
+async function listWalls(session, accountId) {
+  const id = requireSnowflake(accountId, 'Account id');
+  const result = await requestJson({
+    method: 'GET',
+    path: '/wall',
+    session,
+    query: { accountIds: id },
+  });
+  return wallRows(result.data, id);
+}
+
+async function createFeedPost(session, { content, accountMediaId, wallId } = {}) {
+  const result = await requestJson({
+    method: 'POST',
+    path: '/post',
+    session,
+    body: buildFeedPostBody({ content, accountMediaId, wallId }),
+  });
+  return result.data;
+}
+
+async function listWallPosts(session, { accountId, wallId, before = 0 } = {}) {
+  const account = requireSnowflake(accountId, 'Account id');
+  const wall = requireSnowflake(wallId, 'Wall id');
+  const cursor = before == null || before === '' ? '0' : String(before);
+  const result = await requestJson({
+    method: 'GET',
+    path: `/timelinenew/${encodeURIComponent(account)}`,
+    session,
+    query: { before: cursor, after: 0, wallId: wall, contentSearch: '' },
+  });
+  const data = result.data || {};
+  const mediaById = indexById(timelineAccountMedia(data));
+  const rawPosts = timelinePosts(data);
+  const posts = rawPosts
+    .map((row) => mapFeedPost(row, mediaById))
+    .filter((row) => /^\d+$/.test(row.id) && snowflakeBefore(row.id, cursor));
+  const last = posts[posts.length - 1];
+  return {
+    posts,
+    before: last ? last.id : null,
+    hasMore: posts.length > 0 && rawPosts.length >= 15, // Fansly returns 15 posts per timeline page
+  };
+}
+
+async function deletePost(session, postId) {
+  const id = requireSnowflake(postId, 'Post id');
+  await requestJson({
+    method: 'POST',
+    path: `/post/${encodeURIComponent(id)}/delete`,
+    session,
+  });
+  return { ok: true };
+}
+
+async function putUploadPart(session, uploadUrl, chunk) {
+  if (!isAllowedFanslyUploadUrl(uploadUrl)) {
+    throw new FanslyApiError('Invalid upload URL', 502);
+  }
+  const proxyUrl = resolveFanslyProxyUrl(session?.proxyUrl);
+  const dispatcher = createDispatcher(proxyUrl);
+  let response;
+  try {
+    response = await undiciFetch(uploadUrl, {
+      method: 'PUT',
+      body: chunk,
+      dispatcher,
+    });
+  } catch (err) {
+    throw proxyFailureError(err);
+  }
+  if (!response.ok) {
+    throw new FanslyApiError('Fansly upload part failed', response.status || 502);
+  }
+  const etag = response.headers.get('etag');
+  if (!etag) {
+    throw new FanslyApiError('Fansly upload part is missing an ETag', 502);
+  }
+  return etag;
+}
+
+async function pollUploadedMedia(session, uploadId) {
+  for (let attempt = 0; attempt < UPLOAD_POLL_ATTEMPTS; attempt += 1) {
+    const result = await requestJson({
+      method: 'GET',
+      origin: MEDIA_ORIGIN,
+      path: `/media/upload/${encodeURIComponent(uploadId)}`,
+      session,
+    });
+    const row = result.data || {};
+    const mediaId = row.mediaId == null ? '' : String(row.mediaId);
+    if (Number(row.status) === UPLOAD_READY_STATUS && /^\d+$/.test(mediaId)) {
+      return mediaId;
+    }
+    await delay(UPLOAD_POLL_MS);
+  }
+  throw new FanslyApiError('Fansly upload timed out', 504);
+}
+
+async function uploadMedia(session, { buffer, fileName, mimeType } = {}) {
+  const bytes = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || []);
+  if (!bytes.length) {
+    throw new FanslyApiError('File is required', 400);
+  }
+  const name = typeof fileName === 'string' ? fileName.trim() : '';
+  if (!name) {
+    throw new FanslyApiError('File name is required', 400);
+  }
+  const type = uploadMediaType(mimeType);
+  const created = await requestJson({
+    method: 'POST',
+    origin: MEDIA_ORIGIN,
+    path: '/media/upload/create',
+    session,
+    body: {
+      fileSize: bytes.length,
+      mimeType,
+      fileName: name,
+      uploadFormData: { formInputs: UPLOAD_FORM_INPUTS },
+    },
+  });
+  const upload = created.data || {};
+  const uploadId = requireSnowflake(upload.id, 'Upload id');
+  const partSize = Number(upload.partSize) > 0 ? Number(upload.partSize) : UPLOAD_PART_BYTES;
+  const parts = (Array.isArray(upload.parts) ? upload.parts : [])
+    .slice()
+    .sort((a, b) => Number(a?.index) - Number(b?.index));
+  const needed = Math.ceil(bytes.length / partSize);
+  if (parts.length < needed) {
+    throw new FanslyApiError('Fansly did not return upload parts', 502);
+  }
+  const completed = [];
+  for (const part of parts.slice(0, needed)) {
+    const index = Number(part.index);
+    if (!Number.isInteger(index) || index < 0) {
+      throw new FanslyApiError('Fansly upload part is invalid', 502);
+    }
+    const start = index * partSize;
+    const chunk = bytes.subarray(start, Math.min(start + partSize, bytes.length));
+    if (!chunk.length) {
+      throw new FanslyApiError('Fansly upload part is empty', 502);
+    }
+    const eTag = await putUploadPart(session, part.uploadUrl, chunk);
+    completed.push({ index, eTag });
+  }
+  await requestJson({
+    method: 'POST',
+    origin: MEDIA_ORIGIN,
+    path: '/media/upload/complete',
+    session,
+    body: {
+      id: uploadId,
+      type: Number(upload.type) || type,
+      partSize,
+      status: 0,
+      parts: completed,
+      waitForComplete: 0,
+    },
+  });
+  return pollUploadedMedia(session, uploadId);
+}
+
+function toFeedPost(post, accountMediaRows) {
+  return mapFeedPost(post, indexById(accountMediaRows));
 }
 
 async function createStory(session, body) {
@@ -1503,10 +2052,22 @@ module.exports = {
   listMessages,
   sendMessage,
   deleteMessage,
+  BROADCAST_MEDIA_CAP,
+  broadcastGroupFlags,
+  buildBroadcastGroupBody,
+  buildBroadcastMessageBody,
+  mapBroadcastMessages,
+  listBroadcastMessages,
+  createBroadcastGroup,
+  sendBroadcastMessage,
+  attachUnlockedBroadcastMedia,
   MESSAGE_CONTENT_MEDIA,
   MESSAGE_CONTENT_BUNDLE,
   MESSAGE_CONTENT_STORY,
   buildAccountMediaBody,
+  buildFeedAccountMediaBody,
+  buildFeedPostBody,
+  pickPostsWall,
   buildAccountMediaBundleBody,
   buildLockedTextBody,
   buildDeleteMessageBody,
@@ -1528,6 +2089,12 @@ module.exports = {
   buildListCommands,
   applyListCommands,
   createAccountMedia,
+  createFeedPost,
+  listWalls,
+  listWallPosts,
+  deletePost,
+  uploadMedia,
+  toFeedPost,
   createAccountMediaBundle,
   createStory,
   ackMessages,

@@ -191,7 +191,7 @@ export default function TelegramSextingSession() {
     try {
       let textToSend = english;
       if (english && readAutoTranslateOutgoing()) {
-        textToSend = await translateToGerman(english);
+        textToSend = await translateToGerman(english, [], 'telegram');
       }
       const result = await sendTelegramSextingSessionBlock(block.sessionId, block.id, {
         text: textToSend,

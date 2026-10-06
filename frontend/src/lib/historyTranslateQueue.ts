@@ -6,9 +6,15 @@ export type HistoryTranslateItem = {
   text: string;
 };
 
+function isFanslyPlatform(platform?: string | null): boolean {
+  return String(platform || '').trim().toLowerCase() === 'fansly';
+}
+
 export async function translateTextToEnglish(
-  text: string
+  text: string,
+  platform?: string
 ): Promise<string | null> {
+  if (isFanslyPlatform(platform)) return null;
   if (!text.trim()) return null;
   const response = await fetch(HISTORY_TRANSLATE_API_URL, {
     method: 'POST',
@@ -36,6 +42,7 @@ export type HistoryTranslateQueue = {
 
 type CreateHistoryTranslateQueueOptions = {
   concurrency?: number;
+  platform?: string;
   onResult: (key: string, translated: string) => void;
   onStart?: (key: string) => void;
   onSettle?: (key: string) => void;
@@ -51,7 +58,10 @@ export function createHistoryTranslateQueue(
   options: CreateHistoryTranslateQueueOptions
 ): HistoryTranslateQueue {
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CONCURRENCY);
-  const translate = options.translate ?? translateTextToEnglish;
+  const translate = isFanslyPlatform(options.platform)
+    ? async () => null
+    : (options.translate ??
+      ((text: string) => translateTextToEnglish(text, options.platform)));
   const pending: HistoryTranslateItem[] = [];
   const inFlight = new Set<string>();
   const done = new Set<string>();

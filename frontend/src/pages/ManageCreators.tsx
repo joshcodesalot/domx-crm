@@ -31,15 +31,7 @@ import {
   type Creator,
   type FanslyTwofaRequired,
 } from '@/lib/api';
-import fourBasedIcon from '@/assets/4based_icon.ico';
-import maloumIcon from '@/assets/maloum_icon.png';
-import telegramIcon from '@/assets/telegram_icon.svg';
-
-function platformLabel(platform: Creator['platform']): string {
-  if (platform === 'maloum') return 'Maloum';
-  if (platform === 'telegram') return 'Telegram';
-  return '4based';
-}
+import { formatPlatformLabel } from '@/lib/formatCreator';
 
 function connectionBadgeClass(status: Creator['connectionStatus']): string {
   if (status === 'connected') {
@@ -366,18 +358,8 @@ export default function ManageCreators() {
                     </td>
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center gap-1.5">
-                        {creator.platform === '4based' ? (
-                          <img src={fourBasedIcon} alt="" className="w-3.5 h-3.5" />
-                        ) : creator.platform === 'telegram' ? (
-                          <img src={telegramIcon} alt="" className="w-3.5 h-3.5 rounded-full" />
-                        ) : (
-                          <img
-                            src={maloumIcon}
-                            alt=""
-                            className="w-3.5 h-3.5 rounded-sm object-cover"
-                          />
-                        )}
-                        {platformLabel(creator.platform)}
+                        <PlatformIcon platform={creator.platform} />
+                        {formatPlatformLabel(creator.platform)}
                       </span>
                     </td>
                     <td className="px-4 py-3">
@@ -432,10 +414,14 @@ export default function ManageCreators() {
                                   : creator.hasSavedCredentials
                                   ? creator.platform === '4based'
                                     ? 'Reconnect 4based with saved password'
-                                    : 'Reconnect Maloum with saved password'
+                                    : creator.platform === 'fansly'
+                                      ? 'Reconnect Fansly with saved password'
+                                      : 'Reconnect Maloum with saved password'
                                   : creator.platform === '4based'
                                     ? 'Reconnect 4based account'
-                                    : 'Reconnect Maloum account'
+                                    : creator.platform === 'fansly'
+                                      ? 'Reconnect Fansly account'
+                                      : 'Reconnect Maloum account'
                               }
                               disabled={reconnectingId === creator.id}
                               onClick={() => void handleReconnect(creator)}

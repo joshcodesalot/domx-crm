@@ -1,6 +1,7 @@
 const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { translateToGermanFemdom } = require('../services/germanTranslator');
+const { skipsGermanTranslation } = require('../services/germanTranslationPolicy');
 
 const router = express.Router();
 
@@ -11,6 +12,12 @@ router.post('/', authenticate, async (req, res) => {
     if (!text || !text.trim()) {
       return res.status(400).json({
         error: 'Missing text',
+      });
+    }
+
+    if (skipsGermanTranslation(req.body.platform)) {
+      return res.json({
+        translatedText: String(text).trim(),
       });
     }
 

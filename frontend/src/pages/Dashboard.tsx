@@ -65,6 +65,7 @@ const PLATFORM_LABELS: Record<string, string> = {
   maloum: 'Maloum',
   '4based': '4based',
   telegram: 'Telegram',
+  fansly: 'Fansly',
 };
 
 function dayTotal(amounts: CurrencyAmount[]): number {

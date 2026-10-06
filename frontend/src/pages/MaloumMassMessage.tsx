@@ -919,7 +919,7 @@ export default function MaloumMassMessage() {
       if (autoTranslateOutgoing && englishDraft) {
         setTranslatingOutgoing(true);
         try {
-          textToSend = await translateToGerman(englishDraft, []);
+          textToSend = await translateToGerman(englishDraft, [], 'maloum');
         } catch (err) {
           setSendError(
             err instanceof Error

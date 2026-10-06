@@ -1442,6 +1442,7 @@ export function FourBasedChatThread({
 
   useEffect(() => {
     const queue = createHistoryTranslateQueue({
+      platform: '4based',
       concurrency: 4,
       onStart: (key) => {
         setTranslatingMessageKeys((prev) => new Set(prev).add(key));
@@ -2175,7 +2176,7 @@ export function FourBasedChatThread({
               role: m.user_id === providerUserId ? 'assistant' : 'user',
               content: m.message!.trim(),
             }));
-          messageToSend = await translateToGerman(text, history);
+          messageToSend = await translateToGerman(text, history, '4based');
         } catch (err) {
           setSendError(
             err instanceof Error ? err.message : 'Translation failed. Message was not sent.'

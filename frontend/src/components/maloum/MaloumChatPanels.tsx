@@ -1155,6 +1155,7 @@ export function MaloumChatThread({
 
   useEffect(() => {
     const queue = createHistoryTranslateQueue({
+      platform: 'maloum',
       concurrency: 4,
       onStart: (key) => {
         setTranslatingMessageKeys((prev) => new Set(prev).add(key));
@@ -1951,7 +1952,7 @@ export function MaloumChatThread({
                   : 'user',
               content: messageText(m).trim(),
             }));
-          textToSend = await translateToGerman(englishDraft, history);
+          textToSend = await translateToGerman(englishDraft, history, 'maloum');
         } catch (err) {
           setSendError(
             err instanceof Error

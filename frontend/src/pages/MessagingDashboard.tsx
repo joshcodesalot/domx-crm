@@ -22,6 +22,7 @@ import {
   getDefaultMessagingDashboardDateRange,
   resolveDashboardCurrency,
 } from '@/lib/messagingDashboardFormat';
+import { formatPlatformLabel } from '@/lib/formatCreator';
 import { useStaffTimeZone } from '@/lib/berlinTime';
 
 const inputClassName =
@@ -61,14 +62,7 @@ function MessagingDashboardRow({
   const sentTime = formatSentTime(entry.sentAt, timeZone);
   const mediaLabel = formatMediaLabel(entry);
   const moneyCurrency = resolveDashboardCurrency(entry.currency, entry.platform);
-  const platformLabel =
-    entry.platform === '4based'
-      ? '4based'
-      : entry.platform === 'maloum'
-        ? 'Maloum'
-        : entry.platform === 'telegram'
-          ? 'Telegram'
-          : null;
+  const platformLabel = formatPlatformLabel(entry.platform);
 
   return (
     <tr className="border-b border-gray-100 dark:border-white/5 hover:bg-gray-50/60 dark:hover:bg-white/[0.02]">

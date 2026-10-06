@@ -7,6 +7,7 @@ const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/authorize');
 const { userCanAccessCreator, userSeesAllCreators } = require('../services/creatorAccess');
+const { skipsGermanTranslation } = require('../services/germanTranslationPolicy');
 const {
   parseBusinessDateTime,
   normalizeTimeZone,
@@ -224,7 +225,7 @@ async function insertJob({
       platform,
       runAt,
       bodyText || '',
-      translateBody !== false,
+      skipsGermanTranslation(platform) ? false : translateBody !== false,
       imageFileName || null,
       storedPath || null,
       JSON.stringify(payload || {}),

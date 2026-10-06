@@ -2301,6 +2301,25 @@ export interface FanslyMediaPermissions {
   requireFollow: boolean;
 }
 
+export interface FanslyFeedMedia {
+  mediaId: string;
+  kind: 'image' | 'video';
+  previewUrl: string | null;
+  previewLocked?: boolean;
+  fullUrl: string | null;
+  fullLocked?: boolean;
+  playlistUrl: string | null;
+  price: number | null;
+}
+
+export interface FanslyFeedPost {
+  id: string;
+  content: string;
+  createdAt: number | null;
+  accessLabel: string | null;
+  media: FanslyFeedMedia | null;
+}
+
 export interface FanslyNotification {
   id: string;
   accountId: string;
@@ -2606,6 +2625,177 @@ export async function listFanslySubscriptionTiers(
   creatorId: string
 ): Promise<{ tiers: FanslySubscriptionTier[] }> {
   return request(`/api/creators/${creatorId}/fansly/subscription-tiers`);
+}
+
+export async function listFanslyFeedPosts(
+  creatorId: string,
+  options: { before?: string } = {}
+): Promise<{
+  posts: FanslyFeedPost[];
+  before: string | null;
+  hasMore: boolean;
+  wallId: string;
+  providerUserId: string;
+}> {
+  const params = new URLSearchParams();
+  if (options.before) params.set('before', options.before);
+  const query = params.toString();
+  return request(`/api/creators/${creatorId}/fansly/feed${query ? `?${query}` : ''}`);
+}
+
+export async function createFanslyFeedPost(
+  creatorId: string,
+  payload: {
+    content?: string;
+    mediaId: string;
+    permissions: FanslyMediaPermissions;
+  }
+): Promise<{ post: FanslyFeedPost; providerUserId: string }> {
+  return request(`/api/creators/${creatorId}/fansly/feed`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteFanslyFeedPost(
+  creatorId: string,
+  postId: string
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/feed/${encodeURIComponent(postId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export interface FanslyMassMessageMedia {
+  mediaId: string;
+  kind: 'image' | 'video';
+  previewUrl: string | null;
+  previewLocked?: boolean;
+  fullUrl: string | null;
+  fullLocked?: boolean;
+  playlistUrl: string | null;
+  price: number | null;
+}
+
+export interface FanslyMassMessage {
+  id: string;
+  content: string;
+  createdAt: number | null;
+  deletedAt: number | null;
+  stats: { total: number; delivered: number; read: number };
+  media: FanslyMassMessageMedia[];
+}
+
+export interface FanslyMassMessageAudience {
+  followers?: boolean;
+  subscribers?: boolean;
+  expiredSubscribers?: boolean;
+  excludeCreators?: boolean;
+  excludeOffline?: boolean;
+  includeListIds?: string[];
+  excludeListIds?: string[];
+}
+
+export type FanslyMassMessageTab = 'sent' | 'deleted';
+
+export async function listFanslyMassMessages(
+  creatorId: string,
+  options: { tab?: FanslyMassMessageTab; before?: string } = {}
+): Promise<{
+  messages: FanslyMassMessage[];
+  before: string | null;
+  hasMore: boolean;
+  providerUserId: string;
+}> {
+  const params = new URLSearchParams();
+  if (options.tab) params.set('tab', options.tab);
+  if (options.before) params.set('before', options.before);
+  const query = params.toString();
+  return request(
+    `/api/creators/${creatorId}/fansly/mass-messages${query ? `?${query}` : ''}`
+  );
+}
+
+export async function sendFanslyMassMessage(
+  creatorId: string,
+  payload: {
+    content?: string;
+    mediaIds?: string[];
+    audience: FanslyMassMessageAudience;
+  }
+): Promise<{ ok: boolean; groupId: string; providerUserId: string }> {
+  return request(`/api/creators/${creatorId}/fansly/mass-messages`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function uploadFanslyMassMessage(
+  creatorId: string,
+  formData: FormData
+): Promise<{ ok: boolean; groupId: string; providerUserId: string }> {
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const response = await fetch(
+    `${API_URL}/api/creators/${creatorId}/fansly/mass-messages/uploads`,
+    {
+      method: 'POST',
+      headers,
+      body: formData,
+    }
+  );
+  const data = await response.json().catch(() => ({}));
+  if (isDomxAuthFailure(response.status, (data as { error?: string }).error) && token) {
+    clearToken();
+    window.dispatchEvent(new CustomEvent('domx:session-expired'));
+  }
+  if (!response.ok) {
+    throw new ApiError((data as { error?: string }).error || 'Upload failed', {
+      status: response.status,
+    });
+  }
+  return data as { ok: boolean; groupId: string; providerUserId: string };
+}
+
+export async function deleteFanslyMassMessage(
+  creatorId: string,
+  messageId: string
+): Promise<{ ok: boolean }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/mass-messages/${encodeURIComponent(messageId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export async function uploadFanslyFeedMedia(
+  creatorId: string,
+  formData: FormData
+): Promise<{ post: FanslyFeedPost; providerUserId: string }> {
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const response = await fetch(`${API_URL}/api/creators/${creatorId}/fansly/feed/uploads`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (isDomxAuthFailure(response.status, (data as { error?: string }).error) && token) {
+    clearToken();
+    window.dispatchEvent(new CustomEvent('domx:session-expired'));
+  }
+  if (!response.ok) {
+    throw new ApiError((data as { error?: string }).error || 'Upload failed', {
+      status: response.status,
+    });
+  }
+  return data as { post: FanslyFeedPost; providerUserId: string };
 }
 
 export async function listFanslyNotifications(
@@ -5716,11 +5906,19 @@ export interface TranslateHistoryItem {
 
 export async function translateToGerman(
   text: string,
-  history: TranslateHistoryItem[] = []
+  history: TranslateHistoryItem[] = [],
+  platform?: string
 ): Promise<string> {
+  const original = text.trim();
+  if (String(platform || '').trim().toLowerCase() === 'fansly') {
+    if (!original) {
+      throw new Error('Translation returned empty text');
+    }
+    return original;
+  }
   const result = await request<{ translatedText: string }>('/api/translate-to-german', {
     method: 'POST',
-    body: JSON.stringify({ text, history }),
+    body: JSON.stringify({ text, history, ...(platform ? { platform } : {}) }),
   });
   const translated = result.translatedText?.trim();
   if (!translated) {

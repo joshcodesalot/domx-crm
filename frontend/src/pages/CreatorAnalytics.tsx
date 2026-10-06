@@ -3,6 +3,7 @@ import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import AppLayout from '@/components/AppLayout';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import PlatformIcon from '@/components/PlatformIcon';
 import PeriodDaysToggle, {
   DEFAULT_TIMEZONE,
   formatPeriodRangeLabel,
@@ -19,37 +20,8 @@ import {
   type CreatorSeriesDay,
   type CurrencyAmount,
 } from '@/lib/api';
+import { formatPlatformLabel } from '@/lib/formatCreator';
 import { formatMoney, formatResponseTime } from '@/lib/messagingDashboardFormat';
-import fourBasedIcon from '@/assets/4based_icon.ico';
-import maloumIcon from '@/assets/maloum_icon.png';
-import telegramIcon from '@/assets/telegram_icon.svg';
-
-function PlatformIcon({
-  platform,
-  className = 'w-3.5 h-3.5',
-}: {
-  platform?: 'maloum' | '4based' | 'telegram' | null;
-  className?: string;
-}) {
-  if (platform === '4based') {
-    return <img src={fourBasedIcon} alt="" className={className} />;
-  }
-  if (platform === 'maloum') {
-    return (
-      <img
-        src={maloumIcon}
-        alt=""
-        className={`${className} rounded-sm object-cover`}
-      />
-    );
-  }
-  if (platform === 'telegram') {
-    return (
-      <img src={telegramIcon} alt="" className={`${className} rounded-full`} />
-    );
-  }
-  return null;
-}
 
 function formatCurrencyAmounts(amounts: CurrencyAmount[] | undefined): string {
   if (!amounts || amounts.length === 0) return formatMoney(0, 'EUR');
@@ -368,14 +340,7 @@ export default function CreatorAnalytics() {
               </label>
             </div>
             <div className="flex items-center gap-2">
-              <PlatformIcon
-                platform={
-                  selectedPlatform === 'maloum' || selectedPlatform === '4based'
-                    ? selectedPlatform
-                    : null
-                }
-                className="w-4 h-4"
-              />
+              <PlatformIcon platform={selectedPlatform} className="w-4 h-4" />
               <select
                 value={creatorId}
                 onChange={(e) => handleCreatorChange(e.target.value)}
@@ -383,12 +348,15 @@ export default function CreatorAnalytics() {
                 className="rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-3 py-2 text-sm disabled:opacity-50"
               >
                 <option value="">All creators</option>
-                {creators.map((creator) => (
-                  <option key={creator.id} value={creator.id}>
-                    {creator.platform === '4based' ? '4based · ' : 'Maloum · '}
-                    {creator.displayName}
-                  </option>
-                ))}
+                {creators.map((creator) => {
+                  const platform = formatPlatformLabel(creator.platform);
+                  return (
+                    <option key={creator.id} value={creator.id}>
+                      {platform ? `${platform} · ` : ''}
+                      {creator.displayName}
+                    </option>
+                  );
+                })}
               </select>
             </div>
             <button

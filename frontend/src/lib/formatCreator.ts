@@ -4,6 +4,7 @@ export function formatPlatformLabel(
   if (platform === 'maloum') return 'Maloum';
   if (platform === '4based') return '4based';
   if (platform === 'telegram') return 'Telegram';
+  if (platform === 'fansly') return 'Fansly';
   return null;
 }
 

@@ -11,15 +11,7 @@ import {
   openBrowserProfile,
   type BrowserProfileLock,
 } from '@/lib/api';
-import fourBasedIcon from '@/assets/4based_icon.ico';
-import maloumIcon from '@/assets/maloum_icon.png';
-import telegramIcon from '@/assets/telegram_icon.svg';
-
-function platformLabel(platform: string): string {
-  if (platform === 'maloum') return 'Maloum';
-  if (platform === 'telegram') return 'Telegram';
-  return '4based';
-}
+import { formatPlatformLabel } from '@/lib/formatCreator';
 
 export default function Marketing() {
   const { hasPermission } = useAuth();
@@ -152,18 +144,8 @@ export default function Marketing() {
                       </td>
                       <td className="px-4 py-3">
                         <span className="inline-flex items-center gap-1.5 text-gray-600 dark:text-gray-300">
-                          {profile.platform === '4based' ? (
-                            <img src={fourBasedIcon} alt="" className="w-3.5 h-3.5" />
-                          ) : profile.platform === 'telegram' ? (
-                            <img src={telegramIcon} alt="" className="w-3.5 h-3.5 rounded-full" />
-                          ) : (
-                            <img
-                              src={maloumIcon}
-                              alt=""
-                              className="w-3.5 h-3.5 rounded-sm object-cover"
-                            />
-                          )}
-                          {platformLabel(profile.platform)}
+                          <PlatformIcon platform={profile.platform} />
+                          {formatPlatformLabel(profile.platform)}
                         </span>
                       </td>
                       <td className="px-4 py-3">

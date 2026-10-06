@@ -25,7 +25,11 @@ export default function EditCreatorProxyModal({
   const [showPassword, setShowPassword] = useState(false);
   const [hasCustomProxy, setHasCustomProxy] = useState(false);
   const [envLabel, setEnvLabel] = useState(
-    creator.platform === '4based' ? 'FOURBASED_PROXY_URL' : 'MALOUM_PROXY_URL'
+    creator.platform === '4based'
+      ? 'FOURBASED_PROXY_URL'
+      : creator.platform === 'fansly'
+        ? 'FANSLY_PROXY_URL'
+        : 'MALOUM_PROXY_URL'
   );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
