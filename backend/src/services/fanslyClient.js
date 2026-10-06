@@ -1454,7 +1454,12 @@ function mapListRows(data) {
 }
 
 async function listCreatorLists(session) {
-  const result = await requestJson({ method: 'GET', path: '/lists', session });
+  const result = await requestJson({
+    method: 'GET',
+    path: '/lists/account',
+    session,
+    query: { itemId: '' },
+  });
   return mapListRows(result.data);
 }
 
@@ -1888,26 +1893,80 @@ async function getMessagesByIds(session, ids) {
   return rows.map(mapMessage).filter(Boolean);
 }
 
+const UNREAD_BADGE_PAGE_SIZE = 20;
+const UNREAD_BADGE_PAGE_CAP = 5;
+
+function sumLeadingUnread(chats) {
+  const rows = Array.isArray(chats) ? chats : [];
+  let total = 0;
+  for (const chat of rows) {
+    const count = Number(chat?.unreadCount);
+    if (!Number.isFinite(count) || count <= 0) return { total, done: true };
+    total += count;
+  }
+  return { total, done: rows.length === 0 };
+}
+
+async function countUnreadMessages(session) {
+  let messages = 0;
+  for (let page = 0; page < UNREAD_BADGE_PAGE_CAP; page += 1) {
+    const chats = await listGroups(session, {
+      sortOrder: 3,
+      limit: UNREAD_BADGE_PAGE_SIZE,
+      offset: page * UNREAD_BADGE_PAGE_SIZE,
+    });
+    const summed = sumLeadingUnread(chats);
+    messages += summed.total;
+    if (summed.done || chats.length < UNREAD_BADGE_PAGE_SIZE) break;
+  }
+  return messages;
+}
+
+function ackIdsForOpenChat({ interactions, groupId, messages, providerUserId } = {}) {
+  const group = groupId == null ? '' : String(groupId);
+  const selfId = providerUserId == null ? '' : String(providerUserId);
+  const ids = [];
+  const seen = new Set();
+  const add = (id) => {
+    const value = id == null ? '' : String(id).trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    ids.push(value);
+  };
+
+  for (const row of Array.isArray(interactions) ? interactions : []) {
+    if (!row || String(row.groupId || '') !== group) continue;
+    if (row.readAt != null || row.validMessage === false) continue;
+    add(row.messageId);
+  }
+
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!message?.senderId || String(message.senderId) === selfId) continue;
+    const mine = (Array.isArray(message.interactions) ? message.interactions : []).find(
+      (row) => String(row?.userId) === selfId
+    );
+    if (mine && mine.readAt) continue;
+    add(message.id);
+  }
+
+  return ids;
+}
+
+async function listUnreadInteractions(session) {
+  const result = await requestJson({
+    method: 'GET',
+    path: '/message/unread',
+    session,
+    query: { limit: 100, offset: 0, before: 0 },
+  });
+  return Array.isArray(result.data?.messageInteractions) ? result.data.messageInteractions : [];
+}
+
 async function getBadges(session) {
-  const [unreadResult, unackResult] = await Promise.all([
-    requestJson({
-      method: 'GET',
-      path: '/message/unread',
-      session,
-      query: { limit: 100, offset: 0, before: 0 },
-    }),
+  const [messages, unackResult] = await Promise.all([
+    countUnreadMessages(session),
     requestJson({ method: 'GET', path: '/notifications/unack', session }),
   ]);
-
-  const interactions = Array.isArray(unreadResult.data?.messageInteractions)
-    ? unreadResult.data.messageInteractions
-    : [];
-  const unreadFromRows = interactions.filter(
-    (row) => row && row.readAt == null && row.validMessage !== false
-  ).length;
-  const total = Number(unreadResult.data?.total);
-  const messages = Number.isFinite(total) && total > unreadFromRows ? total : unreadFromRows;
-
   return { messages, notifications: notificationUnreadCount(unackResult.data) };
 }
 
@@ -2135,6 +2194,9 @@ module.exports = {
   createAccountMediaBundle,
   createStory,
   ackMessages,
+  ackIdsForOpenChat,
+  listUnreadInteractions,
+  sumLeadingUnread,
   listNotifications,
   ackNotifications,
   notificationUnreadCount,

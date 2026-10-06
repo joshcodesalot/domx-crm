@@ -22,8 +22,10 @@ const {
   fanslyFailureError,
   fanslyPreviewLocksToIp,
   FanslyApiError,
+  ackIdsForOpenChat,
   mapGroupChats,
   mapListRows,
+  sumLeadingUnread,
   mapMessageThread,
   messagingGroupsQuery,
   MESSAGE_CONTENT_MEDIA,
@@ -768,6 +770,76 @@ describe('fansly inbox groups', () => {
     assert.equal(chat.partnerAvatarUrl, small);
   });
 
+  it('counts one unread chat instead of a full interaction page', () => {
+    const interactionPage = Array.from({ length: 100 }, (_, index) => ({
+      messageId: String(index),
+      groupId: 'other',
+      readAt: null,
+      validMessage: true,
+    }));
+    const { total, done } = sumLeadingUnread([
+      { groupId: 'open', unreadCount: 1 },
+      { groupId: 'read', unreadCount: 0 },
+    ]);
+    assert.equal(interactionPage.length, 100);
+    assert.equal(total, 1);
+    assert.equal(done, true);
+  });
+
+  it('keeps summing while a full page is entirely unread', () => {
+    const page = Array.from({ length: 20 }, (_, index) => ({
+      groupId: String(index),
+      unreadCount: 2,
+    }));
+    const { total, done } = sumLeadingUnread(page);
+    assert.equal(total, 40);
+    assert.equal(done, false);
+  });
+
+  it('acks unread interactions for the open chat and unread incoming messages', () => {
+    const ids = ackIdsForOpenChat({
+      groupId: '941499222019043328',
+      providerUserId: 'creator',
+      interactions: [
+        {
+          messageId: '962950114589028352',
+          groupId: '941499222019043328',
+          readAt: null,
+          validMessage: true,
+        },
+        {
+          messageId: 'already-read',
+          groupId: '941499222019043328',
+          readAt: 1,
+          validMessage: true,
+        },
+        {
+          messageId: 'other-chat',
+          groupId: '999',
+          readAt: null,
+          validMessage: true,
+        },
+        {
+          messageId: 'invalid',
+          groupId: '941499222019043328',
+          readAt: null,
+          validMessage: false,
+        },
+      ],
+      messages: [
+        { id: '962950114589028352', senderId: 'fan', interactions: [] },
+        { id: 'from-me', senderId: 'creator', interactions: [] },
+        {
+          id: 'seen',
+          senderId: 'fan',
+          interactions: [{ userId: 'creator', readAt: 5 }],
+        },
+        { id: 'missed', senderId: 'fan', interactions: [{ userId: 'creator', readAt: null }] },
+      ],
+    });
+    assert.deepEqual(ids, ['962950114589028352', 'missed']);
+  });
+
   it('leaves the avatar empty when the account has none', () => {
     const [chat] = mapGroupChats({
       data: [{ groupId: 'g2', partnerAccountId: '1', partnerUsername: 'fan' }],
@@ -821,6 +893,42 @@ describe('fansly fan lists', () => {
     assert.deepEqual(buildListCommands({ action: 'remove', fanId, listId }), {
       listCommands: [{ type: 2, listId, itemIds: [fanId] }],
     });
+  });
+
+  it('maps the captured mass-message list payload', () => {
+    assert.deepEqual(
+      mapListRows([
+        {
+          id: '951713542833184769',
+          accountId: '948650325143744512',
+          pos: null,
+          type: 1,
+          label: 'ACTIVELY CHATTING',
+          itemCount: 2,
+        },
+        {
+          id: '960343602666434560',
+          accountId: '948650325143744512',
+          pos: null,
+          type: 1,
+          label: 'No mm at all cost',
+          itemCount: 1,
+        },
+        {
+          id: '960930326035582976',
+          accountId: '948650325143744512',
+          pos: null,
+          type: 1,
+          label: 'willing to spend on wednesday',
+          itemCount: 1,
+        },
+      ]),
+      [
+        { id: '951713542833184769', label: 'ACTIVELY CHATTING' },
+        { id: '960343602666434560', label: 'No mm at all cost' },
+        { id: '960930326035582976', label: 'willing to spend on wednesday' },
+      ]
+    );
   });
 
   it('maps account lists to ids and labels', () => {

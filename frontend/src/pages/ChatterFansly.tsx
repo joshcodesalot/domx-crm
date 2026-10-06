@@ -222,7 +222,7 @@ export default function ChatterFansly() {
   const { user } = useAuth();
   const location = useLocation();
   const pollEnabled = usePollEnabled(location.pathname === '/chatter/fansly');
-  const { creators, creatorsLoading, creatorsError, badgesByCreatorId } = useCreatorLive({
+  const { creators, creatorsLoading, creatorsError, badgesByCreatorId, refreshBadges } = useCreatorLive({
     platform: 'fansly',
     wantBadges: true,
     pollEnabled,
@@ -235,6 +235,7 @@ export default function ChatterFansly() {
   const [search, setSearch] = useState('');
   const [chats, setChats] = useState<FanslyChat[]>([]);
   const [chatsLoading, setChatsLoading] = useState(false);
+  const [inboxRefreshing, setInboxRefreshing] = useState(false);
   const [chatsLoadingMore, setChatsLoadingMore] = useState(false);
   const [chatsHasMore, setChatsHasMore] = useState(false);
   const [chatsError, setChatsError] = useState<string | null>(null);
@@ -410,6 +411,16 @@ export default function ChatterFansly() {
     }
   }, [inboxFilter, pageSize, search, selectedCreatorId, sortOrder]);
 
+  const refreshInbox = useCallback(async () => {
+    if (!selectedCreatorId || inboxRefreshing) return;
+    setInboxRefreshing(true);
+    try {
+      await Promise.all([loadChats(0), refreshBadges([selectedCreatorId])]);
+    } finally {
+      setInboxRefreshing(false);
+    }
+  }, [inboxRefreshing, loadChats, refreshBadges, selectedCreatorId]);
+
   useEffect(() => {
     const timer = window.setTimeout(() => setSearch(searchInput.trim()), 300);
     return () => window.clearTimeout(timer);
@@ -465,10 +476,17 @@ export default function ChatterFansly() {
       setMessages(rows);
       setSelfId(result.providerUserId);
       markUnlockedMessages(rows, result.providerUserId);
+      const openedGroupId = selectedGroupId;
+      setChats((prev) =>
+        prev.map((chat) =>
+          chat.groupId === openedGroupId ? { ...chat, unreadCount: 0 } : chat
+        )
+      );
+      void refreshBadges([selectedCreatorId]);
     } catch (err) {
       setThreadError(err instanceof Error ? err.message : 'Failed to load messages');
     }
-  }, [selectedCreatorId, selectedGroupId]);
+  }, [refreshBadges, selectedCreatorId, selectedGroupId]);
 
   useEffect(() => {
     if (!selectedGroupId) return;
@@ -485,8 +503,10 @@ export default function ChatterFansly() {
   useEffect(() => {
     if (!pollEnabled || !selectedCreatorId) return;
     const timer = window.setInterval(() => {
-      void loadChats();
-      if (selectedGroupId) void loadThread();
+      void (async () => {
+        if (selectedGroupId) await loadThread();
+        await loadChats();
+      })();
     }, 8000);
     return () => window.clearInterval(timer);
   }, [loadChats, loadThread, pollEnabled, selectedCreatorId, selectedGroupId]);
@@ -762,6 +782,16 @@ export default function ChatterFansly() {
                   className="flex-1 min-w-0 bg-transparent text-sm outline-none text-gray-900 dark:text-white placeholder:text-gray-400"
                 />
               </label>
+              <button
+                type="button"
+                aria-label="Refresh inbox"
+                title="Refresh inbox"
+                disabled={!selectedCreatorId || inboxRefreshing}
+                onClick={() => void refreshInbox()}
+                className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 disabled:opacity-40"
+              >
+                <RefreshCw className={`w-4 h-4 ${inboxRefreshing ? 'animate-spin' : ''}`} />
+              </button>
               <div className="relative">
                 <button
                   type="button"

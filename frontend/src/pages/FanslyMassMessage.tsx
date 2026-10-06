@@ -100,6 +100,8 @@ export default function FanslyMassMessage() {
   const [excludeCreators, setExcludeCreators] = useState(true);
   const [excludeOffline, setExcludeOffline] = useState(false);
   const [lists, setLists] = useState<FanslyFanList[]>([]);
+  const [listsLoading, setListsLoading] = useState(false);
+  const [listsLoadError, setListsLoadError] = useState<string | null>(null);
   const [includeListIds, setIncludeListIds] = useState<string[]>([]);
   const [excludeListIds, setExcludeListIds] = useState<string[]>([]);
 
@@ -204,10 +206,29 @@ export default function FanslyMassMessage() {
     setIncludeListIds([]);
     setExcludeListIds([]);
     setLists([]);
-    if (!selectedCreatorId) return;
+    setListsLoadError(null);
+    if (!selectedCreatorId) {
+      setListsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setListsLoading(true);
     listFanslyLists(selectedCreatorId)
-      .then((result) => setLists(result.lists || []))
-      .catch(() => setLists([]));
+      .then((result) => {
+        if (!cancelled) setLists(result.lists || []);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setLists([]);
+          setListsLoadError(err instanceof Error ? err.message : 'Failed to load lists');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setListsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCreatorId]);
 
   useEffect(() => {
@@ -599,44 +620,39 @@ export default function FanslyMassMessage() {
                 )}
               </div>
 
-              {lists.length > 0 && (
-                <div className="space-y-3 rounded-xl border border-gray-200 dark:border-zinc-800 p-3">
-                  <div>
-                    <p className="text-xs font-semibold text-gray-700 dark:text-zinc-300">
-                      Include lists
-                    </p>
+              <div className="space-y-3 rounded-xl border border-gray-200 dark:border-zinc-800 p-3">
+                {listsLoading && (
+                  <p className="text-xs text-gray-500 flex items-center gap-2">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading lists…
+                  </p>
+                )}
+                {listsLoadError && <p className="text-xs text-red-400">{listsLoadError}</p>}
+                {!listsLoading && !listsLoadError && lists.length === 0 && (
+                  <p className="text-xs text-gray-500">No lists yet.</p>
+                )}
+                {(
+                  [
+                    ['include', 'Include lists', includeListIds],
+                    ['exclude', 'Exclude lists', excludeListIds],
+                  ] as const
+                ).map(([kind, title, selected]) => (
+                  <div key={kind}>
+                    <p className="text-xs font-semibold text-gray-700 dark:text-zinc-300">{title}</p>
                     <div className="mt-2 max-h-32 overflow-y-auto space-y-1">
                       {lists.map((list) => (
-                        <label key={`in-${list.id}`} className="flex items-center gap-2 text-sm">
+                        <label key={`${kind}-${list.id}`} className="flex items-center gap-2 text-sm">
                           <input
                             type="checkbox"
-                            checked={includeListIds.includes(list.id)}
-                            onChange={() => toggleList('include', list.id)}
+                            checked={selected.includes(list.id)}
+                            onChange={() => toggleList(kind, list.id)}
                           />
                           <span className="truncate">{list.label}</span>
                         </label>
                       ))}
                     </div>
                   </div>
-                  <div>
-                    <p className="text-xs font-semibold text-gray-700 dark:text-zinc-300">
-                      Exclude lists
-                    </p>
-                    <div className="mt-2 max-h-32 overflow-y-auto space-y-1">
-                      {lists.map((list) => (
-                        <label key={`out-${list.id}`} className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={excludeListIds.includes(list.id)}
-                            onChange={() => toggleList('exclude', list.id)}
-                          />
-                          <span className="truncate">{list.label}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
+                ))}
+              </div>
 
               {sendError && <p className="text-xs text-red-400">{sendError}</p>}
               {sendPhase !== 'idle' && (

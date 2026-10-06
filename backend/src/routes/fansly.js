@@ -668,22 +668,18 @@ router.get(
       if (!creator) return;
       const session = fanslySession(creator);
       const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 50);
-      const messages = await fanslyClient.listMessages(session, req.params.groupId, { limit });
-      const unreadIds = messages
-        .filter((message) => {
-          if (!message.senderId || message.senderId === creator.providerUserId) return false;
-          const mine = (message.interactions || []).find(
-            (row) => String(row.userId) === String(creator.providerUserId)
-          );
-          return !mine || !mine.readAt;
-        })
-        .map((message) => message.id);
+      const [messages, interactions] = await Promise.all([
+        fanslyClient.listMessages(session, req.params.groupId, { limit }),
+        fanslyClient.listUnreadInteractions(session),
+      ]);
+      const unreadIds = fanslyClient.ackIdsForOpenChat({
+        interactions,
+        groupId: req.params.groupId,
+        messages,
+        providerUserId: creator.providerUserId,
+      });
       if (unreadIds.length > 0) {
-        try {
-          await fanslyClient.ackMessages(session, unreadIds);
-        } catch (err) {
-          console.warn('[fanslyClient] ack on open failed:', err.message);
-        }
+        await fanslyClient.ackMessages(session, unreadIds);
       }
       res.json({ messages, providerUserId: creator.providerUserId });
     } catch (err) {
