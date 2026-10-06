@@ -1454,7 +1454,7 @@ export async function getMessagingDashboard(filters: {
   endDate?: string;
   chatterId?: string;
   creatorId?: string;
-  platform?: 'maloum' | '4based' | 'telegram';
+  platform?: 'maloum' | '4based' | 'telegram' | 'fansly';
   purchased?: boolean;
   contentType?: 'chat_product' | 'tip';
   salesOnly?: boolean;
@@ -2241,12 +2241,16 @@ export interface FanslyAttachmentMedia {
   fullLocked?: boolean;
   playlistUrl: string | null;
   price: number | null;
+  purchased?: boolean;
+  access?: boolean;
 }
 
 export interface FanslyLockedText {
   id: string;
   content: string;
   price: number | null;
+  purchased?: boolean;
+  access?: boolean;
 }
 
 export interface FanslyMessage {

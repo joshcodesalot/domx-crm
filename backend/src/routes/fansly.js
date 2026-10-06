@@ -8,6 +8,7 @@ const { userCanAccessCreator, getUserIdsWithCreatorAccess } = require('../servic
 const { decryptJson, decryptSecret, encryptJson, encryptSecret } = require('../services/crypto');
 const { emitToUsers } = require('../services/userEventBus');
 const fanslyClient = require('../services/fanslyClient');
+const messagingDashboard = require('./messagingDashboard');
 const fanslyMediaCache = require('../services/fanslyMediaCache');
 const { loadFanslyCreator } = require('../services/platformCreatorSession');
 const {
@@ -1021,6 +1022,11 @@ router.get(
         after: 0,
         type,
       });
+      try {
+        await messagingDashboard.processFanslyPurchaseNotifications(payload.notifications);
+      } catch (err) {
+        console.warn('[fansly] purchase log failed:', err.message);
+      }
       res.json({
         filters: fanslyClient.NOTIFICATION_FILTERS,
         ...payload,

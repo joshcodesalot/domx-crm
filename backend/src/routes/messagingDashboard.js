@@ -195,7 +195,9 @@ async function enrichCreatorFields(creatorId) {
         ? '4based'
         : row.platform === 'telegram'
           ? 'telegram'
-          : 'maloum',
+          : row.platform === 'fansly'
+            ? 'fansly'
+            : 'maloum',
   };
 }
 
@@ -213,6 +215,48 @@ function parsePriceNet(priceNet) {
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+const FANSLY_PURCHASE_TYPES = new Set([2007, 2008, 32007]);
+
+function fanslyPurchasePriceDollars(metadata) {
+  let parsed = metadata;
+  if (typeof metadata === 'string') {
+    try {
+      parsed = JSON.parse(metadata);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const mills = Number(parsed.accountMediaPrice);
+  if (!Number.isFinite(mills) || mills <= 0) return null;
+  return mills / 1000;
+}
+
+function fanslyUnlockedAt(createdAt) {
+  const numeric = Number(createdAt);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  const ms = numeric < 1e12 ? numeric * 1000 : numeric;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+async function processFanslyPurchaseNotifications(notifications) {
+  const list = Array.isArray(notifications) ? notifications : [];
+  for (const note of list) {
+    const type = Number(note?.type);
+    if (!FANSLY_PURCHASE_TYPES.has(type)) continue;
+    const messageId = note?.correlationId == null ? '' : String(note.correlationId).trim();
+    if (!/^\d+$/.test(messageId)) continue;
+    await unlockSaleByMessageId({
+      maloumMessageId: messageId,
+      priceNet: fanslyPurchasePriceDollars(note.metadata),
+      notificationId: note.id == null ? null : String(note.id),
+      unlockedAt: fanslyUnlockedAt(note.createdAt),
+    });
+  }
 }
 
 async function unlockSaleByMessageId({
@@ -2942,7 +2986,14 @@ router.get(
           creatorAvatarUrl: isDeletedCreator
             ? null
             : row.creatorAvatarUrl || null,
-          platform: row.platform === '4based' ? '4based' : row.platform === 'maloum' ? 'maloum' : null,
+          platform:
+            row.platform === '4based'
+              ? '4based'
+              : row.platform === 'maloum'
+                ? 'maloum'
+                : row.platform === 'fansly'
+                  ? 'fansly'
+                  : null,
           ...stats,
           totalSales: [],
           tipSales: [],
@@ -4442,7 +4493,9 @@ router.get(
               ? '4based'
               : row.platform === 'maloum'
                 ? 'maloum'
-                : null,
+                : row.platform === 'fansly'
+                  ? 'fansly'
+                  : null,
           ...stats,
           totalSales,
           tipSales,
@@ -4809,7 +4862,12 @@ router.get(
       paramIndex += 1;
     }
 
-    if (platform === 'maloum' || platform === '4based' || platform === 'telegram') {
+    if (
+      platform === 'maloum' ||
+      platform === '4based' ||
+      platform === 'telegram' ||
+      platform === 'fansly'
+    ) {
       conditions.push(`m.platform = $${paramIndex}`);
       values.push(platform);
       paramIndex += 1;
@@ -5217,6 +5275,7 @@ router.patch(
 
 module.exports = router;
 module.exports.unlockSaleByMessageId = unlockSaleByMessageId;
+module.exports.processFanslyPurchaseNotifications = processFanslyPurchaseNotifications;
 module.exports.logTip = logTip;
 module.exports.processMaloumSaleAndTipNotifications = processMaloumSaleAndTipNotifications;
 module.exports.processFourBasedSaleAndTipNotifications =

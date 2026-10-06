@@ -918,6 +918,11 @@ function wallRows(data, accountId) {
   return [];
 }
 
+function wallsFromMe(me) {
+  const account = me?.account && typeof me.account === 'object' ? me.account : me;
+  return wallRows(account);
+}
+
 function pickPostsWall(walls) {
   const rows = (Array.isArray(walls) ? walls : []).filter((row) =>
     /^\d+$/.test(row?.id == null ? '' : String(row.id))
@@ -1153,15 +1158,25 @@ function purchasePriceDollars(node) {
   return null;
 }
 
-function viewFromAccountMedia(row, price) {
+function unlockFlags(node) {
+  return {
+    purchased: node?.purchased === true,
+    access: node?.access === true,
+  };
+}
+
+function viewFromAccountMedia(row, price, flags) {
   if (!row?.media) return null;
   const view = fanslyMediaView(row.media);
   const mediaId = row.media.id == null ? '' : String(row.media.id);
   if (!mediaId) return null;
+  const own = unlockFlags(row);
   return {
     mediaId,
     ...view,
     price: price == null ? purchasePriceDollars(row) : price,
+    purchased: flags?.purchased === true || own.purchased,
+    access: flags?.access === true || own.access,
   };
 }
 
@@ -1172,10 +1187,13 @@ function lockedTextForMessage(message, storiesById) {
     if (Number(attachment?.contentType) !== MESSAGE_CONTENT_STORY) continue;
     const contentId = attachment?.contentId == null ? '' : String(attachment.contentId);
     const story = storiesById.get(contentId);
+    const flags = unlockFlags(story);
     items.push({
       id: story?.id == null ? contentId : String(story.id),
       content: typeof story?.content === 'string' ? story.content : '',
       price: purchasePriceDollars(story),
+      purchased: flags.purchased,
+      access: flags.access,
     });
   }
   return items;
@@ -1191,9 +1209,10 @@ function mediaForMessage(message, accountMediaById, bundlesById) {
       const bundle = bundlesById.get(contentId);
       if (!bundle) continue;
       const price = purchasePriceDollars(bundle);
+      const flags = unlockFlags(bundle);
       const ids = Array.isArray(bundle.accountMediaIds) ? bundle.accountMediaIds : [];
       for (const id of ids) {
-        const view = viewFromAccountMedia(accountMediaById.get(String(id)), price);
+        const view = viewFromAccountMedia(accountMediaById.get(String(id)), price, flags);
         if (view) items.push(view);
       }
       continue;
@@ -1588,14 +1607,8 @@ function snowflakeBefore(id, before) {
 }
 
 async function listWalls(session, accountId) {
-  const id = requireSnowflake(accountId, 'Account id');
-  const result = await requestJson({
-    method: 'GET',
-    path: '/wall',
-    session,
-    query: { accountIds: id },
-  });
-  return wallRows(result.data, id);
+  requireSnowflake(accountId, 'Account id');
+  return wallsFromMe(await getMe(session));
 }
 
 async function createFeedPost(session, { content, accountMediaId, wallId } = {}) {
@@ -2067,6 +2080,7 @@ module.exports = {
   buildAccountMediaBody,
   buildFeedAccountMediaBody,
   buildFeedPostBody,
+  wallsFromMe,
   pickPostsWall,
   buildAccountMediaBundleBody,
   buildLockedTextBody,

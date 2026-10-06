@@ -161,7 +161,12 @@ export default function SalesLogs() {
   const dateRangeLabel = formatCalendarRangeLabel(startDate, endDate);
 
   const filteredCreators = useMemo(() => {
-    if (platform !== 'maloum' && platform !== '4based' && platform !== 'telegram') {
+    if (
+      platform !== 'maloum' &&
+      platform !== '4based' &&
+      platform !== 'telegram' &&
+      platform !== 'fansly'
+    ) {
       return creators;
     }
     return creators.filter((creator) => creator.platform === platform);
@@ -198,7 +203,10 @@ export default function SalesLogs() {
           chatterId: chatterId || undefined,
           creatorId: creatorId || undefined,
           platform:
-            platform === 'maloum' || platform === '4based' || platform === 'telegram'
+            platform === 'maloum' ||
+            platform === '4based' ||
+            platform === 'telegram' ||
+            platform === 'fansly'
               ? platform
               : undefined,
           contentType:
@@ -340,6 +348,7 @@ export default function SalesLogs() {
                 <option value="maloum">Maloum</option>
                 <option value="4based">4based</option>
                 <option value="telegram">Telegram</option>
+                <option value="fansly">Fansly</option>
               </select>
             </label>
 

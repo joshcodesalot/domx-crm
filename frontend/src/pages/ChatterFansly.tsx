@@ -1,16 +1,18 @@
 import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
 import AppShell from '@/components/AppShell';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpDown, Eye, ImagePlus, Loader2, Lock, PanelRight, PanelRightClose, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import FanslyFanPanel from '@/components/fansly/FanslyFanPanel';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
+import { useAuth } from '@/context/AuthContext';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
 import { useSyncedDrawer } from '@/context/ShellContext';
 import { usePollEnabled } from '@/hooks/useDocumentVisible';
 import { useLocation } from 'react-router-dom';
 import fanslyIcon from '@/assets/fansly.svg';
 import {
+  createMessagingDashboardEntry,
   deleteFanslyMessage,
   listFanslyChats,
   listFanslyMessages,
@@ -21,6 +23,7 @@ import {
   listFanslyVaultAlbums,
   listFanslyVaultMedia,
   sendFanslyMessage,
+  updateMessagingDashboardPurchased,
   type FanslyChat,
   type FanslyFanList,
   type FanslyMediaPermissions,
@@ -176,6 +179,27 @@ function inboxPreview(message: FanslyMessage | null | undefined): string {
   return 'Open conversation';
 }
 
+function sentAtIso(createdAt: number | null | undefined): string {
+  const numeric = Number(createdAt);
+  if (!Number.isFinite(numeric) || numeric <= 0) return new Date().toISOString();
+  return new Date(numeric < 1e12 ? numeric * 1000 : numeric).toISOString();
+}
+
+function messagePriceDollars(message: FanslyMessage): number | null {
+  const prices = [
+    ...(message.media || []).map((item) => item.price),
+    ...(message.lockedText || []).map((item) => item.price),
+  ].filter((price): price is number => typeof price === 'number' && price > 0);
+  return prices.length > 0 ? prices[0] : null;
+}
+
+function messageUnlocked(message: FanslyMessage): boolean {
+  return (
+    (message.media || []).some((item) => item.purchased || item.access) ||
+    (message.lockedText || []).some((item) => item.purchased || item.access)
+  );
+}
+
 function lockPermissions(set: LockedPermissionSet): FanslyMediaPermissions {
   return {
     requirePurchase: set.requirePurchase,
@@ -187,6 +211,7 @@ function lockPermissions(set: LockedPermissionSet): FanslyMediaPermissions {
 }
 
 export default function ChatterFansly() {
+  const { user } = useAuth();
   const location = useLocation();
   const pollEnabled = usePollEnabled(location.pathname === '/chatter/fansly');
   const { creators, creatorsLoading, creatorsError, badgesByCreatorId } = useCreatorLive({
@@ -240,6 +265,7 @@ export default function ChatterFansly() {
   const [tiers, setTiers] = useState<FanslySubscriptionTier[]>([]);
   const [fanPanelOpen, setFanPanelOpen] = useState(false);
   const [fanNickname, setFanNickname] = useState('');
+  const markedPurchasedRef = useRef<Set<string>>(new Set());
   const fanScope = `${selectedCreatorId || ''}:${selectedGroupId || ''}`;
   const [openFanScope, setOpenFanScope] = useState(fanScope);
   if (fanScope !== openFanScope) {
@@ -262,6 +288,75 @@ export default function ChatterFansly() {
   );
   const selectedChat = chats.find((chat) => chat.groupId === selectedGroupId) || null;
 
+  function logSentFanslyMessage(
+    message: FanslyMessage,
+    details: {
+      text: string;
+      contentType: 'text' | 'media' | 'chat_product';
+      priceNet: number | null;
+      media: FanslyVaultMedia[];
+    }
+  ) {
+    if (!user?.id || !selectedCreator || !selectedGroupId || !message.id) return;
+    const pictureCount = details.media.filter(
+      (item) => item.kind !== 'video' && item.mediaType !== 2
+    ).length;
+    const videoCount = details.media.length - pictureCount;
+    void createMessagingDashboardEntry({
+      id: crypto.randomUUID(),
+      creatorId: selectedCreator.id,
+      creatorName: selectedCreator.displayName,
+      creatorUsername: selectedCreator.username,
+      creatorAvatarUrl: selectedCreator.avatarUrl,
+      chatterId: user.id,
+      chatterName: user.name,
+      chatterEmail: user.email,
+      chatId: selectedGroupId,
+      fanId: selectedChat?.partnerAccountId || null,
+      fanUsername: selectedChat?.partnerUsername || null,
+      maloumMessageId: String(message.id),
+      contentType: details.contentType,
+      englishMessage: details.text || null,
+      actualSentText: details.text || null,
+      priceNet: details.priceNet,
+      currency: 'USD',
+      purchased: false,
+      mediaCount: details.media.length,
+      pictureCount,
+      videoCount,
+      mediaJson: details.media.length
+        ? details.media.map((item) => ({
+            mediaId: item.mediaId,
+            type: item.kind === 'video' || item.mediaType === 2 ? 'video' : 'image',
+          }))
+        : null,
+      sentAt: sentAtIso(message.createdAt),
+    }).catch(() => {
+      // Non-blocking
+    });
+  }
+
+  function markUnlockedMessages(rows: FanslyMessage[], providerUserId: string | null) {
+    for (const message of rows) {
+      const messageId = String(message.id || '');
+      if (!messageId || markedPurchasedRef.current.has(messageId)) continue;
+      if (
+        providerUserId &&
+        message.senderId &&
+        String(message.senderId) !== String(providerUserId)
+      ) {
+        continue;
+      }
+      if (!messageUnlocked(message)) continue;
+      const priceNet = messagePriceDollars(message);
+      if (priceNet == null) continue;
+      markedPurchasedRef.current.add(messageId);
+      void updateMessagingDashboardPurchased(messageId, true, priceNet).catch(() => {
+        markedPurchasedRef.current.delete(messageId);
+      });
+    }
+  }
+
   useEffect(() => {
     setVaultOpen(false);
     setAlbums([]);
@@ -276,6 +371,7 @@ export default function ChatterFansly() {
     setRequireSubscription(false);
     setTierId('');
     setRequireFollow(false);
+    markedPurchasedRef.current = new Set();
   }, [selectedCreatorId, selectedGroupId]);
 
   const pageSize = inboxFilter.kind === 'staff' ? 10 : 20;
@@ -356,8 +452,10 @@ export default function ChatterFansly() {
     setThreadError(null);
     try {
       const result = await listFanslyMessages(selectedCreatorId, selectedGroupId);
-      setMessages(result.messages || []);
+      const rows = result.messages || [];
+      setMessages(rows);
       setSelfId(result.providerUserId);
+      markUnlockedMessages(rows, result.providerUserId);
     } catch (err) {
       setThreadError(err instanceof Error ? err.message : 'Failed to load messages');
     }
@@ -476,6 +574,8 @@ export default function ChatterFansly() {
       setThreadError('Enter a purchase price');
       return;
     }
+    const sentMedia = selectedMedia;
+    const priceNet = requirePurchase && Number(price) > 0 ? Number(price) : null;
     setSending(true);
     setThreadError(null);
     try {
@@ -504,6 +604,12 @@ export default function ChatterFansly() {
       setVaultOpen(false);
       if (result.message) {
         setMessages((prev) => [result.message, ...prev.filter((row) => row.id !== result.message.id)]);
+        logSentFanslyMessage(result.message, {
+          text,
+          contentType: sentMedia.length > 0 ? (priceNet ? 'chat_product' : 'media') : 'text',
+          priceNet: sentMedia.length > 0 ? priceNet : null,
+          media: sentMedia,
+        });
       }
       void loadChats();
     } catch (err) {
@@ -532,6 +638,9 @@ export default function ChatterFansly() {
         return;
       }
     }
+    const priceNet = lockedSets
+      .filter((set) => set.requirePurchase && Number(set.price) > 0)
+      .map((set) => Number(set.price))[0];
     setSending(true);
     setThreadError(null);
     try {
@@ -546,6 +655,12 @@ export default function ChatterFansly() {
       setLockedSets([{ ...EMPTY_LOCK }]);
       if (result.message) {
         setMessages((prev) => [result.message, ...prev.filter((row) => row.id !== result.message.id)]);
+        logSentFanslyMessage(result.message, {
+          text,
+          contentType: priceNet ? 'chat_product' : 'text',
+          priceNet: priceNet || null,
+          media: [],
+        });
       }
       void loadChats();
     } catch (err) {

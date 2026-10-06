@@ -4,6 +4,7 @@ const {
   buildAccountMediaBody,
   buildFeedAccountMediaBody,
   buildFeedPostBody,
+  wallsFromMe,
   pickPostsWall,
   buildAccountMediaBundleBody,
   buildDeleteMessageBody,
@@ -340,6 +341,28 @@ describe('fansly feed post body', () => {
         pinWallIds: [],
       }
     );
+  });
+
+  it('reads the Posts wall from the account profile', () => {
+    const walls = wallsFromMe({
+      account: {
+        id: '948650325143744512',
+        walls: [
+          {
+            id: '950608551804416000',
+            accountId: '948650325143744512',
+            pos: 0,
+            name: 'Posts',
+            description: '',
+            private: 0,
+            metadata: '',
+            defaultWall: true,
+            mainWall: true,
+          },
+        ],
+      },
+    });
+    assert.equal(pickPostsWall(walls), '950608551804416000');
   });
 
   it('prefers the Posts wall and falls back to the first position', () => {
