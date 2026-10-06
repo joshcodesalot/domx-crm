@@ -1489,6 +1489,31 @@ async function listDialogs(creatorId, { limit = 80 } = {}) {
 const ALL_DM_DIALOG_CAP = 10_000;
 const PROFILE_UPSERT_BATCH = 20;
 
+function isPeerCacheMiss(err) {
+  return (
+    err?.name === 'MtPeerNotFoundError' ||
+    /not found in local cache/i.test(String(err?.message || ''))
+  );
+}
+
+async function ensureCachedPeer(client, numericId) {
+  try {
+    return await client.resolvePeer(numericId);
+  } catch (err) {
+    if (!isPeerCacheMiss(err)) throw err;
+  }
+  for await (const dialog of client.iterDialogs({ limit: ALL_DM_DIALOG_CAP })) {
+    if (String(dialog.peer?.id) !== String(numericId)) continue;
+    try {
+      return await client.resolvePeer(numericId);
+    } catch (err) {
+      if (!isPeerCacheMiss(err)) throw err;
+      break;
+    }
+  }
+  throw new TelegramWorkerError('This chat is no longer available in Telegram', 404);
+}
+
 async function listAllDmPeers(creatorId) {
   const client = await getClient(creatorId);
   const peers = [];
@@ -1537,6 +1562,7 @@ async function listMessages(
   if (!Number.isFinite(numericId)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
+  await ensureCachedPeer(client, numericId);
   const clamped = Math.min(Math.max(Number(limit) || 50, 1), 100);
   const numericOffsetId = Number(offsetId);
   const hasOffset = Number.isFinite(numericOffsetId) && numericOffsetId > 0;
@@ -1636,6 +1662,7 @@ async function searchMessagesInChat(
   if (!Number.isFinite(numericId)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
+  await ensureCachedPeer(client, numericId);
   const trimmed = String(query || '').trim();
   if (!trimmed) {
     throw new TelegramWorkerError('Search query is required', 400);
@@ -1812,6 +1839,7 @@ async function sendText(creatorId, peerId, text, { replyToMessageId } = {}) {
   if (!Number.isFinite(numericId)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
+  await ensureCachedPeer(client, numericId);
   const trimmed = String(text || '').trim();
   if (!trimmed) {
     throw new TelegramWorkerError('Message text is required');
@@ -1973,6 +2001,7 @@ async function sendVaultToPeer(creatorId, peerId, { items, caption, replyToMessa
   if (!Number.isFinite(numericPeer)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
+  await ensureCachedPeer(client, numericPeer);
   const list = Array.isArray(items) ? items.filter(Boolean) : [];
   if (!list.length) {
     throw new TelegramWorkerError('vaultIds are required');
@@ -2386,6 +2415,7 @@ async function sendReaction(creatorId, peerId, messageId, emoji) {
   if (!Number.isFinite(numericPeer) || !Number.isFinite(msgId)) {
     throw new TelegramWorkerError('Invalid chat or message id');
   }
+  await ensureCachedPeer(client, numericPeer);
   const trimmed = emoji == null ? '' : String(emoji).trim();
   const reactionEmoji = trimmed || null;
   let sent = null;
@@ -2419,6 +2449,7 @@ async function deleteText(creatorId, peerId, messageId) {
   if (!Number.isFinite(numericId) || !Number.isFinite(msgId)) {
     throw new TelegramWorkerError('Invalid chat or message id');
   }
+  await ensureCachedPeer(client, numericId);
 
   let found = null;
   try {
@@ -3123,6 +3154,7 @@ async function sendGif(creatorId, peerId, { fileId, queryId, resultId, replyToMe
   if (!Number.isFinite(numericPeer)) {
     throw new TelegramWorkerError('Invalid chat id');
   }
+  const resolvedPeer = await ensureCachedPeer(client, numericPeer);
   const id = String(fileId || '').trim();
   const inlineQueryId = String(queryId || '').trim();
   const inlineResultId = String(resultId || '').trim();
@@ -3134,7 +3166,7 @@ async function sendGif(creatorId, peerId, { fileId, queryId, resultId, replyToMe
   }
 
   if (inlineQueryId && inlineResultId) {
-    const peer = await client.resolvePeer(numericPeer);
+    const peer = resolvedPeer;
     const parsedQueryId = parseTlLong(inlineQueryId);
     if (parsedQueryId == null) {
       throw new TelegramWorkerError('Invalid GIF search result', 400);
