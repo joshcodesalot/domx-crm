@@ -308,6 +308,7 @@ export interface CreateMessagingDashboardEntryInput {
     vaultFileStackId?: string | null;
     fileStackId?: string | null;
     collectionId?: string | null;
+    contentId?: string;
     type?: string;
     width?: number;
     height?: number;

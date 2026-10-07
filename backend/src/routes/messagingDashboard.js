@@ -218,6 +218,36 @@ function parsePriceNet(priceNet) {
 }
 
 const FANSLY_PURCHASE_TYPES = new Set([2007, 2008, 32007]);
+const FANSLY_TIP_TYPE = 7001;
+const FANSLY_PRICE_EPSILON = 0.02;
+
+const FANSLY_SEND_ROW = `
+  "creatorId" = $1
+  AND platform = 'fansly'
+  AND "contentType" = 'chat_product'
+  AND "maloumMessageId" NOT LIKE 'fansly-sale:%'
+  AND "maloumMessageId" NOT LIKE 'fansly-tip:%'
+`;
+
+const FANSLY_UNCLAIMED_CONTENT = `
+  NOT EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(
+      CASE
+        WHEN jsonb_typeof("mediaJson") = 'array' THEN "mediaJson"
+        ELSE '[]'::jsonb
+      END
+    ) elem
+    WHERE jsonb_typeof(elem) = 'object'
+      AND COALESCE(elem->>'contentId', '') ~ '^[0-9]+$'
+  )
+`;
+
+function fanslyMillsToDollars(mills) {
+  const amount = Number(mills);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return amount / 1000;
+}
 
 function fanslyPurchasePriceDollars(metadata) {
   let parsed = metadata;
@@ -229,9 +259,7 @@ function fanslyPurchasePriceDollars(metadata) {
     }
   }
   if (!parsed || typeof parsed !== 'object') return null;
-  const mills = Number(parsed.accountMediaPrice);
-  if (!Number.isFinite(mills) || mills <= 0) return null;
-  return mills / 1000;
+  return fanslyMillsToDollars(parsed.accountMediaPrice);
 }
 
 function fanslyUnlockedAt(createdAt) {
@@ -243,19 +271,362 @@ function fanslyUnlockedAt(createdAt) {
   return date.toISOString();
 }
 
-async function processFanslyPurchaseNotifications(notifications) {
-  const list = Array.isArray(notifications) ? notifications : [];
-  for (const note of list) {
-    const type = Number(note?.type);
-    if (!FANSLY_PURCHASE_TYPES.has(type)) continue;
-    const messageId = note?.correlationId == null ? '' : String(note.correlationId).trim();
-    if (!/^\d+$/.test(messageId)) continue;
-    await unlockSaleByMessageId({
-      maloumMessageId: messageId,
-      priceNet: fanslyPurchasePriceDollars(note.metadata),
-      notificationId: note.id == null ? null : String(note.id),
-      unlockedAt: fanslyUnlockedAt(note.createdAt),
+function fanslyAccountLabel(accounts, id) {
+  if (id == null || id === '') return null;
+  const account = (Array.isArray(accounts) ? accounts : []).find(
+    (row) => row && String(row.id) === String(id)
+  );
+  if (!account) return null;
+  const name = account.displayName || account.username;
+  return typeof name === 'string' && name.trim() ? name.trim() : null;
+}
+
+function fanslySaleMessageId(notificationId) {
+  return `fansly-sale:${notificationId}`;
+}
+
+async function findFanslySendByContentId(creatorId, contentId) {
+  const result = await pool.query(
+    `SELECT "maloumMessageId", purchased, "payoutVerified"
+     FROM messaging_dashboard_entries
+     WHERE ${FANSLY_SEND_ROW}
+       AND "mediaJson" @> $2::jsonb
+     ORDER BY "sentAt" DESC
+     LIMIT 1`,
+    [creatorId, JSON.stringify([{ contentId }])]
+  );
+  return result.rows[0] || null;
+}
+
+async function findFanslySendByPrice({ creatorId, fanId, priceNet, soldAt, purchased }) {
+  if (!fanId || priceNet == null) return null;
+  const soldAtIso =
+    soldAt && !Number.isNaN(Date.parse(soldAt))
+      ? new Date(soldAt).toISOString()
+      : new Date().toISOString();
+  const result = await pool.query(
+    `SELECT "maloumMessageId", purchased, "payoutVerified"
+     FROM messaging_dashboard_entries
+     WHERE ${FANSLY_SEND_ROW}
+       AND "fanId" = $2
+       AND purchased = $3
+       AND ${FANSLY_UNCLAIMED_CONTENT}
+       AND "priceNet" IS NOT NULL
+       AND ABS("priceNet" - $4::numeric) < $5::numeric
+       AND "sentAt" <= $6::timestamptz
+     ORDER BY "sentAt" DESC
+     LIMIT 1`,
+    [creatorId, fanId, purchased, priceNet, FANSLY_PRICE_EPSILON, soldAtIso]
+  );
+  return result.rows[0] || null;
+}
+
+async function confirmFanslySale({ maloumMessageId, priceNet, unlockedAt, contentId }) {
+  const parsedPriceNet = parsePriceNet(priceNet);
+  const unlockedAtIso =
+    unlockedAt && !Number.isNaN(Date.parse(unlockedAt))
+      ? new Date(unlockedAt).toISOString()
+      : new Date().toISOString();
+  const content = typeof contentId === 'string' && /^\d+$/.test(contentId) ? contentId : null;
+  const result = await pool.query(
+    `UPDATE messaging_dashboard_entries
+     SET purchased = true,
+         "priceNet" = COALESCE("priceNet", $1),
+         "unlockedAt" = COALESCE("unlockedAt", $2::timestamptz),
+         "payoutVerified" = true,
+         "payoutVerifiedAt" = COALESCE("payoutVerifiedAt", $2::timestamptz),
+         "mediaJson" = CASE
+           WHEN $4::text IS NULL THEN "mediaJson"
+           WHEN jsonb_typeof("mediaJson") = 'array'
+             AND "mediaJson" @> jsonb_build_array(jsonb_build_object('contentId', $4::text))
+             THEN "mediaJson"
+           WHEN jsonb_typeof("mediaJson") = 'array'
+             THEN "mediaJson" || jsonb_build_array(jsonb_build_object('contentId', $4::text))
+           WHEN "mediaJson" IS NULL
+             THEN jsonb_build_array(jsonb_build_object('contentId', $4::text))
+           ELSE "mediaJson"
+         END,
+         "updatedAt" = NOW()
+     WHERE "maloumMessageId" = $3
+     RETURNING *`,
+    [parsedPriceNet, unlockedAtIso, maloumMessageId, content]
+  );
+  if (result.rows.length === 0) {
+    return { updated: false, reason: 'entry_not_found', maloumMessageId };
+  }
+  return {
+    updated: true,
+    entry: toDashboardEntry({
+      ...result.rows[0],
+      chatterSalesTotal: null,
+    }),
+  };
+}
+
+async function logFanslyOrphanSale({
+  creatorId,
+  fanId = null,
+  fanUsername = null,
+  notificationId,
+  priceNet = null,
+  createdAt = null,
+} = {}) {
+  const maloumMessageId = fanslySaleMessageId(notificationId);
+  if (!creatorId || !isValidUuid(creatorId)) {
+    return { updated: false, reason: 'creatorId_required', maloumMessageId, notificationId };
+  }
+  if (!notificationId || !/^\d+$/.test(String(notificationId))) {
+    return { updated: false, reason: 'notificationId_required', maloumMessageId, notificationId };
+  }
+
+  const existing = await pool.query(
+    `SELECT *
+     FROM messaging_dashboard_entries
+     WHERE "maloumMessageId" = $1`,
+    [maloumMessageId]
+  );
+  if (existing.rows.length > 0) {
+    return {
+      updated: false,
+      reason: 'already_logged',
+      maloumMessageId,
+      notificationId,
+    };
+  }
+
+  const enriched = await enrichCreatorFields(creatorId);
+  if (!enriched) {
+    return { updated: false, reason: 'creator_not_found', maloumMessageId, notificationId };
+  }
+
+  const tipContext = await resolveTipContext(creatorId, fanId);
+  if (!tipContext) {
+    return { updated: false, reason: 'no_chatter_context', maloumMessageId, notificationId };
+  }
+
+  const parsedPriceNet = parsePriceNet(priceNet);
+  const sentAt =
+    createdAt && !Number.isNaN(Date.parse(createdAt))
+      ? new Date(createdAt).toISOString()
+      : new Date().toISOString();
+  const chatId = fanId ? `fansly-sale:${fanId}` : tipContext.chatId;
+
+  const result = await pool.query(
+    `INSERT INTO messaging_dashboard_entries (
+      id,
+      "creatorId",
+      "creatorName",
+      "creatorUsername",
+      "creatorAvatarUrl",
+      platform,
+      "chatterId",
+      "chatterName",
+      "chatterEmail",
+      "chatId",
+      "fanId",
+      "fanUsername",
+      "maloumMessageId",
+      "optimisticMessageId",
+      "contentType",
+      "englishMessage",
+      "germanTranslatedMessage",
+      "actualSentText",
+      "priceNet",
+      currency,
+      purchased,
+      "unlockedAt",
+      "payoutVerified",
+      "payoutVerifiedAt",
+      "attributionSource",
+      "mediaCount",
+      "pictureCount",
+      "videoCount",
+      "mediaJson",
+      "previousFanMessageAt",
+      "responseTimeSeconds",
+      "sentAt"
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+      $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+      $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+      $31, $32
+    )
+    ON CONFLICT ("maloumMessageId") DO NOTHING
+    RETURNING *`,
+    [
+      randomUUID(),
+      creatorId,
+      enriched.creatorName,
+      enriched.creatorUsername,
+      enriched.creatorAvatarUrl,
+      enriched.platform,
+      tipContext.chatterId,
+      tipContext.chatterName,
+      tipContext.chatterEmail,
+      chatId,
+      fanId,
+      fanUsername,
+      maloumMessageId,
+      null,
+      'chat_product',
+      null,
+      null,
+      null,
+      parsedPriceNet,
+      'USD',
+      true,
+      sentAt,
+      true,
+      sentAt,
+      'orphan_sale',
+      0,
+      0,
+      0,
+      null,
+      null,
+      null,
+      sentAt,
+    ]
+  );
+
+  if (result.rows.length === 0) {
+    return { updated: false, reason: 'already_logged', maloumMessageId, notificationId };
+  }
+
+  return {
+    updated: true,
+    entry: toDashboardEntry({
+      ...result.rows[0],
+      chatterSalesTotal: null,
+    }),
+    notificationId,
+  };
+}
+
+async function logFanslyPurchaseNotification({ creatorId, note, accounts }) {
+  const notificationId = note?.id == null ? '' : String(note.id).trim();
+  const contentId = note?.correlationId == null ? '' : String(note.correlationId).trim();
+  if (!/^\d+$/.test(notificationId) || !/^\d+$/.test(contentId)) return;
+
+  const existingOrphan = await pool.query(
+    `SELECT 1 FROM messaging_dashboard_entries WHERE "maloumMessageId" = $1`,
+    [fanslySaleMessageId(notificationId)]
+  );
+  if (existingOrphan.rows.length > 0) return;
+
+  const priceNet = fanslyPurchasePriceDollars(note.metadata);
+  const unlockedAt = fanslyUnlockedAt(note.createdAt);
+  const fanId =
+    note?.correlationGroupId == null || String(note.correlationGroupId).trim() === ''
+      ? null
+      : String(note.correlationGroupId).trim();
+  const fanUsername = fanslyAccountLabel(accounts, fanId);
+
+  const byContent = await findFanslySendByContentId(creatorId, contentId);
+  if (byContent) {
+    if (!byContent.purchased || !byContent.payoutVerified) {
+      await confirmFanslySale({
+        maloumMessageId: byContent.maloumMessageId,
+        priceNet,
+        unlockedAt,
+        contentId,
+      });
+    }
+    return;
+  }
+
+  const unpurchased = await findFanslySendByPrice({
+    creatorId,
+    fanId,
+    priceNet,
+    soldAt: unlockedAt,
+    purchased: false,
+  });
+  if (unpurchased) {
+    await confirmFanslySale({
+      maloumMessageId: unpurchased.maloumMessageId,
+      priceNet,
+      unlockedAt,
+      contentId,
     });
+    return;
+  }
+
+  const purchased = await findFanslySendByPrice({
+    creatorId,
+    fanId,
+    priceNet,
+    soldAt: unlockedAt,
+    purchased: true,
+  });
+  if (purchased) {
+    await confirmFanslySale({
+      maloumMessageId: purchased.maloumMessageId,
+      priceNet,
+      unlockedAt,
+      contentId,
+    });
+    return;
+  }
+
+  if (priceNet == null) return;
+  await logFanslyOrphanSale({
+    creatorId,
+    fanId,
+    fanUsername,
+    notificationId,
+    priceNet,
+    createdAt: unlockedAt,
+  });
+}
+
+async function logFanslyTipNotification({ creatorId, note, accounts, tipsById }) {
+  const tipId = note?.correlationId == null ? '' : String(note.correlationId).trim();
+  if (!/^\d+$/.test(tipId)) return;
+  const tip = tipsById.get(tipId);
+  const priceNet = fanslyMillsToDollars(tip?.amount);
+  if (priceNet == null) return;
+  const fanId = tip?.senderId == null || String(tip.senderId).trim() === ''
+    ? null
+    : String(tip.senderId).trim();
+  await logTip({
+    creatorId,
+    fanId,
+    fanUsername: fanslyAccountLabel(accounts, fanId),
+    maloumMessageId: `fansly-tip:${tipId}`,
+    priceNet,
+    notificationId: note?.id == null ? null : String(note.id),
+    createdAt: fanslyUnlockedAt(note.createdAt) || fanslyUnlockedAt(tip?.createdAt),
+    currency: 'USD',
+  });
+}
+
+async function processFanslyPurchaseNotifications(creatorId, payload) {
+  if (!creatorId || !isValidUuid(String(creatorId))) return;
+  const notifications = Array.isArray(payload?.notifications)
+    ? payload.notifications
+    : Array.isArray(payload)
+      ? payload
+      : [];
+  const accounts = Array.isArray(payload?.accounts) ? payload.accounts : [];
+  const tips = Array.isArray(payload?.tips) ? payload.tips : [];
+  const tipsById = new Map();
+  for (const tip of tips) {
+    if (tip?.id != null) tipsById.set(String(tip.id), tip);
+  }
+
+  for (const note of notifications) {
+    const type = Number(note?.type);
+    try {
+      if (type === FANSLY_TIP_TYPE) {
+        await logFanslyTipNotification({ creatorId, note, accounts, tipsById });
+        continue;
+      }
+      if (!FANSLY_PURCHASE_TYPES.has(type)) continue;
+      await logFanslyPurchaseNotification({ creatorId, note, accounts });
+    } catch (err) {
+      console.warn('[fansly] purchase log failed:', err.message || err);
+    }
   }
 }
 
@@ -5256,8 +5627,16 @@ router.patch(
              WHEN $1 = true THEN COALESCE("unlockedAt", NOW())
              ELSE NULL
            END,
-           "payoutVerified" = CASE WHEN $1 = false THEN false ELSE "payoutVerified" END,
-           "payoutVerifiedAt" = CASE WHEN $1 = false THEN NULL ELSE "payoutVerifiedAt" END,
+           "payoutVerified" = CASE
+             WHEN $1 = true AND platform = 'fansly' THEN true
+             WHEN $1 = false THEN false
+             ELSE "payoutVerified"
+           END,
+           "payoutVerifiedAt" = CASE
+             WHEN $1 = true AND platform = 'fansly' THEN COALESCE("payoutVerifiedAt", NOW())
+             WHEN $1 = false THEN NULL
+             ELSE "payoutVerifiedAt"
+           END,
            "payoutTxnId" = CASE WHEN $1 = false THEN NULL ELSE "payoutTxnId" END,
            "updatedAt" = NOW()
        WHERE "maloumMessageId" = $3

@@ -1021,7 +1021,11 @@ router.get(
         type,
       });
       try {
-        await messagingDashboard.processFanslyPurchaseNotifications(payload.notifications);
+        await messagingDashboard.processFanslyPurchaseNotifications(creator.id, {
+          notifications: payload.notifications,
+          accounts: payload.accounts,
+          tips: payload.tips,
+        });
       } catch (err) {
         console.warn('[fanslyClient] purchase log failed:', err.message);
       }

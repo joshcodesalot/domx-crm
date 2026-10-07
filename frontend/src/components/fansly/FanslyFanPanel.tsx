@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Pencil, Plus, X } from 'lucide-react';
+import { Loader2, Lock, Pencil, Plus, Unlock, X } from 'lucide-react';
 import {
   addFanslyFanToList,
   getFanslyFan,
   getFanslyFanLists,
   getFanslyGroup,
+  getMaloumFanStats,
   listFanslyLists,
   removeFanslyFanFromList,
   saveFanslyFanNotes,
   saveFanslyNickname,
   type FanslyFanList,
   type FanslyFanProfile,
-  type FanslyFanPurchase,
+  type MaloumFanStats,
 } from '@/lib/api';
 
 const NOTES_DEBOUNCE_MS = 800;
@@ -21,15 +22,39 @@ function formatMills(mills: number): string {
   return `$${dollars.toFixed(2)}`;
 }
 
-function formatWhen(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(Number(value))) return '';
-  const numeric = Number(value);
-  const ms = numeric < 1e12 ? numeric * 1000 : numeric;
-  return new Date(ms).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
+function formatRelativeTime(iso?: string | null): string | null {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime();
+  if (Number.isNaN(ms)) return null;
+  const diff = Date.now() - ms;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
+function formatUsd(amount?: number | null): string {
+  if (typeof amount !== 'number' || !Number.isFinite(amount)) return '—';
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: 'USD',
+      maximumFractionDigits: amount % 1 === 0 ? 0 : 2,
+    }).format(amount);
+  } catch {
+    return `$${amount.toFixed(2)}`;
+  }
+}
+
+function SectionHeading({ children }: { children: string }) {
+  return (
+    <h3 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-2">
+      {children}
+    </h3>
+  );
 }
 
 type FanslyFanPanelProps = {
@@ -67,6 +92,9 @@ export default function FanslyFanPanel({
   const [listsError, setListsError] = useState<string | null>(null);
   const [listMutating, setListMutating] = useState(false);
   const [listPickerOpen, setListPickerOpen] = useState(false);
+  const [stats, setStats] = useState<MaloumFanStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
   const notesBaseline = useRef('');
   const notesDraftRef = useRef('');
   const fanIdRef = useRef('');
@@ -214,6 +242,32 @@ export default function FanslyFanPanel({
       setListMutating(false);
     }
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    setStats(null);
+    setStatsLoading(true);
+    setStatsError(null);
+    getMaloumFanStats({
+      creatorId,
+      chatId: groupId,
+      fanId: partnerAccountId || undefined,
+    })
+      .then((result) => {
+        if (!cancelled) setStats(result);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setStatsError(err instanceof Error ? err.message : 'Failed to load PPV stats');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setStatsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [creatorId, groupId, partnerAccountId]);
 
   const assignedIds = new Set(assignedLists.map((list) => list.id));
   const availableLists = allLists.filter((list) => !assignedIds.has(list.id));
@@ -452,18 +506,121 @@ export default function FanslyFanPanel({
             )}
 
             {tab === 'ppvs' && (
-              <div className="px-4 py-4 space-y-2">
-                {profile.purchases.length === 0 ? (
-                  <p className="text-sm text-gray-500">No purchases.</p>
+              <div className="px-4 py-4 space-y-5">
+                {statsLoading && !stats ? (
+                  <p className="text-xs text-gray-500 dark:text-zinc-500 flex items-center gap-1.5">
+                    <Loader2 className="w-3 h-3 animate-spin" /> Loading…
+                  </p>
+                ) : statsError ? (
+                  <p className="text-xs text-red-400">{statsError}</p>
                 ) : (
-                  <ul className="space-y-2">
-                    {profile.purchases.map((purchase) => (
-                      <PurchaseRow key={purchase.id} purchase={purchase} />
-                    ))}
-                  </ul>
-                )}
-                {profile.hasMorePurchases && (
-                  <p className="text-[11px] text-gray-400">Showing the latest 30.</p>
+                  <>
+                    <section>
+                      <SectionHeading>Purchase Rate</SectionHeading>
+                      <div className="space-y-1.5 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-gray-500 dark:text-zinc-500">Rate</span>
+                          <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                            {stats?.ppv.unlocked ?? 0}/{stats?.ppv.sent ?? 0} (
+                            {stats?.ppv.ratePercent ?? 0}%)
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-gray-500 dark:text-zinc-500">Highest price</span>
+                          <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                            {stats?.ppv.highestPrice != null ? formatUsd(stats.ppv.highestPrice) : '—'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs text-gray-500 dark:text-zinc-500">Lowest price</span>
+                          <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                            {stats?.ppv.lowestPrice != null ? formatUsd(stats.ppv.lowestPrice) : '—'}
+                          </span>
+                        </div>
+                      </div>
+                    </section>
+                    <section>
+                      <SectionHeading>PPV Media</SectionHeading>
+                      {!stats?.ppvEntries?.length ? (
+                        <p className="text-xs text-gray-500 dark:text-zinc-500">No PPVs sent.</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {stats.ppvEntries.map((entry) => (
+                            <li
+                              key={entry.id}
+                              className="flex items-start justify-between gap-2 px-2.5 py-2 rounded-lg bg-gray-50 dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  {entry.purchased ? (
+                                    <Unlock className="w-3 h-3 text-emerald-400 shrink-0" />
+                                  ) : (
+                                    <Lock className="w-3 h-3 text-gray-400 dark:text-zinc-500 shrink-0" />
+                                  )}
+                                  <span
+                                    className={`text-sm font-semibold ${
+                                      entry.purchased
+                                        ? 'text-emerald-400'
+                                        : 'text-gray-900 dark:text-white'
+                                    }`}
+                                  >
+                                    {formatUsd(entry.priceNet)}
+                                  </span>
+                                </div>
+                                <p className="text-[10px] text-gray-500 dark:text-zinc-500 mt-0.5">
+                                  {[
+                                    entry.pictureCount > 0
+                                      ? `${entry.pictureCount} pic${entry.pictureCount === 1 ? '' : 's'}`
+                                      : null,
+                                    entry.videoCount > 0
+                                      ? `${entry.videoCount} video${entry.videoCount === 1 ? '' : 's'}`
+                                      : null,
+                                    !entry.pictureCount && !entry.videoCount && entry.mediaCount > 0
+                                      ? `${entry.mediaCount} media`
+                                      : null,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(' · ') || 'Media'}
+                                  {entry.sentAt ? ` · ${formatRelativeTime(entry.sentAt) || ''}` : ''}
+                                </p>
+                              </div>
+                              <span
+                                className={`text-[10px] font-bold uppercase shrink-0 ${
+                                  entry.purchased
+                                    ? 'text-emerald-400'
+                                    : 'text-gray-400 dark:text-zinc-500'
+                                }`}
+                              >
+                                {entry.purchased ? 'Unlocked' : 'Locked'}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </section>
+                    <section>
+                      <SectionHeading>Tips</SectionHeading>
+                      {!stats?.tips?.length ? (
+                        <p className="text-xs text-gray-500 dark:text-zinc-500">No tips.</p>
+                      ) : (
+                        <ul className="space-y-2">
+                          {stats.tips.map((tip) => (
+                            <li
+                              key={tip.id}
+                              className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg bg-gray-50 dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800"
+                            >
+                              <span className="text-sm font-semibold text-emerald-400">
+                                {formatUsd(tip.priceNet)}
+                              </span>
+                              <span className="text-[10px] text-gray-500 dark:text-zinc-500">
+                                {formatRelativeTime(tip.sentAt) || ''}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </section>
+                  </>
                 )}
               </div>
             )}
@@ -471,14 +628,5 @@ export default function FanslyFanPanel({
         )}
       </div>
     </aside>
-  );
-}
-
-function PurchaseRow({ purchase }: { purchase: FanslyFanPurchase }) {
-  return (
-    <li className="flex items-center justify-between gap-2 text-sm">
-      <span className="text-gray-500">{formatWhen(purchase.createdAt) || 'Purchase'}</span>
-      <span className="font-medium">{formatMills(purchase.grossMills)}</span>
-    </li>
   );
 }

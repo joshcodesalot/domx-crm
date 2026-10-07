@@ -37,7 +37,7 @@ function formatTime(value: number | null | undefined): string {
 }
 
 function money(amount: number): string {
-  return `$${(amount / 100).toFixed(2)}`;
+  return `$${(amount / 1000).toFixed(2)}`;
 }
 
 function mergeById<T extends { id: string }>(current: T[], incoming: T[] | undefined): T[] {

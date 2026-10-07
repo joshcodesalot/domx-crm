@@ -1,7 +1,7 @@
 import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
 import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpDown, Eye, ImagePlus, Loader2, Lock, PanelRight, PanelRightClose, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
+import { ArrowUpDown, Banknote, Check, Eye, ImagePlus, Loader2, Lock, PanelRight, PanelRightClose, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import FanslyFanPanel from '@/components/fansly/FanslyFanPanel';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
@@ -68,11 +68,6 @@ function formatFanslySpend(mills: number | null | undefined): string | null {
 function formatFanslyPrice(price: number): string {
   const rounded = Math.round(price * 100) / 100;
   return Number.isInteger(rounded) ? `$${rounded}` : `$${rounded.toFixed(2)}`;
-}
-
-function messagePrice(message: FanslyMessage): number | null {
-  const priced = (message.media || []).find((item) => item.price != null && item.price > 0);
-  return priced?.price ?? null;
 }
 
 function isFanslyVideo(item: { kind?: 'image' | 'video'; mediaType?: number }): boolean {
@@ -193,12 +188,82 @@ function sentAtIso(createdAt: number | null | undefined): string {
   return new Date(numeric < 1e12 ? numeric * 1000 : numeric).toISOString();
 }
 
+function fanslyContentIds(message: FanslyMessage): Array<{ contentId: string }> {
+  const seen = new Set<string>();
+  const items: Array<{ contentId: string }> = [];
+  const add = (value: unknown) => {
+    const contentId = value == null ? '' : String(value).trim();
+    if (!/^\d+$/.test(contentId) || seen.has(contentId)) return;
+    seen.add(contentId);
+    items.push({ contentId });
+  };
+  for (const row of message.attachments || []) {
+    if (row && typeof row === 'object') add((row as { contentId?: unknown }).contentId);
+  }
+  for (const row of message.lockedText || []) add(row.id);
+  return items;
+}
+
 function messagePriceDollars(message: FanslyMessage): number | null {
   const prices = [
     ...(message.media || []).map((item) => item.price),
     ...(message.lockedText || []).map((item) => item.price),
   ].filter((price): price is number => typeof price === 'number' && price > 0);
   return prices.length > 0 ? prices[0] : null;
+}
+
+function fanslyMessageTimeMs(createdAt: number | null | undefined): number | null {
+  const numeric = Number(createdAt);
+  if (!Number.isFinite(numeric) || numeric <= 0) return null;
+  return numeric < 1e12 ? numeric * 1000 : numeric;
+}
+
+function computeFanslyResponseTime(
+  rows: FanslyMessage[],
+  providerUserId: string | null
+): { responseTimeSeconds: number | null; previousFanMessageAt: string | null } {
+  if (!providerUserId) {
+    return { responseTimeSeconds: null, previousFanMessageAt: null };
+  }
+
+  let latestFanAt: number | null = null;
+  let latestCreatorAt: number | null = null;
+  for (const message of rows) {
+    const at = fanslyMessageTimeMs(message.createdAt);
+    if (at == null) continue;
+    if (String(message.senderId) === String(providerUserId)) {
+      if (latestCreatorAt == null || at > latestCreatorAt) latestCreatorAt = at;
+    } else if (message.senderId) {
+      if (latestFanAt == null || at > latestFanAt) latestFanAt = at;
+    }
+  }
+
+  if (latestFanAt == null) {
+    return { responseTimeSeconds: null, previousFanMessageAt: null };
+  }
+  if (latestCreatorAt != null && latestFanAt <= latestCreatorAt) {
+    return { responseTimeSeconds: null, previousFanMessageAt: null };
+  }
+
+  return {
+    responseTimeSeconds: Math.max(0, Math.floor((Date.now() - latestFanAt) / 1000)),
+    previousFanMessageAt: new Date(latestFanAt).toISOString(),
+  };
+}
+
+function fanslyTipDollars(message: FanslyMessage): number | null {
+  const mills = Number(message.totalTipAmount);
+  if (!Number.isFinite(mills) || mills <= 0) return null;
+  return mills / 1000;
+}
+
+function fanslyPpvSold(message: FanslyMessage): boolean {
+  const items = [
+    ...(message.media || []).filter((item) => item.price != null && item.price > 0),
+    ...(message.lockedText || []).filter((item) => item.price != null && item.price > 0),
+  ];
+  if (items.length === 0) return false;
+  return items.every((item) => item.purchased || item.access);
 }
 
 function messageUnlocked(message: FanslyMessage): boolean {
@@ -308,10 +373,18 @@ export default function ChatterFansly() {
     }
   ) {
     if (!user?.id || !selectedCreator || !selectedGroupId || !message.id) return;
+    const responseSnapshot = computeFanslyResponseTime(messages, selfId);
     const pictureCount = details.media.filter(
       (item) => item.kind !== 'video' && item.mediaType !== 2
     ).length;
     const videoCount = details.media.length - pictureCount;
+    const mediaItems = [
+      ...details.media.map((item) => ({
+        mediaId: item.mediaId,
+        type: item.kind === 'video' || item.mediaType === 2 ? ('video' as const) : ('image' as const),
+      })),
+      ...fanslyContentIds(message),
+    ];
     void createMessagingDashboardEntry({
       id: crypto.randomUUID(),
       creatorId: selectedCreator.id,
@@ -334,12 +407,9 @@ export default function ChatterFansly() {
       mediaCount: details.media.length,
       pictureCount,
       videoCount,
-      mediaJson: details.media.length
-        ? details.media.map((item) => ({
-            mediaId: item.mediaId,
-            type: item.kind === 'video' || item.mediaType === 2 ? 'video' : 'image',
-          }))
-        : null,
+      mediaJson: mediaItems.length ? mediaItems : null,
+      previousFanMessageAt: responseSnapshot.previousFanMessageAt,
+      responseTimeSeconds: responseSnapshot.responseTimeSeconds,
       sentAt: sentAtIso(message.createdAt),
     }).catch(() => {
       // Non-blocking
@@ -1024,7 +1094,12 @@ export default function ChatterFansly() {
                   const attachments = attachmentCount(message);
                   const media = Array.isArray(message.media) ? message.media : [];
                   const locked = Array.isArray(message.lockedText) ? message.lockedText : [];
-                  const price = messagePrice(message);
+                  const price = messagePriceDollars(message);
+                  const sold = fanslyPpvSold(message);
+                  const ppvLabel = price != null ? formatFanslyPrice(price) : null;
+                  const tipDollars = fanslyTipDollars(message);
+                  const isTip =
+                    tipDollars != null && price == null && media.length === 0 && locked.length === 0;
                   return (
                     <div key={message.id} className={`flex items-end gap-1 ${mine ? 'justify-end' : 'justify-start'}`}>
                       {mine && (
@@ -1042,34 +1117,61 @@ export default function ChatterFansly() {
                           )}
                         </button>
                       )}
+                      {isTip ? (
+                        <div className="max-w-[75%] min-w-[140px] rounded-2xl px-4 py-3 shadow-lg bg-zinc-900 border border-emerald-500/30 text-white">
+                          <div className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-300/90 uppercase tracking-wide">
+                            <Banknote className="w-3.5 h-3.5" />
+                            <span>Tip</span>
+                          </div>
+                          <div className="mt-1 text-2xl font-semibold tracking-tight">
+                            {formatFanslyPrice(tipDollars)}
+                          </div>
+                          {message.content ? (
+                            <p className="mt-1 whitespace-pre-wrap break-words text-sm text-white/80">
+                              {message.content}
+                            </p>
+                          ) : null}
+                          <p className="text-[10px] mt-1 text-white/60">{formatTime(message.createdAt)}</p>
+                        </div>
+                      ) : (
                       <div
-                        className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm ${
-                          mine
-                            ? 'bg-sky-500 text-white'
-                            : 'bg-gray-100 dark:bg-white/10 text-gray-900 dark:text-gray-100'
+                        className={`max-w-[75%] rounded-2xl text-sm relative overflow-hidden ${
+                          ppvLabel
+                            ? mine
+                              ? 'bg-zinc-900 border border-sky-500/30 text-white p-1.5'
+                              : 'bg-gray-100 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 text-gray-900 dark:text-zinc-200 p-1.5'
+                            : mine
+                              ? 'bg-sky-500 text-white px-3 py-2'
+                              : 'bg-gray-100 dark:bg-white/10 text-gray-900 dark:text-gray-100 px-3 py-2'
                         }`}
                       >
+                        {ppvLabel ? (
+                          <div
+                            className={`absolute top-2 right-2 z-10 px-2 py-1 rounded text-[10px] font-bold tracking-widest flex items-center gap-1 ${
+                              sold
+                                ? 'bg-emerald-600/90 border border-emerald-400/40 text-white'
+                                : 'bg-black/60 border border-white/10 text-amber-300'
+                            }`}
+                          >
+                            {sold ? <Check className="w-3 h-3" /> : <Lock className="w-3 h-3" />}
+                            {sold ? 'Sold' : 'PPV'} · {ppvLabel}
+                          </div>
+                        ) : null}
                         {locked.map((item) => (
                           <div
                             key={item.id}
                             className={`mb-1 rounded-lg px-2 py-1.5 ${
-                              mine ? 'bg-white/15' : 'bg-black/5 dark:bg-black/20'
-                            }`}
+                              ppvLabel ? 'pt-7' : ''
+                            } ${mine && !ppvLabel ? 'bg-white/15' : 'bg-black/5 dark:bg-black/20'}`}
                           >
                             <p className="text-[10px] font-semibold uppercase tracking-wide">
                               Locked text
-                              {item.price != null && item.price > 0 ? ` · ${formatFanslyPrice(item.price)}` : ''}
                             </p>
                             {item.content ? (
                               <p className="whitespace-pre-wrap break-words">{item.content}</p>
                             ) : null}
                           </div>
                         ))}
-                        {price != null && (
-                          <p className={`text-[11px] font-semibold mb-1 ${mine ? 'text-white' : 'text-gray-700 dark:text-gray-200'}`}>
-                            {formatFanslyPrice(price)}
-                          </p>
-                        )}
                         {media.length > 0 && selectedCreatorId && (
                           <div className="flex flex-wrap gap-1 mb-1">
                             {media.map((item) => {
@@ -1110,10 +1212,11 @@ export default function ChatterFansly() {
                         ) : media.length === 0 && locked.length === 0 && attachments === 0 ? (
                           <p>Attachment</p>
                         ) : null}
-                        <p className={`text-[10px] mt-1 ${mine ? 'text-white/80' : 'text-gray-500'}`}>
+                        <p className={`text-[10px] mt-1 ${mine && !ppvLabel ? 'text-white/80' : 'text-gray-500'}`}>
                           {formatTime(message.createdAt)}
                         </p>
                       </div>
+                      )}
                     </div>
                   );
                 })}
