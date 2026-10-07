@@ -873,9 +873,131 @@ describe('fansly locked text thread', () => {
     });
     assert.equal(message.attachments[0].contentType, MESSAGE_CONTENT_STORY);
     assert.deepEqual(message.lockedText, [
-      { id: '963202346916007936', content: 'test', price: 1 },
+      {
+        id: '963202346916007936',
+        content: 'test',
+        price: 1,
+        purchased: false,
+        access: false,
+      },
     ]);
     assert.deepEqual(message.media, []);
+  });
+
+  it('keeps creator access from counting as a locked-text purchase', () => {
+    const [message] = mapMessageThread({
+      messages: [
+        {
+          id: 'm-lock-owned',
+          content: '',
+          senderId: 'creator',
+          createdAt: 12,
+          attachments: [
+            { contentType: MESSAGE_CONTENT_STORY, contentId: '963202346916007936', pos: 0 },
+          ],
+        },
+      ],
+      stories: [
+        {
+          id: '963202346916007936',
+          content: 'secret',
+          purchased: true,
+          access: true,
+          whitelisted: true,
+          permissions: { permissionFlags: [{ type: 0, flags: 1, price: 1000 }] },
+        },
+      ],
+      storyOrders: [],
+    });
+    assert.equal(message.lockedText[0].price, 1);
+    assert.equal(message.lockedText[0].purchased, false);
+    assert.equal(message.lockedText[0].access, true);
+  });
+
+  it('marks locked text purchased when a story order matches', () => {
+    const [message] = mapMessageThread({
+      messages: [
+        {
+          id: 'm-lock-sold',
+          content: '',
+          senderId: 'creator',
+          createdAt: 12,
+          attachments: [
+            { contentType: MESSAGE_CONTENT_STORY, contentId: '963202346916007936', pos: 0 },
+          ],
+        },
+      ],
+      stories: [
+        {
+          id: '963202346916007936',
+          content: 'secret',
+          permissions: { permissionFlags: [{ type: 0, flags: 1, price: 1000 }] },
+        },
+      ],
+      storyOrders: [{ accountMediaId: '963202346916007936' }],
+    });
+    assert.equal(message.lockedText[0].purchased, true);
+  });
+});
+
+describe('fansly ppv purchase orders', () => {
+  const bundleId = '964094309802459137';
+  const mediaId = '964094309664051200';
+
+  function unsoldBundleThread(orders) {
+    return mapMessageThread({
+      messages: [
+        {
+          id: '964094311182381056',
+          content: '',
+          senderId: '948650325143744512',
+          createdAt: 1791352355,
+          attachments: [{ contentType: MESSAGE_CONTENT_BUNDLE, contentId: bundleId, pos: 0 }],
+        },
+      ],
+      accountMedia: [
+        {
+          id: mediaId,
+          purchased: true,
+          access: true,
+          whitelisted: true,
+          accountPermissionFlags: 255,
+          permissions: { permissionFlags: [{ type: 0, flags: 1, price: 0 }] },
+          media: {
+            id: '951258463059587078',
+            type: 1,
+            locations: [{ location: 'https://cdn3.fansly.com/photo.jpeg' }],
+          },
+        },
+      ],
+      accountMediaBundles: [
+        {
+          id: bundleId,
+          accountMediaIds: [mediaId],
+          purchased: true,
+          access: true,
+          whitelisted: true,
+          accountPermissionFlags: 255,
+          permissions: { permissionFlags: [{ type: 0, flags: 1, price: 10000 }] },
+        },
+      ],
+      accountMediaOrders: orders,
+      storyOrders: [],
+    });
+  }
+
+  it('does not mark a creator-owned $10 bundle sold when nobody has bought it', () => {
+    const [message] = unsoldBundleThread([]);
+    assert.equal(message.media.length, 1);
+    assert.equal(message.media[0].price, 10);
+    assert.equal(message.media[0].purchased, false);
+    assert.equal(message.media[0].access, true);
+  });
+
+  it('marks the bundle sold when an order references the bundle id', () => {
+    const [message] = unsoldBundleThread([{ accountMediaId: bundleId }]);
+    assert.equal(message.media[0].price, 10);
+    assert.equal(message.media[0].purchased, true);
   });
 });
 

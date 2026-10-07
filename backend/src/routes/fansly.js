@@ -1249,6 +1249,9 @@ router.get(
       if (!creator) return;
       const badges = await fanslyClient.getBadges(fanslySession(creator));
       res.json(badges);
+      void messagingDashboard.repairFanslyFalseSalesOnce(creator.id).catch((err) => {
+        console.warn('[fansly] false sale repair failed:', err.message || err);
+      });
     } catch (err) {
       return handleFanslyError(res, err, 'Fansly unread error:');
     }
@@ -1456,3 +1459,5 @@ router.delete(
 );
 
 module.exports = router;
+module.exports.publishFanslyFeed = publishFanslyFeed;
+module.exports.sendFanslyBroadcast = sendFanslyBroadcast;

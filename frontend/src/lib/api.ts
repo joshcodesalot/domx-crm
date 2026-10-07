@@ -6089,7 +6089,7 @@ export interface ScheduledContentJob {
   kind: ScheduledContentKind;
   creatorId: string;
   creatorName: string | null;
-  platform: 'maloum' | '4based' | 'telegram';
+  platform: 'maloum' | '4based' | 'telegram' | 'fansly';
   runAt: string;
   status: ScheduledContentStatus;
   bodyText: string;
@@ -6111,7 +6111,7 @@ export interface ScheduleNamedRef {
 export interface CreatorScheduleSettings {
   creatorId: string;
   displayName?: string;
-  platform?: 'maloum' | '4based';
+  platform?: 'maloum' | '4based' | 'telegram' | 'fansly';
   audienceFilters: string[];
   includeListIds: string[];
   excludeListIds: string[];
@@ -6194,7 +6194,7 @@ export async function updateScheduleSettings(
 export async function createScheduledContent(input: {
   kind: ScheduledContentKind;
   creatorId: string;
-  platform: 'maloum' | '4based' | 'telegram';
+  platform: 'maloum' | '4based' | 'telegram' | 'fansly';
   runAt: string;
   bodyText?: string;
   translateBody?: boolean;
@@ -6252,7 +6252,7 @@ export interface ScheduledImportPreviewRow {
   index: number;
   included: boolean;
   kind: ScheduledContentKind | null;
-  platform: 'maloum' | '4based' | 'telegram' | null;
+  platform: 'maloum' | '4based' | 'telegram' | 'fansly' | null;
   model: string;
   creatorId: string | null;
   creatorName: string | null;
@@ -6321,7 +6321,7 @@ export async function commitScheduledContentImport(
   rows: Array<{
     included: boolean;
     kind: ScheduledContentKind;
-    platform: 'maloum' | '4based';
+    platform: 'maloum' | '4based' | 'telegram' | 'fansly';
     creatorId: string;
     runAt: string;
     bodyText: string;

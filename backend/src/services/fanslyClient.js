@@ -1180,48 +1180,63 @@ function purchasePriceDollars(node) {
   return null;
 }
 
-function unlockFlags(node) {
-  return {
-    purchased: node?.purchased === true,
-    access: node?.access === true,
-  };
+const ORDER_CONTENT_KEYS = ['accountMediaId', 'contentId', 'storyId', 'mediaOfferId'];
+
+function orderContentIds(orders) {
+  const ids = new Set();
+  for (const order of Array.isArray(orders) ? orders : []) {
+    if (!order || typeof order !== 'object') continue;
+    for (const key of ORDER_CONTENT_KEYS) {
+      const value = order[key] == null ? '' : String(order[key]).trim();
+      if (/^\d+$/.test(value)) ids.add(value);
+    }
+  }
+  return ids;
 }
 
-function viewFromAccountMedia(row, price, flags) {
+function contentPurchased(ids, orderIds) {
+  const bought = orderIds instanceof Set ? orderIds : new Set();
+  return ids.some((id) => bought.has(String(id)));
+}
+
+function viewerAccess(node) {
+  return node?.access === true;
+}
+
+function viewFromAccountMedia(row, price, { purchased = false, access = false } = {}) {
   if (!row?.media) return null;
   const view = fanslyMediaView(row.media);
   const mediaId = row.media.id == null ? '' : String(row.media.id);
   if (!mediaId) return null;
-  const own = unlockFlags(row);
   return {
     mediaId,
     ...view,
     price: price == null ? purchasePriceDollars(row) : price,
-    purchased: flags?.purchased === true || own.purchased,
-    access: flags?.access === true || own.access,
+    purchased: purchased === true,
+    access: access === true || viewerAccess(row),
   };
 }
 
-function lockedTextForMessage(message, storiesById) {
+function lockedTextForMessage(message, storiesById, orderIds) {
   const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
   const items = [];
   for (const attachment of attachments) {
     if (Number(attachment?.contentType) !== MESSAGE_CONTENT_STORY) continue;
     const contentId = attachment?.contentId == null ? '' : String(attachment.contentId);
     const story = storiesById.get(contentId);
-    const flags = unlockFlags(story);
+    const id = story?.id == null ? contentId : String(story.id);
     items.push({
-      id: story?.id == null ? contentId : String(story.id),
+      id,
       content: typeof story?.content === 'string' ? story.content : '',
       price: purchasePriceDollars(story),
-      purchased: flags.purchased,
-      access: flags.access,
+      purchased: contentPurchased([id, contentId], orderIds),
+      access: viewerAccess(story),
     });
   }
   return items;
 }
 
-function mediaForMessage(message, accountMediaById, bundlesById) {
+function mediaForMessage(message, accountMediaById, bundlesById, orderIds) {
   const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
   const items = [];
   for (const attachment of attachments) {
@@ -1231,18 +1246,28 @@ function mediaForMessage(message, accountMediaById, bundlesById) {
       const bundle = bundlesById.get(contentId);
       if (!bundle) continue;
       const price = purchasePriceDollars(bundle);
-      const flags = unlockFlags(bundle);
-      const ids = Array.isArray(bundle.accountMediaIds) ? bundle.accountMediaIds : [];
+      const ids = Array.isArray(bundle.accountMediaIds) ? bundle.accountMediaIds.map(String) : [];
+      const purchased = contentPurchased([contentId, ...ids], orderIds);
+      const access = viewerAccess(bundle);
       for (const id of ids) {
-        const view = viewFromAccountMedia(accountMediaById.get(String(id)), price, flags);
+        const view = viewFromAccountMedia(accountMediaById.get(id), price, { purchased, access });
         if (view) items.push(view);
       }
       continue;
     }
-    const view = viewFromAccountMedia(accountMediaById.get(contentId), null);
+    const view = viewFromAccountMedia(accountMediaById.get(contentId), null, {
+      purchased: contentPurchased([contentId], orderIds),
+    });
     if (view) items.push(view);
   }
   return items;
+}
+
+function purchaseOrderIds(data) {
+  return orderContentIds([
+    ...(Array.isArray(data?.accountMediaOrders) ? data.accountMediaOrders : []),
+    ...(Array.isArray(data?.storyOrders) ? data.storyOrders : []),
+  ]);
 }
 
 function mapMessageThread(data) {
@@ -1250,25 +1275,35 @@ function mapMessageThread(data) {
   const accountMediaById = indexById(data?.accountMedia);
   const bundlesById = indexById(data?.accountMediaBundles);
   const storiesById = indexById(data?.stories);
+  const orderIds = purchaseOrderIds(data);
   return rows
     .map((row) => {
       const message = mapMessage(row);
       if (!message) return null;
       return {
         ...message,
-        media: mediaForMessage(message, accountMediaById, bundlesById),
-        lockedText: lockedTextForMessage(message, storiesById),
+        media: mediaForMessage(message, accountMediaById, bundlesById, orderIds),
+        lockedText: lockedTextForMessage(message, storiesById, orderIds),
       };
     })
     .filter(Boolean);
 }
 
-function hydrateMessageMedia(message, { accountMedia, accountMediaBundles, stories } = {}) {
+function hydrateMessageMedia(
+  message,
+  { accountMedia, accountMediaBundles, stories, accountMediaOrders, storyOrders } = {}
+) {
   if (!message) return message;
+  const orderIds = purchaseOrderIds({ accountMediaOrders, storyOrders });
   return {
     ...message,
-    media: mediaForMessage(message, indexById(accountMedia), indexById(accountMediaBundles)),
-    lockedText: lockedTextForMessage(message, indexById(stories)),
+    media: mediaForMessage(
+      message,
+      indexById(accountMedia),
+      indexById(accountMediaBundles),
+      orderIds
+    ),
+    lockedText: lockedTextForMessage(message, indexById(stories), orderIds),
   };
 }
 

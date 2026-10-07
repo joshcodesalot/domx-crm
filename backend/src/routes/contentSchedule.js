@@ -88,6 +88,17 @@ function normalizeMassPayload(platform, payload) {
     } else {
       next.vaultIds = vaultIds.map((id) => String(id || '').trim()).filter(Boolean);
     }
+  } else if (platform === 'fansly') {
+    const mediaIds = Array.isArray(next.mediaIds)
+      ? next.mediaIds.map((id) => String(id || '').trim()).filter((id) => /^\d+$/.test(id))
+      : [];
+    const mediaId = String(next.mediaId || '').trim();
+    if (mediaIds.length === 0 && /^\d+$/.test(mediaId)) {
+      next.mediaIds = [mediaId];
+    } else {
+      next.mediaIds = mediaIds;
+    }
+    if (!next.mediaId && next.mediaIds[0]) next.mediaId = next.mediaIds[0];
   }
   return next;
 }
@@ -145,6 +156,7 @@ function normalizePlatform(value) {
   if (raw === '4based' || raw === 'fourbased') return '4based';
   if (raw === 'maloum') return 'maloum';
   if (raw === 'telegram') return 'telegram';
+  if (raw === 'fansly') return 'fansly';
   return null;
 }
 
@@ -271,7 +283,7 @@ function collectRowErrors(entry, {
     errors.push('Could not tell if this row is a mass message or feed post');
   }
   if (!platform) {
-    errors.push('platform must be 4based, maloum, or telegram');
+    errors.push('platform must be 4based, maloum, telegram, or fansly');
   }
   if (platform === 'telegram' && kind === 'feed_post') {
     errors.push('Telegram can only schedule mass messages');
@@ -283,7 +295,12 @@ function collectRowErrors(entry, {
   if (creator && allowed === false) {
     errors.push(`No access to ${creator.displayName}`);
   }
-  if (kind === 'feed_post') {
+  if (kind === 'feed_post' && platform === 'fansly') {
+    const mediaId = String(vaultPayload?.mediaId || '').trim();
+    if (!/^\d+$/.test(mediaId)) {
+      errors.push('Pick a Fansly vault item');
+    }
+  } else if (kind === 'feed_post') {
     const hasVault =
       (platform === '4based' && vaultPayload?.vaultId) ||
       (platform === 'maloum' && (vaultPayload?.mediaId || vaultPayload?.uploadId));
@@ -531,7 +548,7 @@ router.post('/', (req, res, next) => {
       return res.status(400).json({ error: 'creatorId is required' });
     }
     if (!platform) {
-      return res.status(400).json({ error: 'platform must be 4based, maloum, or telegram' });
+      return res.status(400).json({ error: 'platform must be 4based, maloum, telegram, or fansly' });
     }
     if (platform === 'telegram' && kind === 'feed_post') {
       return res.status(400).json({ error: 'Telegram can only schedule mass messages' });
@@ -571,7 +588,7 @@ router.post('/', (req, res, next) => {
       translateBody: parseTranslateBody(body.translateBody, true),
       imageFileName: req.file?.originalname || body.imageFileName || null,
       storedPath: req.file?.path || null,
-      payload,
+      payload: kind === 'mass_message' ? normalizeMassPayload(platform, payload) : payload,
       userId: req.user.id,
     });
     res.status(201).json({ job: mapJob({ ...row, displayName: creator.rows[0].displayName }) });
@@ -787,6 +804,13 @@ router.post('/import/commit', async (req, res) => {
       if (platform === 'telegram' && kind === 'feed_post') {
         errors.push({ index, error: 'Telegram can only schedule mass messages' });
         continue;
+      }
+      if (kind === 'feed_post' && platform === 'fansly') {
+        const mediaId = String(payload.mediaId || '').trim();
+        if (!/^\d+$/.test(mediaId)) {
+          errors.push({ index, error: 'Pick a Fansly vault item' });
+          continue;
+        }
       }
 
       const allowed = await userCanAccessCreator(req.user, creatorId);

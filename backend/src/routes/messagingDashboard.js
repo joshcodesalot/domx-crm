@@ -220,6 +220,56 @@ function parsePriceNet(priceNet) {
 const FANSLY_PURCHASE_TYPES = new Set([2007, 2008, 32007]);
 const FANSLY_TIP_TYPE = 7001;
 const FANSLY_PRICE_EPSILON = 0.02;
+const FANSLY_FALSE_SALE_WINDOW_MS = 2 * 60 * 1000;
+const FANSLY_BATCH_STAMP_MS = 1000;
+
+function fanslyStampMs(value) {
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isFanslyChatProductSend(row) {
+  if (!row || row.platform !== 'fansly' || row.contentType !== 'chat_product') return false;
+  if (row.purchased !== true) return false;
+  const messageId = row.maloumMessageId == null ? '' : String(row.maloumMessageId);
+  if (!messageId || messageId.startsWith('fansly-sale:') || messageId.startsWith('fansly-tip:')) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Chat-thread false sales: marked within 2 minutes of send, or several sends in
+ * one chat stamped with the same unlock time. A later unique notification
+ * unlock, a payout match, and fansly-sale rows are left alone.
+ */
+function isFanslyFalseSendSale(row, peers) {
+  if (!isFanslyChatProductSend(row) || row.payoutTxnId) return false;
+  const unlocked = fanslyStampMs(row.unlockedAt);
+  const sent = fanslyStampMs(row.sentAt);
+  if (unlocked == null || sent == null) return false;
+  if (Math.abs(unlocked - sent) <= FANSLY_FALSE_SALE_WINDOW_MS) return true;
+
+  const chatId = row.chatId == null ? '' : String(row.chatId);
+  const rowId = row.id == null ? '' : String(row.id);
+  if (!chatId) return false;
+  return (Array.isArray(peers) ? peers : []).some((other) => {
+    if (!other || !isFanslyChatProductSend(other)) return false;
+    if (rowId && String(other.id || '') === rowId) return false;
+    if (String(other.chatId || '') !== chatId) return false;
+    const otherUnlocked = fanslyStampMs(other.unlockedAt);
+    const otherSent = fanslyStampMs(other.sentAt);
+    if (otherUnlocked == null || otherSent == null) return false;
+    if (Math.abs(otherUnlocked - unlocked) > FANSLY_BATCH_STAMP_MS) return false;
+    return Math.abs(otherSent - sent) > FANSLY_FALSE_SALE_WINDOW_MS;
+  });
+}
 
 const FANSLY_SEND_ROW = `
   "creatorId" = $1
@@ -598,6 +648,52 @@ async function logFanslyTipNotification({ creatorId, note, accounts, tipsById })
     notificationId: note?.id == null ? null : String(note.id),
     createdAt: fanslyUnlockedAt(note.createdAt) || fanslyUnlockedAt(tip?.createdAt),
     currency: 'USD',
+  });
+}
+
+const fanslyFalseSaleRepaired = new Set();
+
+async function repairFanslyFalseSales(creatorId) {
+  if (!creatorId || !isValidUuid(String(creatorId))) return { cleared: 0 };
+  const result = await pool.query(
+    `SELECT id, platform, "contentType", purchased, "payoutTxnId", "maloumMessageId",
+            "chatId", "unlockedAt", "sentAt"
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+       AND platform = 'fansly'
+       AND "contentType" = 'chat_product'
+       AND purchased = true
+       AND "payoutTxnId" IS NULL
+       AND "maloumMessageId" NOT LIKE 'fansly-sale:%'
+       AND "maloumMessageId" NOT LIKE 'fansly-tip:%'`,
+    [creatorId]
+  );
+  const rows = result.rows;
+  const ids = rows.filter((row) => isFanslyFalseSendSale(row, rows)).map((row) => row.id);
+  if (ids.length === 0) return { cleared: 0 };
+  const updated = await pool.query(
+    `UPDATE messaging_dashboard_entries
+     SET purchased = false,
+         "unlockedAt" = NULL,
+         "payoutVerified" = false,
+         "payoutVerifiedAt" = NULL,
+         "updatedAt" = NOW()
+     WHERE id = ANY($1::uuid[])
+       AND purchased = true
+       AND "payoutTxnId" IS NULL
+     RETURNING id`,
+    [ids]
+  );
+  return { cleared: updated.rows.length };
+}
+
+function repairFanslyFalseSalesOnce(creatorId) {
+  const id = creatorId == null ? '' : String(creatorId);
+  if (!id || fanslyFalseSaleRepaired.has(id)) return Promise.resolve({ cleared: 0, skipped: true });
+  fanslyFalseSaleRepaired.add(id);
+  return repairFanslyFalseSales(id).catch((err) => {
+    fanslyFalseSaleRepaired.delete(id);
+    throw err;
   });
 }
 
@@ -5661,3 +5757,5 @@ module.exports.processFourBasedSaleAndTipNotifications =
   processFourBasedSaleAndTipNotifications;
 module.exports.clearPurchasedForFourBasedMessage = clearPurchasedForFourBasedMessage;
 module.exports.repairFourBasedPurchasedFlags = repairFourBasedPurchasedFlags;
+module.exports.repairFanslyFalseSalesOnce = repairFanslyFalseSalesOnce;
+module.exports.isFanslyFalseSendSale = isFanslyFalseSendSale;

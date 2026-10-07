@@ -15,6 +15,9 @@ import {
   getFourBasedProfile,
   listAllMaloumVaultFolders,
   listFourBasedVault,
+  fanslyVaultPreviewSrc,
+  listFanslyVaultAlbums,
+  listFanslyVaultMedia,
   listMaloumVaultMedia,
   listTelegramVault,
   listTelegramVaultFolders,
@@ -22,6 +25,7 @@ import {
   pickFourBasedSourceUrl,
   resolveFourBasedMediaSrc,
   telegramVaultMediaUrl,
+  type FanslyVaultMedia,
   type FourBasedVaultItem,
   type MaloumVaultFolder,
   type MaloumVaultMediaItem,
@@ -58,7 +62,7 @@ export default function ScheduleVaultPicker({
 }: {
   open: boolean;
   creatorId: string;
-  platform: '4based' | 'maloum' | 'telegram';
+  platform: '4based' | 'maloum' | 'telegram' | 'fansly';
   onClose: () => void;
   onSelect: (pick: ScheduleVaultPick) => void;
 }) {
@@ -70,6 +74,7 @@ export default function ScheduleVaultPicker({
   const [fourBasedItems, setFourBasedItems] = useState<FourBasedVaultItem[]>([]);
   const [maloumItems, setMaloumItems] = useState<MaloumVaultMediaItem[]>([]);
   const [telegramItems, setTelegramItems] = useState<TelegramVaultItem[]>([]);
+  const [fanslyItems, setFanslyItems] = useState<FanslyVaultMedia[]>([]);
   const offsetRef = useRef(0);
   const maloumNextRef = useRef<number | null>(null);
   const hasMoreRef = useRef(false);
@@ -81,6 +86,7 @@ export default function ScheduleVaultPicker({
     setFourBasedItems([]);
     setMaloumItems([]);
     setTelegramItems([]);
+    setFanslyItems([]);
     try {
       const folderKey = vaultCacheKey({
         platform,
@@ -113,6 +119,15 @@ export default function ScheduleVaultPicker({
         setFolders(nextFolders);
         setFolderId(nextFolders[0]?.id || 'all');
         setVaultListingCache(folderKey, { folders: nextFolders });
+      } else if (platform === 'fansly') {
+        const result = await listFanslyVaultAlbums(creatorId);
+        const list = (result.albums || []).map((album) => ({
+          id: album.id,
+          name: album.title || album.id,
+        }));
+        setFolders(list);
+        setFolderId(list[0]?.id || null);
+        setVaultListingCache(folderKey, { folders: list });
       } else {
         const result = await listAllMaloumVaultFolders(creatorId);
         const list = (result.folders || []).map((folder: MaloumVaultFolder) => ({
@@ -143,6 +158,7 @@ export default function ScheduleVaultPicker({
         setFourBasedItems([]);
         setMaloumItems([]);
         setTelegramItems([]);
+        setFanslyItems([]);
         offsetRef.current = 0;
         hasMoreRef.current = false;
         maloumNextRef.current = null;
@@ -187,6 +203,11 @@ export default function ScheduleVaultPicker({
           offsetRef.current = nextOffset + items.length;
           hasMoreRef.current = items.length >= 60;
           if (!append) setVaultListingCache(mediaKey, { fourBasedItems: items });
+        } else if (platform === 'fansly') {
+          const result = await listFanslyVaultMedia(creatorId, folderId);
+          const items = result.media || [];
+          setFanslyItems(items);
+          hasMoreRef.current = false;
         } else {
           const result = await listMaloumVaultMedia(creatorId, folderId, {
             limit: 50,
@@ -330,6 +351,34 @@ export default function ScheduleVaultPicker({
                         <TelegramVoiceTile duration={item.duration} />
                       ) : (
                         <img src={thumb} alt="" className="w-full h-full object-cover" />
+                      )}
+                    </button>
+                  );
+                })}
+              {platform === 'fansly' &&
+                fanslyItems.map((item) => {
+                  const mediaId = String(item.mediaId || '').trim();
+                  const thumb = fanslyVaultPreviewSrc(creatorId, item);
+                  if (!mediaId) return null;
+                  return (
+                    <button
+                      key={mediaId}
+                      type="button"
+                      onClick={() =>
+                        onSelect({
+                          label: item.filename || mediaId,
+                          thumbUrl: thumb,
+                          payload: { mediaId },
+                        })
+                      }
+                      className="aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-zinc-800"
+                    >
+                      {thumb ? (
+                        <img src={thumb} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-[10px] text-gray-400 p-2 block truncate">
+                          {item.filename || mediaId}
+                        </span>
                       )}
                     </button>
                   );

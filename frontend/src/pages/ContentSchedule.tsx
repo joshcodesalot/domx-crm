@@ -24,6 +24,7 @@ import {
   commitScheduledContentImport,
   getCreators,
   getUnsendBeforeMassSetting,
+  listFanslyLists,
   listFourBasedUserLists,
   listMaloumCategories,
   listMaloumChatLists,
@@ -103,7 +104,7 @@ type ReviewRow = {
   key: string;
   included: boolean;
   kind: ScheduledContentKind | '';
-  platform: 'maloum' | '4based' | 'telegram' | '';
+  platform: 'maloum' | '4based' | 'telegram' | 'fansly' | '';
   model: string;
   creatorId: string;
   date: string;
@@ -159,6 +160,9 @@ function vaultPayloadForKind(
     if (platform === 'maloum' && mediaId) {
       return { media: [{ mediaId, type: 'picture' }] };
     }
+    if (platform === 'fansly' && mediaId) {
+      return { mediaId, mediaIds: [mediaId] };
+    }
     if (platform === 'telegram') {
       const ids = Array.isArray(source.vaultIds)
         ? source.vaultIds.map((id) => String(id || '')).filter(Boolean)
@@ -172,7 +176,7 @@ function vaultPayloadForKind(
     if (platform === '4based' && vaultId) {
       return vaultGuid ? { vaultId, vaultGuid } : { vaultId };
     }
-    if (platform === 'maloum' && mediaId) {
+    if ((platform === 'maloum' || platform === 'fansly') && mediaId) {
       return { mediaId };
     }
   }
@@ -264,7 +268,8 @@ function rowIssues(row: ReviewRow): string[] {
   if (row.kind === 'feed_post') {
     const hasVault =
       (row.platform === '4based' && Boolean(row.payload.vaultId)) ||
-      (row.platform === 'maloum' && Boolean(row.payload.mediaId));
+      ((row.platform === 'maloum' || row.platform === 'fansly') &&
+        Boolean(row.payload.mediaId));
     if (row.imageSource === 'upload' && !row.assetId) {
       errors.push('Pick an uploaded image or a vault item');
     }
@@ -384,6 +389,18 @@ export default function ContentSchedule() {
             setCategories([]);
             setListsCreatorId(creatorId);
           }
+        } else if (selectedCreator.platform === 'fansly') {
+          const result = await listFanslyLists(creatorId);
+          if (!cancelled) {
+            setLists(
+              (result.lists || []).map((list) => ({
+                _id: list.id,
+                name: list.label,
+              })) as FourBasedUserList[]
+            );
+            setCategories([]);
+            setListsCreatorId(creatorId);
+          }
         } else {
           const [listRes, catRes] = await Promise.all([
             listMaloumChatLists(creatorId, { limit: 80 }),
@@ -452,7 +469,8 @@ export default function ContentSchedule() {
             platform:
               selectedCreator?.platform === 'maloum' ||
               selectedCreator?.platform === '4based' ||
-              selectedCreator?.platform === 'telegram'
+              selectedCreator?.platform === 'telegram' ||
+              selectedCreator?.platform === 'fansly'
                 ? selectedCreator.platform
                 : undefined,
           },
@@ -624,7 +642,7 @@ export default function ContentSchedule() {
           translateBody: scheduleSendsAsTyped(row.platform)
             ? false
             : row.translateBody !== false,
-          imageSource: 'upload',
+          imageSource: row.platform === 'fansly' ? 'vault' : 'upload',
           assetId: row.assetId || matched?.id || null,
           imageFileName: row.imageFileName || matched?.originalFileName || '',
           vaultLabel: '',
@@ -673,7 +691,7 @@ export default function ContentSchedule() {
         checked.map((row) => ({
           included: true,
           kind: row.kind as ScheduledContentKind,
-          platform: row.platform as 'maloum' | '4based',
+          platform: row.platform as 'maloum' | '4based' | 'telegram' | 'fansly',
           creatorId: row.creatorId,
           runAt: berlinWallToIso(row.date, row.time, timeZone),
           bodyText: row.bodyText,
@@ -882,6 +900,9 @@ export default function ContentSchedule() {
                                     ...(scheduleSendsAsTyped(platform)
                                       ? { translateBody: false }
                                       : {}),
+                                    ...(platform === 'fansly'
+                                      ? { imageSource: 'vault' as const }
+                                      : {}),
                                   });
                                 }}
                                 className="w-full rounded-lg border border-gray-200 dark:border-zinc-700 bg-transparent px-1 py-1"
@@ -890,6 +911,7 @@ export default function ContentSchedule() {
                                 <option value="4based">4based</option>
                                 <option value="maloum">maloum</option>
                                 <option value="telegram">telegram</option>
+                                <option value="fansly">fansly</option>
                               </select>
                               <select
                                 value={row.creatorId}
@@ -986,6 +1008,7 @@ export default function ContentSchedule() {
                             <td className="p-2 space-y-1">
                               {row.kind === 'feed_post' ? (
                                 <>
+                                  {row.platform !== 'fansly' && (
                                   <div className="flex gap-1">
                                     <button
                                       type="button"
@@ -1026,7 +1049,8 @@ export default function ContentSchedule() {
                                       Vault
                                     </button>
                                   </div>
-                                  {row.imageSource === 'upload' && (
+                                  )}
+                                  {row.platform !== 'fansly' && row.imageSource === 'upload' && (
                                     <>
                                       <select
                                         value={row.assetId || ''}
@@ -1084,7 +1108,7 @@ export default function ContentSchedule() {
                                       {assetFile && <LocalThumb file={assetFile} />}
                                     </>
                                   )}
-                                  {row.imageSource === 'vault' && (
+                                  {(row.platform === 'fansly' || row.imageSource === 'vault') && (
                                     <>
                                       <button
                                         type="button"
@@ -1179,6 +1203,7 @@ export default function ContentSchedule() {
                     ['maloum', 'Maloum'],
                     ['4based', '4based'],
                     ['telegram', 'Telegram'],
+                    ['fansly', 'Fansly'],
                   ] as const).map(([id, label]) => (
                     <button
                       key={id}
@@ -1544,7 +1569,7 @@ export default function ContentSchedule() {
         <ScheduleVaultPicker
           open={Boolean(vaultRowKey)}
           creatorId={vaultRow.creatorId}
-          platform={vaultRow.platform as '4based' | 'maloum' | 'telegram'}
+          platform={vaultRow.platform as '4based' | 'maloum' | 'telegram' | 'fansly'}
           onClose={() => setVaultRowKey(null)}
           onSelect={(pick: ScheduleVaultPick) => {
             updateRow(vaultRow.key, {

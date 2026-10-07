@@ -7,6 +7,7 @@ import FanslyFanPanel from '@/components/fansly/FanslyFanPanel';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import { useAuth } from '@/context/AuthContext';
+import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
 import { useSyncedDrawer } from '@/context/ShellContext';
 import { usePollEnabled } from '@/hooks/useDocumentVisible';
@@ -34,6 +35,19 @@ import {
   type FanslyVaultMedia,
 } from '@/lib/api';
 
+function SentTag({ light }: { light?: boolean }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 font-semibold uppercase tracking-wide ${
+        light ? 'text-white/90' : ''
+      }`}
+    >
+      <Check className="w-3 h-3" />
+      Sent
+    </span>
+  );
+}
+
 function formatTime(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(Number(value))) return '';
   const numeric = Number(value);
@@ -49,6 +63,23 @@ function formatTime(value: number | null | undefined): string {
 function attachmentCount(message: FanslyMessage): number {
   if (Array.isArray(message.media) && message.media.length > 0) return message.media.length;
   return Array.isArray(message.attachments) ? message.attachments.length : 0;
+}
+
+function messageKey(id: unknown): string {
+  return id == null ? '' : String(id);
+}
+
+function isDeletedFanslyMessage(message: FanslyMessage): boolean {
+  const deletedAt = Number(message.deletedAt);
+  return Number.isFinite(deletedAt) && deletedAt > 0;
+}
+
+function hasVisibleBody(message: FanslyMessage): boolean {
+  if (message.content && message.content.trim()) return true;
+  if (fanslyTipDollars(message) != null) return true;
+  if ((message.media || []).length > 0) return true;
+  if ((message.lockedText || []).length > 0) return true;
+  return attachmentCount(message) > 0;
 }
 
 function formatFanslySpend(mills: number | null | undefined): string | null {
@@ -283,13 +314,13 @@ function fanslyPpvSold(message: FanslyMessage): boolean {
     ...(message.lockedText || []).filter((item) => item.price != null && item.price > 0),
   ];
   if (items.length === 0) return false;
-  return items.every((item) => item.purchased || item.access);
+  return items.every((item) => item.purchased === true);
 }
 
 function messageUnlocked(message: FanslyMessage): boolean {
   return (
-    (message.media || []).some((item) => item.purchased || item.access) ||
-    (message.lockedText || []).some((item) => item.purchased || item.access)
+    (message.media || []).some((item) => item.purchased === true) ||
+    (message.lockedText || []).some((item) => item.purchased === true)
   );
 }
 
@@ -305,6 +336,7 @@ function lockPermissions(set: LockedPermissionSet): FanslyMediaPermissions {
 
 export default function ChatterFansly() {
   const { user } = useAuth();
+  const confirm = useConfirm();
   const location = useLocation();
   const pollEnabled = usePollEnabled(location.pathname === '/chatter/fansly');
   const { creators, creatorsLoading, creatorsError, badgesByCreatorId, refreshBadges } = useCreatorLive({
@@ -341,6 +373,7 @@ export default function ChatterFansly() {
   const [sending, setSending] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [hiddenMessageIds, setHiddenMessageIds] = useState<string[]>([]);
+  const hiddenMessageIdsRef = useRef<Set<string>>(new Set());
   const [vaultOpen, setVaultOpen] = useState(false);
   const [albums, setAlbums] = useState<FanslyVaultAlbum[]>([]);
   const [albumsLoading, setAlbumsLoading] = useState(false);
@@ -468,6 +501,7 @@ export default function ChatterFansly() {
     setSelectedMedia([]);
     setVaultError(null);
     setTiers([]);
+    hiddenMessageIdsRef.current = new Set();
     setHiddenMessageIds([]);
     setRequirePurchase(false);
     setPrice('');
@@ -607,7 +641,13 @@ export default function ChatterFansly() {
     setThreadError(null);
     try {
       const result = await listFanslyMessages(selectedCreatorId, selectedGroupId);
-      const rows = result.messages || [];
+      const hidden = hiddenMessageIdsRef.current;
+      const rows = (result.messages || []).filter(
+        (message) =>
+          !isDeletedFanslyMessage(message) &&
+          !hidden.has(messageKey(message.id)) &&
+          hasVisibleBody(message)
+      );
       setMessages(rows);
       setSelfId(result.providerUserId);
       markUnlockedMessages(rows, result.providerUserId);
@@ -717,12 +757,22 @@ export default function ChatterFansly() {
 
   async function handleDelete(messageId: string) {
     if (!selectedCreatorId || !selectedGroupId || deletingId) return;
-    setDeletingId(messageId);
+    const key = messageKey(messageId);
+    if (!key) return;
+    const ok = await confirm({
+      title: 'Delete message',
+      message: 'Delete this message? It will be removed from the Fansly chat.',
+      confirmLabel: 'Delete',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    setDeletingId(key);
     setThreadError(null);
     try {
-      await deleteFanslyMessage(selectedCreatorId, selectedGroupId, messageId);
-      setHiddenMessageIds((prev) => (prev.includes(messageId) ? prev : [...prev, messageId]));
-      setMessages((prev) => prev.filter((row) => row.id !== messageId));
+      await deleteFanslyMessage(selectedCreatorId, selectedGroupId, key);
+      hiddenMessageIdsRef.current.add(key);
+      setHiddenMessageIds((prev) => (prev.includes(key) ? prev : [...prev, key]));
+      setMessages((prev) => prev.filter((row) => messageKey(row.id) !== key));
     } catch (err) {
       setThreadError(err instanceof Error ? err.message : 'Failed to delete message');
     } finally {
@@ -836,7 +886,12 @@ export default function ChatterFansly() {
 
   const orderedMessages = [...messages]
     .reverse()
-    .filter((message) => !message.deletedAt && !hiddenMessageIds.includes(message.id));
+    .filter(
+      (message) =>
+        !isDeletedFanslyMessage(message) &&
+        !hiddenMessageIds.includes(messageKey(message.id)) &&
+        hasVisibleBody(message)
+    );
   const canSend = !sending && (Boolean(draft.trim()) || selectedMedia.length > 0);
 
   return (
@@ -1231,11 +1286,11 @@ export default function ChatterFansly() {
                         <button
                           type="button"
                           aria-label="Delete message"
-                          disabled={deletingId === message.id}
-                          onClick={() => void handleDelete(message.id)}
+                          disabled={deletingId === messageKey(message.id)}
+                          onClick={() => void handleDelete(messageKey(message.id))}
                           className="p-1 text-gray-400 hover:text-red-500 disabled:opacity-50"
                         >
-                          {deletingId === message.id ? (
+                          {deletingId === messageKey(message.id) ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           ) : (
                             <Trash2 className="w-3.5 h-3.5" />
@@ -1256,7 +1311,10 @@ export default function ChatterFansly() {
                               {message.content}
                             </p>
                           ) : null}
-                          <p className="text-[10px] mt-1 text-white/60">{formatTime(message.createdAt)}</p>
+                          <p className="text-[10px] mt-1 text-white/60 flex items-center gap-1.5">
+                            {mine ? <SentTag light /> : null}
+                            <span>{formatTime(message.createdAt)}</span>
+                          </p>
                         </div>
                       ) : (
                       <div
@@ -1334,11 +1392,10 @@ export default function ChatterFansly() {
                         )}
                         {message.content ? (
                           <p className="whitespace-pre-wrap break-words">{message.content}</p>
-                        ) : media.length === 0 && locked.length === 0 && attachments === 0 ? (
-                          <p>Attachment</p>
                         ) : null}
-                        <p className={`text-[10px] mt-1 ${mine && !ppvLabel ? 'text-white/80' : 'text-gray-500'}`}>
-                          {formatTime(message.createdAt)}
+                        <p className={`text-[10px] mt-1 flex items-center gap-1.5 ${mine && !ppvLabel ? 'text-white/80' : 'text-gray-500'}`}>
+                          {mine ? <SentTag light={Boolean(mine && !ppvLabel)} /> : null}
+                          <span>{formatTime(message.createdAt)}</span>
                         </p>
                       </div>
                       )}

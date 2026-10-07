@@ -5,7 +5,13 @@ const { skipsGermanTranslation } = require('./germanTranslationPolicy');
 const { prepareFeedPhoto } = require('./imageOrient');
 const fourBasedClient = require('./fourBasedClient');
 const maloumClient = require('./maloumClient');
-const { loadFourBasedCreator, loadMaloumCreator } = require('./platformCreatorSession');
+const fanslyClient = require('./fanslyClient');
+const fanslyRoutes = require('../routes/fansly');
+const {
+  loadFourBasedCreator,
+  loadMaloumCreator,
+  loadFanslyCreator,
+} = require('./platformCreatorSession');
 const { isInsideMediaDir } = require('./scheduledMedia');
 const { getUnsendBeforeMass } = require('./appSettings');
 const {
@@ -433,6 +439,75 @@ async function unsendBeforeScheduledMass(job) {
   );
 }
 
+function fanslyMediaIds(payload) {
+  const ids = [];
+  const seen = new Set();
+  const push = (value) => {
+    const id = value == null ? '' : String(value).trim();
+    if (!/^\d+$/.test(id) || seen.has(id)) return;
+    seen.add(id);
+    ids.push(id);
+  };
+  if (Array.isArray(payload.mediaIds)) payload.mediaIds.forEach(push);
+  if (Array.isArray(payload.media)) {
+    for (const item of payload.media) push(item?.mediaId);
+  }
+  push(payload.mediaId);
+  return ids;
+}
+
+function fanslyScheduleAudience(settings, payload) {
+  const include = asIdList(payload.includeListIds).length
+    ? asIdList(payload.includeListIds)
+    : settings.includeListIds;
+  const exclude = asIdList(payload.excludeListIds).length
+    ? asIdList(payload.excludeListIds)
+    : settings.excludeListIds;
+  return {
+    followers: false,
+    subscribers: true,
+    expiredSubscribers: false,
+    excludeCreators: true,
+    excludeOffline: false,
+    includeListIds: include,
+    excludeListIds: exclude,
+    subscriptionTierId: null,
+  };
+}
+
+async function sendFanslyMass(job, settings, text) {
+  const loaded = await loadFanslyCreator(job.creatorId);
+  if (loaded.error) throw new Error(loaded.error.message);
+  const payload = job.payload && typeof job.payload === 'object' ? job.payload : {};
+  const mediaIds = fanslyMediaIds(payload);
+  const content = String(text || '').trim();
+  if (!content && mediaIds.length === 0) {
+    throw new Error('Mass message needs text or media');
+  }
+  await fanslyRoutes.sendFanslyBroadcast(
+    fanslyClient.sessionFromCreator(loaded.creator),
+    loaded.creator,
+    {
+      content,
+      mediaIds,
+      audience: fanslyScheduleAudience(settings, payload),
+    }
+  );
+}
+
+async function postFanslyFeed(job, text) {
+  const loaded = await loadFanslyCreator(job.creatorId);
+  if (loaded.error) throw new Error(loaded.error.message);
+  const payload = job.payload && typeof job.payload === 'object' ? job.payload : {};
+  const mediaId = fanslyMediaIds(payload)[0] || '';
+  if (!mediaId) throw new Error('Fansly feed post needs a vault item');
+  await fanslyRoutes.publishFanslyFeed(
+    fanslyClient.sessionFromCreator(loaded.creator),
+    loaded.creator,
+    { content: String(text || ''), mediaId, permissions: {} }
+  );
+}
+
 async function executeJob(job) {
   const settings = await loadSettings(job.creatorId);
   const english = String(job.bodyText || '').trim();
@@ -453,6 +528,10 @@ async function executeJob(job) {
       await sendTelegramMass(job, settings, text);
       return;
     }
+    if (job.platform === 'fansly') {
+      await sendFanslyMass(job, settings, text);
+      return;
+    }
     await sendMaloumMass(job, settings, text);
     return;
   }
@@ -463,6 +542,10 @@ async function executeJob(job) {
 
   if (job.platform === '4based') {
     await postFourBasedFeed(job, text);
+    return;
+  }
+  if (job.platform === 'fansly') {
+    await postFanslyFeed(job, text);
     return;
   }
   await postMaloumFeed(job, settings, text);
