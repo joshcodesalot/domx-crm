@@ -1,7 +1,7 @@
 import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
 import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpDown, Banknote, Check, Eye, ImagePlus, Loader2, Lock, PanelRight, PanelRightClose, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
+import { ArrowUpDown, Banknote, Check, Eye, ImagePlus, Loader2, Lock, PanelRight, PanelRightClose, Pencil, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import FanslyFanPanel from '@/components/fansly/FanslyFanPanel';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
@@ -166,6 +166,26 @@ function sameFilter(a: InboxFilter, b: InboxFilter): boolean {
   return true;
 }
 
+function pinnedListsStorageKey(creatorId: string): string {
+  return `domx.fansly.inboxListFilters.${creatorId}`;
+}
+
+function readPinnedListIds(creatorId: string): string[] {
+  try {
+    const raw = localStorage.getItem(pinnedListsStorageKey(creatorId));
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is string => typeof id === 'string' && /^\d+$/.test(id));
+  } catch {
+    return [];
+  }
+}
+
+function writePinnedListIds(creatorId: string, ids: string[]) {
+  localStorage.setItem(pinnedListsStorageKey(creatorId), JSON.stringify(ids));
+}
+
 function isLockedAttachment(message: FanslyMessage): boolean {
   if (Array.isArray(message.lockedText) && message.lockedText.length > 0) return true;
   return (Array.isArray(message.attachments) ? message.attachments : []).some((item) => {
@@ -305,6 +325,9 @@ export default function ChatterFansly() {
   const [chatsHasMore, setChatsHasMore] = useState(false);
   const [chatsError, setChatsError] = useState<string | null>(null);
   const [fanLists, setFanLists] = useState<FanslyFanList[]>([]);
+  const [fanListsLoading, setFanListsLoading] = useState(false);
+  const [pinnedListIds, setPinnedListIds] = useState<string[]>([]);
+  const [listPickerOpen, setListPickerOpen] = useState(false);
   const [inboxTiers, setInboxTiers] = useState<FanslySubscriptionTier[]>([]);
   const [lockedOpen, setLockedOpen] = useState(false);
   const [lockedContent, setLockedContent] = useState('');
@@ -411,8 +434,8 @@ export default function ChatterFansly() {
       previousFanMessageAt: responseSnapshot.previousFanMessageAt,
       responseTimeSeconds: responseSnapshot.responseTimeSeconds,
       sentAt: sentAtIso(message.createdAt),
-    }).catch(() => {
-      // Non-blocking
+    }).catch((err) => {
+      console.error('Fansly chat log failed:', err);
     });
   }
 
@@ -499,16 +522,34 @@ export default function ChatterFansly() {
   useEffect(() => {
     if (!selectedCreatorId) {
       setFanLists([]);
+      setFanListsLoading(false);
       setInboxTiers([]);
+      setPinnedListIds([]);
+      setListPickerOpen(false);
       return;
     }
+    const creatorId = selectedCreatorId;
+    setPinnedListIds(readPinnedListIds(creatorId));
+    setListPickerOpen(false);
+    setFanListsLoading(true);
     let cancelled = false;
-    listFanslyLists(selectedCreatorId)
+    listFanslyLists(creatorId)
       .then((result) => {
-        if (!cancelled) setFanLists(result.lists || []);
+        if (cancelled) return;
+        const lists = result.lists || [];
+        setFanLists(lists);
+        const known = new Set(lists.map((list) => list.id));
+        setPinnedListIds((prev) => {
+          const next = prev.filter((id) => known.has(id));
+          if (next.length !== prev.length) writePinnedListIds(creatorId, next);
+          return next.length === prev.length ? prev : next;
+        });
       })
       .catch(() => {
         if (!cancelled) setFanLists([]);
+      })
+      .finally(() => {
+        if (!cancelled) setFanListsLoading(false);
       });
     listFanslySubscriptionTiers(selectedCreatorId)
       .then((result) => {
@@ -521,6 +562,30 @@ export default function ChatterFansly() {
       cancelled = true;
     };
   }, [selectedCreatorId]);
+
+  useEffect(() => {
+    if (inboxFilter.kind === 'staff') {
+      setInboxFilter({ kind: 'all' });
+      return;
+    }
+    if (inboxFilter.kind !== 'list') return;
+    if (pinnedListIds.includes(inboxFilter.id)) return;
+    setInboxFilter({ kind: 'all' });
+  }, [inboxFilter, pinnedListIds]);
+
+  function togglePinnedList(listId: string) {
+    if (!selectedCreatorId) return;
+    const creatorId = selectedCreatorId;
+    setPinnedListIds((prev) => {
+      const next = prev.includes(listId) ? prev.filter((id) => id !== listId) : [...prev, listId];
+      writePinnedListIds(creatorId, next);
+      return next;
+    });
+  }
+
+  const pinnedLists = pinnedListIds
+    .map((id) => fanLists.find((list) => list.id === id))
+    .filter((list): list is FanslyFanList => Boolean(list));
 
   useEffect(() => {
     if (!selectedCreatorId) return;
@@ -900,18 +965,17 @@ export default function ChatterFansly() {
                 )}
               </div>
             </div>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-1.5 items-center">
               {(
                 [
                   { filter: { kind: 'all' } as InboxFilter, label: 'All' },
                   { filter: { kind: 'subscribers' } as InboxFilter, label: 'Subscribers' },
                   { filter: { kind: 'followers' } as InboxFilter, label: 'Followers' },
-                  { filter: { kind: 'staff' } as InboxFilter, label: 'Staff' },
                   ...inboxTiers.map((tier) => ({
                     filter: { kind: 'tier' as const, id: tier.id },
                     label: tier.name,
                   })),
-                  ...fanLists.map((list) => ({
+                  ...pinnedLists.map((list) => ({
                     filter: { kind: 'list' as const, id: list.id },
                     label: list.label,
                   })),
@@ -933,7 +997,68 @@ export default function ChatterFansly() {
                   </button>
                 );
               })}
+              <button
+                type="button"
+                aria-label="Select lists"
+                title="Select lists"
+                disabled={!selectedCreatorId}
+                onClick={() => setListPickerOpen(true)}
+                className="p-1.5 rounded-full text-sky-500 hover:bg-sky-500/10 disabled:opacity-40"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
             </div>
+            {listPickerOpen && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                <button
+                  type="button"
+                  aria-label="Close list picker"
+                  className="absolute inset-0 bg-black/40"
+                  onClick={() => setListPickerOpen(false)}
+                />
+                <div className="relative w-full max-w-sm rounded-2xl bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 shadow-2xl">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-zinc-800">
+                    <h3 className="font-semibold text-gray-900 dark:text-white">Select a List</h3>
+                    <button
+                      type="button"
+                      aria-label="Close list picker"
+                      onClick={() => setListPickerOpen(false)}
+                      className="p-1 text-gray-500"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="max-h-80 overflow-y-auto">
+                    {fanListsLoading && (
+                      <p className="px-4 py-6 text-sm text-gray-500 flex items-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin" /> Loading lists…
+                      </p>
+                    )}
+                    {!fanListsLoading && fanLists.length === 0 && (
+                      <p className="px-4 py-6 text-sm text-gray-500">No lists.</p>
+                    )}
+                    {fanLists.map((list) => {
+                      const selected = pinnedListIds.includes(list.id);
+                      return (
+                        <button
+                          key={list.id}
+                          type="button"
+                          onClick={() => togglePinnedList(list.id)}
+                          className={`w-full flex items-center gap-3 px-4 py-3 text-left border-b border-gray-100 dark:border-zinc-800 last:border-b-0 ${
+                            selected ? 'bg-sky-500/10' : 'hover:bg-gray-50 dark:hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="flex-1 min-w-0 text-sm font-medium text-gray-900 dark:text-white truncate">
+                            {list.label}
+                          </span>
+                          {selected && <Check className="w-4 h-4 text-sky-500 shrink-0" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
           <div
             data-drawer-list
