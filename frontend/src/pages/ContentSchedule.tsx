@@ -18,8 +18,10 @@ import ScheduleJobThumb from '@/components/ScheduleJobThumb';
 import ScheduleVaultPicker, {
   type ScheduleVaultPick,
 } from '@/components/ScheduleVaultPicker';
+import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useToast } from '@/context/ToastContext';
 import {
+  archiveScheduledMassMessages,
   cancelScheduledContent,
   commitScheduledContentImport,
   getCreators,
@@ -282,6 +284,7 @@ function rowIssues(row: ReviewRow): string[] {
 
 export default function ContentSchedule() {
   const { toast } = useToast();
+  const confirm = useConfirm();
   const timeZone = useStaffTimeZone();
   const now = berlinNowParts(timeZone);
   const [creators, setCreators] = useState<Creator[]>([]);
@@ -314,6 +317,8 @@ export default function ContentSchedule() {
   const [platformFilter, setPlatformFilter] =
     useState<ScheduleJobPlatformFilter>('all');
   const [kindFilter, setKindFilter] = useState<ScheduleJobKindFilter>('all');
+  const [showArchived, setShowArchived] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const [categorySearch, setCategorySearch] = useState('');
   const defaultedIncludeRef = useRef(new Set<string>());
 
@@ -333,7 +338,7 @@ export default function ContentSchedule() {
     try {
       const [creatorRes, jobRes, settingRes, unsendRes] = await Promise.all([
         getCreators(),
-        listScheduledContent(),
+        listScheduledContent(showArchived ? { archived: true } : {}),
         listScheduleSettings(),
         getUnsendBeforeMassSetting(),
       ]);
@@ -352,11 +357,35 @@ export default function ContentSchedule() {
     } finally {
       setLoading(false);
     }
-  }, [toast]);
+  }, [toast, showArchived]);
 
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
+
+  const handleArchivePast = useCallback(async () => {
+    if (archiving) return;
+    const ok = await confirm({
+      title: 'Archive sent and cancelled mass messages',
+      message:
+        'This hides every sent or cancelled mass message you can access, including ones not on this page. Upcoming jobs, failed jobs, and feed posts stay.',
+      confirmLabel: 'Archive',
+    });
+    if (!ok) return;
+    setArchiving(true);
+    try {
+      const result = await archiveScheduledMassMessages();
+      const count = result.archived || 0;
+      toast.success(
+        count === 1 ? 'Archived 1 mass message' : `Archived ${count} mass messages`
+      );
+      await loadAll();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Archive failed');
+    } finally {
+      setArchiving(false);
+    }
+  }, [archiving, confirm, loadAll, toast]);
 
   useEffect(() => {
     setLists([]);
@@ -1241,6 +1270,28 @@ export default function ContentSchedule() {
                 </div>
               </div>
 
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleArchivePast()}
+                  disabled={archiving}
+                  className="px-3 py-1.5 text-sm font-medium rounded-md border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800 disabled:opacity-40"
+                >
+                  {archiving ? 'Archiving…' : 'Archive sent and cancelled'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowArchived((prev) => !prev)}
+                  className={`px-3 py-1.5 text-sm font-medium rounded-md border transition-colors ${
+                    showArchived
+                      ? 'bg-domx-600 border-domx-600 text-white'
+                      : 'border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800'
+                  }`}
+                >
+                  {showArchived ? 'Showing archived' : 'Show archived'}
+                </button>
+              </div>
+
               <section className="space-y-3">
                 <h2 className="text-xs font-semibold text-gray-500 tracking-wider">
                   UPCOMING
@@ -1275,11 +1326,11 @@ export default function ContentSchedule() {
 
               <section className="space-y-3">
                 <h2 className="text-xs font-semibold text-gray-500 tracking-wider">
-                  RECENT
+                  {showArchived ? 'ARCHIVED' : 'RECENT'}
                 </h2>
                 {history.length === 0 && (
                   <p className="text-sm text-gray-500 italic rounded-md border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900/40 p-4">
-                    No recent jobs.
+                    {showArchived ? 'No archived mass messages.' : 'No recent jobs.'}
                   </p>
                 )}
                 {history.map((job) => (

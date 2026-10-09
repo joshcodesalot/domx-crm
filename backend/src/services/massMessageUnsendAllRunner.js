@@ -23,6 +23,7 @@ function randomUnsendGapMs() {
 }
 
 function creatorUnsendCap(opts) {
+  if (opts?.cap === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;
   const cap = Number(opts?.cap);
   if (Number.isFinite(cap) && cap > 0) return Math.floor(cap);
   return opts.skipLoadErrors ? MAX_UNSEND_PER_CREATOR : Number.POSITIVE_INFINITY;
@@ -320,7 +321,10 @@ async function runMaloum(creatorId, run, opts = {}) {
           !row.isRevoked && row._id && !seen.has(row._id) && !locked.has(String(row._id))
       )
       .map((row) => row._id);
-    for (const id of broadcasts.map((row) => row._id).filter(Boolean)) {
+    const pageIds = broadcasts.map((row) => row._id).filter(Boolean);
+    let fresh = 0;
+    for (const id of pageIds) {
+      if (!seen.has(id)) fresh += 1;
       seen.add(id);
     }
     run.totalEstimate = Math.max(
@@ -358,8 +362,7 @@ async function runMaloum(creatorId, run, opts = {}) {
     }
 
     next = result?.next;
-    // Platform unsend-all only touches the latest page (cap 30), then the next creator.
-    if (processed >= cap || Number.isFinite(cap) || !next || broadcasts.length === 0) {
+    if (processed >= cap || !next || broadcasts.length === 0 || fresh === 0) {
       break;
     }
   }
@@ -379,7 +382,10 @@ async function runPlatform(platform, creators, run) {
     run.currentCreatorName = creator.displayName || creator.id;
     let outcome;
     try {
-      outcome = await worker(creator.id, run, { skipLoadErrors: true });
+      outcome = await worker(creator.id, run, {
+        skipLoadErrors: true,
+        cap: Number.POSITIVE_INFINITY,
+      });
     } catch (err) {
       run.creatorsSkipped += 1;
       run.lastError = err?.message || 'Unsend all failed for creator';

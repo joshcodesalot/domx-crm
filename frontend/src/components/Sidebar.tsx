@@ -591,7 +591,7 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
             onClick={() => go('/dashboard/creator-analytics')}
           />
         )}
-        {hasPermission('analytics.view') && (
+        {isManager && (
           <NavItem
             active={activePage === 'analytics'}
             title="Messaging Analytics"
@@ -614,10 +614,10 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
           </>
         )}
 
-        {(hasPermission('analytics.view') || isManager) && (
+        {isManager && (
           <GroupTitle>Logs & Activity</GroupTitle>
         )}
-        {hasPermission('analytics.view') && (
+        {isManager && (
           <NavItem
             active={activePage === 'salesLogs'}
             title="Sales Logs"
@@ -626,7 +626,7 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
             onClick={() => go('/dashboard/sales-logs')}
           />
         )}
-        {hasPermission('analytics.view') && (
+        {isManager && (
           <NavItem
             active={activePage === 'crmActivity'}
             title="CRM Activity"
@@ -635,7 +635,7 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
             onClick={() => go('/dashboard/crm-activity')}
           />
         )}
-        {hasPermission('analytics.view') && (
+        {isManager && (
           <NavItem
             active={activePage === 'loginActivity'}
             title="Login Activity"

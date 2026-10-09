@@ -14,4 +14,10 @@ function requirePermission(...requiredPermissions) {
   };
 }
 
-module.exports = { requirePermission };
+function requireOwnerOrManager(req, res, next) {
+  const role = req.user?.role;
+  if (role === 'owner' || role === 'manager') return next();
+  return res.status(403).json({ error: 'Owner or manager access required' });
+}
+
+module.exports = { requirePermission, requireOwnerOrManager };

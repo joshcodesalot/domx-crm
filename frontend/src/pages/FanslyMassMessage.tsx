@@ -203,6 +203,11 @@ export default function FanslyMassMessage() {
     setDraft('');
     setSelectedVaultItems([]);
     setUploadFile(null);
+    setFollowers(false);
+    setSubscribers(true);
+    setExpiredSubscribers(false);
+    setExcludeCreators(true);
+    setExcludeOffline(false);
     setIncludeListIds([]);
     setExcludeListIds([]);
     setLists([]);

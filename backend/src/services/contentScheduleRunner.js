@@ -32,6 +32,19 @@ const {
 } = require('./scheduleNamedRefs');
 
 const POLL_MS = 15_000;
+/** A crashed process leaves rows in `running`. Clear them so later jobs can start. */
+const STALE_RUNNING_MS = 15 * 60 * 1000;
+/** Other creators can send while one creator is still unsending or posting. */
+const MAX_IN_FLIGHT = 4;
+/**
+ * Scheduled pre-send unsend waits up to 30 × 10s. This is a little longer than
+ * that, plus the send itself, so a hung platform call fails the job.
+ * Telegram sends one recipient at a time and can legitimately run much longer.
+ */
+const JOB_TIMEOUT_MS = 8 * 60 * 1000;
+const TELEGRAM_JOB_TIMEOUT_MS = 3 * 60 * 60 * 1000;
+const HEARTBEAT_MS = 60 * 1000;
+const STALE_RUNNING_ERROR = 'Send did not finish and was cleared so later jobs can run';
 const DEFAULT_AUDIENCE = [
   'users_with_purchases',
   'users_without_purchases',
@@ -40,7 +53,8 @@ const DEFAULT_AUDIENCE = [
 ];
 
 let schedulerTimer = null;
-let ticking = false;
+let claiming = false;
+let inFlight = 0;
 
 function parseHashtags(description) {
   const tags = [];
@@ -605,26 +619,90 @@ async function finishJob(id, status, lastError) {
   );
 }
 
-async function tick() {
-  if (ticking) return;
-  ticking = true;
+async function recoverStaleRunning() {
+  const result = await pool.query(
+    `UPDATE scheduled_content_jobs
+     SET status = 'failed',
+         "lastError" = $1,
+         "updatedAt" = NOW()
+     WHERE status = 'running'
+       AND "updatedAt" < NOW() - ($2::int * INTERVAL '1 millisecond')
+     RETURNING id`,
+    [STALE_RUNNING_ERROR, STALE_RUNNING_MS]
+  );
+  for (const row of result.rows) {
+    console.error('Cleared stale scheduled job:', row.id);
+  }
+}
+
+async function heartbeatJob(id) {
+  await pool.query(
+    `UPDATE scheduled_content_jobs
+     SET "updatedAt" = NOW()
+     WHERE id = $1 AND status = 'running'`,
+    [id]
+  );
+}
+
+function jobTimeoutMs(job) {
+  return job.platform === 'telegram' ? TELEGRAM_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS;
+}
+
+function withTimeout(work, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+  // The send keeps running after a timeout. Swallow that late result so it
+  // does not surface as an unhandled rejection.
+  work.then(
+    () => {},
+    () => {}
+  );
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
+
+async function runClaimedJob(job) {
+  const heartbeat = setInterval(() => {
+    void heartbeatJob(job.id).catch((err) => {
+      console.error('Scheduled job heartbeat failed:', job.id, err?.message || err);
+    });
+  }, HEARTBEAT_MS);
+  if (typeof heartbeat.unref === 'function') heartbeat.unref();
   try {
-    for (let i = 0; i < 5; i += 1) {
+    await withTimeout(executeJob(job), jobTimeoutMs(job), 'Send timed out');
+    await finishJob(job.id, 'sent', null);
+  } catch (err) {
+    const message = err?.message || 'Scheduled job failed';
+    console.error('Scheduled content job failed:', job.id, message);
+    await finishJob(job.id, 'failed', message);
+  } finally {
+    clearInterval(heartbeat);
+    inFlight -= 1;
+    void tick();
+  }
+}
+
+async function tick() {
+  try {
+    await recoverStaleRunning();
+  } catch (err) {
+    console.error('Content schedule recovery failed:', err);
+  }
+  if (claiming) return;
+  claiming = true;
+  try {
+    while (inFlight < MAX_IN_FLIGHT) {
       const job = await claimDueJob();
       if (!job) break;
-      try {
-        await executeJob(job);
-        await finishJob(job.id, 'sent', null);
-      } catch (err) {
-        const message = err?.message || 'Scheduled job failed';
-        console.error('Scheduled content job failed:', job.id, message);
-        await finishJob(job.id, 'failed', message);
-      }
+      inFlight += 1;
+      void runClaimedJob(job);
     }
   } catch (err) {
     console.error('Content schedule tick failed:', err);
   } finally {
-    ticking = false;
+    claiming = false;
   }
 }
 

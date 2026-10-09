@@ -6101,6 +6101,7 @@ export interface ScheduledContentJob {
   createdByUserId: string | null;
   createdAt: string;
   updatedAt: string;
+  archivedAt?: string | null;
 }
 
 export interface ScheduleNamedRef {
@@ -6141,12 +6142,14 @@ export async function listScheduledContent(options: {
   to?: string;
   status?: string;
   creatorId?: string;
+  archived?: boolean;
 } = {}): Promise<{ jobs: ScheduledContentJob[] }> {
   const params = new URLSearchParams();
   if (options.from) params.set('from', options.from);
   if (options.to) params.set('to', options.to);
   if (options.status) params.set('status', options.status);
   if (options.creatorId) params.set('creatorId', options.creatorId);
+  if (options.archived) params.set('archived', '1');
   const query = params.toString();
   return request(`/api/scheduled-content${query ? `?${query}` : ''}`);
 }
@@ -6369,6 +6372,13 @@ export async function updateScheduledContent(
   return request(`/api/scheduled-content/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+}
+
+export async function archiveScheduledMassMessages(): Promise<{ archived: number }> {
+  return request('/api/scheduled-content/archive', {
+    method: 'POST',
+    body: JSON.stringify({}),
   });
 }
 

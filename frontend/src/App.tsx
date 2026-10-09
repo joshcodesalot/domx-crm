@@ -326,8 +326,6 @@ function AppRoutes() {
                       element={<CreatorAnalytics />}
                     />
                     <Route path="/dashboard/false-sales" element={<FalseSalesReview />} />
-                  </Route>
-                  <Route element={<PermissionRoute permission="analytics.view" />}>
                     <Route path="/dashboard/messaging" element={<MessagingDashboard />} />
                     <Route path="/dashboard/sales-logs" element={<SalesLogs />} />
                     <Route path="/dashboard/crm-activity" element={<CrmActivity />} />

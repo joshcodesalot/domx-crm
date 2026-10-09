@@ -633,7 +633,7 @@ export default function Dashboard() {
                 label="Total Sales"
                 value={formatCurrencyAmounts(totalSalesAmounts)}
                 hint={`Payout-verified PPVs + tips for ${periodLabel} (${overview?.timeZone || viewerTimeZone}; Maloum 80% / 4based 70%)`}
-                to={canViewTeamAnalytics ? salesLogsHref : undefined}
+                to={isTeamScope ? salesLogsHref : undefined}
                 linkLabel="View logs"
               />
               <MetricCard

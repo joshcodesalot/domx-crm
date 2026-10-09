@@ -1,7 +1,7 @@
 const express = require('express');
 const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
-const { requirePermission } = require('../middleware/authorize');
+const { requireOwnerOrManager } = require('../middleware/authorize');
 const { getUserTimeZone } = require('../services/rbac');
 
 const router = express.Router();
@@ -111,7 +111,7 @@ function toEvent(row) {
 router.get(
   '/',
   authenticate,
-  requirePermission('analytics.view'),
+  requireOwnerOrManager,
   async (req, res) => {
     try {
       const tz = await getUserTimeZone(req.user.id);

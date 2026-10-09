@@ -58,7 +58,7 @@ const DEFAULT_MATRIX = {
     'marketing.view',
   ],
   backend: [
-    'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view',
+    'dashboard.view', 'analytics.self', 'creators.view',
     'staff.view',
     'mass_messages.send',
     'vault.notes.edit',
@@ -66,7 +66,7 @@ const DEFAULT_MATRIX = {
     'marketing.view',
   ],
   team_leader: [
-    'dashboard.view', 'analytics.view', 'analytics.self', 'creators.view',
+    'dashboard.view', 'analytics.self', 'creators.view',
     'staff.view',
     'vault.notes.edit',
   ],

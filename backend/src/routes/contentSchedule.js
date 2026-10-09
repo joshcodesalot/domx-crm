@@ -121,6 +121,7 @@ function mapJob(row) {
     createdByUserId: row.createdByUserId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    archivedAt: row.archivedAt || null,
   };
 }
 
@@ -357,6 +358,8 @@ router.get('/', async (req, res) => {
 
     const hasRange =
       (from && !Number.isNaN(from.getTime())) || (to && !Number.isNaN(to.getTime()));
+    const showArchived =
+      req.query.archived === '1' || req.query.archived === 'true';
     const selectSql = `SELECT j.*, c."displayName"
        FROM scheduled_content_jobs j
        JOIN creators c ON c.id = j."creatorId"`;
@@ -364,15 +367,30 @@ router.get('/', async (req, res) => {
     // History (no date range): all pending/running, plus the 80 newest completed.
     // Oldest-first LIMIT 2000 was dropping tonight's pending jobs under old sent/cancelled rows.
     if (!hasRange && !status) {
-      const pendingWhere = [...where, `j.status IN ('pending', 'running')`];
-      const completedWhere = [...where, `j.status NOT IN ('pending', 'running')`];
+      const pendingWhere = [
+        ...where,
+        `j.status IN ('pending', 'running')`,
+        `j."archivedAt" IS NULL`,
+      ];
+      const completedWhere = showArchived
+        ? [
+            ...where,
+            `j."archivedAt" IS NOT NULL`,
+            `j.kind = 'mass_message'`,
+            `j.status IN ('sent', 'cancelled')`,
+          ]
+        : [
+            ...where,
+            `j.status NOT IN ('pending', 'running')`,
+            `j."archivedAt" IS NULL`,
+          ];
       const [pending, completed] = await Promise.all([
         pool.query(
           `${selectSql} WHERE ${pendingWhere.join(' AND ')} ORDER BY j."runAt" ASC`,
           params
         ),
         pool.query(
-          `${selectSql} WHERE ${completedWhere.join(' AND ')} ORDER BY j."runAt" DESC LIMIT 80`,
+          `${selectSql} WHERE ${completedWhere.join(' AND ')} ORDER BY j."archivedAt" DESC NULLS LAST, j."runAt" DESC LIMIT 80`,
           params
         ),
       ]);
@@ -381,6 +399,7 @@ router.get('/', async (req, res) => {
       });
     }
 
+    where.push(`j."archivedAt" IS NULL`);
     const result = await pool.query(
       `${selectSql}
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
@@ -391,6 +410,35 @@ router.get('/', async (req, res) => {
     res.json({ jobs: result.rows.map(mapJob) });
   } catch (err) {
     console.error('List scheduled content error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.post('/archive', async (req, res) => {
+  try {
+    const allowedIds = await accessibleCreatorIds(req.user);
+    if (allowedIds && allowedIds.length === 0) {
+      return res.json({ archived: 0 });
+    }
+    const params = [];
+    const filters = [
+      `"archivedAt" IS NULL`,
+      `kind = 'mass_message'`,
+      `status IN ('sent', 'cancelled')`,
+    ];
+    if (allowedIds) {
+      params.push(allowedIds);
+      filters.push(`"creatorId" = ANY($${params.length}::uuid[])`);
+    }
+    const result = await pool.query(
+      `UPDATE scheduled_content_jobs
+       SET "archivedAt" = NOW(), "updatedAt" = NOW()
+       WHERE ${filters.join(' AND ')}`,
+      params
+    );
+    res.json({ archived: result.rowCount || 0 });
+  } catch (err) {
+    console.error('Archive scheduled mass messages error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

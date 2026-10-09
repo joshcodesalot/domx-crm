@@ -2,7 +2,7 @@ const express = require('express');
 const { randomUUID } = require('crypto');
 const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
-const { requirePermission } = require('../middleware/authorize');
+const { requirePermission, requireOwnerOrManager } = require('../middleware/authorize');
 const {
   getUserIdsWithCreatorAccess,
   userCanAccessCreator,
@@ -5263,7 +5263,7 @@ router.get(
 router.get(
   '/',
   authenticate,
-  requirePermission('analytics.view'),
+  requireOwnerOrManager,
   async (req, res) => {
     const tz = await getUserTimeZone(req.user.id);
     const {
