@@ -1,6 +1,11 @@
-const { loadFourBasedCreator, loadMaloumCreator } = require('./platformCreatorSession');
+const {
+  loadFourBasedCreator,
+  loadMaloumCreator,
+  loadFanslyCreator,
+} = require('./platformCreatorSession');
 const fourBasedClient = require('./fourBasedClient');
 const maloumClient = require('./maloumClient');
+const fanslyClient = require('./fanslyClient');
 const { lockedIdSet } = require('./massMessageLocks');
 
 /** @typedef {{ abort: boolean, status: string, done: number, failed: number, totalEstimate: number, currentId: string | null, lastError: string | null, startedAt: number, currentCreatorId: string | null, currentCreatorName: string | null, creatorsDone: number, creatorsTotal: number, creatorsSkipped: number }} UnsendRun */
@@ -371,6 +376,96 @@ async function runMaloum(creatorId, run, opts = {}) {
   return 'ok';
 }
 
+/**
+ * @param {string} creatorId
+ * @param {UnsendRun} run
+ * @param {{ skipLoadErrors?: boolean, bestEffortDeletes?: boolean, cap?: number }} [opts]
+ * @returns {Promise<'ok' | 'skipped' | 'failed' | 'stopped'>}
+ */
+async function runFansly(creatorId, run, opts = {}) {
+  const loaded = await loadFanslyCreator(creatorId);
+  if (loaded.error) {
+    return failOrSkip(run, opts, loaded.error.message);
+  }
+
+  const cap = creatorUnsendCap(opts);
+  const session = fanslyClient.sessionFromCreator(loaded.creator);
+  let before = 0;
+  let processed = 0;
+  const attempted = new Set();
+  for (;;) {
+    if (run.abort) {
+      run.status = 'stopped';
+      return 'stopped';
+    }
+    if (processed >= cap) break;
+    const limit = Number.isFinite(cap) ? Math.min(24, Math.max(1, cap - processed)) : 24;
+    let page;
+    try {
+      page = await fanslyClient.listBroadcastMessages(session, {
+        deleted: false,
+        before,
+        limit,
+      });
+    } catch (err) {
+      return failOrSkip(run, opts, err?.message || 'Failed to list mass messages');
+    }
+    const messages = Array.isArray(page?.messages) ? page.messages : [];
+    const rawIds = messages
+      .map((row) => (row?.id == null ? '' : String(row.id).trim()))
+      .filter((id) => /^\d+$/.test(id));
+    const ids = rawIds.filter((id) => !attempted.has(id));
+    for (const id of rawIds) attempted.add(id);
+    if (ids.length === 0) {
+      if (!page?.hasMore || rawIds.length === 0) break;
+      const nextBefore = page.before || rawIds[rawIds.length - 1];
+      if (nextBefore == null || String(nextBefore) === String(before)) break;
+      before = nextBefore;
+      continue;
+    }
+    run.totalEstimate = Math.max(
+      run.totalEstimate,
+      processed + Math.min(ids.length, Number.isFinite(cap) ? cap - processed : ids.length)
+    );
+    if (!Number.isFinite(cap) && page?.hasMore) {
+      run.totalEstimate = Math.max(run.totalEstimate, processed + ids.length + 1);
+    }
+
+    for (const id of ids) {
+      if (run.abort) {
+        run.status = 'stopped';
+        return 'stopped';
+      }
+      if (processed >= cap) break;
+      run.currentId = id;
+      try {
+        await fanslyClient.deleteMessage(session, id);
+        run.done += 1;
+      } catch (err) {
+        const outcome = handleUnsendDeleteError(
+          run,
+          opts,
+          err,
+          'Failed to delete mass message'
+        );
+        if (outcome) {
+          run.currentId = null;
+          return outcome;
+        }
+      }
+      processed += 1;
+      await sleep(randomUnsendGapMs(), () => run.abort);
+    }
+
+    if (processed >= cap || !page?.hasMore) break;
+    // Deletes drop off the sent list, so the next pass starts at the newest remaining.
+    before = 0;
+  }
+
+  run.currentId = null;
+  return 'ok';
+}
+
 async function runPlatform(platform, creators, run) {
   const worker = platform === '4based' ? runFourBased : runMaloum;
   for (const creator of creators) {
@@ -465,12 +560,12 @@ function stopUnsendAllPlatform(platform) {
  * Load/list failures throw so the scheduled job can fail; delete failures stop
  * remaining deletes and resolve so the send can still go out.
  *
- * @param {'4based' | 'maloum'} platform
+ * @param {'4based' | 'maloum' | 'fansly'} platform
  * @param {string} creatorId
  * @param {{ cap?: number }} [opts]
  */
 async function unsendRecentForCreator(platform, creatorId, opts = {}) {
-  if (platform !== '4based' && platform !== 'maloum') {
+  if (platform !== '4based' && platform !== 'maloum' && platform !== 'fansly') {
     return { skipped: true, reason: 'unsupported_platform', done: 0, failed: 0 };
   }
   const active = findActiveRunOnPlatform(platform);
@@ -488,7 +583,8 @@ async function unsendRecentForCreator(platform, creatorId, opts = {}) {
   runs.set(key, run);
 
   try {
-    const worker = platform === '4based' ? runFourBased : runMaloum;
+    const worker =
+      platform === '4based' ? runFourBased : platform === 'fansly' ? runFansly : runMaloum;
     const outcome = await worker(creatorId, run, {
       cap,
       bestEffortDeletes: true,

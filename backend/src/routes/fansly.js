@@ -668,15 +668,45 @@ router.get(
       if (!creator) return;
       const session = fanslySession(creator);
       const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 50);
+      const lastUnreadMessageId =
+        typeof req.query.lastUnreadMessageId === 'string' ? req.query.lastUnreadMessageId.trim() : '';
       const [messages, interactions] = await Promise.all([
         fanslyClient.listMessages(session, req.params.groupId, { limit }),
         fanslyClient.listUnreadInteractions(session),
       ]);
+      const threadMessages = messages.map((message) =>
+        message?.groupId ? message : { ...message, groupId: req.params.groupId }
+      );
+      const knownIds = new Set(threadMessages.map((message) => String(message.id)));
+      const missingIds = [];
+      const rememberMissing = (id) => {
+        const value = id == null ? '' : String(id).trim();
+        if (!/^\d+$/.test(value) || knownIds.has(value)) return;
+        knownIds.add(value);
+        missingIds.push(value);
+      };
+      for (const row of interactions) {
+        if (!row || row.deletedAt || row.validMessage === false) continue;
+        if (row.readAt != null && row.readAt !== 0) continue;
+        const interactionGroup = row.groupId == null || row.groupId === '' ? '' : String(row.groupId);
+        if (interactionGroup) continue;
+        rememberMissing(row.messageId);
+      }
+      rememberMissing(lastUnreadMessageId);
+      let resolved = [];
+      if (missingIds.length > 0) {
+        try {
+          resolved = await fanslyClient.getMessagesByIds(session, missingIds);
+        } catch (err) {
+          console.warn('[fanslyClient] unread message lookup failed:', err.message);
+        }
+      }
       const unreadIds = fanslyClient.ackIdsForOpenChat({
         interactions,
         groupId: req.params.groupId,
-        messages,
+        messages: resolved.length > 0 ? [...threadMessages, ...resolved] : threadMessages,
         providerUserId: creator.providerUserId,
+        lastUnreadMessageId,
       });
       if (unreadIds.length > 0) {
         await fanslyClient.ackMessages(session, unreadIds);

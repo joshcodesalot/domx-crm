@@ -351,6 +351,8 @@ export default function ChatterFansly() {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [chats, setChats] = useState<FanslyChat[]>([]);
+  const chatsRef = useRef(chats);
+  chatsRef.current = chats;
   const [chatsLoading, setChatsLoading] = useState(false);
   const [inboxRefreshing, setInboxRefreshing] = useState(false);
   const [chatsLoadingMore, setChatsLoadingMore] = useState(false);
@@ -640,7 +642,14 @@ export default function ChatterFansly() {
     }
     setThreadError(null);
     try {
-      const result = await listFanslyMessages(selectedCreatorId, selectedGroupId);
+      const lastUnreadMessageId = chatsRef.current.find(
+        (chat) => chat.groupId === selectedGroupId
+      )?.lastUnreadMessageId;
+      const result = await listFanslyMessages(
+        selectedCreatorId,
+        selectedGroupId,
+        lastUnreadMessageId
+      );
       const hidden = hiddenMessageIdsRef.current;
       const rows = (result.messages || []).filter(
         (message) =>
@@ -654,7 +663,9 @@ export default function ChatterFansly() {
       const openedGroupId = selectedGroupId;
       setChats((prev) =>
         prev.map((chat) =>
-          chat.groupId === openedGroupId ? { ...chat, unreadCount: 0 } : chat
+          chat.groupId === openedGroupId
+            ? { ...chat, unreadCount: 0, lastUnreadMessageId: null }
+            : chat
         )
       );
       void refreshBadges([selectedCreatorId]);

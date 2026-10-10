@@ -573,6 +573,7 @@ function mapGroupChats(data) {
       partnerAvatarUrl: avatarUrlFromAccount(account),
       unreadCount: Number(row.unreadCount) || 0,
       lastMessageId: row.lastMessageId || null,
+      lastUnreadMessageId: optionalSnowflake(row.lastUnreadMessageId),
       flags: row.flags,
     };
   });
@@ -1574,6 +1575,11 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function optionalSnowflake(value) {
+  const id = value == null ? '' : String(value).trim();
+  return /^\d+$/.test(id) ? id : null;
+}
+
 function requireSnowflake(value, label) {
   const id = value == null ? '' : String(value).trim();
   if (!/^\d+$/.test(id)) {
@@ -1957,7 +1963,17 @@ async function countUnreadMessages(session) {
   return messages;
 }
 
-function ackIdsForOpenChat({ interactions, groupId, messages, providerUserId } = {}) {
+function readReceiptOpen(readAt) {
+  return readAt == null || readAt === 0;
+}
+
+function ackIdsForOpenChat({
+  interactions,
+  groupId,
+  messages,
+  providerUserId,
+  lastUnreadMessageId,
+} = {}) {
   const group = groupId == null ? '' : String(groupId);
   const selfId = providerUserId == null ? '' : String(providerUserId);
   const ids = [];
@@ -1968,19 +1984,39 @@ function ackIdsForOpenChat({ interactions, groupId, messages, providerUserId } =
     seen.add(value);
     ids.push(value);
   };
+  const messageById = new Map();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (message?.id == null) continue;
+    messageById.set(String(message.id), message);
+  }
+  const belongsToGroup = (message) =>
+    Boolean(message) && String(message.groupId || '') === group;
 
   for (const row of Array.isArray(interactions) ? interactions : []) {
-    if (!row || String(row.groupId || '') !== group) continue;
-    if (row.readAt != null || row.validMessage === false) continue;
-    add(row.messageId);
+    if (!row || row.deletedAt || row.validMessage === false || !readReceiptOpen(row.readAt)) continue;
+    const interactionGroup = row.groupId == null || row.groupId === '' ? '' : String(row.groupId);
+    if (interactionGroup) {
+      if (interactionGroup === group) add(row.messageId);
+      continue;
+    }
+    const message = messageById.get(String(row.messageId ?? '').trim());
+    if (belongsToGroup(message)) add(message.id);
+  }
+
+  const unreadTarget = optionalSnowflake(lastUnreadMessageId);
+  if (unreadTarget && belongsToGroup(messageById.get(unreadTarget))) {
+    add(unreadTarget);
   }
 
   for (const message of Array.isArray(messages) ? messages : []) {
     if (!message?.senderId || String(message.senderId) === selfId) continue;
+    if (message.groupId != null && String(message.groupId) !== '' && String(message.groupId) !== group) {
+      continue;
+    }
     const mine = (Array.isArray(message.interactions) ? message.interactions : []).find(
       (row) => String(row?.userId) === selfId
     );
-    if (mine && mine.readAt) continue;
+    if (mine && !readReceiptOpen(mine.readAt)) continue;
     add(message.id);
   }
 

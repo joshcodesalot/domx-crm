@@ -2229,6 +2229,7 @@ export interface FanslyChat {
   partnerAvatarUrl?: string | null;
   unreadCount: number;
   lastMessageId: string | null;
+  lastUnreadMessageId?: string | null;
   lastMessage: FanslyMessage | null;
   lifetimeGrossMills?: number | null;
 }
@@ -2438,10 +2439,16 @@ export async function removeFanslyFanFromList(
 
 export async function listFanslyMessages(
   creatorId: string,
-  groupId: string
+  groupId: string,
+  lastUnreadMessageId?: string | null
 ): Promise<{ messages: FanslyMessage[]; providerUserId: string }> {
+  const params = new URLSearchParams();
+  if (lastUnreadMessageId && /^\d+$/.test(lastUnreadMessageId)) {
+    params.set('lastUnreadMessageId', lastUnreadMessageId);
+  }
+  const query = params.toString();
   return request(
-    `/api/creators/${creatorId}/fansly/chats/${encodeURIComponent(groupId)}/messages`
+    `/api/creators/${creatorId}/fansly/chats/${encodeURIComponent(groupId)}/messages${query ? `?${query}` : ''}`
   );
 }
 

@@ -735,6 +735,7 @@ describe('fansly inbox groups', () => {
           partnerUsername: 'dc2cool',
           unreadCount: 1,
           lastMessageId: 'm1',
+          lastUnreadMessageId: '962532559676268544',
           flags: 2,
         },
       ],
@@ -768,6 +769,7 @@ describe('fansly inbox groups', () => {
     });
     assert.equal(chat.partnerAccountId, '927528690898714626');
     assert.equal(chat.partnerAvatarUrl, small);
+    assert.equal(chat.lastUnreadMessageId, '962532559676268544');
   });
 
   it('counts one unread chat instead of a full interaction page', () => {
@@ -840,12 +842,66 @@ describe('fansly inbox groups', () => {
     assert.deepEqual(ids, ['962950114589028352', 'missed']);
   });
 
+  it('acks a sent last-unread message and a null-group unread interaction in this chat', () => {
+    const ids = ackIdsForOpenChat({
+      groupId: '941499222019043328',
+      providerUserId: 'creator',
+      lastUnreadMessageId: '962000000000000001',
+      interactions: [
+        {
+          messageId: 'orphan',
+          groupId: null,
+          readAt: null,
+          validMessage: true,
+        },
+        {
+          messageId: 'other-orphan',
+          groupId: null,
+          readAt: null,
+          validMessage: true,
+        },
+        {
+          messageId: 'deleted-orphan',
+          groupId: null,
+          readAt: null,
+          deletedAt: 1,
+          validMessage: true,
+        },
+      ],
+      messages: [
+        { id: 'orphan', groupId: '941499222019043328', senderId: 'creator', interactions: [] },
+        { id: 'other-orphan', groupId: '999', senderId: 'fan', interactions: [] },
+        { id: '962000000000000001', groupId: '941499222019043328', senderId: 'creator', interactions: [] },
+        { id: 'my-other-sent', groupId: '941499222019043328', senderId: 'creator', interactions: [] },
+        {
+          id: 'fresh',
+          groupId: '941499222019043328',
+          senderId: 'fan',
+          interactions: [{ userId: 'creator', readAt: 0 }],
+        },
+      ],
+    });
+    assert.deepEqual(ids, ['orphan', '962000000000000001', 'fresh']);
+  });
+
+  it('does not ack a last-unread message from another chat', () => {
+    const ids = ackIdsForOpenChat({
+      groupId: '941499222019043328',
+      providerUserId: 'creator',
+      lastUnreadMessageId: '962000000000000002',
+      interactions: [],
+      messages: [{ id: '962000000000000002', groupId: '999', senderId: 'creator', interactions: [] }],
+    });
+    assert.deepEqual(ids, []);
+  });
+
   it('leaves the avatar empty when the account has none', () => {
     const [chat] = mapGroupChats({
       data: [{ groupId: 'g2', partnerAccountId: '1', partnerUsername: 'fan' }],
       aggregationData: { accounts: [{ id: '1', username: 'fan' }] },
     });
     assert.equal(chat.partnerAvatarUrl, null);
+    assert.equal(chat.lastUnreadMessageId, null);
   });
 });
 

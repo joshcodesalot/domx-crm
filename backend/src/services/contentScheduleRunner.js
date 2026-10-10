@@ -478,9 +478,9 @@ function fanslyScheduleAudience(settings, payload) {
     ? asIdList(payload.excludeListIds)
     : settings.excludeListIds;
   return {
-    followers: false,
+    followers: true,
     subscribers: true,
-    expiredSubscribers: false,
+    expiredSubscribers: true,
     excludeCreators: true,
     excludeOffline: false,
     includeListIds: include,
