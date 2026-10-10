@@ -16,6 +16,7 @@ import fanslyIcon from '@/assets/fansly.svg';
 import {
   createMessagingDashboardEntry,
   deleteFanslyMessage,
+  getMessagingDashboardSenders,
   listFanslyChats,
   listFanslyMessages,
   listFanslySubscriptionTiers,
@@ -44,6 +45,20 @@ function SentTag({ light }: { light?: boolean }) {
     >
       <Check className="w-3 h-3" />
       Sent
+    </span>
+  );
+}
+
+function SentByTag({ name, light }: { name: string; light?: boolean }) {
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[9px] font-medium shadow-sm ${
+        light
+          ? 'bg-white/20 border-white/30 text-white'
+          : 'bg-white/90 dark:bg-zinc-900/90 border-gray-200 dark:border-zinc-800 text-gray-500 dark:text-zinc-400'
+      }`}
+    >
+      Sent by {name}
     </span>
   );
 }
@@ -368,6 +383,7 @@ export default function ChatterFansly() {
   const [lockedSets, setLockedSets] = useState<LockedPermissionSet[]>([{ ...EMPTY_LOCK }]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [messages, setMessages] = useState<FanslyMessage[]>([]);
+  const [messageSenders, setMessageSenders] = useState<Record<string, string>>({});
   const [selfId, setSelfId] = useState<string | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
   const [threadError, setThreadError] = useState<string | null>(null);
@@ -401,10 +417,13 @@ export default function ChatterFansly() {
   const markedPurchasedRef = useRef<Set<string>>(new Set());
   const fanScope = `${selectedCreatorId || ''}:${selectedGroupId || ''}`;
   const [openFanScope, setOpenFanScope] = useState(fanScope);
+  const threadKeyRef = useRef(fanScope);
+  threadKeyRef.current = fanScope;
   if (fanScope !== openFanScope) {
     setOpenFanScope(fanScope);
     setFanPanelOpen(false);
     setFanNickname('');
+    setMessageSenders({});
   }
   useSyncedDrawer('fansly-fan', 'xl', fanPanelOpen, setFanPanelOpen);
 
@@ -674,6 +693,29 @@ export default function ChatterFansly() {
     }
   }, [refreshBadges, selectedCreatorId, selectedGroupId]);
 
+  const loadSenders = useCallback(async () => {
+    if (!selectedCreatorId || !selectedGroupId) return;
+    const key = `${selectedCreatorId}:${selectedGroupId}`;
+    try {
+      const result = await getMessagingDashboardSenders({
+        creatorId: selectedCreatorId,
+        chatId: selectedGroupId,
+        limit: 200,
+      });
+      if (threadKeyRef.current !== key) return;
+      setMessageSenders((prev) => ({ ...prev, ...(result.senders || {}) }));
+    } catch {
+      // best-effort
+    }
+  }, [selectedCreatorId, selectedGroupId]);
+
+  function rememberSender(messageId: unknown) {
+    const id = messageKey(messageId);
+    const name = user?.name?.trim();
+    if (!id || !name) return;
+    setMessageSenders((prev) => (prev[id] === name ? prev : { ...prev, [id]: name }));
+  }
+
   useEffect(() => {
     if (!selectedGroupId) return;
     let cancelled = false;
@@ -681,21 +723,25 @@ export default function ChatterFansly() {
     loadThread().finally(() => {
       if (!cancelled) setThreadLoading(false);
     });
+    void loadSenders();
     return () => {
       cancelled = true;
     };
-  }, [loadThread, selectedGroupId]);
+  }, [loadSenders, loadThread, selectedGroupId]);
 
   useEffect(() => {
     if (!pollEnabled || !selectedCreatorId) return;
     const timer = window.setInterval(() => {
       void (async () => {
-        if (selectedGroupId) await loadThread();
+        if (selectedGroupId) {
+          await loadThread();
+          await loadSenders();
+        }
         await loadChats();
       })();
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [loadChats, loadThread, pollEnabled, selectedCreatorId, selectedGroupId]);
+  }, [loadChats, loadSenders, loadThread, pollEnabled, selectedCreatorId, selectedGroupId]);
 
   useEffect(() => {
     if (!vaultOpen || !selectedCreatorId) return;
@@ -829,6 +875,7 @@ export default function ChatterFansly() {
       setVaultOpen(false);
       if (result.message) {
         setMessages((prev) => [result.message, ...prev.filter((row) => row.id !== result.message.id)]);
+        rememberSender(result.message.id);
         logSentFanslyMessage(result.message, {
           text,
           contentType: sentMedia.length > 0 ? (priceNet ? 'chat_product' : 'media') : 'text',
@@ -880,6 +927,7 @@ export default function ChatterFansly() {
       setLockedSets([{ ...EMPTY_LOCK }]);
       if (result.message) {
         setMessages((prev) => [result.message, ...prev.filter((row) => row.id !== result.message.id)]);
+        rememberSender(result.message.id);
         logSentFanslyMessage(result.message, {
           text,
           contentType: priceNet ? 'chat_product' : 'text',
@@ -1236,7 +1284,10 @@ export default function ChatterFansly() {
                 <button
                   type="button"
                   aria-label="Refresh messages"
-                  onClick={() => void loadThread()}
+                  onClick={() => {
+                    void loadThread();
+                    void loadSenders();
+                  }}
                   className="p-2 rounded-lg text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all border border-transparent hover:border-gray-300 dark:hover:border-zinc-700"
                 >
                   <RefreshCw className={`w-4 h-4 ${threadLoading ? 'animate-spin' : ''}`} />
@@ -1291,6 +1342,8 @@ export default function ChatterFansly() {
                   const tipDollars = fanslyTipDollars(message);
                   const isTip =
                     tipDollars != null && price == null && media.length === 0 && locked.length === 0;
+                  const sentBy = mine ? messageSenders[messageKey(message.id)] : undefined;
+                  const lightTag = Boolean(mine && !ppvLabel);
                   return (
                     <div key={message.id} className={`flex items-end gap-1 ${mine ? 'justify-end' : 'justify-start'}`}>
                       {mine && (
@@ -1322,8 +1375,10 @@ export default function ChatterFansly() {
                               {message.content}
                             </p>
                           ) : null}
-                          <p className="text-[10px] mt-1 text-white/60 flex items-center gap-1.5">
-                            {mine ? <SentTag light /> : null}
+                          <p className="text-[10px] mt-1 text-white/60 flex flex-wrap items-center gap-1.5">
+                            {mine ? (
+                              sentBy ? <SentByTag name={sentBy} /> : <SentTag light />
+                            ) : null}
                             <span>{formatTime(message.createdAt)}</span>
                           </p>
                         </div>
@@ -1404,8 +1459,14 @@ export default function ChatterFansly() {
                         {message.content ? (
                           <p className="whitespace-pre-wrap break-words">{message.content}</p>
                         ) : null}
-                        <p className={`text-[10px] mt-1 flex items-center gap-1.5 ${mine && !ppvLabel ? 'text-white/80' : 'text-gray-500'}`}>
-                          {mine ? <SentTag light={Boolean(mine && !ppvLabel)} /> : null}
+                        <p className={`text-[10px] mt-1 flex flex-wrap items-center gap-1.5 ${mine && !ppvLabel ? 'text-white/80' : 'text-gray-500'}`}>
+                          {mine ? (
+                            sentBy ? (
+                              <SentByTag name={sentBy} light={lightTag} />
+                            ) : (
+                              <SentTag light={lightTag} />
+                            )
+                          ) : null}
                           <span>{formatTime(message.createdAt)}</span>
                         </p>
                       </div>
