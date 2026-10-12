@@ -1595,6 +1595,151 @@ export async function getFanCrmActivity(filters: {
   return request<FanCrmActivityResponse>(path);
 }
 
+export type ChatArchivePlatform = 'maloum' | '4based' | 'telegram' | 'fansly';
+
+export interface ChatArchiveHit {
+  id: string;
+  conversationId: string;
+  sentAt: string | null;
+  direction: 'inbound' | 'outbound';
+  senderRole: 'fan' | 'creator' | 'system';
+  chatterName: string | null;
+  kind: 'dm' | 'ppv' | 'mass' | 'system';
+  textEn: string | null;
+  textDe: string | null;
+  textSent: string;
+  snippet: string;
+  isPpv: boolean;
+  priceNet: number | null;
+  currency: string | null;
+  deleted: boolean;
+  platform: ChatArchivePlatform;
+  fanLabel: string;
+  creatorId: string | null;
+  creatorName: string;
+}
+
+export interface ChatArchiveSearchResponse {
+  data: ChatArchiveHit[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    from: number;
+    to: number;
+  };
+}
+
+export interface ChatArchiveMessage {
+  id: string;
+  platformMessageId: string;
+  direction: 'inbound' | 'outbound';
+  senderRole: 'fan' | 'creator' | 'system';
+  chatterName: string | null;
+  kind: 'dm' | 'ppv' | 'mass' | 'system';
+  textEn: string | null;
+  textDe: string | null;
+  textSent: string;
+  hasMedia: boolean;
+  isPpv: boolean;
+  priceNet: number | null;
+  currency: string | null;
+  sentAt: string | null;
+  deleted: boolean;
+}
+
+export interface ChatArchiveThread {
+  conversation: {
+    id: string;
+    platform: ChatArchivePlatform;
+    creatorId: string | null;
+    creatorName: string;
+    creatorUsername: string | null;
+    fanLabel: string;
+    fanUsername: string | null;
+    messageCount: number;
+    capturedFrom: string | null;
+    capturedTo: string | null;
+    truncated: boolean;
+  };
+  messages: ChatArchiveMessage[];
+}
+
+export interface ChatArchiveFilters {
+  q?: string;
+  startDate?: string;
+  endDate?: string;
+  chatterId?: string;
+  creatorId?: string;
+  platform?: ChatArchivePlatform;
+  direction?: 'inbound' | 'outbound';
+  includeMass?: boolean;
+  page?: number;
+  limit?: number;
+  conversationId?: string;
+}
+
+function chatArchiveQuery(filters: ChatArchiveFilters): string {
+  const params = new URLSearchParams();
+  if (filters.q) params.set('q', filters.q);
+  if (filters.startDate) params.set('startDate', filters.startDate);
+  if (filters.endDate) params.set('endDate', filters.endDate);
+  if (filters.chatterId) params.set('chatterId', filters.chatterId);
+  if (filters.creatorId) params.set('creatorId', filters.creatorId);
+  if (filters.platform) params.set('platform', filters.platform);
+  if (filters.direction) params.set('direction', filters.direction);
+  if (filters.includeMass) params.set('includeMass', '1');
+  if (filters.page) params.set('page', String(filters.page));
+  if (filters.limit) params.set('limit', String(filters.limit));
+  if (filters.conversationId) params.set('conversationId', filters.conversationId);
+  return params.toString();
+}
+
+export async function searchChatArchive(
+  filters: ChatArchiveFilters
+): Promise<ChatArchiveSearchResponse> {
+  const query = chatArchiveQuery(filters);
+  return request<ChatArchiveSearchResponse>(`/api/chat-archive/search?${query}`);
+}
+
+export async function getChatArchiveThread(
+  conversationId: string,
+  includeMass = false
+): Promise<ChatArchiveThread> {
+  const query = includeMass ? '?includeMass=1' : '';
+  return request<ChatArchiveThread>(`/api/chat-archive/conversations/${conversationId}/messages${query}`);
+}
+
+export async function downloadChatArchiveExport(filters: ChatArchiveFilters): Promise<void> {
+  const token = getToken();
+  const headers: HeadersInit = {};
+  if (token) {
+    (headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
+  }
+  const query = chatArchiveQuery(filters);
+  const response = await fetch(`${API_URL}/api/chat-archive/export?${query}`, { headers });
+  if (!response.ok) {
+    const data = (await response.json().catch(() => ({}))) as { error?: string };
+    if (isDomxAuthFailure(response.status, data.error) && token) {
+      clearToken();
+      window.dispatchEvent(new CustomEvent('domx:session-expired'));
+    }
+    throw new ApiError(data.error || 'Export failed', { status: response.status });
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="([^"]+)"/);
+  const filename = match?.[1] || 'chat-archive.json';
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 export type LoginActivityChange = 'ip' | 'device' | 'either';
 
 export interface LoginActivityEvent {

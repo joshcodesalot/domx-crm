@@ -13,6 +13,7 @@ import {
   LineChart,
   Megaphone,
   MessageSquare,
+  MessagesSquare,
   Monitor,
   Moon,
   Newspaper,
@@ -46,6 +47,7 @@ export type SidebarPage =
   | 'falseSales'
   | 'salesLogs'
   | 'crmActivity'
+  | 'chatArchive'
   | 'loginActivity'
   | 'chatter'
   | 'creators'
@@ -633,6 +635,15 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
             label="CRM Activity"
             icon={<ClipboardList className="w-5 h-5" />}
             onClick={() => go('/dashboard/crm-activity')}
+          />
+        )}
+        {isManager && (
+          <NavItem
+            active={activePage === 'chatArchive'}
+            title="Chat Archive"
+            label="Chat Archive"
+            icon={<MessagesSquare className="w-5 h-5" />}
+            onClick={() => go('/dashboard/chat-archive')}
           />
         )}
         {isManager && (

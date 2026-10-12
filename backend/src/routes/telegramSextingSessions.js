@@ -7,6 +7,7 @@ const {
   userSeesAllCreators,
 } = require('../services/creatorAccess');
 const { applyModeration } = require('../services/contentModeration');
+const { scheduleSentArchive } = require('../services/fanChatArchive');
 const {
   TelegramWorkerError,
   sendText,
@@ -550,6 +551,16 @@ router.post('/:id/blocks/:blockId/send', async (req, res) => {
       });
     }
 
+    scheduleSentArchive({
+      creatorId: block.creatorId,
+      platform: 'telegram',
+      platformChatId: session.groupPeerId,
+      platformFanId: session.groupPeerId,
+      fanLabel: session.fanName || '',
+      rawMessages: sentMessages,
+      englishDraft: typeof englishText === 'string' ? englishText : '',
+      chatter: req.user,
+    });
     const firstId = sentMessages[0]?.id ? String(sentMessages[0].id) : null;
     await pool.query(
       `UPDATE telegram_sexting_session_blocks

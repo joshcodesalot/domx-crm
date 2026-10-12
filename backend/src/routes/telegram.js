@@ -45,6 +45,7 @@ const {
   upsertFanNotes,
 } = require('../services/telegramWorker');
 const fanCrmActivity = require('../services/fanCrmActivity');
+const { scheduleHistoryArchive, scheduleSentArchive } = require('../services/fanChatArchive');
 const {
   canOpenChatByUsername,
   canSeeTelegramServiceChats,
@@ -552,11 +553,21 @@ router.get(
       ) {
         return res.status(403).json({ error: 'You do not have access to this chat' });
       }
+      const visibleMessages = result.messages.map((msg) => redactMessage(msg, req.user));
+      scheduleHistoryArchive({
+        creatorId: id,
+        platform: 'telegram',
+        platformChatId: result.peerId || peerId,
+        platformFanId: result.fan?.telegramUserId || peerId,
+        fanUsername: result.fan?.username || null,
+        fanLabel: result.fan?.displayName || result.fan?.nickname || '',
+        rawMessages: visibleMessages,
+      });
       return res.json({
         peerId: result.peerId,
         kind: result.kind || 'dm',
         fan: redactFan(result.fan, req.user),
-        messages: result.messages.map((msg) => redactMessage(msg, req.user)),
+        messages: visibleMessages,
         next: result.next || null,
         hasMore: Boolean(result.hasMore),
       });
@@ -596,10 +607,18 @@ router.get(
         limit: Number(req.query.limit) || 30,
         offset: Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : undefined,
       });
+      const visibleMessages = result.messages.map((msg) => redactMessage(msg, req.user));
+      scheduleHistoryArchive({
+        creatorId: id,
+        platform: 'telegram',
+        platformChatId: result.peerId || peerId,
+        platformFanId: peerId,
+        rawMessages: visibleMessages,
+      });
       return res.json({
         peerId: result.peerId,
         kind: result.kind || 'dm',
-        messages: result.messages.map((msg) => redactMessage(msg, req.user)),
+        messages: visibleMessages,
         nextOffset: result.nextOffset,
         hasMore: Boolean(result.hasMore),
       });
@@ -700,9 +719,19 @@ router.post(
 
       if (vaultIdList.length === 0) {
         const message = await sendText(id, peerId, trimmed, { replyToMessageId });
+        const visible = redactMessage(message, req.user);
+        scheduleSentArchive({
+          creatorId: id,
+          platform: 'telegram',
+          platformChatId: peerId,
+          platformFanId: peerId,
+          rawMessages: [visible],
+          englishDraft: typeof englishText === 'string' ? englishText : '',
+          chatter: req.user,
+        });
         return res.status(201).json({
-          message: redactMessage(message, req.user),
-          messages: [redactMessage(message, req.user)],
+          message: visible,
+          messages: [visible],
         });
       }
 
@@ -729,6 +758,15 @@ router.post(
         userId: req.user.id,
       });
       const messages = sent.map((msg) => redactMessage(msg, req.user));
+      scheduleSentArchive({
+        creatorId: id,
+        platform: 'telegram',
+        platformChatId: peerId,
+        platformFanId: peerId,
+        rawMessages: messages,
+        englishDraft: typeof englishText === 'string' ? englishText : '',
+        chatter: req.user,
+      });
       return res.status(201).json({
         message: messages[0] || null,
         messages,

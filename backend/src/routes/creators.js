@@ -30,6 +30,10 @@ const { emitToUser, emitToUsers } = require('../services/userEventBus');
 const fourBasedClient = require('../services/fourBasedClient');
 const fanslyClient = require('../services/fanslyClient');
 const maloumClient = require('../services/maloumClient');
+const {
+  scheduleHistoryArchive,
+  scheduleSentArchive,
+} = require('../services/fanChatArchive');
 const maloumPollCache = require('../services/maloumPollCache');
 const {
   InvalidProxyError,
@@ -4453,8 +4457,16 @@ router.get(
         limit,
         offset,
       });
+      const messageList = Array.isArray(messages) ? messages : messages?.items || messages || [];
+      scheduleHistoryArchive({
+        creatorId: id,
+        platform: '4based',
+        platformChatId: chatId,
+        providerUserId: loaded.creator.providerUserId,
+        rawMessages: messageList,
+      });
       res.json({
-        messages: Array.isArray(messages) ? messages : messages?.items || messages || [],
+        messages: messageList,
         providerUserId: loaded.creator.providerUserId,
       });
     } catch (err) {
@@ -4540,6 +4552,19 @@ router.post(
           priceCoins: Number(priceCoins) || 0,
           localId: resolvedLocalId,
         });
+        scheduleSentArchive({
+          creatorId: id,
+          platform: '4based',
+          platformChatId: chatId,
+          platformFanId: fanId,
+          fanUsername,
+          providerUserId: loaded.creator.providerUserId,
+          rawMessage: result.message,
+          englishDraft,
+          chatter: req.user,
+          priceNet: Number(priceCoins) > 0 ? Number(priceCoins) / 121 : null,
+          currency: 'USD',
+        });
         return res.status(201).json({
           message: result.message,
           fileStack: result.fileStack,
@@ -4554,6 +4579,17 @@ router.post(
           fileStackId,
           localId: resolvedLocalId,
         });
+        scheduleSentArchive({
+          creatorId: id,
+          platform: '4based',
+          platformChatId: chatId,
+          platformFanId: fanId,
+          fanUsername,
+          providerUserId: loaded.creator.providerUserId,
+          rawMessage: sent,
+          englishDraft,
+          chatter: req.user,
+        });
         return res.status(201).json({ message: sent, localId: resolvedLocalId });
       }
 
@@ -4564,6 +4600,17 @@ router.post(
       const sent = await fourBasedClient.sendText(loaded.creator, chatId, {
         message: text,
         localId: resolvedLocalId,
+      });
+      scheduleSentArchive({
+        creatorId: id,
+        platform: '4based',
+        platformChatId: chatId,
+        platformFanId: fanId,
+        fanUsername,
+        providerUserId: loaded.creator.providerUserId,
+        rawMessage: sent,
+        englishDraft,
+        chatter: req.user,
       });
       return res.status(201).json({ message: sent, localId: resolvedLocalId });
     } catch (err) {
@@ -5890,6 +5937,13 @@ router.get(
           providerUserId: loaded.creator.providerUserId,
         };
       });
+      scheduleHistoryArchive({
+        creatorId: id,
+        platform: 'maloum',
+        platformChatId: chatId,
+        providerUserId: payload.providerUserId,
+        rawMessages: payload.messages,
+      });
       res.json(payload);
     } catch (err) {
       return handlePollCacheError(res, err, 'Get Maloum messages error:');
@@ -6036,6 +6090,24 @@ router.post(
           optimisticMessageId: resolvedOptimisticId,
         });
         invalidateMaloumMessagePollCache(id, chatId);
+        scheduleSentArchive({
+          creatorId: id,
+          platform: 'maloum',
+          platformChatId: chatId,
+          platformFanId: fanId,
+          fanUsername,
+          providerUserId: loaded.creator.providerUserId,
+          rawMessage: {
+            _id: messageId,
+            senderId: loaded.creator.providerUserId,
+            sentAt: new Date().toISOString(),
+            content: { text: bodyText, media, priceNet: net > 0 ? net : undefined },
+          },
+          englishDraft,
+          chatter: req.user,
+          priceNet: net > 0 ? net : null,
+          currency: 'EUR',
+        });
         return res.status(201).json({
           messageId,
           message: { _id: messageId },
@@ -6052,6 +6124,22 @@ router.post(
         optimisticMessageId: resolvedOptimisticId,
       });
       invalidateMaloumMessagePollCache(id, chatId);
+      scheduleSentArchive({
+        creatorId: id,
+        platform: 'maloum',
+        platformChatId: chatId,
+        platformFanId: fanId,
+        fanUsername,
+        providerUserId: loaded.creator.providerUserId,
+        rawMessage: {
+          _id: messageId,
+          senderId: loaded.creator.providerUserId,
+          sentAt: new Date().toISOString(),
+          content: { text: bodyText },
+        },
+        englishDraft,
+        chatter: req.user,
+      });
       return res.status(201).json({
         messageId,
         message: { _id: messageId },

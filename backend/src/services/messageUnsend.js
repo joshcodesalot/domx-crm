@@ -1,5 +1,6 @@
 const { randomUUID } = require('crypto');
 const pool = require('../db/pool');
+const { markArchivedMessageDeletedInBackground } = require('./fanChatArchive');
 
 function parseOptionalTimestamp(value) {
   if (value == null || value === '') return null;
@@ -75,6 +76,15 @@ async function upsertMessageUnsend({
   );
 
   const row = result.rows[0];
+  markArchivedMessageDeletedInBackground({
+    creatorId,
+    platform,
+    platformChatId: String(chatId),
+    platformMessageId: String(platformMessageId),
+    originalText: row.originalText || text,
+    messageSentAt: row.messageSentAt || sentAt,
+    chatter: user,
+  });
   return {
     platformMessageId: row.platformMessageId,
     originalText: row.originalText || '',

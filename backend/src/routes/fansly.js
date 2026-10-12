@@ -8,6 +8,11 @@ const { userCanAccessCreator, getUserIdsWithCreatorAccess } = require('../servic
 const { decryptJson, decryptSecret, encryptJson, encryptSecret } = require('../services/crypto');
 const { emitToUsers } = require('../services/userEventBus');
 const fanslyClient = require('../services/fanslyClient');
+const {
+  markArchivedMessageDeletedInBackground,
+  scheduleHistoryArchive,
+  scheduleSentArchive,
+} = require('../services/fanChatArchive');
 const messagingDashboard = require('./messagingDashboard');
 const fanslyMediaCache = require('../services/fanslyMediaCache');
 const { loadFanslyCreator } = require('../services/platformCreatorSession');
@@ -711,6 +716,13 @@ router.get(
       if (unreadIds.length > 0) {
         await fanslyClient.ackMessages(session, unreadIds);
       }
+      scheduleHistoryArchive({
+        creatorId: creator.id,
+        platform: 'fansly',
+        platformChatId: req.params.groupId,
+        providerUserId: creator.providerUserId,
+        rawMessages: [...threadMessages, ...resolved],
+      });
       res.json({ messages, providerUserId: creator.providerUserId });
     } catch (err) {
       return handleFanslyError(res, err, 'List Fansly messages error:');
@@ -800,6 +812,20 @@ router.post(
         }),
         sentMedia
       );
+      const sentContent = lockedText
+        ? String(lockedText.content || '')
+        : typeof req.body?.content === 'string'
+          ? req.body.content
+          : '';
+      scheduleSentArchive({
+        creatorId: creator.id,
+        platform: 'fansly',
+        platformChatId: req.params.groupId,
+        providerUserId: creator.providerUserId,
+        rawMessage: message,
+        englishDraft: sentContent,
+        chatter: req.user,
+      });
       res.json({ message });
     } catch (err) {
       return handleFanslyError(res, err, 'Send Fansly message error:');
@@ -819,6 +845,15 @@ router.post(
         fanslySession(creator),
         req.params.messageId
       );
+      markArchivedMessageDeletedInBackground({
+        creatorId: creator.id,
+        platform: 'fansly',
+        platformChatId: req.params.groupId,
+        platformMessageId: req.params.messageId,
+        originalText: message?.content || '',
+        messageSentAt: message?.createdAt,
+        chatter: req.user,
+      });
       res.json({ message });
     } catch (err) {
       return handleFanslyError(res, err, 'Delete Fansly message error:');

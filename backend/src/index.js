@@ -63,6 +63,7 @@ const fourbasedFanScrapeRoutes = require('./routes/fourbasedFanScrape');
 const maloumSentMessagesRoutes = require('./routes/maloumSentMessages');
 const messagingDashboardRoutes = require('./routes/messagingDashboard');
 const fanCrmActivityRoutes = require('./routes/fanCrmActivity');
+const chatArchiveRoutes = require('./routes/chatArchive');
 const loginActivityRoutes = require('./routes/loginActivity');
 const saleReconciliationRoutes = require('./routes/saleReconciliation');
 const translateRoutes = require('./routes/translate');
@@ -150,6 +151,7 @@ app.use('/api/creators', fourbasedFanScrapeRoutes);
 app.use('/api/maloum-sent-messages', maloumSentMessagesRoutes);
 app.use('/api/messaging-dashboard', messagingDashboardRoutes);
 app.use('/api/fan-crm-activity', fanCrmActivityRoutes);
+app.use('/api/chat-archive', chatArchiveRoutes);
 app.use('/api/login-activity', loginActivityRoutes);
 app.use('/api/sale-reconciliation', saleReconciliationRoutes);
 app.use('/api/translate-to-german', translateRoutes);
@@ -195,6 +197,8 @@ app.listen(PORT, () => {
   } = require('./services/fourbasedFanScrapeRunner');
   void resumeFourBasedFanScrapeJobs();
   startContentScheduleRunner();
+  const { startFanChatArchiveWorker } = require('./services/fanChatArchive');
+  startFanChatArchiveWorker();
   const {
     startMaloumCommentGuard,
   } = require('./services/maloumCommentGuard');
