@@ -29,6 +29,11 @@ const fourBasedClient = require('../services/fourBasedClient');
 const maloumClient = require('../services/maloumClient');
 const { connectFanslyCreator } = require('./creatorsFansly');
 const {
+  abortPendingTelegramLogin,
+  startTelegramAfterCreate,
+  disconnectTelegramCreator,
+} = require('./creatorsTelegram');
+const {
   InvalidProxyError,
   buildProxyUrl,
   parseProxyParts,
@@ -827,8 +832,7 @@ router.delete(
     }
 
     try {
-      const { abortPendingLogin } = require('../services/telegramWorker');
-      void abortPendingLogin(accountId);
+      abortPendingTelegramLogin(accountId);
 
       const result = await pool.query(
         `DELETE FROM creator_connect_pending
@@ -993,10 +997,7 @@ router.post('/', authenticate, requirePermission('creators.manage'), async (req,
     }
 
     if (saved.platform === 'telegram' && pending?.accountId) {
-      const { onCreatorSaved } = require('../services/telegramWorker');
-      void onCreatorSaved(saved.id, pending.accountId).catch((err) => {
-        console.warn('[telegram] Failed to start client after create:', err.message);
-      });
+      startTelegramAfterCreate(saved.id, pending.accountId);
     }
 
     res.status(201).json({ creator: toCreator(saved) });
@@ -1964,8 +1965,7 @@ router.delete('/:id', authenticate, requirePermission('creators.manage'), async 
       disconnectCreator(id);
     }
     if (platform === 'telegram') {
-      const { disconnectCreator: disconnectTelegram } = require('../services/telegramWorker');
-      void disconnectTelegram(id);
+      disconnectTelegramCreator(id);
     }
 
     if (accountId) {
