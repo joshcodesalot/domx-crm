@@ -42,7 +42,6 @@ const {
   isValidUuid,
   readCustomProxy,
   toCreator,
-  scheduleBadgeSideEffects,
   connectLimiter,
   encryptCustomProxy,
   decryptStoredProxy,
@@ -52,6 +51,27 @@ const {
 } = require('./creators');
 
 const router = express.Router();
+
+const BADGE_SIDE_EFFECT_MIN_MS = 60_000;
+const lastBadgeSideEffectAt = new Map();
+
+function scheduleBadgeSideEffects(creatorId, work) {
+  if (!creatorId) return;
+  const last = lastBadgeSideEffectAt.get(creatorId) || 0;
+  if (Date.now() - last < BADGE_SIDE_EFFECT_MIN_MS) return;
+  lastBadgeSideEffectAt.set(creatorId, Date.now());
+  setImmediate(() => {
+    Promise.resolve()
+      .then(work)
+      .catch((err) => {
+        console.warn(
+          'Badge side effects failed:',
+          creatorId,
+          err.message || err
+        );
+      });
+  });
+}
 
 const fourBasedPhotoUpload = multer({
   storage: multer.memoryStorage(),
