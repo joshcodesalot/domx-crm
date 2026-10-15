@@ -56,6 +56,7 @@ const authRoutes = require('./routes/auth');
 const staffRoutes = require('./routes/staff');
 const rolesRoutes = require('./routes/roles');
 const creatorsRoutes = require('./routes/creators');
+const creators4basedRoutes = require('./routes/creators4based');
 const fanslyRoutes = require('./routes/fansly');
 const maloumFanScrapeRoutes = require('./routes/maloumFanScrape');
 const maloumCommentGuardRoutes = require('./routes/maloumCommentGuard');
@@ -82,6 +83,14 @@ const {
   startMaloumTokenRefreshScheduler,
 } = require('./services/maloumTokenRefresh');
 const { startContentScheduleRunner } = require('./services/contentScheduleRunner');
+const logger = require('./services/logger');
+const opsRoutes = require('./routes/ops');
+const {
+  recordRequest,
+  recordHandlerError,
+  routeSource,
+  startOpsRetention,
+} = require('./services/opsEvents');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -95,6 +104,27 @@ app.use(
     credentials: true,
   })
 );
+app.use((req, res, next) => {
+  const started = Date.now();
+  res.on('finish', () => {
+    const fields = {
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      durationMs: Date.now() - started,
+    };
+    if (req.user) fields.userId = req.user.id;
+    logger.info('request', fields);
+    recordRequest({
+      method: fields.method,
+      path: fields.path,
+      status: fields.status,
+      durationMs: fields.durationMs,
+      source: routeSource(req),
+    });
+  });
+  next();
+});
 app.use(
   '/api/webhooks/throne',
   express.raw({ type: 'application/json' }),
@@ -144,6 +174,7 @@ app.use('/api/creators', telegramListRoutes);
 app.use('/api/creators', telegramMassMessageRoutes);
 app.use('/api/creators', massMessageLockRoutes);
 app.use('/api/creators', fanslyRoutes);
+app.use('/api/creators', creators4basedRoutes);
 app.use('/api/creators', creatorsRoutes);
 app.use('/api/creators', maloumFanScrapeRoutes);
 app.use('/api/creators', maloumCommentGuardRoutes);
@@ -162,6 +193,7 @@ app.use('/api/scheduled-content', contentScheduleRoutes);
 app.use('/api/telegram-sexting-sessions', telegramSextingSessionRoutes);
 app.use('/api/throne', throneRoutes);
 app.use('/api/browser-profiles', browserProfileRoutes);
+app.use('/api/ops', opsRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });
@@ -175,13 +207,30 @@ app.use((err, req, res, _next) => {
       error: tooLargeProfile ? 'Profile archive is too large' : 'Request is too large',
     });
   }
-  console.error(err);
+  logger.error(err.message || 'Internal server error', { path: req.path });
+  recordHandlerError(err, req);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`DomX API running on http://localhost:${PORT}`);
+function processRole() {
+  const role = String(process.env.PROCESS_ROLE || '').trim().toLowerCase();
+  if (role === 'api' || role === 'worker') return role;
+  return 'all';
+}
+
+function startMovableWorkers() {
   startMaloumTokenRefreshScheduler();
+  startContentScheduleRunner();
+  const { startFanChatArchiveWorker } = require('./services/fanChatArchive');
+  startFanChatArchiveWorker();
+  const {
+    startMaloumCommentGuard,
+  } = require('./services/maloumCommentGuard');
+  startMaloumCommentGuard();
+  startOpsRetention();
+}
+
+function startInProcessWorkers() {
   const {
     startFourBasedSocketManager,
   } = require('./services/fourBasedSocket');
@@ -196,11 +245,25 @@ app.listen(PORT, () => {
     resumeRunningJobs: resumeFourBasedFanScrapeJobs,
   } = require('./services/fourbasedFanScrapeRunner');
   void resumeFourBasedFanScrapeJobs();
-  startContentScheduleRunner();
-  const { startFanChatArchiveWorker } = require('./services/fanChatArchive');
-  startFanChatArchiveWorker();
-  const {
-    startMaloumCommentGuard,
-  } = require('./services/maloumCommentGuard');
-  startMaloumCommentGuard();
-});
+}
+
+if (processRole() === 'worker') {
+  startMovableWorkers();
+  setInterval(() => {}, 60_000);
+} else {
+  app.listen(PORT, () => {
+    console.log(`DomX API running on http://localhost:${PORT}`);
+    if (processRole() !== 'api') startMaloumTokenRefreshScheduler();
+    startInProcessWorkers();
+    if (processRole() !== 'api') {
+      startContentScheduleRunner();
+      const { startFanChatArchiveWorker } = require('./services/fanChatArchive');
+      startFanChatArchiveWorker();
+      const {
+        startMaloumCommentGuard,
+      } = require('./services/maloumCommentGuard');
+      startMaloumCommentGuard();
+      startOpsRetention();
+    }
+  });
+}
