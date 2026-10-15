@@ -2,6 +2,7 @@ const pool = require('../db/pool');
 const maloumClient = require('./maloumClient');
 const { keywordMatches } = require('./contentModeration');
 const { loadMaloumCreator } = require('./platformCreatorSession');
+const { startHeartbeat, noteTickFailure } = require('./opsEvents');
 
 const GUARD_TERMS = ['AI', 'KI', 'A.I.', 'K.I.'];
 const INTERVAL_MS = 60 * 60 * 1000;
@@ -346,6 +347,7 @@ async function tick() {
       }
     }
   } catch (err) {
+    noteTickFailure('maloumCommentGuard', err);
     console.error('[maloumCommentGuard] tick failed:', err);
   } finally {
     ticking = false;
@@ -354,6 +356,7 @@ async function tick() {
 
 function startMaloumCommentGuard() {
   if (schedulerTimer) return;
+  startHeartbeat('maloumCommentGuard');
   const run = () => {
     void tick();
   };

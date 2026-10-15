@@ -12,6 +12,7 @@ const { getUserIdsWithCreatorAccess } = require('./creatorAccess');
 const { saveCreatorAvatarFromBuffer } = require('./creatorAvatar');
 const { dataPath } = require('./dataDir');
 const { downloadVaultObjectToFile } = require('./b2Storage');
+const { startHeartbeat, noteTickFailure } = require('./opsEvents');
 
 const DATA_DIR = dataPath('telegram');
 const FAN_AVATARS_DIR = dataPath('telegram-fans');
@@ -21,6 +22,7 @@ const LOGIN_TIMEOUT_MS = 90_000;
 const VAULT_ALBUM_MAX = 10;
 const FAN_AVATAR_PREFETCH_CONCURRENCY = 3;
 const MEDIA_DOWNLOAD_CONCURRENCY = 3;
+const FANOUT_CONCURRENCY = 3;
 
 /** @type {Map<string, Promise<string | null>>} */
 const fanAvatarInFlight = new Map();
@@ -891,6 +893,27 @@ async function cachePeerAvatar(creatorId, client, peer) {
   return work;
 }
 
+async function mapWithLimit(items, limit, fn) {
+  const queue = [...items];
+  const workerCount = Math.min(Math.max(Number(limit) || 1, 1), queue.length);
+  if (!workerCount) return [];
+  let firstError = null;
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (queue.length) {
+        const item = queue.shift();
+        try {
+          await fn(item);
+        } catch (err) {
+          if (!firstError) firstError = err;
+        }
+      }
+    })
+  );
+  if (firstError) throw firstError;
+  return [];
+}
+
 function scheduleFanAvatarPrefetch(creatorId, client, peers, profiles) {
   const missing = peers.filter((peer) => {
     const url = profiles.get(String(peer.id))?.avatarUrl;
@@ -1552,7 +1575,7 @@ async function collectDialogs(creatorId, limit = 80) {
       user: kind === 'dm' ? serializeUserPreview(peer) : null,
     });
   }
-  await Promise.all(peers.map((peer) => upsertFanProfile(creatorId, peer)));
+  await mapWithLimit(peers, FANOUT_CONCURRENCY, (peer) => upsertFanProfile(creatorId, peer));
   const profiles = await loadProfiles(
     creatorId,
     dialogs.map((d) => d.peerId)
@@ -1631,7 +1654,7 @@ async function listAllDmPeers(creatorId) {
   }
   for (let index = 0; index < peers.length; index += PROFILE_UPSERT_BATCH) {
     const batch = peers.slice(index, index + PROFILE_UPSERT_BATCH);
-    await Promise.all(batch.map((peer) => upsertFanProfile(creatorId, peer)));
+    await mapWithLimit(batch, FANOUT_CONCURRENCY, (peer) => upsertFanProfile(creatorId, peer));
   }
   return peers.map((peer) => ({
     peerId: String(peer.id),
@@ -1876,7 +1899,7 @@ async function listChatMembers(creatorId, peerId) {
   if (!Number.isFinite(memberCount) || memberCount <= 0) {
     memberCount = members.length;
   }
-  await Promise.all(users.map((user) => upsertFanProfile(creatorId, user)));
+  await mapWithLimit(users, FANOUT_CONCURRENCY, (user) => upsertFanProfile(creatorId, user));
   const profiles = await loadProfiles(
     creatorId,
     members.map((m) => m.telegramUserId)
@@ -1913,17 +1936,15 @@ async function attachSenderAvatars(creatorId, client, messages) {
     users = [];
   }
   const userList = Array.isArray(users) ? users : users ? [users] : [];
-  await Promise.all(
-    userList.map(async (user) => {
-      if (!user) return;
-      try {
-        await upsertFanProfile(creatorId, user);
-        await cachePeerAvatar(creatorId, client, user);
-      } catch {
-        // best-effort
-      }
-    })
-  );
+  await mapWithLimit(userList, FANOUT_CONCURRENCY, async (user) => {
+    if (!user) return;
+    try {
+      await upsertFanProfile(creatorId, user);
+      await cachePeerAvatar(creatorId, client, user);
+    } catch {
+      // best-effort
+    }
+  });
   const senderProfiles = await loadProfiles(creatorId, senderIds);
   return messages.map((msg) => {
     if (msg.isOutgoing || !msg.senderId) return msg;
@@ -2632,15 +2653,21 @@ async function unreadCount(creatorId, { hideService = false } = {}) {
   return { messages, notifications: 0 };
 }
 
+let telegramManagerStarted = false;
+
 async function startTelegramManager() {
+  if (telegramManagerStarted) return;
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.mkdirSync(FAN_AVATARS_DIR, { recursive: true });
   try {
     getApiCreds();
   } catch (err) {
+    noteTickFailure('telegramManager', err);
     console.warn('[telegram]', err.message);
     return;
   }
+  telegramManagerStarted = true;
+  startHeartbeat('telegramManager');
   const result = await pool.query(
     `SELECT id, platform, "encryptedSession", "connectionStatus"
      FROM creators
@@ -3312,6 +3339,7 @@ async function sendGif(creatorId, peerId, { fileId, queryId, resultId, replyToMe
 }
 
 module.exports = {
+  mapWithLimit,
   TelegramWorkerError,
   describeError,
   startPhoneLogin,

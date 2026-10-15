@@ -9,6 +9,7 @@ const {
 } = require('./maloumAuthTokens');
 const { emitToUsers } = require('./userEventBus');
 const { getUserIdsWithCreatorAccess } = require('./creatorAccess');
+const { startHeartbeat, noteTickFailure } = require('./opsEvents');
 
 const REFRESH_INTERVAL_MS = 60_000;
 const REFRESH_AHEAD_MS = 5 * 60_000;
@@ -254,10 +255,12 @@ function startMaloumTokenRefreshScheduler() {
 
   const tick = () => {
     void refreshDueCreators().catch((error) => {
+      noteTickFailure('maloumTokenRefresh', error);
       console.error('Maloum token refresh scheduler tick failed:', error);
     });
   };
 
+  startHeartbeat('maloumTokenRefresh');
   tick();
   schedulerTimer = setInterval(tick, REFRESH_INTERVAL_MS);
   if (typeof schedulerTimer.unref === 'function') {

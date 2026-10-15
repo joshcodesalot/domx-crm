@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  Activity,
   BarChart2,
   Bell,
   CalendarDays,
@@ -49,6 +50,7 @@ export type SidebarPage =
   | 'crmActivity'
   | 'chatArchive'
   | 'loginActivity'
+  | 'ops'
   | 'chatter'
   | 'creators'
   | 'staff'
@@ -653,6 +655,15 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
             label="Login Activity"
             icon={<LogIn className="w-5 h-5" />}
             onClick={() => go('/dashboard/login-activity')}
+          />
+        )}
+        {isManager && (
+          <NavItem
+            active={activePage === 'ops'}
+            title="Ops"
+            label="Ops"
+            icon={<Activity className="w-5 h-5" />}
+            onClick={() => go('/dashboard/ops')}
           />
         )}
         {isManager && (

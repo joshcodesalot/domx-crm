@@ -2,6 +2,7 @@ const { randomUUID } = require('crypto');
 const pool = require('../db/pool');
 const { decryptJson, decryptSecret } = require('./crypto');
 const fourBasedClient = require('./fourBasedClient');
+const { startHeartbeat, noteTickFailure } = require('./opsEvents');
 
 const COMMENT_DELAY_MS = 1200;
 const FAN_COOLDOWN_MIN_MS = 45_000;
@@ -1066,6 +1067,7 @@ async function stopJob(motherCreatorId) {
 }
 
 async function resumeRunningJobs() {
+  startHeartbeat('fourbasedFanScrape');
   try {
     const result = await pool.query(
       `SELECT "motherCreatorId"
@@ -1083,6 +1085,7 @@ async function resumeRunningJobs() {
       });
     }
   } catch (err) {
+    noteTickFailure('fourbasedFanScrape', err);
     console.error('[4based-fan-scrape] resumeRunningJobs failed', err);
   }
 }

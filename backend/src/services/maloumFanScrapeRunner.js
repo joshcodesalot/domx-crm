@@ -3,6 +3,7 @@ const pool = require('../db/pool');
 const { decryptJson, decryptSecret } = require('./crypto');
 const { decryptAccessToken } = require('./maloumAuthTokens');
 const maloumClient = require('./maloumClient');
+const { startHeartbeat, noteTickFailure } = require('./opsEvents');
 
 const COMMENT_DELAY_MS = 1200;
 const STEP_DELAY_MS = 350;
@@ -1545,6 +1546,7 @@ async function stopJob(motherCreatorId) {
 }
 
 async function resumeRunningJobs() {
+  startHeartbeat('maloumFanScrape');
   try {
     const result = await pool.query(
       `SELECT "motherCreatorId"
@@ -1562,6 +1564,7 @@ async function resumeRunningJobs() {
       });
     }
   } catch (err) {
+    noteTickFailure('maloumFanScrape', err);
     console.error('[fan-scrape] resumeRunningJobs failed', err);
   }
 }

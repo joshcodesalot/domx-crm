@@ -1,4 +1,5 @@
 const pool = require('../db/pool');
+const { startHeartbeat, noteTickFailure } = require('./opsEvents');
 
 const PLATFORMS = new Set(['maloum', '4based', 'telegram', 'fansly']);
 const GERMAN_PLATFORMS = new Set(['maloum', '4based', 'telegram']);
@@ -732,6 +733,7 @@ async function drainPendingTranslations() {
       }
     }
   } catch (err) {
+    noteTickFailure('fanChatArchive', err);
     console.warn('[fanChatArchive] translate batch:', err.message);
   } finally {
     draining = false;
@@ -740,6 +742,7 @@ async function drainPendingTranslations() {
 
 function startFanChatArchiveWorker() {
   if (translateTimer) return;
+  startHeartbeat('fanChatArchive');
   translateTimer = setInterval(() => {
     void drainPendingTranslations();
   }, TRANSLATE_INTERVAL_MS);

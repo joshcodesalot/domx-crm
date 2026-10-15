@@ -50,6 +50,7 @@ const SalesLogs = lazy(() => import('@/pages/SalesLogs'));
 const CrmActivity = lazy(() => import('@/pages/CrmActivity'));
 const ChatArchive = lazy(() => import('@/pages/ChatArchive'));
 const LoginActivity = lazy(() => import('@/pages/LoginActivity'));
+const Ops = lazy(() => import('@/pages/Ops'));
 const FalseSalesReview = lazy(() => import('@/pages/FalseSalesReview'));
 const AnalyticsCharts = lazy(() => import('@/pages/AnalyticsCharts'));
 const CreatorAnalytics = lazy(() => import('@/pages/CreatorAnalytics'));
@@ -332,6 +333,7 @@ function AppRoutes() {
                     <Route path="/dashboard/crm-activity" element={<CrmActivity />} />
                     <Route path="/dashboard/chat-archive" element={<ChatArchive />} />
                     <Route path="/dashboard/login-activity" element={<LoginActivity />} />
+                    <Route path="/dashboard/ops" element={<Ops />} />
                   </Route>
                   <Route element={<PermissionRoute permission="staff.view" />}>
                     <Route path="/staff/manage" element={<ManageStaff />} />

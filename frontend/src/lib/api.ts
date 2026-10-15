@@ -1798,6 +1798,34 @@ export interface LoginActivityResponse {
   lastUpdated: string;
 }
 
+export interface OpsHeartbeat {
+  source: string;
+  time: string;
+}
+
+export interface OpsSummary {
+  errorsLastHour: number;
+  slowRequestsLastHour: number;
+  heartbeats: OpsHeartbeat[];
+}
+
+export interface OpsEvent {
+  time: string;
+  kind: 'error' | 'slow_request' | 'heartbeat';
+  message: string | null;
+  path: string | null;
+  status: number | null;
+  durationMs: number | null;
+}
+
+export async function getOpsSummary(): Promise<OpsSummary> {
+  return request<OpsSummary>('/api/ops/summary');
+}
+
+export async function getOpsEvents(): Promise<{ events: OpsEvent[] }> {
+  return request<{ events: OpsEvent[] }>('/api/ops/events?limit=100');
+}
+
 export async function getLoginActivity(filters: {
   startDate?: string;
   endDate?: string;

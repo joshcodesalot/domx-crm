@@ -1,5 +1,6 @@
 const fsp = require('fs/promises');
 const pool = require('../db/pool');
+const { startHeartbeat, noteTickFailure } = require('./opsEvents');
 const { translateToGermanFemdom } = require('./germanTranslator');
 const { skipsGermanTranslation } = require('./germanTranslationPolicy');
 const { prepareFeedPhoto } = require('./imageOrient');
@@ -688,6 +689,7 @@ async function tick() {
   try {
     await recoverStaleRunning();
   } catch (err) {
+    noteTickFailure('contentScheduleRunner', err);
     console.error('Content schedule recovery failed:', err);
   }
   if (claiming) return;
@@ -700,6 +702,7 @@ async function tick() {
       void runClaimedJob(job);
     }
   } catch (err) {
+    noteTickFailure('contentScheduleRunner', err);
     console.error('Content schedule tick failed:', err);
   } finally {
     claiming = false;
@@ -708,6 +711,7 @@ async function tick() {
 
 function startContentScheduleRunner() {
   if (schedulerTimer) return;
+  startHeartbeat('contentScheduleRunner');
   const run = () => {
     void tick();
   };

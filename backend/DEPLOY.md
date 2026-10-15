@@ -74,6 +74,8 @@ screen -S domx-api -dm bash -c 'node src/index.js'
 curl http://127.0.0.1:4001/api/health
 ```
 
+The command above is the single process. A second screen for the schedulers is in section 7.
+
 After nginx and TLS are set up (sections 8–9), verify:
 
 ```bash
@@ -249,6 +251,21 @@ Verify it is running:
 curl http://127.0.0.1:4001/api/health
 # {"status":"ok","database":"connected"}
 ```
+
+To run the four schedulers in a second screen, leave the `domx-api` session above running and start the worker beside it. Those schedulers overlap until the original screen is replaced with `PROCESS_ROLE=api`.
+
+```bash
+cd /home/debian/domx_backend
+screen -S domx-worker -dm bash -c 'PROCESS_ROLE=worker node src/index.js'
+curl http://127.0.0.1:4001/api/health
+# Still the original process. {"status":"ok","database":"connected"}
+screen -S domx-api -X quit
+screen -S domx-api -dm bash -c 'PROCESS_ROLE=api node src/index.js'
+curl http://127.0.0.1:4001/api/health
+# {"status":"ok","database":"connected"}
+```
+
+The API role needs the port, so it starts in that last step. `npm start` without `PROCESS_ROLE` stays the single process.
 
 
 

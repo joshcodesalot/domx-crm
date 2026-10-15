@@ -5,11 +5,13 @@ const { decryptJson, decryptSecret } = require('./crypto');
 const { emitToUsers } = require('./userEventBus');
 const { resolveFourBasedProxyUrl } = require('./fourBasedClient');
 const { getUserIdsWithCreatorAccess } = require('./creatorAccess');
+const { startHeartbeat, noteTickFailure } = require('./opsEvents');
 
 const SOCKET_URL = 'https://socket.4based.com';
 const connections = new Map();
 const IDLE_MS = 30 * 60 * 1000;
 const CHAT_EVENT_RE = /message|chat|conversation|inbox|unread|tip|sale|ppv|purchase/i;
+let socketManagerTimer = null;
 
 function loadCreatorAuth(row) {
   let session = {};
@@ -168,14 +170,22 @@ async function ensureCreatorSocket(creatorId) {
 }
 
 async function startFourBasedSocketManager() {
-  setInterval(() => {
-    const now = Date.now();
-    for (const [creatorId, conn] of connections) {
-      if (now - (conn.lastUsed || 0) > IDLE_MS) {
-        disconnectCreator(creatorId);
+  if (socketManagerTimer) return;
+  socketManagerTimer = setInterval(() => {
+    try {
+      const now = Date.now();
+      for (const [creatorId, conn] of connections) {
+        if (now - (conn.lastUsed || 0) > IDLE_MS) {
+          disconnectCreator(creatorId);
+        }
       }
+    } catch (err) {
+      noteTickFailure('fourBasedSocket', err);
+      throw err;
     }
-  }, 60_000).unref?.();
+  }, 60_000);
+  if (typeof socketManagerTimer.unref === 'function') socketManagerTimer.unref();
+  startHeartbeat('fourBasedSocket');
   console.log('[4based-socket] Started in lazy-connect mode');
 }
 

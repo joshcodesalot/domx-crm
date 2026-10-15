@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
+    "start:api": "node src/run-role.js api",
+    "start:worker": "node src/run-role.js worker",
     "migrate": "node src/db/migrate.js",
     "seed": "node src/db/seed.js",
     "test": "node --test",
