@@ -191,6 +191,7 @@ CORS_ORIGIN=https://domx.low7labs.cloud
 ENCRYPTION_KEY=base64-encoded-32-byte-key
 XAI_API_KEY=your-xai-api-key
 XAI_MODEL=grok-4.20-non-reasoning
+GOOGLE_TRANSLATE_API_KEY=your-cloud-translation-api-key
 DOMX_ELECTRON_SERVICE_KEY=generate-a-long-random-string
 ```
 

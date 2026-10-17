@@ -53,6 +53,7 @@ import TelegramAudioPlayer, {
 } from '@/components/telegram/TelegramAudioPlayer';
 import {
   createHistoryTranslateQueue,
+  selectAutoHistoryTranslations,
   type HistoryTranslateQueue,
 } from '@/lib/historyTranslateQueue';
 import { stripModelTokens } from '@/lib/stripModelTokens';
@@ -1431,15 +1432,16 @@ export function TelegramChatThread({
 
   useEffect(() => {
     if (!autoTranslateHistory || !pollEnabled) return;
-    const pending: Array<{ key: string; text: string }> = [];
+    const eligible: Array<{ key: string; text: string }> = [];
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const msg = messages[i];
       const text = stripModelTokens(typeof msg.text === 'string' ? msg.text : '');
       if (!text || msg.placeholder || msg.deleted) continue;
-      const cacheKey = `${msg.id}::${text}`;
-      if (historyTranslationsRef.current[cacheKey]) continue;
-      pending.push({ key: cacheKey, text });
+      eligible.push({ key: `${msg.id}::${text}`, text });
     }
+    const pending = selectAutoHistoryTranslations(eligible, (key) =>
+      Boolean(historyTranslationsRef.current[key])
+    );
     if (pending.length) {
       historyTranslateQueueRef.current?.enqueue(pending);
     }

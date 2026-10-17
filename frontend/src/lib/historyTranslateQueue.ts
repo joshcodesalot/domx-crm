@@ -1,6 +1,11 @@
+import { translateToEnglish } from '@/lib/api';
 import { stripModelTokens } from '@/lib/stripModelTokens';
 
-const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
+export {
+  HISTORY_AUTO_TRANSLATE_LIMIT,
+  selectAutoHistoryTranslations,
+} from '@/lib/historyTranslateWindow.mjs';
+
 const DEFAULT_CONCURRENCY = 4;
 
 export type HistoryTranslateItem = {
@@ -19,21 +24,7 @@ export async function translateTextToEnglish(
   if (isFanslyPlatform(platform)) return null;
   const source = stripModelTokens(text);
   if (!source) return null;
-  const response = await fetch(HISTORY_TRANSLATE_API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      q: source,
-      source: 'de',
-      target: 'en',
-      format: 'text',
-    }),
-  });
-  if (!response.ok) {
-    throw new Error('Translation API failed with status ' + response.status);
-  }
-  const data = (await response.json()) as { translatedText?: string };
-  const translated = stripModelTokens(data?.translatedText || '');
+  const translated = stripModelTokens(await translateToEnglish(source, platform));
   return translated || null;
 }
 

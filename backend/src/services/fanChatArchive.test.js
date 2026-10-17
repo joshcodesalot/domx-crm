@@ -3,8 +3,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const {
+  ARCHIVE_TRANSLATE_WINDOW,
   applyLanguageFields,
   applyInboundTranslation,
+  splitPendingByWindow,
   buildSearchText,
   mergeArchiveMessage,
   mapMaloumMessage,
@@ -253,6 +255,51 @@ describe('fan chat archive mappers', () => {
     assert.equal(row.textSent, 'Photo');
     assert.equal(row.skipTranslation, true);
     assert.equal(row.direction, 'inbound');
+  });
+});
+
+describe('archive translate window', () => {
+  it('translates only the newest 20 text messages in a thread', () => {
+    assert.equal(ARCHIVE_TRANSLATE_WINDOW, 20);
+    const rows = [];
+    for (let rank = 1; rank <= 25; rank += 1) {
+      rows.push({
+        id: `m-${rank}`,
+        textSent: `nachricht ${rank}`,
+        translationStatus: 'pending',
+        rn: rank,
+      });
+    }
+    rows.push({
+      id: 'empty',
+      textSent: '   ',
+      translationStatus: 'pending',
+      rn: 1,
+    });
+    rows.push({
+      id: 'done',
+      textSent: 'schon fertig',
+      translationStatus: 'done',
+      rn: 1,
+    });
+    const { translate, skip } = splitPendingByWindow(rows);
+    assert.deepEqual(
+      translate.map((row) => row.id),
+      Array.from({ length: 20 }, (_, index) => `m-${index + 1}`)
+    );
+    assert.deepEqual(
+      skip.map((row) => row.id),
+      ['m-21', 'm-22', 'm-23', 'm-24', 'm-25']
+    );
+  });
+
+  it('skips a pending row whose rank is outside the window', () => {
+    const { translate, skip } = splitPendingByWindow([
+      { id: 'new', textSent: 'hallo', translationStatus: 'pending', rn: 1 },
+      { id: 'old', textSent: 'früher', translationStatus: 'pending', rn: 21 },
+    ]);
+    assert.deepEqual(translate.map((row) => row.id), ['new']);
+    assert.deepEqual(skip.map((row) => row.id), ['old']);
   });
 });
 

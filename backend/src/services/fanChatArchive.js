@@ -1,11 +1,12 @@
 const pool = require('../db/pool');
 const { startHeartbeat, noteTickFailure } = require('./opsEvents');
+const { translateDeToEn: translateDeToEnGoogle } = require('./googleTranslate');
 
 const PLATFORMS = new Set(['maloum', '4based', 'telegram', 'fansly']);
 const GERMAN_PLATFORMS = new Set(['maloum', '4based', 'telegram']);
-const TRANSLATE_URL = 'https://translate.low7labs.cloud/translate';
 const TRANSLATE_BATCH = 8;
 const TRANSLATE_INTERVAL_MS = 4000;
+const ARCHIVE_TRANSLATE_WINDOW = 20;
 const COINS_PER_DOLLAR = 121;
 const TELEGRAM_PLACEHOLDERS = new Set([
   'Photo',
@@ -684,37 +685,80 @@ function markArchivedMessageDeletedInBackground(input) {
   });
 }
 
-async function translateDeToEn(text) {
-  const response = await fetch(TRANSLATE_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      q: text,
-      source: 'de',
-      target: 'en',
-      format: 'text',
-    }),
-  });
-  if (!response.ok) {
-    throw new Error(`Translation API failed with status ${response.status}`);
+function splitPendingByWindow(rows, limit = ARCHIVE_TRANSLATE_WINDOW) {
+  const cap = Number(limit);
+  const translate = [];
+  const skip = [];
+  const list = Array.isArray(rows) ? rows : [];
+  for (const row of list) {
+    if (!row || row.translationStatus !== 'pending') continue;
+    if (!textValue(row.textSent)) continue;
+    const rank = Number(row.rn);
+    if (Number.isFinite(cap) && cap > 0 && Number.isFinite(rank) && rank >= 1 && rank <= cap) {
+      translate.push(row);
+    } else {
+      skip.push(row);
+    }
   }
-  const data = await response.json();
-  return textValue(data?.translatedText);
+  return { translate, skip };
+}
+
+async function translateDeToEn(text) {
+  return textValue(await translateDeToEnGoogle(text));
+}
+
+async function loadPendingArchiveRanks() {
+  const pending = await pool.query(
+    `SELECT m.id,
+            m."textSent",
+            m."capturedAt",
+            m."translationStatus",
+            ranked.rn
+     FROM fan_messages m
+     JOIN (
+       SELECT id,
+              row_number() OVER (
+                PARTITION BY "conversationId"
+                ORDER BY "sentAt" DESC NULLS LAST, id DESC
+              ) AS rn
+       FROM fan_messages
+       WHERE btrim("textSent") <> ''
+         AND "conversationId" IN (
+           SELECT DISTINCT "conversationId"
+           FROM fan_messages
+           WHERE "translationStatus" = 'pending' AND btrim("textSent") <> ''
+         )
+     ) ranked ON ranked.id = m.id
+     WHERE m."translationStatus" = 'pending' AND btrim(m."textSent") <> ''`
+  );
+  return pending.rows;
 }
 
 async function drainPendingTranslations() {
   if (draining) return;
   draining = true;
   try {
-    const pending = await pool.query(
-      `SELECT id, "textSent"
-       FROM fan_messages
-       WHERE "translationStatus" = 'pending' AND btrim("textSent") <> ''
-       ORDER BY "capturedAt" ASC
-       LIMIT $1`,
-      [TRANSLATE_BATCH]
-    );
-    for (const row of pending.rows) {
+    const ranked = await loadPendingArchiveRanks();
+    const { translate, skip } = splitPendingByWindow(ranked);
+    if (skip.length > 0) {
+      await pool.query(
+        `UPDATE fan_messages
+         SET "translationStatus" = 'skipped',
+             "textEn" = "textSent",
+             "searchText" = fan_archive_search_text("textSent", NULL, "textSent")
+         WHERE id = ANY($1::uuid[]) AND "translationStatus" = 'pending'`,
+        [skip.map((row) => row.id)]
+      );
+    }
+    const batch = translate
+      .slice()
+      .sort((left, right) => {
+        const leftAt = new Date(left.capturedAt).getTime() || 0;
+        const rightAt = new Date(right.capturedAt).getTime() || 0;
+        return leftAt - rightAt;
+      })
+      .slice(0, TRANSLATE_BATCH);
+    for (const row of batch) {
       try {
         const translated = await translateDeToEn(row.textSent);
         if (!translated) continue;
@@ -750,8 +794,10 @@ function startFanChatArchiveWorker() {
 }
 
 module.exports = {
+  ARCHIVE_TRANSLATE_WINDOW,
   applyLanguageFields,
   applyInboundTranslation,
+  splitPendingByWindow,
   buildSearchText,
   mergeArchiveMessage,
   mapMaloumMessage,

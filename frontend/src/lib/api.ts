@@ -6125,6 +6125,22 @@ export async function translateToGerman(
   return translated;
 }
 
+export async function translateToEnglish(text: string, platform?: string): Promise<string> {
+  const original = text.trim();
+  if (String(platform || '').trim().toLowerCase() === 'fansly') {
+    return original;
+  }
+  const result = await request<{ translatedText: string }>('/api/translate-to-english', {
+    method: 'POST',
+    body: JSON.stringify({ text: original, ...(platform ? { platform } : {}) }),
+  });
+  const translated = result.translatedText?.trim();
+  if (!translated) {
+    throw new Error('Translation returned empty text');
+  }
+  return translated;
+}
+
 // â”€â”€ Content moderation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type ModerationAction =

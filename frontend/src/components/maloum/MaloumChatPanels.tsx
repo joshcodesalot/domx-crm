@@ -80,6 +80,7 @@ import {
 import { chatCopyIsLocked } from '@/lib/massMessageLock';
 import {
   createHistoryTranslateQueue,
+  selectAutoHistoryTranslations,
   type HistoryTranslateQueue,
 } from '@/lib/historyTranslateQueue';
 import { stripModelTokens } from '@/lib/stripModelTokens';
@@ -1645,7 +1646,7 @@ export function MaloumChatThread({
 
   useEffect(() => {
     if (!autoTranslateHistory || !pollEnabled) return;
-    const pending: Array<{ key: string; text: string }> = [];
+    const eligible: Array<{ key: string; text: string }> = [];
     // Newest first so the bottom of the thread fills in first.
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const msg = messages[i];
@@ -1654,11 +1655,13 @@ export function MaloumChatThread({
       const msgKey = maloumMessageId(msg);
       if (!msgKey) continue;
       if (manualTranslateOnlyIdsRef.current.has(msgKey)) continue;
-      const cacheKey = `${msgKey}::${text}`;
-      if (scannedTranslateKeysRef.current.has(cacheKey)) continue;
-      scannedTranslateKeysRef.current.add(cacheKey);
-      if (historyTranslationsRef.current[cacheKey]) continue;
-      pending.push({ key: cacheKey, text });
+      eligible.push({ key: `${msgKey}::${text}`, text });
+    }
+    const pending = selectAutoHistoryTranslations(eligible, (key) =>
+      scannedTranslateKeysRef.current.has(key) || Boolean(historyTranslationsRef.current[key])
+    );
+    for (const item of selectAutoHistoryTranslations(eligible)) {
+      scannedTranslateKeysRef.current.add(item.key);
     }
     if (pending.length === 0) return;
     historyTranslateQueueRef.current?.enqueue(pending);
