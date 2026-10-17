@@ -8,6 +8,8 @@ import {
   type UIEvent,
 } from 'react';
 import {
+  Check,
+  CheckCheck,
   Image as ImageIcon,
   Languages,
   Loader2,
@@ -53,6 +55,7 @@ import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
 } from '@/lib/historyTranslateQueue';
+import { stripModelTokens } from '@/lib/stripModelTokens';
 import {
   addVaultSentIds,
   vaultCacheKey,
@@ -202,8 +205,18 @@ function messageHasGif(msg: TelegramMessage): boolean {
   return msg.kind === 'gif';
 }
 
+function outgoingReadMark(
+  messageId: string,
+  readOutboxMaxId: number | null
+): 'sent' | 'read' | null {
+  if (readOutboxMaxId == null || !Number.isFinite(readOutboxMaxId)) return null;
+  const id = Number(messageId);
+  if (!Number.isFinite(id) || id <= 0) return null;
+  return id <= readOutboxMaxId ? 'read' : 'sent';
+}
+
 function searchResultPreview(msg: TelegramMessage): string {
-  const text = String(msg.text || '').trim();
+  const text = stripModelTokens(msg.text || '');
   if (text) return text;
   return msg.placeholder || 'Message';
 }
@@ -222,7 +235,7 @@ function kindPlaceholder(kind?: string | null): string | null {
 }
 
 function messageSnippet(msg: TelegramMessage): string {
-  const text = String(msg.text || '').trim();
+  const text = stripModelTokens(msg.text || '');
   if (text) return text;
   return msg.placeholder || kindPlaceholder(msg.kind) || 'Message';
 }
@@ -804,7 +817,10 @@ export function TelegramChatList({
         )}
         {filtered.map((dialog) => {
           const active = selectedPeerId === dialog.peerId;
-          const preview = dialog.lastMessage?.text || dialog.lastMessage?.placeholder || '';
+          const preview =
+            stripModelTokens(dialog.lastMessage?.text || '') ||
+            dialog.lastMessage?.placeholder ||
+            '';
           const isGroup = (dialog.kind || dialog.fan?.kind) === 'group';
           const ago = formatRelativeAgo(dialog.lastMessage?.date);
           return (
@@ -887,6 +903,7 @@ export function TelegramChatThread({
   const canManageScripts = hasPermission('scripts.manage');
   const [fan, setFan] = useState<TelegramFan | null>(initialFan || null);
   const [messages, setMessages] = useState<TelegramMessage[]>([]);
+  const [readOutboxMaxId, setReadOutboxMaxId] = useState<number | null>(null);
   const [massLocks, setMassLocks] = useState<MassMessageLock[]>([]);
 
   useEffect(() => {
@@ -1029,6 +1046,7 @@ export function TelegramChatThread({
     setMessageSenders({});
     setMessageUnsends({});
     setMessages([]);
+    setReadOutboxMaxId(null);
     setMessagesNext(null);
     messagesNextRef.current = null;
     loadedOlderRef.current = false;
@@ -1153,6 +1171,10 @@ export function TelegramChatThread({
           if (!loadedOlderRef.current) {
             messagesNextRef.current = nextCursor;
             setMessagesNext(nextCursor);
+          }
+          const readCursor = result.readOutboxMaxId;
+          if (typeof readCursor === 'number' && Number.isFinite(readCursor)) {
+            setReadOutboxMaxId(readCursor);
           }
           if (!markedReadOnOpenRef.current) {
             markedReadOnOpenRef.current = true;
@@ -1412,7 +1434,7 @@ export function TelegramChatThread({
     const pending: Array<{ key: string; text: string }> = [];
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const msg = messages[i];
-      const text = typeof msg.text === 'string' ? msg.text.trim() : '';
+      const text = stripModelTokens(typeof msg.text === 'string' ? msg.text : '');
       if (!text || msg.placeholder || msg.deleted) continue;
       const cacheKey = `${msg.id}::${text}`;
       if (historyTranslationsRef.current[cacheKey]) continue;
@@ -1424,7 +1446,7 @@ export function TelegramChatThread({
   }, [messages, autoTranslateHistory, pollEnabled]);
 
   const translateMessage = useCallback((msgKey: string, text: string) => {
-    const trimmed = text.trim();
+    const trimmed = stripModelTokens(text);
     if (!msgKey || !trimmed) return;
     const cacheKey = `${msgKey}::${trimmed}`;
     if (historyTranslationsRef.current[cacheKey]) return;
@@ -1974,7 +1996,7 @@ export function TelegramChatThread({
           </div>
         )}
         {messages.map((msg, index) => {
-          const msgText = msg.text || '';
+          const msgText = stripModelTokens(msg.text || '');
           const cacheKey = `${msg.id}::${msgText.trim()}`;
           const historyEn = historyTranslations[cacheKey];
           const translatingThis = Boolean(translatingKeys[cacheKey]);
@@ -1987,6 +2009,10 @@ export function TelegramChatThread({
           const sentBy = msg.isOutgoing
             ? messageSenders[`telegram:${msg.id}`]
             : undefined;
+          const readMark =
+            msg.isOutgoing && !msg.deleted && !isGroup
+              ? outgoingReadMark(msg.id, readOutboxMaxId)
+              : null;
           const unsentBy = messageUnsends[msg.id]?.unsentByUserName;
           const canUnsend =
             msg.isOutgoing && !msg.deleted && !telegramMessageIsLocked(massLocks, msg.id);
@@ -2262,7 +2288,7 @@ export function TelegramChatThread({
                         </p>
                       )}
                       <p
-                        className={`text-[10px] mt-1 ${
+                        className={`text-[10px] mt-1 flex items-center gap-1 ${
                           msg.deleted
                             ? 'text-gray-400'
                             : msg.isOutgoing
@@ -2270,7 +2296,20 @@ export function TelegramChatThread({
                               : 'text-gray-400'
                         }`}
                       >
-                        {formatTime(msg.date, staffTimeZone)}
+                        <span>{formatTime(msg.date, staffTimeZone)}</span>
+                        {readMark === 'read' ? (
+                          <CheckCheck
+                            className="w-3.5 h-3.5 shrink-0"
+                            aria-label="Read"
+                            title="Read"
+                          />
+                        ) : readMark === 'sent' ? (
+                          <Check
+                            className="w-3.5 h-3.5 shrink-0"
+                            aria-label="Sent"
+                            title="Sent"
+                          />
+                        ) : null}
                       </p>
                     </div>
                     {!msg.deleted && (

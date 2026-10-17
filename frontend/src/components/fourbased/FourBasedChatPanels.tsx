@@ -90,6 +90,7 @@ import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
 } from '@/lib/historyTranslateQueue';
+import { stripModelTokens } from '@/lib/stripModelTokens';
 import {
   getVaultListingCache,
   loadVaultListingCache,
@@ -698,7 +699,7 @@ function lastMessagePreview(chat: FourBasedChat): string {
   const last = chat.last_message;
   if (!last) return '—';
   if (isDeletedFourBasedMessage(last)) return 'Message unsent';
-  const text = typeof last.message === 'string' ? last.message.trim() : '';
+  const text = stripModelTokens(typeof last.message === 'string' ? last.message : '');
   return text || '—';
 }
 
@@ -1932,7 +1933,7 @@ export function FourBasedChatThread({
   }, [historyTranslations, autoTranslateHistory, scrollToBottom]);
 
   const translateMessage = useCallback((msgKey: string, text: string) => {
-    const trimmed = text.trim();
+    const trimmed = stripModelTokens(text);
     if (!msgKey || !trimmed) return;
     const cacheKey = `${msgKey}::${trimmed}`;
     if (historyTranslationsRef.current[cacheKey]) return;
@@ -1968,7 +1969,7 @@ export function FourBasedChatThread({
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const msg = messages[i];
       if (isDeletedFourBasedMessage(msg)) continue;
-      const text = typeof msg.message === 'string' ? msg.message.trim() : '';
+      const text = stripModelTokens(typeof msg.message === 'string' ? msg.message : '');
       if (!text) continue;
       const msgKey = fourBasedMessageId(msg);
       if (!msgKey) continue;
@@ -2821,7 +2822,7 @@ export function FourBasedChatThread({
           const localKey = typeof msg.local_id === 'string' ? msg.local_id : '';
           const unsendInfo = msg._id ? messageUnsends[msg._id] : undefined;
           const unsentBy = unsendInfo?.unsentByUserName;
-          const unsentOriginalText = (unsendInfo?.originalText || '').trim();
+          const unsentOriginalText = stripModelTokens(unsendInfo?.originalText || '');
           const sentBy = mine
             ? messageSenders[`4based:${msg._id}`] ||
               (localKey ? messageSenders[localKey] : undefined) ||
@@ -2862,7 +2863,9 @@ export function FourBasedChatThread({
           );
           const duration = msg.file_stack?.duration;
           const msgText =
-            deleted || typeof msg.message !== 'string' ? '' : msg.message.trim();
+            deleted || typeof msg.message !== 'string'
+              ? ''
+              : stripModelTokens(msg.message);
           const cacheKey =
             msgKey && msgText ? `${msgKey}::${msgText}` : '';
           const historyEn =
@@ -3014,9 +3017,9 @@ export function FourBasedChatThread({
                         )}
                       </div>
                     )}
-                    {msg.message && (
+                    {msgText && (
                       <div className="px-3 pb-2 pt-1 text-sm">
-                        <p className="whitespace-pre-wrap break-words">{msg.message}</p>
+                        <p className="whitespace-pre-wrap break-words">{msgText}</p>
                       </div>
                     )}
                   </div>
@@ -3028,8 +3031,8 @@ export function FourBasedChatThread({
                         : 'bg-gray-100/80 dark:bg-zinc-800/80 border border-gray-200 dark:border-zinc-700/50 text-gray-800 dark:text-zinc-200 chat-bubble-in'
                     }`}
                   >
-                    {msg.message && (
-                      <p className="whitespace-pre-wrap break-words">{msg.message}</p>
+                    {msgText && (
+                      <p className="whitespace-pre-wrap break-words">{msgText}</p>
                     )}
                   </div>
                 )}

@@ -3991,6 +3991,7 @@ export async function getTelegramMessages(
   messages: TelegramMessage[];
   next: { id: string; date: number } | null;
   hasMore?: boolean;
+  readOutboxMaxId?: number;
 }> {
   const params = new URLSearchParams();
   if (options.limit != null) params.set('limit', String(options.limit));

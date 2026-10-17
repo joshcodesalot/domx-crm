@@ -570,6 +570,9 @@ router.get(
         messages: visibleMessages,
         next: result.next || null,
         hasMore: Boolean(result.hasMore),
+        ...(Number.isFinite(result.readOutboxMaxId)
+          ? { readOutboxMaxId: result.readOutboxMaxId }
+          : {}),
       });
     } catch (err) {
       return handleTelegramError(res, err, 'List Telegram messages error:');

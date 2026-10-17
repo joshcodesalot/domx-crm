@@ -82,6 +82,7 @@ import {
   createHistoryTranslateQueue,
   type HistoryTranslateQueue,
 } from '@/lib/historyTranslateQueue';
+import { stripModelTokens } from '@/lib/stripModelTokens';
 import {
   addVaultSentIds,
   getVaultListingCache,
@@ -721,7 +722,7 @@ const MaloumChatRow = memo(function MaloumChatRow({
   const spend = formatSpend(chat.chatPartner?.totalSpendForCreator, 'EUR');
   const relative = formatRelativeTime(chat.lastRelevantMessage?.sentAt);
   const preview =
-    chat.lastRelevantMessage?.text ||
+    stripModelTokens(chat.lastRelevantMessage?.text || '') ||
     (chat.lastRelevantMessage?.type === 'chat_product'
       ? 'PPV'
       : chat.lastRelevantMessage?.type === 'media'
@@ -1616,7 +1617,7 @@ export function MaloumChatThread({
   }, [historyTranslations, autoTranslateHistory, scrollToBottom]);
 
   const translateMessage = useCallback((msgKey: string, text: string) => {
-    const trimmed = text.trim();
+    const trimmed = stripModelTokens(text);
     if (!msgKey || !trimmed) return;
     const cacheKey = `${msgKey}::${trimmed}`;
     if (historyTranslationsRef.current[cacheKey]) return;
@@ -1648,7 +1649,7 @@ export function MaloumChatThread({
     // Newest first so the bottom of the thread fills in first.
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const msg = messages[i];
-      const text = messageText(msg).trim();
+      const text = stripModelTokens(messageText(msg));
       if (!text) continue;
       const msgKey = maloumMessageId(msg);
       if (!msgKey) continue;
@@ -2351,22 +2352,21 @@ export function MaloumChatThread({
             Boolean(msgKey && messageUnsends[msgKey]);
           const unsendInfo = msgKey ? messageUnsends[msgKey] : undefined;
           const unsentBy = unsendInfo?.unsentByUserName;
-          const unsentOriginalText = (
-            unsendInfo?.originalText ||
-            messageText(msg) ||
-            ''
-          ).trim();
+          const unsentOriginalText = stripModelTokens(
+            unsendInfo?.originalText || messageText(msg) || ''
+          );
           const assets = unsent ? [] : messageMediaAssets(msg);
-          const text = unsent ? '' : messageText(msg);
+          const rawText = unsent ? '' : messageText(msg);
           const lockMediaIds = messageMediaAssets(msg)
             .map((asset) => asset.uploadId)
             .filter((id): id is string => Boolean(id));
           const lockedCopy =
             !unsent &&
             chatCopyIsLocked(massLocks, {
-              text,
+              text: rawText,
               mediaIds: lockMediaIds,
             });
+          const text = stripModelTokens(rawText);
           const canDelete =
             mine && !unsent && isPersistedMaloumMessageId(msgKey) && !lockedCopy;
           const deleting = deletingMessageId === msgKey;

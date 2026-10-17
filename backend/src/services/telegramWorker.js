@@ -1662,6 +1662,19 @@ async function listAllDmPeers(creatorId) {
   }));
 }
 
+async function outgoingReadCursor(client, numericId) {
+  try {
+    const dialogs = await client.getPeerDialogs(numericId);
+    const dialog = Array.isArray(dialogs) ? dialogs[0] : null;
+    const value = Number(dialog && dialog.lastReadOutgoing);
+    if (!Number.isFinite(value) || value < 0) return null;
+    return value;
+  } catch (err) {
+    console.warn('[telegram] getPeerDialogs failed:', err.message || err);
+    return null;
+  }
+}
+
 async function markPeerRead(client, peerId, { creatorId, force = false } = {}) {
   const key = `${creatorId || ''}:${peerId}`;
   if (!force) {
@@ -1691,6 +1704,9 @@ async function listMessages(
   const numericOffsetId = Number(offsetId);
   const hasOffset = Number.isFinite(numericOffsetId) && numericOffsetId > 0;
   const numericOffsetDate = Number(offsetDate);
+  const readCursorPromise = hasOffset
+    ? Promise.resolve(null)
+    : outgoingReadCursor(client, numericId);
   const history = await client.getHistory(numericId, {
     limit: clamped,
     ...(hasOffset
@@ -1743,9 +1759,11 @@ async function listMessages(
       ? await attachSenderAvatars(creatorId, client, messages)
       : messages;
   scheduleChatThumbPrewarm(creatorId, String(numericId), withSenders);
+  const readOutboxMaxId = await readCursorPromise;
   return {
     peerId: String(numericId),
     kind,
+    ...(readOutboxMaxId != null ? { readOutboxMaxId } : {}),
     fan: {
       telegramUserId: String(numericId),
       kind,

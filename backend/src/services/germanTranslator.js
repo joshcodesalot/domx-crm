@@ -40,6 +40,10 @@ const VALID_HISTORY_ROLES = new Set(['user', 'assistant']);
 const ARROW = /(?:→|->|=>)/;
 const ARROW_ONLY_LINE = /\n\s*(?:→|->|=>)\s*\n/;
 
+function stripModelTokens(value) {
+  return String(value || '').replace(/<\|[^|>]*\|>/g, '').trim();
+}
+
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -160,9 +164,10 @@ async function translateToGermanFemdom(text, history) {
 
   const raw = response.outputText?.trim() || '';
   if (!raw) return '';
-  return stripBilingualWrapper(raw, original);
+  return stripModelTokens(stripBilingualWrapper(raw, original));
 }
 
 module.exports = {
+  stripModelTokens,
   translateToGermanFemdom,
 };

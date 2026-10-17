@@ -1,3 +1,5 @@
+import { stripModelTokens } from '@/lib/stripModelTokens';
+
 const HISTORY_TRANSLATE_API_URL = 'https://translate.low7labs.cloud/translate';
 const DEFAULT_CONCURRENCY = 4;
 
@@ -15,12 +17,13 @@ export async function translateTextToEnglish(
   platform?: string
 ): Promise<string | null> {
   if (isFanslyPlatform(platform)) return null;
-  if (!text.trim()) return null;
+  const source = stripModelTokens(text);
+  if (!source) return null;
   const response = await fetch(HISTORY_TRANSLATE_API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      q: text,
+      q: source,
       source: 'de',
       target: 'en',
       format: 'text',
@@ -30,7 +33,8 @@ export async function translateTextToEnglish(
     throw new Error('Translation API failed with status ' + response.status);
   }
   const data = (await response.json()) as { translatedText?: string };
-  return data?.translatedText?.trim() || null;
+  const translated = stripModelTokens(data?.translatedText || '');
+  return translated || null;
 }
 
 export type HistoryTranslateQueue = {
@@ -82,9 +86,10 @@ export function createHistoryTranslateQueue(
         try {
           const translated = await translate(item.text);
           if (disposed || gen !== generation) return;
-          if (translated) {
+          const cleaned = stripModelTokens(translated || '');
+          if (cleaned) {
             done.add(item.key);
-            options.onResult(item.key, translated);
+            options.onResult(item.key, cleaned);
           }
         } catch {
           // Best-effort; leave bubble without overlay on failure
@@ -106,7 +111,7 @@ export function createHistoryTranslateQueue(
       if (disposed) return;
       for (const item of items) {
         const key = item.key;
-        const text = typeof item.text === 'string' ? item.text.trim() : '';
+        const text = stripModelTokens(typeof item.text === 'string' ? item.text : '');
         if (!key || !text) continue;
         if (done.has(key) || inFlight.has(key)) continue;
         inFlight.add(key);
