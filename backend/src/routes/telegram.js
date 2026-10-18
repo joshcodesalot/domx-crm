@@ -36,6 +36,7 @@ const {
   searchGifs,
   getCachedGifMedia,
   getCachedMessageMedia,
+  streamChatVideo,
   deleteText,
   resolveUsername,
   unreadCount,
@@ -667,6 +668,16 @@ router.get(
     try {
       const creator = await requireTelegramCreator(req, res);
       if (!creator) return undefined;
+      if (variant === 'full') {
+        const rangeHeader = Array.isArray(req.headers.range)
+          ? req.headers.range[0]
+          : req.headers.range;
+        const streamed = await streamChatVideo(res, id, peerId, messageId, rangeHeader);
+        if (streamed?.streamed) return undefined;
+        if (streamed?.file) {
+          return sendLocalFile(res, streamed.file.filePath, streamed.file.mimeType);
+        }
+      }
       const media = await getCachedMessageMedia(id, peerId, messageId, variant);
       return sendLocalFile(res, media.filePath, media.mimeType);
     } catch (err) {

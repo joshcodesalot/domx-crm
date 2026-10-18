@@ -26,6 +26,12 @@ const {
   mapGroupChats,
   mapListRows,
   sumLeadingUnread,
+  countGroupedUnread,
+  mapThreadGallery,
+  buildDmGroupBody,
+  missingBroadcastRecipients,
+  missingExcludedUsers,
+  listItemFanId,
   mapMessageThread,
   messagingGroupsQuery,
   MESSAGE_CONTENT_MEDIA,
@@ -798,6 +804,120 @@ describe('fansly inbox groups', () => {
     assert.equal(done, false);
   });
 
+  it('ignores null-group receipts when Fansly reports no unread messages', () => {
+    assert.equal(
+      countGroupedUnread({
+        total: 0,
+        messageInteractions: [
+          {
+            messageId: '967780182603603968',
+            groupId: null,
+            userId: '879702847782936576',
+            readAt: null,
+            validMessage: true,
+          },
+          {
+            messageId: '963942554624094208',
+            groupId: null,
+            userId: '879702847782936576',
+            readAt: null,
+            validMessage: true,
+          },
+          {
+            messageId: '963406834427777024',
+            groupId: null,
+            userId: '879702847782936576',
+            readAt: null,
+            validMessage: true,
+          },
+          {
+            messageId: '962195377698656256',
+            groupId: null,
+            userId: '879702847782936576',
+            readAt: null,
+            validMessage: true,
+          },
+        ],
+      }),
+      0
+    );
+  });
+
+  it('counts three grouped unread chats when Fansly reports a total of zero', () => {
+    assert.equal(
+      countGroupedUnread({
+        total: 0,
+        messageInteractions: [
+          {
+            messageId: '967897125343993859',
+            groupId: '958889510890926080',
+            readAt: null,
+            validMessage: true,
+          },
+          {
+            messageId: '967897019005816836',
+            groupId: '900031822820294656',
+            readAt: null,
+            validMessage: true,
+          },
+          {
+            messageId: '967896857114079232',
+            groupId: '955629698136690688',
+            readAt: null,
+            validMessage: true,
+          },
+          { messageId: '967780182603603968', groupId: null, readAt: null, validMessage: true },
+          { messageId: '963942554624094208', groupId: null, readAt: null, validMessage: true },
+          { messageId: '963406834427777024', groupId: null, readAt: null, validMessage: true },
+          { messageId: '962195377698656256', groupId: null, readAt: null, validMessage: true },
+        ],
+      }),
+      3
+    );
+  });
+
+  it('maps a thread gallery offer onto its account media', () => {
+    const items = mapThreadGallery({
+      data: [
+        {
+          mediaOfferId: '947583103558234112',
+          mediaId: '947583089444405248',
+          mediaType: 1,
+          locationType: 4001,
+        },
+      ],
+      aggregationData: {
+        accountMedia: [
+          {
+            id: '947583103558234112',
+            media: { id: '947583089444405248', type: 1 },
+          },
+        ],
+      },
+    });
+    assert.equal(items.length, 1);
+    assert.equal(items[0].mediaId, '947583089444405248');
+    assert.equal(items[0].kind, 'image');
+  });
+
+  it('counts an unread interaction that belongs to a chat', () => {
+    assert.equal(
+      countGroupedUnread({
+        total: 1,
+        messageInteractions: [
+          { messageId: '1', groupId: null, readAt: null, validMessage: true },
+          {
+            messageId: '2',
+            groupId: '957064010614718464',
+            readAt: null,
+            validMessage: true,
+          },
+        ],
+      }),
+      1
+    );
+  });
+
   it('acks unread interactions for the open chat and unread incoming messages', () => {
     const ids = ackIdsForOpenChat({
       groupId: '941499222019043328',
@@ -1246,6 +1366,67 @@ describe('fansly broadcast', () => {
       }),
       62
     );
+  });
+
+  it('matches the captured new-follower chat', () => {
+    assert.deepEqual(buildDmGroupBody('879702847782936576', '832812360128294912'), {
+      users: [
+        { userId: '879702847782936576', permissionFlags: 0 },
+        { userId: '832812360128294912', permissionFlags: 0 },
+      ],
+      recipients: [],
+      lastMessage: null,
+      userSettings: null,
+      type: 1,
+    });
+  });
+
+  it('does not treat an empty recipient list as applied excludes', () => {
+    const excludeListIds = ['920253369149321216', '932595974298152960'];
+    assert.deepEqual(missingBroadcastRecipients({ recipients: [] }, excludeListIds), excludeListIds);
+    assert.deepEqual(
+      missingBroadcastRecipients(
+        {
+          recipients: [
+            { recipientId: '920253369149321216', type: 30001 },
+            { recipientId: '932595974298152960', type: 30001 },
+          ],
+        },
+        excludeListIds
+      ),
+      []
+    );
+  });
+
+  it('requires excluded fans to come back with no send permission', () => {
+    const creatorId = '879702847782936576';
+    const fanId = '832812360128294912';
+    assert.deepEqual(
+      missingExcludedUsers(
+        { users: [{ userId: creatorId, permissionFlags: 65535 }] },
+        creatorId,
+        [fanId]
+      ),
+      [fanId]
+    );
+    assert.deepEqual(
+      missingExcludedUsers(
+        {
+          users: [
+            { userId: creatorId, permissionFlags: 65535 },
+            { userId: fanId, permissionFlags: 0 },
+          ],
+        },
+        creatorId,
+        [fanId]
+      ),
+      []
+    );
+  });
+
+  it('reads a fan id from a list item', () => {
+    assert.equal(listItemFanId({ id: '1', accountId: '832812360128294912' }, '920253369149321216'), '832812360128294912');
+    assert.equal(listItemFanId({ id: '832812360128294912', listId: '920253369149321216' }, '920253369149321216'), '832812360128294912');
   });
 
   it('matches the captured exclude-list broadcast group', () => {

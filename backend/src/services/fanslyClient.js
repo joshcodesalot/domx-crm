@@ -599,6 +599,66 @@ async function getGroup(session, groupId) {
   return result.data;
 }
 
+function buildDmGroupBody(creatorId, fanAccountId) {
+  const creator = requireSnowflake(creatorId, 'Creator id');
+  const fan = requireSnowflake(fanAccountId, 'Fan id');
+  if (creator === fan) {
+    throw new FanslyApiError('Fan id is required', 400);
+  }
+  return {
+    users: [
+      { userId: creator, permissionFlags: 0 },
+      { userId: fan, permissionFlags: 0 },
+    ],
+    recipients: [],
+    lastMessage: null,
+    userSettings: null,
+    type: 1,
+  };
+}
+
+async function findGroupByPartner(session, fanAccountId, username) {
+  const search = typeof username === 'string' ? username.trim() : '';
+  if (!search) return null;
+  for (let offset = 0; offset <= 20; offset += 20) {
+    const chats = await listGroups(session, { search, limit: 20, offset });
+    const match = chats.find((chat) => String(chat.partnerAccountId || '') === fanAccountId);
+    if (match?.groupId) return String(match.groupId);
+    if (chats.length < 20) break;
+  }
+  return null;
+}
+
+async function openDmGroup(session, { creatorId, fanAccountId } = {}) {
+  const fan = requireSnowflake(fanAccountId, 'Fan id');
+  const accounts = await getAccounts(session, [fan]);
+  const account = accounts.find((row) => String(row?.id) === fan) || null;
+  const username = typeof account?.username === 'string' ? account.username.trim() : '';
+  const existing = await findGroupByPartner(session, fan, username);
+  if (existing) {
+    return {
+      groupId: existing,
+      partnerAccountId: fan,
+      partnerUsername: username || 'Fan',
+    };
+  }
+  const result = await requestJson({
+    method: 'POST',
+    path: '/group',
+    session,
+    body: buildDmGroupBody(creatorId, fan),
+  });
+  const id = result.data?.id == null ? '' : String(result.data.id);
+  if (!/^\d+$/.test(id)) {
+    throw new FanslyApiError('Fansly did not return a chat', 502);
+  }
+  return {
+    groupId: id,
+    partnerAccountId: fan,
+    partnerUsername: username || 'Fan',
+  };
+}
+
 const ALBUM_TYPE_LABELS = {
   1000: 'Photos',
   5000: 'Videos',
@@ -1098,6 +1158,36 @@ function buildBroadcastGroupBody({
   };
 }
 
+function snowflakeList(values) {
+  const ids = [];
+  const seen = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    const id = value == null ? '' : String(value).trim();
+    if (!/^\d+$/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+function missingBroadcastRecipients(group, listIds) {
+  const present = new Set(
+    (Array.isArray(group?.recipients) ? group.recipients : [])
+      .map((row) => (row?.recipientId == null ? '' : String(row.recipientId)))
+  );
+  return snowflakeList(listIds).filter((id) => !present.has(id));
+}
+
+function missingExcludedUsers(group, creatorId, fanIds) {
+  const creator = creatorId == null ? '' : String(creatorId);
+  const present = new Set(
+    (Array.isArray(group?.users) ? group.users : [])
+      .filter((user) => Number(user?.permissionFlags) === 0)
+      .map((user) => (user?.userId == null ? '' : String(user.userId)))
+  );
+  return snowflakeList(fanIds).filter((id) => id !== creator && !present.has(id));
+}
+
 function buildBroadcastMessageBody({ groupId, content, attachments, createdAt } = {}) {
   const group = requireSnowflake(groupId, 'Group id');
   const text = typeof content === 'string' ? content.trim() : '';
@@ -1308,14 +1398,59 @@ function hydrateMessageMedia(
   };
 }
 
-async function listMessages(session, groupId, { limit = 25 } = {}) {
+async function listMessages(session, groupId, { limit = 25, before } = {}) {
+  const cursor = before == null ? '' : String(before).trim();
+  const query = { groupId, limit };
+  if (/^\d+$/.test(cursor)) query.before = cursor;
   const result = await requestJson({
     method: 'GET',
     path: '/message',
     session,
-    query: { groupId, limit },
+    query,
   });
   return mapMessageThread(result.data || {});
+}
+
+const THREAD_GALLERY_LOCATION_TYPE = 4001;
+const THREAD_GALLERY_PAGE_SIZE = 30;
+
+function mapThreadGallery(data) {
+  const offers = Array.isArray(data?.data) ? data.data : [];
+  const accountMediaById = indexById(data?.aggregationData?.accountMedia);
+  const items = [];
+  for (const offer of offers) {
+    const offerId = offer?.mediaOfferId == null ? '' : String(offer.mediaOfferId);
+    const view = viewFromAccountMedia(accountMediaById.get(offerId));
+    if (view) items.push(view);
+  }
+  return items;
+}
+
+async function listThreadGallery(session, { groupId, accountId, offset = 0, limit = THREAD_GALLERY_PAGE_SIZE } = {}) {
+  const locationId = requireSnowflake(groupId, 'Group id');
+  const fanId = requireSnowflake(accountId, 'Fan id');
+  const page = Math.min(Math.max(Number(limit) || THREAD_GALLERY_PAGE_SIZE, 1), 50);
+  const start = Math.max(Number(offset) || 0, 0);
+  const result = await requestJson({
+    method: 'GET',
+    path: '/mediaoffers/location',
+    session,
+    query: {
+      locationId,
+      locationType: THREAD_GALLERY_LOCATION_TYPE,
+      accountId: fanId,
+      mediaType: '',
+      before: '',
+      after: 0,
+      limit: page,
+      offset: start,
+    },
+  });
+  const offers = Array.isArray(result.data?.data) ? result.data.data : [];
+  return {
+    items: mapThreadGallery(result.data || {}),
+    hasMore: offers.length >= page,
+  };
 }
 
 function messageAttachments(attachments) {
@@ -1497,6 +1632,68 @@ async function listCreatorLists(session) {
     query: { itemId: '' },
   });
   return mapListRows(result.data);
+}
+
+function listItemRows(data) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.items)) return data.items;
+  if (Array.isArray(data?.listItems)) return data.listItems;
+  if (Array.isArray(data?.data)) return data.data;
+  return [];
+}
+
+function listItemFanId(row, listId) {
+  if (!row || typeof row !== 'object') return '';
+  for (const key of ['accountId', 'itemId']) {
+    const value = row[key] == null ? '' : String(row[key]).trim();
+    if (/^\d+$/.test(value) && value !== String(listId)) return value;
+  }
+  if (row.accountId != null || row.itemId != null) return '';
+  const id = row.id == null ? '' : String(row.id).trim();
+  if (/^\d+$/.test(id) && id !== String(listId)) return id;
+  return '';
+}
+
+async function listAccountIdsForLists(session, listIds) {
+  const ids = [];
+  const seen = new Set();
+  for (const listId of snowflakeList(listIds)) {
+    let before = '';
+    for (let page = 0; page < 20; page += 1) {
+      const query = { listId, limit: 100, sortMode: 0 };
+      if (before) query.before = before;
+      const result = await requestJson({
+        method: 'GET',
+        path: '/lists/itemsnew',
+        session,
+        query,
+      });
+      const rows = listItemRows(result.data);
+      let parsed = 0;
+      for (const row of rows) {
+        const accountId = listItemFanId(row, listId);
+        if (!accountId) continue;
+        parsed += 1;
+        if (seen.has(accountId)) continue;
+        seen.add(accountId);
+        ids.push(accountId);
+      }
+      if (rows.length > 0 && parsed === 0) {
+        throw new FanslyApiError('Fansly did not apply the exclude lists', 502);
+      }
+      if (rows.length < 100) break;
+      const cursor = rows[rows.length - 1]?.id;
+      const nextBefore = cursor == null ? '' : String(cursor);
+      if (!/^\d+$/.test(nextBefore) || nextBefore === before) {
+        throw new FanslyApiError('Fansly did not apply the exclude lists', 502);
+      }
+      before = nextBefore;
+      if (page === 19) {
+        throw new FanslyApiError('Fansly did not apply the exclude lists', 502);
+      }
+    }
+  }
+  return ids;
 }
 
 async function listAccountLists(session, fanId) {
@@ -1934,8 +2131,8 @@ async function getMessagesByIds(session, ids) {
   return rows.map(mapMessage).filter(Boolean);
 }
 
-const UNREAD_BADGE_PAGE_SIZE = 20;
-const UNREAD_BADGE_PAGE_CAP = 5;
+const UNREAD_INTERACTION_PAGE_SIZE = 100;
+const UNREAD_INTERACTION_CAP = 500;
 
 function sumLeadingUnread(chats) {
   const rows = Array.isArray(chats) ? chats : [];
@@ -1948,19 +2145,56 @@ function sumLeadingUnread(chats) {
   return { total, done: rows.length === 0 };
 }
 
-async function countUnreadMessages(session) {
-  let messages = 0;
-  for (let page = 0; page < UNREAD_BADGE_PAGE_CAP; page += 1) {
-    const chats = await listGroups(session, {
-      sortOrder: 3,
-      limit: UNREAD_BADGE_PAGE_SIZE,
-      offset: page * UNREAD_BADGE_PAGE_SIZE,
-    });
-    const summed = sumLeadingUnread(chats);
-    messages += summed.total;
-    if (summed.done || chats.length < UNREAD_BADGE_PAGE_SIZE) break;
+function unreadInteractionRows(payload) {
+  if (Array.isArray(payload?.messageInteractions)) return payload.messageInteractions;
+  if (Array.isArray(payload)) return payload;
+  return [];
+}
+
+function countsAsMessageUnread(row) {
+  if (!row || row.deletedAt || row.validMessage === false || !readReceiptOpen(row.readAt)) return false;
+  const groupId = row.groupId == null || row.groupId === '' ? '' : String(row.groupId);
+  if (!groupId) return false;
+  const messageId = row.messageId == null ? '' : String(row.messageId).trim();
+  return Boolean(messageId);
+}
+
+function countGroupedUnread(payload) {
+  const ids = new Set();
+  for (const row of unreadInteractionRows(payload)) {
+    if (!countsAsMessageUnread(row)) continue;
+    ids.add(String(row.messageId).trim());
   }
-  return messages;
+  return ids.size;
+}
+
+async function countUnreadMessages(session) {
+  const ids = new Set();
+  let before = '0';
+  let fetched = 0;
+  for (;;) {
+    const result = await requestJson({
+      method: 'GET',
+      path: '/message/unread',
+      session,
+      query: { limit: UNREAD_INTERACTION_PAGE_SIZE, offset: 0, before },
+    });
+    const data = result.data || {};
+    const rows = unreadInteractionRows(data);
+    for (const row of rows) {
+      const messageId = row?.messageId == null ? '' : String(row.messageId).trim();
+      if (messageId) before = messageId;
+      if (!countsAsMessageUnread(row)) continue;
+      ids.add(messageId);
+    }
+    const reported = Number(data.total) || 0;
+    const shortPage = rows.length < UNREAD_INTERACTION_PAGE_SIZE;
+    if (rows.length === 0 || shortPage) break;
+    if (reported > 0 && fetched + UNREAD_INTERACTION_PAGE_SIZE >= reported) break;
+    fetched += rows.length;
+    if (fetched >= UNREAD_INTERACTION_CAP) break;
+  }
+  return ids.size;
 }
 
 function readReceiptOpen(readAt) {
@@ -2214,12 +2448,18 @@ module.exports = {
   messagingGroupsQuery,
   mapGroupChats,
   getGroup,
+  buildDmGroupBody,
+  openDmGroup,
   listMessages,
+  mapThreadGallery,
+  listThreadGallery,
   sendMessage,
   deleteMessage,
   BROADCAST_MEDIA_CAP,
   broadcastGroupFlags,
   buildBroadcastGroupBody,
+  missingBroadcastRecipients,
+  missingExcludedUsers,
   buildBroadcastMessageBody,
   mapBroadcastMessages,
   listBroadcastMessages,
@@ -2251,6 +2491,8 @@ module.exports = {
   fetchCdnMedia,
   listSubscriptionTiers,
   listCreatorLists,
+  listItemFanId,
+  listAccountIdsForLists,
   listAccountLists,
   mapListRows,
   buildListCommands,
@@ -2268,6 +2510,7 @@ module.exports = {
   ackIdsForOpenChat,
   listUnreadInteractions,
   sumLeadingUnread,
+  countGroupedUnread,
   listNotifications,
   ackNotifications,
   notificationUnreadCount,

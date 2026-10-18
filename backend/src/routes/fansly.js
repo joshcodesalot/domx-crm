@@ -288,16 +288,52 @@ async function sendFanslyBroadcast(session, creator, { content, mediaIds, audien
   if (!text && ids.length === 0) {
     throw new fanslyClient.FanslyApiError('Message text is required', 400);
   }
-  const group = await fanslyClient.createBroadcastGroup(
+  const includeListIds = Array.isArray(audience.includeListIds) ? audience.includeListIds : [];
+  const excludeListIds = Array.isArray(audience.excludeListIds) ? audience.excludeListIds : [];
+  const groupFlags = fanslyClient.broadcastGroupFlags(audience);
+  let group = await fanslyClient.createBroadcastGroup(
     session,
     fanslyClient.buildBroadcastGroupBody({
       creatorId: creator.providerUserId,
-      groupFlags: fanslyClient.broadcastGroupFlags(audience),
-      includeListIds: audience.includeListIds,
-      excludeListIds: audience.excludeListIds,
+      groupFlags,
+      includeListIds,
+      excludeListIds,
       subscriptionTierId: audience.subscriptionTierId,
     })
   );
+  const missingLists = fanslyClient.missingBroadcastRecipients(group, [
+    ...includeListIds,
+    ...excludeListIds,
+  ]);
+  if (missingLists.length > 0) {
+    const includeSet = new Set(includeListIds.map((id) => String(id)));
+    const missingIncludes = missingLists.filter((id) => includeSet.has(String(id)));
+    if (missingIncludes.length > 0) {
+      throw new fanslyClient.FanslyApiError('Fansly did not apply the include lists', 502);
+    }
+    const excludeUserIds = await fanslyClient.listAccountIdsForLists(session, missingLists);
+    if (excludeUserIds.length > 0) {
+      group = await fanslyClient.createBroadcastGroup(
+        session,
+        fanslyClient.buildBroadcastGroupBody({
+          creatorId: creator.providerUserId,
+          groupFlags,
+          includeListIds,
+          excludeUserIds,
+          subscriptionTierId: audience.subscriptionTierId,
+        })
+      );
+      const stillMissingLists = fanslyClient.missingBroadcastRecipients(group, includeListIds);
+      const stillMissingUsers = fanslyClient.missingExcludedUsers(
+        group,
+        creator.providerUserId,
+        excludeUserIds
+      );
+      if (stillMissingLists.length > 0 || stillMissingUsers.length > 0) {
+        throw new fanslyClient.FanslyApiError('Fansly did not apply the exclude lists', 502);
+      }
+    }
+  }
   const attachments = await fanslyClient.attachUnlockedBroadcastMedia(session, ids);
   await fanslyClient.sendBroadcastMessage(
     session,
@@ -647,6 +683,25 @@ router.get(
   }
 );
 
+router.post(
+  '/:id/fansly/chats/open',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const chat = await fanslyClient.openDmGroup(fanslySession(creator), {
+        creatorId: creator.providerUserId,
+        fanAccountId: req.body?.fanAccountId,
+      });
+      res.json(chat);
+    } catch (err) {
+      return handleFanslyError(res, err, 'Open Fansly chat error:');
+    }
+  }
+);
+
 router.get(
   '/:id/fansly/chats/:groupId',
   authenticate,
@@ -673,12 +728,21 @@ router.get(
       if (!creator) return;
       const session = fanslySession(creator);
       const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 50);
+      const before =
+        typeof req.query.before === 'string' && /^\d+$/.test(req.query.before.trim())
+          ? req.query.before.trim()
+          : '';
       const lastUnreadMessageId =
         typeof req.query.lastUnreadMessageId === 'string' ? req.query.lastUnreadMessageId.trim() : '';
-      const [messages, interactions] = await Promise.all([
-        fanslyClient.listMessages(session, req.params.groupId, { limit }),
-        fanslyClient.listUnreadInteractions(session),
-      ]);
+      const messages = await fanslyClient.listMessages(session, req.params.groupId, {
+        limit,
+        ...(before ? { before } : {}),
+      });
+      if (before) {
+        res.json({ messages, providerUserId: creator.providerUserId });
+        return;
+      }
+      const interactions = await fanslyClient.listUnreadInteractions(session);
       const threadMessages = messages.map((message) =>
         message?.groupId ? message : { ...message, groupId: req.params.groupId }
       );
@@ -726,6 +790,28 @@ router.get(
       res.json({ messages, providerUserId: creator.providerUserId });
     } catch (err) {
       return handleFanslyError(res, err, 'List Fansly messages error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/fansly/chats/:groupId/gallery',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const accountId = typeof req.query.accountId === 'string' ? req.query.accountId.trim() : '';
+      const offset = Math.max(Number(req.query.offset) || 0, 0);
+      const gallery = await fanslyClient.listThreadGallery(fanslySession(creator), {
+        groupId: req.params.groupId,
+        accountId,
+        offset,
+      });
+      res.json(gallery);
+    } catch (err) {
+      return handleFanslyError(res, err, 'List Fansly thread gallery error:');
     }
   }
 );

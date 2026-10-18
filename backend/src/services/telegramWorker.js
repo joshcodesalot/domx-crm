@@ -12,6 +12,11 @@ const { getUserIdsWithCreatorAccess } = require('./creatorAccess');
 const { saveCreatorAvatarFromBuffer } = require('./creatorAvatar');
 const { dataPath } = require('./dataDir');
 const { downloadVaultObjectToFile } = require('./b2Storage');
+const {
+  isServableCacheFile,
+  startProgressiveDownload,
+  pipeProgressiveMedia,
+} = require('./telegramProgressiveMedia');
 const { startHeartbeat, noteTickFailure } = require('./opsEvents');
 
 const DATA_DIR = dataPath('telegram');
@@ -29,6 +34,9 @@ const fanAvatarInFlight = new Map();
 
 /** @type {Map<string, Promise<{ filePath: string, mimeType: string, kind: string }>>} */
 const mediaInFlight = new Map();
+
+/** @type {Map<string, { gate: Promise<object>, job: Promise<void> }>} */
+const videoDownloads = new Map();
 
 const STICKER_CACHE_TTL_MS = 5 * 60 * 1000;
 const STICKER_SET_SHORT_NAME_RE = /^[A-Za-z0-9_]{1,64}$/;
@@ -552,11 +560,7 @@ const FULL_CACHE_EXTS = [
 ];
 
 function cachedFileReady(filePath) {
-  try {
-    return Boolean(filePath && fs.existsSync(filePath) && fs.statSync(filePath).size);
-  } catch {
-    return false;
-  }
+  return isServableCacheFile(filePath);
 }
 
 function findCachedFullMedia(creatorId, peerId, messageId) {
@@ -2510,7 +2514,201 @@ async function getCachedMessageMedia(creatorId, peerId, messageId, variant) {
   try {
     return await work;
   } finally {
-    mediaInFlight.delete(cacheKey);
+    if (mediaInFlight.get(cacheKey) === work) mediaInFlight.delete(cacheKey);
+  }
+}
+
+function mediaByteSize(media) {
+  const value = media?.fileSize ?? media?.raw?.size;
+  const size = typeof value === 'bigint' ? Number(value) : Number(value);
+  if (!Number.isFinite(size) || size <= 0) return 0;
+  return Math.floor(size);
+}
+
+function fullMediaCacheKey(creatorId, peerId, messageId) {
+  return `${creatorId}:${peerId}:${messageId}:full`;
+}
+
+function beginVideoDownload(key, runner) {
+  const existing = videoDownloads.get(key);
+  if (existing) return existing;
+  let resolveGate;
+  let rejectGate;
+  const gate = new Promise((resolve, reject) => {
+    resolveGate = resolve;
+    rejectGate = reject;
+  });
+  const entry = { gate, job: null };
+  videoDownloads.set(key, entry);
+  entry.job = (async () => {
+    try {
+      const result = await runner();
+      resolveGate(result);
+      if (result?.session) await result.session.finished;
+    } catch (err) {
+      rejectGate(err);
+    } finally {
+      if (videoDownloads.get(key) === entry) videoDownloads.delete(key);
+    }
+  })();
+  return entry;
+}
+
+async function downloadFullChatMedia({
+  client,
+  location,
+  destPath,
+  mimeType,
+  kind,
+  cacheKey,
+}) {
+  const work = (async () => {
+    await acquireMediaDownloadSlot();
+    try {
+      if (cachedFileReady(destPath)) {
+        return { filePath: destPath, mimeType, kind };
+      }
+      const saved = await downloadLocationToFile(client, location, destPath);
+      if (!saved) {
+        throw new TelegramWorkerError('Failed to download media', 502);
+      }
+      return { filePath: destPath, mimeType, kind };
+    } finally {
+      releaseMediaDownloadSlot();
+    }
+  })();
+  mediaInFlight.set(cacheKey, work);
+  try {
+    return { file: await work };
+  } finally {
+    if (mediaInFlight.get(cacheKey) === work) mediaInFlight.delete(cacheKey);
+  }
+}
+
+async function startChatVideoDownload(creatorId, peerId, messageId, cacheKey) {
+  const cached = findCachedFullMedia(creatorId, peerId, messageId);
+  if (cached) return { file: cached };
+  const existing = mediaInFlight.get(cacheKey);
+  if (existing) {
+    return { file: await existing };
+  }
+
+  const client = await getClient(creatorId);
+  const msg = await resolveChatMessage(client, peerId, messageId);
+  if (!msg) {
+    throw new TelegramWorkerError('Message not found', 404);
+  }
+  const media = msg.media;
+  const kind =
+    (isChatGifMedia(media) ? 'gif' : null) ||
+    (isChatVideoMedia(media) ? 'video' : null) ||
+    mediaPlaceholder(media)?.kind ||
+    vaultKindFromMedia(media) ||
+    'media';
+  const mimeType = guessMediaMime(kind, 'full', media);
+  const ready = findCachedFullMedia(creatorId, peerId, messageId);
+  if (ready) return { file: ready };
+  const location = pickMediaFull(media);
+  if (!location) {
+    throw new TelegramWorkerError('No media on this message', 404);
+  }
+  const ext = kind === 'photo' ? 'jpg' : fullMediaExt(kind, mimeType);
+  const destPath = vaultCacheAbs(
+    vaultCacheRel(creatorId, String(peerId), `${messageId}_full.${ext}`)
+  );
+  const totalSize = mediaByteSize(media);
+  const canStream =
+    String(mimeType).startsWith('video/') &&
+    totalSize > 0 &&
+    typeof client.downloadAsIterable === 'function';
+  if (!canStream) {
+    return downloadFullChatMedia({
+      client,
+      location,
+      destPath,
+      mimeType,
+      kind,
+      cacheKey,
+    });
+  }
+  const filename = mediaFileName(media) || `video.${ext}`;
+
+  await acquireMediaDownloadSlot();
+  let handedOff = false;
+  try {
+    const again = findCachedFullMedia(creatorId, peerId, messageId);
+    if (again) return { file: again };
+    const session = startProgressiveDownload({
+      destPath,
+      totalSize,
+      iterate: () => client.downloadAsIterable(location, { fileSize: totalSize }),
+    });
+    handedOff = true;
+    const pending = session.finished.then((info) => {
+      if (info?.error) {
+        throw info.error instanceof TelegramWorkerError
+          ? info.error
+          : new TelegramWorkerError('Failed to download media', 502);
+      }
+      return (
+        findCachedFullMedia(creatorId, peerId, messageId) || {
+          filePath: destPath,
+          mimeType,
+          kind,
+        }
+      );
+    });
+    pending.catch((err) => {
+      console.warn('[telegram] Chat video download failed:', err.message || err);
+    });
+    mediaInFlight.set(cacheKey, pending);
+    session.finished.finally(() => {
+      if (mediaInFlight.get(cacheKey) === pending) mediaInFlight.delete(cacheKey);
+      releaseMediaDownloadSlot();
+    });
+    return { session, mimeType, filename };
+  } finally {
+    if (!handedOff) releaseMediaDownloadSlot();
+  }
+}
+
+async function streamChatVideo(res, creatorId, peerId, messageId, rangeHeader) {
+  const cached = findCachedFullMedia(creatorId, peerId, messageId);
+  if (cached) return { file: cached };
+
+  const cacheKey = fullMediaCacheKey(creatorId, peerId, messageId);
+  const entry = beginVideoDownload(cacheKey, () =>
+    startChatVideoDownload(creatorId, peerId, messageId, cacheKey)
+  );
+  let result;
+  try {
+    result = await entry.gate;
+  } catch (err) {
+    if (res.headersSent) {
+      if (!res.destroyed) res.destroy(err);
+      return { streamed: true };
+    }
+    throw err;
+  }
+  if (!result || result.skip) return null;
+  if (result.file) return { file: result.file };
+
+  try {
+    await pipeProgressiveMedia(res, result.session, {
+      rangeHeader,
+      mimeType: result.mimeType,
+      filename: result.filename,
+    });
+    return { streamed: true };
+  } catch (err) {
+    if (res.headersSent || res.writableEnded) {
+      console.warn('[telegram] Chat video stream failed:', err.message || err);
+      if (!res.destroyed) res.destroy(err);
+      return { streamed: true };
+    }
+    throw err instanceof TelegramWorkerError
+      ? err
+      : new TelegramWorkerError('Failed to download media', 502);
   }
 }
 
@@ -3389,6 +3587,7 @@ module.exports = {
   uploadVaultMedia,
   deleteSavedVaultMessage,
   getCachedMessageMedia,
+  streamChatVideo,
   getCachedVaultMedia,
   prewarmVaultThumb,
   deleteText,

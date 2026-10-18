@@ -1,7 +1,7 @@
 import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
 import AppShell from '@/components/AppShell';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpDown, Banknote, Check, Eye, ImagePlus, Loader2, Lock, PanelRight, PanelRightClose, Pencil, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ArrowUpDown, Banknote, Check, Eye, ImagePlus, Images, Loader2, Lock, PanelRight, PanelRightClose, Pencil, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import FanslyFanPanel from '@/components/fansly/FanslyFanPanel';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
@@ -19,6 +19,8 @@ import {
   getMessagingDashboardSenders,
   listFanslyChats,
   listFanslyMessages,
+  listFanslyThreadGallery,
+  openFanslyChat,
   listFanslySubscriptionTiers,
   fanslyOpenSrc,
   fanslyVaultPreviewSrc,
@@ -31,6 +33,7 @@ import {
   type FanslyFanList,
   type FanslyMediaPermissions,
   type FanslyMessage,
+  type FanslyThreadMedia,
   type FanslySubscriptionTier,
   type FanslyVaultAlbum,
   type FanslyVaultMedia,
@@ -339,6 +342,15 @@ function messageUnlocked(message: FanslyMessage): boolean {
   );
 }
 
+function readOpenChat(state: unknown): { creatorId: string; fanAccountId: string } | null {
+  if (!state || typeof state !== 'object') return null;
+  const creatorId = (state as { creatorId?: unknown }).creatorId;
+  const fanAccountId = (state as { fanAccountId?: unknown }).fanAccountId;
+  if (typeof creatorId !== 'string' || !creatorId) return null;
+  if (typeof fanAccountId !== 'string' || !/^\d+$/.test(fanAccountId)) return null;
+  return { creatorId, fanAccountId };
+}
+
 function lockPermissions(set: LockedPermissionSet): FanslyMediaPermissions {
   return {
     requirePurchase: set.requirePurchase,
@@ -347,6 +359,33 @@ function lockPermissions(set: LockedPermissionSet): FanslyMediaPermissions {
     subscriptionTierId: set.subscriptionTierId || null,
     requireFollow: set.requireFollow,
   };
+}
+
+const MESSAGE_PAGE_SIZE = 25;
+const GALLERY_PAGE_SIZE = 30;
+
+function snowflakeOlder(id: string, than: string) {
+  if (id.length !== than.length) return id.length < than.length;
+  return id < than;
+}
+
+function visibleThreadMessages(page: FanslyMessage[], hidden: Set<string>) {
+  return page.filter(
+    (message) =>
+      !isDeletedFanslyMessage(message) && !hidden.has(messageKey(message.id)) && hasVisibleBody(message)
+  );
+}
+
+function mergeLatestPage(prev: FanslyMessage[], page: FanslyMessage[]) {
+  if (page.length === 0) return prev;
+  const seen = new Set(page.map((message) => message.id));
+  const oldest = page[page.length - 1]?.id;
+  const older = oldest
+    ? prev.filter(
+        (message) => !seen.has(message.id) && snowflakeOlder(String(message.id), String(oldest))
+      )
+    : [];
+  return [...page, ...older];
 }
 
 export default function ChatterFansly() {
@@ -368,6 +407,8 @@ export default function ChatterFansly() {
   const [chats, setChats] = useState<FanslyChat[]>([]);
   const chatsRef = useRef(chats);
   chatsRef.current = chats;
+  const openedChatRef = useRef<FanslyChat | null>(null);
+  const openChatKeyRef = useRef<string | null>(null);
   const [chatsLoading, setChatsLoading] = useState(false);
   const [inboxRefreshing, setInboxRefreshing] = useState(false);
   const [chatsLoadingMore, setChatsLoadingMore] = useState(false);
@@ -383,6 +424,22 @@ export default function ChatterFansly() {
   const [lockedSets, setLockedSets] = useState<LockedPermissionSet[]>([{ ...EMPTY_LOCK }]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [messages, setMessages] = useState<FanslyMessage[]>([]);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const threadScrollRef = useRef<HTMLDivElement>(null);
+  const historyCursorRef = useRef<string | null>(null);
+  const loadedOlderRef = useRef(false);
+  const loadingOlderRef = useRef(false);
+  const stickToBottomRef = useRef(true);
+  const pendingScrollRef = useRef<'bottom' | { height: number; top: number } | null>(null);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryItems, setGalleryItems] = useState<FanslyThreadMedia[]>([]);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [galleryError, setGalleryError] = useState<string | null>(null);
+  const [galleryHasMore, setGalleryHasMore] = useState(false);
+  const galleryOffsetRef = useRef(0);
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>({});
   const [selfId, setSelfId] = useState<string | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
@@ -424,15 +481,30 @@ export default function ChatterFansly() {
     setFanPanelOpen(false);
     setFanNickname('');
     setMessageSenders({});
+    historyCursorRef.current = null;
+    loadedOlderRef.current = false;
+    stickToBottomRef.current = true;
+    pendingScrollRef.current = 'bottom';
+    setMessages([]);
+    setHistoryHasMore(false);
+    setGalleryOpen(false);
+    setGalleryItems([]);
+    setGalleryError(null);
+    setGalleryHasMore(false);
+    galleryOffsetRef.current = 0;
   }
   useSyncedDrawer('fansly-fan', 'xl', fanPanelOpen, setFanPanelOpen);
 
   useEffect(() => {
     setSelectedCreatorId((prev) => {
+      const requested = readOpenChat(location.state);
+      if (!prev && requested && creators.some((creator) => creator.id === requested.creatorId)) {
+        return requested.creatorId;
+      }
       if (prev && creators.some((creator) => creator.id === prev)) return prev;
       return creators[0]?.id || null;
     });
-  }, [creators]);
+  }, [creators, location.state]);
 
   const selectedCreator = useMemo(
     () => creators.find((creator) => creator.id === selectedCreatorId) || null,
@@ -551,7 +623,17 @@ export default function ChatterFansly() {
         offset,
       });
       const next = result.chats || [];
-      setChats((prev) => (offset === 0 ? next : [...prev, ...next.filter((chat) => !prev.some((row) => row.groupId === chat.groupId))]));
+      setChats((prev) => {
+        const page =
+          offset === 0
+            ? next
+            : [...prev, ...next.filter((chat) => !prev.some((row) => row.groupId === chat.groupId))];
+        const opened = openedChatRef.current;
+        if (opened && !page.some((chat) => chat.groupId === opened.groupId)) {
+          return [opened, ...page];
+        }
+        return page;
+      });
       setChatsHasMore(next.length >= pageSize);
       setSelfId(result.providerUserId);
     } catch (err) {
@@ -654,29 +736,68 @@ export default function ChatterFansly() {
     };
   }, [loadChats, selectedCreatorId]);
 
+  useEffect(() => {
+    const requested = readOpenChat(location.state);
+    if (requested && selectedCreatorId === requested.creatorId) return;
+    openedChatRef.current = null;
+  }, [location.state, selectedCreatorId]);
+
+  useEffect(() => {
+    const requested = readOpenChat(location.state);
+    if (!requested || selectedCreatorId !== requested.creatorId) return;
+    const key = `${requested.creatorId}:${requested.fanAccountId}`;
+    if (openChatKeyRef.current === key) return;
+    openChatKeyRef.current = key;
+    let cancelled = false;
+    setThreadError(null);
+    setThreadLoading(true);
+    openFanslyChat(requested.creatorId, requested.fanAccountId)
+      .then((result) => {
+        if (cancelled) return;
+        const chat: FanslyChat = {
+          groupId: result.groupId,
+          partnerAccountId: result.partnerAccountId,
+          partnerUsername: result.partnerUsername || 'Fan',
+          unreadCount: 0,
+          lastMessageId: null,
+          lastMessage: null,
+        };
+        openedChatRef.current = chat;
+        setChats((prev) => (prev.some((row) => row.groupId === chat.groupId) ? prev : [chat, ...prev]));
+        setSelectedGroupId(result.groupId);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setThreadLoading(false);
+        setThreadError(err instanceof Error ? err.message : 'Failed to open chat');
+      });
+    return () => {
+      cancelled = true;
+      if (openChatKeyRef.current === key) openChatKeyRef.current = null;
+    };
+  }, [location.state, selectedCreatorId]);
+
   const loadThread = useCallback(async () => {
     if (!selectedCreatorId || !selectedGroupId) {
       setMessages([]);
       return;
     }
     setThreadError(null);
+    const requestKey = `${selectedCreatorId}:${selectedGroupId}`;
     try {
       const lastUnreadMessageId = chatsRef.current.find(
         (chat) => chat.groupId === selectedGroupId
       )?.lastUnreadMessageId;
-      const result = await listFanslyMessages(
-        selectedCreatorId,
-        selectedGroupId,
-        lastUnreadMessageId
-      );
-      const hidden = hiddenMessageIdsRef.current;
-      const rows = (result.messages || []).filter(
-        (message) =>
-          !isDeletedFanslyMessage(message) &&
-          !hidden.has(messageKey(message.id)) &&
-          hasVisibleBody(message)
-      );
-      setMessages(rows);
+      const result = await listFanslyMessages(selectedCreatorId, selectedGroupId, {
+        lastUnreadMessageId,
+      });
+      if (threadKeyRef.current !== requestKey) return;
+      const page = result.messages || [];
+      const rows = visibleThreadMessages(page, hiddenMessageIdsRef.current);
+      const oldest = page[page.length - 1]?.id;
+      if (!loadedOlderRef.current && oldest) historyCursorRef.current = String(oldest);
+      if (!loadedOlderRef.current) setHistoryHasMore(page.length >= MESSAGE_PAGE_SIZE);
+      setMessages((prev) => (loadedOlderRef.current ? mergeLatestPage(prev, rows) : rows));
       setSelfId(result.providerUserId);
       markUnlockedMessages(rows, result.providerUserId);
       const openedGroupId = selectedGroupId;
@@ -692,6 +813,42 @@ export default function ChatterFansly() {
       setThreadError(err instanceof Error ? err.message : 'Failed to load messages');
     }
   }, [refreshBadges, selectedCreatorId, selectedGroupId]);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (!selectedCreatorId || !selectedGroupId || loadingOlderRef.current) return;
+    const before = historyCursorRef.current;
+    if (!before || !/^\d+$/.test(before)) return;
+    const scroller = threadScrollRef.current;
+    const snapshot = scroller
+      ? { height: scroller.scrollHeight, top: scroller.scrollTop }
+      : null;
+    if (snapshot) pendingScrollRef.current = snapshot;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    try {
+      const result = await listFanslyMessages(selectedCreatorId, selectedGroupId, { before });
+      if (threadKeyRef.current !== `${selectedCreatorId}:${selectedGroupId}`) {
+        pendingScrollRef.current = null;
+        return;
+      }
+      const page = result.messages || [];
+      const nextCursor = page[page.length - 1]?.id;
+      if (nextCursor) historyCursorRef.current = String(nextCursor);
+      loadedOlderRef.current = true;
+      setHistoryHasMore(page.length >= MESSAGE_PAGE_SIZE);
+      const rows = visibleThreadMessages(page, hiddenMessageIdsRef.current);
+      setMessages((prev) => {
+        const seen = new Set(prev.map((message) => message.id));
+        return [...prev, ...rows.filter((message) => !seen.has(message.id))];
+      });
+    } catch (err) {
+      pendingScrollRef.current = null;
+      setThreadError(err instanceof Error ? err.message : 'Failed to load older messages');
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
+    }
+  }, [selectedCreatorId, selectedGroupId]);
 
   const loadSenders = useCallback(async () => {
     if (!selectedCreatorId || !selectedGroupId) return;
@@ -728,6 +885,47 @@ export default function ChatterFansly() {
       cancelled = true;
     };
   }, [loadSenders, loadThread, selectedGroupId]);
+
+  useLayoutEffect(() => {
+    const el = threadScrollRef.current;
+    if (!el) return;
+    const pending = pendingScrollRef.current;
+    if (pending && pending !== 'bottom') {
+      pendingScrollRef.current = null;
+      el.scrollTop = el.scrollHeight - pending.height + pending.top;
+      return;
+    }
+    if (stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [messages, threadLoading]);
+
+  const loadGallery = useCallback(
+    async (offset: number) => {
+      if (!selectedCreatorId || !selectedGroupId) return;
+      const accountId = chatsRef.current.find((chat) => chat.groupId === selectedGroupId)
+        ?.partnerAccountId;
+      if (!accountId) {
+        setGalleryError('This chat has no fan to show media for.');
+        return;
+      }
+      setGalleryLoading(true);
+      setGalleryError(null);
+      try {
+        const result = await listFanslyThreadGallery(selectedCreatorId, selectedGroupId, {
+          accountId,
+          offset,
+        });
+        if (threadKeyRef.current !== `${selectedCreatorId}:${selectedGroupId}`) return;
+        setGalleryItems((prev) => (offset === 0 ? result.items : [...prev, ...result.items]));
+        setGalleryHasMore(result.hasMore);
+        galleryOffsetRef.current = offset + GALLERY_PAGE_SIZE;
+      } catch (err) {
+        setGalleryError(err instanceof Error ? err.message : 'Failed to load gallery');
+      } finally {
+        setGalleryLoading(false);
+      }
+    },
+    [selectedCreatorId, selectedGroupId]
+  );
 
   useEffect(() => {
     if (!pollEnabled || !selectedCreatorId) return;
@@ -874,6 +1072,7 @@ export default function ChatterFansly() {
       setSelectedMedia([]);
       setVaultOpen(false);
       if (result.message) {
+        stickToBottomRef.current = true;
         setMessages((prev) => [result.message, ...prev.filter((row) => row.id !== result.message.id)]);
         rememberSender(result.message.id);
         logSentFanslyMessage(result.message, {
@@ -926,6 +1125,7 @@ export default function ChatterFansly() {
       setLockedContent('');
       setLockedSets([{ ...EMPTY_LOCK }]);
       if (result.message) {
+        stickToBottomRef.current = true;
         setMessages((prev) => [result.message, ...prev.filter((row) => row.id !== result.message.id)]);
         rememberSender(result.message.id);
         logSentFanslyMessage(result.message, {
@@ -1283,6 +1483,30 @@ export default function ChatterFansly() {
                 </div>
                 <button
                   type="button"
+                  aria-label={galleryOpen ? 'Close gallery' : 'Open gallery'}
+                  aria-pressed={galleryOpen}
+                  title={galleryOpen ? 'Close gallery' : 'Thread gallery'}
+                  onClick={() => {
+                    if (galleryOpen) {
+                      setGalleryOpen(false);
+                      return;
+                    }
+                    setGalleryOpen(true);
+                    setGalleryItems([]);
+                    setGalleryError(null);
+                    galleryOffsetRef.current = 0;
+                    void loadGallery(0);
+                  }}
+                  className={`p-2 rounded-lg transition-all border ${
+                    galleryOpen
+                      ? 'text-orange-500 bg-orange-500/10 border-orange-500/30'
+                      : 'text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 border-transparent hover:border-gray-300 dark:hover:border-zinc-700'
+                  }`}
+                >
+                  <Images className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
                   aria-label="Refresh messages"
                   onClick={() => {
                     void loadThread();
@@ -1324,7 +1548,23 @@ export default function ChatterFansly() {
                   <X className="w-4 h-4" />
                 </button>
               </div>
-              <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+              <div className="relative flex-1 min-h-0">
+              <div
+                ref={threadScrollRef}
+                className="absolute inset-0 overflow-y-auto px-4 py-4 space-y-3"
+                onScroll={(event) => {
+                  const el = event.currentTarget;
+                  stickToBottomRef.current =
+                    el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+                  if (el.scrollTop > 48 || !historyHasMore || loadingOlderRef.current) return;
+                  void loadOlderMessages();
+                }}
+              >
+                {loadingOlder && (
+                  <p className="text-sm text-gray-500 flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" /> Loading older messages…
+                  </p>
+                )}
                 {threadLoading && (
                   <p className="text-sm text-gray-500 flex items-center gap-2">
                     <Loader2 className="w-4 h-4 animate-spin" /> Loading messages…
@@ -1474,6 +1714,52 @@ export default function ChatterFansly() {
                     </div>
                   );
                 })}
+              </div>
+              {galleryOpen && selectedCreatorId && (
+                <div className="absolute inset-0 z-20 overflow-y-auto bg-white dark:bg-zinc-950 px-4 py-4">
+                  {galleryLoading && galleryItems.length === 0 && (
+                    <p className="text-sm text-gray-500 flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Loading gallery…
+                    </p>
+                  )}
+                  {galleryError && <p className="text-sm text-red-500">{galleryError}</p>}
+                  {!galleryLoading && galleryItems.length === 0 && !galleryError && (
+                    <p className="text-sm text-gray-500">No media in this chat.</p>
+                  )}
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                    {galleryItems.map((item, index) => {
+                      const previewSrc = fanslyVaultPreviewSrc(selectedCreatorId, item);
+                      return (
+                        <button
+                          key={`${item.mediaId}-${index}`}
+                          type="button"
+                          onClick={() => openViewer(item)}
+                          className="relative aspect-square overflow-hidden rounded-lg bg-gray-100 dark:bg-zinc-900"
+                        >
+                          {previewSrc ? (
+                            <img src={previewSrc} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            <span className="text-[10px] text-gray-500">Media</span>
+                          )}
+                          {item.kind === 'video' && (
+                            <Play className="absolute bottom-1.5 right-1.5 w-4 h-4 text-white drop-shadow" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {galleryHasMore && (
+                    <button
+                      type="button"
+                      disabled={galleryLoading}
+                      onClick={() => void loadGallery(galleryOffsetRef.current)}
+                      className="mt-4 text-sm font-medium text-sky-600 dark:text-sky-400 disabled:opacity-50"
+                    >
+                      {galleryLoading ? 'Loading…' : 'Load more'}
+                    </button>
+                  )}
+                </div>
+              )}
               </div>
               {selectedMedia.length > 0 && (
                 <div className="border-t border-gray-200 dark:border-white/10 px-3 py-3 space-y-3">

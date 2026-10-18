@@ -2613,15 +2613,45 @@ export async function removeFanslyFanFromList(
 export async function listFanslyMessages(
   creatorId: string,
   groupId: string,
-  lastUnreadMessageId?: string | null
+  options?: { lastUnreadMessageId?: string | null; before?: string | null }
 ): Promise<{ messages: FanslyMessage[]; providerUserId: string }> {
   const params = new URLSearchParams();
+  const lastUnreadMessageId = options?.lastUnreadMessageId;
+  const before = options?.before;
   if (lastUnreadMessageId && /^\d+$/.test(lastUnreadMessageId)) {
     params.set('lastUnreadMessageId', lastUnreadMessageId);
   }
+  if (before && /^\d+$/.test(before)) params.set('before', before);
   const query = params.toString();
   return request(
     `/api/creators/${creatorId}/fansly/chats/${encodeURIComponent(groupId)}/messages${query ? `?${query}` : ''}`
+  );
+}
+
+export interface FanslyThreadMedia {
+  mediaId: string;
+  kind: 'image' | 'video';
+  previewUrl: string | null;
+  previewLocked?: boolean;
+  fullUrl?: string | null;
+  fullLocked?: boolean;
+  playlistUrl?: string | null;
+  playlistLocked?: boolean;
+  duration?: number | null;
+  price?: number | null;
+  purchased?: boolean;
+  access?: boolean;
+}
+
+export async function listFanslyThreadGallery(
+  creatorId: string,
+  groupId: string,
+  options: { accountId: string; offset?: number }
+): Promise<{ items: FanslyThreadMedia[]; hasMore: boolean }> {
+  const params = new URLSearchParams({ accountId: options.accountId });
+  if (options.offset && options.offset > 0) params.set('offset', String(options.offset));
+  return request(
+    `/api/creators/${creatorId}/fansly/chats/${encodeURIComponent(groupId)}/gallery?${params.toString()}`
   );
 }
 
@@ -3025,6 +3055,16 @@ export async function getFanslyUnread(
   creatorId: string
 ): Promise<{ messages: number; notifications: number }> {
   return request(`/api/creators/${creatorId}/fansly/unread`);
+}
+
+export async function openFanslyChat(
+  creatorId: string,
+  fanAccountId: string
+): Promise<{ groupId: string; partnerAccountId: string; partnerUsername: string }> {
+  return request(`/api/creators/${creatorId}/fansly/chats/open`, {
+    method: 'POST',
+    body: JSON.stringify({ fanAccountId }),
+  });
 }
 
 export async function reconnectFourBasedAccount(

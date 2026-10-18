@@ -2,6 +2,7 @@ import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDr
 import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Bell, Loader2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
 import { usePollEnabled } from '@/hooks/useDocumentVisible';
@@ -53,29 +54,55 @@ function accountName(accounts: FanslyAccount[], id: string | null | undefined): 
   return account.displayName || account.username || null;
 }
 
+function snowflake(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const id = value.trim();
+  return /^\d+$/.test(id) ? id : null;
+}
+
+function notificationFanAccountId(note: FanslyNotification, tips: FanslyTip[]): string | null {
+  const type = Number(note.type);
+  const correlationId = snowflake(note.correlationId);
+  const correlationGroupId = snowflake(note.correlationGroupId);
+  if (type === 3002) return correlationId;
+  if (type === 3003) return correlationGroupId;
+  if (type === 7001) {
+    const tip = tips.find((row) => row.id === note.correlationId);
+    return snowflake(tip?.senderId);
+  }
+  if (type === 2007 || type === 2008) return correlationGroupId;
+  if (type === 1002 || type === 2002 || type === 5003 || type === 1004 || type === 1005) {
+    return correlationId;
+  }
+  return null;
+}
+
 function describeNotification(
   note: FanslyNotification,
   accounts: FanslyAccount[],
   messages: FanslyMessage[],
   tips: FanslyTip[],
   filters: FanslyNotificationFilter[]
-): { title: string; detail: string } {
+): { fanAccountId: string | null; fanName: string; headline: string; detail: string } {
   const typeLabel =
     filters.find((filter) => filter.types.split(',').includes(String(note.type)))?.label ||
     `Type ${note.type}`;
-  const tip = tips.find((row) => row.id === note.correlationId);
-  if (tip) {
-    const name = accountName(accounts, tip.senderId) || 'A fan';
-    return {
-      title: `${name} tipped ${money(tip.amount)}`,
-      detail: tip.message || typeLabel,
-    };
-  }
+  const fanAccountId = notificationFanAccountId(note, tips);
   const message = messages.find((row) => row.id === note.correlationId);
-  const name =
+  const fanName =
+    accountName(accounts, fanAccountId) ||
     accountName(accounts, note.correlationGroupId) ||
     accountName(accounts, message?.senderId) ||
     'A fan';
+  const tip = tips.find((row) => row.id === note.correlationId);
+  if (tip) {
+    return {
+      fanAccountId,
+      fanName,
+      headline: `tipped ${money(tip.amount)}`,
+      detail: tip.message || typeLabel,
+    };
+  }
   let detail = message?.content || typeLabel;
   if (note.metadata) {
     try {
@@ -87,10 +114,11 @@ function describeNotification(
       // metadata is optional free text
     }
   }
-  return { title: `${name} · ${typeLabel}`, detail };
+  return { fanAccountId, fanName, headline: `· ${typeLabel}`, detail };
 }
 
 export default function FanslyNotifications() {
+  const navigate = useNavigate();
   const pollEnabled = usePollEnabled(true);
   const { creators, creatorsLoading, badgesByCreatorId, refreshBadges } = useCreatorLive({
     platform: 'fansly',
@@ -365,7 +393,25 @@ export default function FanslyNotifications() {
                       unread ? 'font-semibold text-gray-900 dark:text-white' : 'font-medium'
                     }`}
                   >
-                    {row.title}
+                    {row.fanAccountId && selectedCreatorId ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          navigate('/chatter/fansly', {
+                            state: {
+                              creatorId: selectedCreatorId,
+                              fanAccountId: row.fanAccountId,
+                            },
+                          })
+                        }
+                        className="text-sky-600 dark:text-sky-400 hover:underline"
+                      >
+                        {row.fanName}
+                      </button>
+                    ) : (
+                      row.fanName
+                    )}
+                    {row.headline ? ` ${row.headline}` : ''}
                   </p>
                   <p className="text-sm text-gray-600 dark:text-gray-300 mt-0.5 whitespace-pre-wrap">
                     {row.detail}
