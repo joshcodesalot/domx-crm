@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type UIEvent } from 'react';
-import { Folder, Loader2, X } from 'lucide-react';
+import { Eye, Folder, Loader2, Play, X } from 'lucide-react';
+import FanslyKindBadge from '@/components/fansly/FanslyKindBadge';
+import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import { TelegramVoiceTile } from '@/components/telegram/TelegramAudioPlayer';
 import {
   friendlyVaultFolderName,
@@ -15,6 +17,8 @@ import {
   getFourBasedProfile,
   listAllMaloumVaultFolders,
   listFourBasedVault,
+  fanslyMediaKind,
+  fanslyOpenSrc,
   fanslyVaultPreviewSrc,
   listFanslyVaultAlbums,
   listFanslyVaultMedia,
@@ -77,8 +81,15 @@ export default function ScheduleVaultPicker({
   const [fanslyItems, setFanslyItems] = useState<FanslyVaultMedia[]>([]);
   const offsetRef = useRef(0);
   const maloumNextRef = useRef<number | null>(null);
+  const fanslyBeforeRef = useRef<string | null>(null);
   const hasMoreRef = useRef(false);
   const loadingMoreRef = useRef(false);
+  const [viewer, setViewer] = useState<{
+    url: string;
+    kind: 'picture' | 'video';
+    poster: string | null;
+    fallbackUrl?: string | null;
+  } | null>(null);
 
   const loadFolders = useCallback(async () => {
     setLoading(true);
@@ -162,6 +173,7 @@ export default function ScheduleVaultPicker({
         offsetRef.current = 0;
         hasMoreRef.current = false;
         maloumNextRef.current = null;
+        fanslyBeforeRef.current = null;
       }
       setError(null);
       try {
@@ -204,10 +216,14 @@ export default function ScheduleVaultPicker({
           hasMoreRef.current = items.length >= 60;
           if (!append) setVaultListingCache(mediaKey, { fourBasedItems: items });
         } else if (platform === 'fansly') {
-          const result = await listFanslyVaultMedia(creatorId, folderId);
+          const result = await listFanslyVaultMedia(creatorId, folderId, {
+            before: append ? fanslyBeforeRef.current : undefined,
+          });
           const items = result.media || [];
-          setFanslyItems(items);
-          hasMoreRef.current = false;
+          setFanslyItems((prev) => (append ? [...prev, ...items] : items));
+          const last = items[items.length - 1];
+          fanslyBeforeRef.current = last?.id ? String(last.id) : append ? fanslyBeforeRef.current : null;
+          hasMoreRef.current = Boolean(result.hasMore) && items.length > 0;
         } else {
           const result = await listMaloumVaultMedia(creatorId, folderId, {
             limit: 50,
@@ -359,28 +375,51 @@ export default function ScheduleVaultPicker({
                 fanslyItems.map((item) => {
                   const mediaId = String(item.mediaId || '').trim();
                   const thumb = fanslyVaultPreviewSrc(creatorId, item);
+                  const kind = fanslyMediaKind(item);
+                  const video = kind === 'video';
                   if (!mediaId) return null;
                   return (
-                    <button
+                    <div
                       key={mediaId}
-                      type="button"
-                      onClick={() =>
-                        onSelect({
-                          label: item.filename || mediaId,
-                          thumbUrl: thumb,
-                          payload: { mediaId },
-                        })
-                      }
-                      className="aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-zinc-800"
+                      className="relative aspect-square rounded-lg overflow-hidden bg-gray-100 dark:bg-zinc-800"
                     >
-                      {thumb ? (
-                        <img src={thumb} alt="" className="w-full h-full object-cover" />
-                      ) : (
-                        <span className="text-[10px] text-gray-400 p-2 block truncate">
-                          {item.filename || mediaId}
-                        </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onSelect({
+                            label: item.filename || mediaId,
+                            thumbUrl: thumb,
+                            payload:
+                              kind === 'image' || kind === 'video'
+                                ? { mediaId, mediaKind: kind }
+                                : { mediaId },
+                          })
+                        }
+                        className="block h-full w-full text-left"
+                      >
+                        {thumb ? (
+                          <img src={thumb} alt="" className="w-full h-full object-cover" />
+                        ) : (
+                          <span className="text-[10px] text-gray-400 p-2 block truncate">
+                            {item.filename || mediaId}
+                          </span>
+                        )}
+                      </button>
+                      <FanslyKindBadge kind={kind} className="bottom-1 left-1" />
+                      {kind !== 'audio' && (
+                        <button
+                          type="button"
+                          aria-label={video ? 'Play video' : 'View picture'}
+                          onClick={() => {
+                            const next = fanslyOpenSrc(creatorId, item);
+                            if (next) setViewer(next);
+                          }}
+                          className="absolute right-1 top-1 rounded-full bg-black/55 p-1 text-white"
+                        >
+                          {video ? <Play className="h-3.5 w-3.5 fill-white" /> : <Eye className="h-3.5 w-3.5" />}
+                        </button>
                       )}
-                    </button>
+                    </div>
                   );
                 })}
               {platform === 'maloum' &&
@@ -420,6 +459,16 @@ export default function ScheduleVaultPicker({
           </div>
         </div>
       </div>
+      {viewer && (
+        <VaultMediaLightbox
+          url={viewer.url}
+          kind={viewer.kind}
+          poster={viewer.poster}
+          fallbackUrl={viewer.fallbackUrl}
+          onClose={() => setViewer(null)}
+          zClassName="z-[80]"
+        />
+      )}
     </div>
   );
 }

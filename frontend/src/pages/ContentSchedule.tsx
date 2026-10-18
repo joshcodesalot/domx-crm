@@ -14,6 +14,7 @@ import ScheduleDateTimePicker, {
   type ScheduleJobKindFilter,
   type ScheduleJobPlatformFilter,
 } from '@/components/ScheduleDateTimePicker';
+import FanslyKindBadge from '@/components/fansly/FanslyKindBadge';
 import ScheduleJobThumb from '@/components/ScheduleJobThumb';
 import ScheduleVaultPicker, {
   type ScheduleVaultPick,
@@ -140,6 +141,18 @@ function vaultIdsFromPayload(payload: Record<string, unknown>): {
   };
 }
 
+function fanslyScheduleKind(source: Record<string, unknown>): 'image' | 'video' | undefined {
+  return source.mediaKind === 'image' || source.mediaKind === 'video' ? source.mediaKind : undefined;
+}
+
+function withFanslyKind(
+  payload: Record<string, unknown>,
+  source: Record<string, unknown>
+): Record<string, unknown> {
+  const mediaKind = fanslyScheduleKind(source);
+  return mediaKind ? { ...payload, mediaKind } : payload;
+}
+
 function vaultPayloadForKind(
   kind: ReviewRow['kind'],
   platform: ReviewRow['platform'],
@@ -163,7 +176,7 @@ function vaultPayloadForKind(
       return { media: [{ mediaId, type: 'picture' }] };
     }
     if (platform === 'fansly' && mediaId) {
-      return { mediaId, mediaIds: [mediaId] };
+      return withFanslyKind({ mediaId, mediaIds: [mediaId] }, source);
     }
     if (platform === 'telegram') {
       const ids = Array.isArray(source.vaultIds)
@@ -178,7 +191,10 @@ function vaultPayloadForKind(
     if (platform === '4based' && vaultId) {
       return vaultGuid ? { vaultId, vaultGuid } : { vaultId };
     }
-    if ((platform === 'maloum' || platform === 'fansly') && mediaId) {
+    if (platform === 'fansly' && mediaId) {
+      return withFanslyKind({ mediaId }, source);
+    }
+    if (platform === 'maloum' && mediaId) {
       return { mediaId };
     }
   }
@@ -1154,11 +1170,17 @@ export default function ContentSchedule() {
                                         {row.vaultLabel || 'Choose vault item'}
                                       </button>
                                       {row.vaultThumb && (
-                                        <img
-                                          src={row.vaultThumb}
-                                          alt=""
-                                          className="w-16 h-16 rounded-lg object-cover"
-                                        />
+                                        <span className="relative inline-block">
+                                          <img
+                                            src={row.vaultThumb}
+                                            alt=""
+                                            className="w-16 h-16 rounded-lg object-cover"
+                                          />
+                                          <FanslyKindBadge
+                                            kind={fanslyScheduleKind(row.payload)}
+                                            className="bottom-1 left-1"
+                                          />
+                                        </span>
                                       )}
                                     </>
                                   )}
@@ -1185,11 +1207,17 @@ export default function ContentSchedule() {
                                     {row.vaultLabel || 'Optional vault item'}
                                   </button>
                                   {row.vaultThumb && (
-                                    <img
-                                      src={row.vaultThumb}
-                                      alt=""
-                                      className="w-16 h-16 rounded-lg object-cover"
-                                    />
+                                    <span className="relative inline-block">
+                                      <img
+                                        src={row.vaultThumb}
+                                        alt=""
+                                        className="w-16 h-16 rounded-lg object-cover"
+                                      />
+                                      <FanslyKindBadge
+                                        kind={fanslyScheduleKind(row.payload)}
+                                        className="bottom-1 left-1"
+                                      />
+                                    </span>
                                   )}
                                   {row.vaultLabel && (
                                     <button

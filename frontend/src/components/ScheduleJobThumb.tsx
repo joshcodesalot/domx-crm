@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ImageIcon } from 'lucide-react';
+import FanslyKindBadge from '@/components/fansly/FanslyKindBadge';
 import {
   fetchScheduledContentAsset,
   type ScheduledContentJob,
@@ -51,6 +52,11 @@ function firstRecord(value: unknown): Record<string, unknown> | null {
   return value[0] as Record<string, unknown>;
 }
 
+function jobMediaKind(job: ScheduledContentJob): 'image' | 'video' | null {
+  const payload = job.payload && typeof job.payload === 'object' ? job.payload : {};
+  return payload.mediaKind === 'image' || payload.mediaKind === 'video' ? payload.mediaKind : null;
+}
+
 function jobHasVaultMedia(job: ScheduledContentJob): boolean {
   const payload = job.payload && typeof job.payload === 'object' ? job.payload : {};
   const vaultItem = firstRecord(payload.vaults);
@@ -75,6 +81,7 @@ export default function ScheduleJobThumb({
   const [visible, setVisible] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const showVault = !job.hasImage && jobHasVaultMedia(job);
+  const mediaKind = jobMediaKind(job);
 
   useEffect(() => {
     const el = rootRef.current;
@@ -140,6 +147,7 @@ export default function ScheduleJobThumb({
       {url && (
         <ImageIcon className="absolute -bottom-1 -right-1 w-4 h-4 text-gray-400 bg-white dark:bg-zinc-900 rounded-full p-0.5" />
       )}
+      {mediaKind && <FanslyKindBadge kind={mediaKind} className="bottom-0 left-0" />}
     </div>
   );
 }

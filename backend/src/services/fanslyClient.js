@@ -670,11 +670,14 @@ const PERMISSION_FOLLOW = 2;
 const PERMISSION_SUBSCRIPTION_TIER = 4;
 const PERMISSION_SUBSCRIPTION_ANY = 8;
 
-/** Message attachment content types. Vault media type is separate (1 image, 2 video). */
+/** Message attachment content types. Vault media type is separate (1 image, 2 video, 100 audio). */
 const MESSAGE_CONTENT_MEDIA = 1;
 const MESSAGE_CONTENT_BUNDLE = 2;
 const MESSAGE_CONTENT_STORY = 32001;
 const VARIANT_HLS = 302;
+const MEDIA_TYPE_VIDEO = 2;
+const MEDIA_TYPE_AUDIO = 100;
+const VAULT_PAGE_SIZE = 50;
 
 const BROADCAST_FLAG_FOLLOWERS = 2;
 const BROADCAST_FLAG_SUBSCRIBERS_RENEW = 4;
@@ -739,8 +742,15 @@ function fanslyDurationSeconds(media) {
   return duration;
 }
 
+function fanslyMediaKind(type) {
+  const value = Number(type);
+  if (value === MEDIA_TYPE_VIDEO) return 'video';
+  if (value === MEDIA_TYPE_AUDIO) return 'audio';
+  return 'image';
+}
+
 function fanslyMediaView(media) {
-  const kind = Number(media?.type) === 2 ? 'video' : 'image';
+  const kind = fanslyMediaKind(media?.type);
   const previewUrl = previewUrlFromMedia(media);
   const fullUrl = kind === 'image' && media ? httpLocation(media) : null;
   const playlistUrl = kind === 'video' ? hlsPlaylistUrl(media) : null;
@@ -868,14 +878,32 @@ function mapVaultAlbum(album) {
 
 function mapVaultMedia(item, mediaById) {
   const media = mediaById.get(String(item.mediaId)) || null;
-  const view = fanslyMediaView(media);
+  const mediaType = Number(item.mediaType) || Number(media?.type) || 1;
+  const view = fanslyMediaView(media ? { ...media, type: media.type ?? mediaType } : { type: mediaType });
   return {
     id: item.id,
     mediaId: item.mediaId,
-    mediaType: Number(item.mediaType) || Number(media?.type) || 1,
+    mediaType,
     filename: item.customFilename || media?.filename || '',
     ...view,
+    kind: fanslyMediaKind(mediaType),
   };
+}
+
+function mapVaultMediaPage(data) {
+  const albumMedia = Array.isArray(data?.albumMedia) ? data.albumMedia : [];
+  const media = Array.isArray(data?.media) ? data.media : [];
+  const mediaById = new Map(media.map((row) => [String(row.id), row]));
+  return {
+    media: albumMedia.map((item) => mapVaultMedia(item, mediaById)),
+    hasMore: albumMedia.length >= VAULT_PAGE_SIZE,
+  };
+}
+
+function vaultCursor(before) {
+  if (before == null || before === '' || before === 0 || before === '0') return 0;
+  const id = String(before).trim();
+  return /^\d+$/.test(id) ? id : 0;
 }
 
 async function fetchCdnMedia(session, url, { accept } = {}) {
@@ -1594,12 +1622,9 @@ async function listVaultMedia(session, { albumId, before = 0, after = 0 } = {}) 
     method: 'GET',
     path: '/media/vaultnew',
     session,
-    query: { albumId: id, mediaType: '', search: '', before, after },
+    query: { albumId: id, mediaType: '', search: '', before: vaultCursor(before), after },
   });
-  const albumMedia = Array.isArray(result.data?.albumMedia) ? result.data.albumMedia : [];
-  const media = Array.isArray(result.data?.media) ? result.data.media : [];
-  const mediaById = new Map(media.map((row) => [String(row.id), row]));
-  return albumMedia.map((item) => mapVaultMedia(item, mediaById));
+  return mapVaultMediaPage(result.data || {});
 }
 
 function subscriptionTierRows(data) {
@@ -2485,6 +2510,7 @@ module.exports = {
   isFanslyInitUrl,
   listVaultAlbums,
   listVaultMedia,
+  mapVaultMediaPage,
   fanslyPreviewLocksToIp,
   isFanslyImagePreview,
   isAllowedFanslyCdnUrl,

@@ -2407,9 +2407,21 @@ export interface FanslyChat {
   lifetimeGrossMills?: number | null;
 }
 
+export type FanslyMediaKind = 'image' | 'video' | 'audio';
+
+export function fanslyMediaKind(item: {
+  kind?: string | null;
+  mediaType?: number | null;
+}): FanslyMediaKind {
+  if (item.kind === 'video' || item.kind === 'audio' || item.kind === 'image') return item.kind;
+  if (item.mediaType === 2) return 'video';
+  if (item.mediaType === 100) return 'audio';
+  return 'image';
+}
+
 export interface FanslyAttachmentMedia {
   mediaId: string;
-  kind: 'image' | 'video';
+  kind: FanslyMediaKind;
   previewUrl: string | null;
   previewLocked?: boolean;
   fullUrl: string | null;
@@ -2461,7 +2473,7 @@ export interface FanslyVaultMedia {
   mediaId: string;
   mediaType: number;
   filename: string;
-  kind?: 'image' | 'video';
+  kind?: FanslyMediaKind;
   previewUrl: string | null;
   previewLocked?: boolean;
   fullUrl?: string | null;
@@ -2486,7 +2498,7 @@ export interface FanslyMediaPermissions {
 
 export interface FanslyFeedMedia {
   mediaId: string;
-  kind: 'image' | 'video';
+  kind: FanslyMediaKind;
   previewUrl: string | null;
   previewLocked?: boolean;
   fullUrl: string | null;
@@ -2630,7 +2642,7 @@ export async function listFanslyMessages(
 
 export interface FanslyThreadMedia {
   mediaId: string;
-  kind: 'image' | 'video';
+  kind: FanslyMediaKind;
   previewUrl: string | null;
   previewLocked?: boolean;
   fullUrl?: string | null;
@@ -2779,9 +2791,11 @@ export async function listFanslyVaultAlbums(
 
 export async function listFanslyVaultMedia(
   creatorId: string,
-  albumId: string
-): Promise<{ media: FanslyVaultMedia[] }> {
+  albumId: string,
+  options: { before?: string | null } = {}
+): Promise<{ media: FanslyVaultMedia[]; hasMore?: boolean }> {
   const params = new URLSearchParams({ albumId });
+  if (options.before && /^\d+$/.test(options.before)) params.set('before', options.before);
   return request(`/api/creators/${creatorId}/fansly/vault/media?${params.toString()}`);
 }
 
@@ -2809,7 +2823,7 @@ export function fanslyOpenSrc(
   creatorId: string,
   item: {
     mediaId: string;
-    kind?: 'image' | 'video';
+    kind?: FanslyMediaKind;
     mediaType?: number;
     previewUrl?: string | null;
     previewLocked?: boolean;
@@ -2894,7 +2908,7 @@ export async function deleteFanslyFeedPost(
 
 export interface FanslyMassMessageMedia {
   mediaId: string;
-  kind: 'image' | 'video';
+  kind: FanslyMediaKind;
   previewUrl: string | null;
   previewLocked?: boolean;
   fullUrl: string | null;

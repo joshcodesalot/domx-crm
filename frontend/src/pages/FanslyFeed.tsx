@@ -1,11 +1,13 @@
 import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
 import AppShell from '@/components/AppShell';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 'react';
 import {
   Check,
+  Eye,
   Image as ImageIcon,
   Loader2,
   Newspaper,
+  Play,
   RefreshCw,
   Send,
   Trash2,
@@ -13,6 +15,8 @@ import {
   X,
 } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
+import FanslyKindBadge from '@/components/fansly/FanslyKindBadge';
+import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import { isCreatorRosterEvent } from '@/lib/creatorAccessEvents';
@@ -21,6 +25,8 @@ import fanslyIcon from '@/assets/fansly.svg';
 import {
   createFanslyFeedPost,
   deleteFanslyFeedPost,
+  fanslyMediaKind,
+  fanslyOpenSrc,
   fanslyVaultPreviewSrc,
   getCreators,
   listFanslyFeedPosts,
@@ -99,7 +105,18 @@ export default function FanslyFeed() {
   const [selectedAlbumId, setSelectedAlbumId] = useState<string | null>(null);
   const [vaultMedia, setVaultMedia] = useState<FanslyVaultMedia[]>([]);
   const [vaultLoading, setVaultLoading] = useState(false);
+  const [vaultLoadingMore, setVaultLoadingMore] = useState(false);
   const [vaultError, setVaultError] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<{
+    url: string;
+    kind: 'picture' | 'video';
+    poster: string | null;
+    fallbackUrl?: string | null;
+  } | null>(null);
+  const vaultCursorRef = useRef<string | null>(null);
+  const vaultHasMoreRef = useRef(false);
+  const vaultLoadingMoreRef = useRef(false);
+  const vaultRequestRef = useRef(0);
   const [selectedVaultItem, setSelectedVaultItem] = useState<FanslyVaultMedia | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -219,27 +236,62 @@ export default function FanslyFeed() {
     };
   }, [vaultOpen, selectedCreatorId]);
 
+  const loadVaultMedia = useCallback(
+    async (append: boolean) => {
+      if (!selectedCreatorId || !selectedAlbumId) return;
+      if (append) {
+        if (vaultLoadingMoreRef.current || !vaultHasMoreRef.current || !vaultCursorRef.current) return;
+        vaultLoadingMoreRef.current = true;
+        setVaultLoadingMore(true);
+      } else {
+        vaultRequestRef.current += 1;
+        vaultCursorRef.current = null;
+        vaultHasMoreRef.current = false;
+        setVaultMedia([]);
+        setVaultLoading(true);
+      }
+      const requestId = vaultRequestRef.current;
+      setVaultError(null);
+      try {
+        const result = await listFanslyVaultMedia(selectedCreatorId, selectedAlbumId, {
+          before: append ? vaultCursorRef.current : undefined,
+        });
+        if (requestId !== vaultRequestRef.current) return;
+        const items = result.media || [];
+        setVaultMedia((prev) => (append ? [...prev, ...items] : items));
+        const last = items[items.length - 1];
+        if (last?.id) vaultCursorRef.current = String(last.id);
+        vaultHasMoreRef.current = Boolean(result.hasMore) && items.length > 0;
+      } catch (err) {
+        if (requestId !== vaultRequestRef.current) return;
+        setVaultError(err instanceof Error ? err.message : 'Failed to load vault media');
+        if (!append) setVaultMedia([]);
+      } finally {
+        if (requestId !== vaultRequestRef.current) return;
+        setVaultLoading(false);
+        setVaultLoadingMore(false);
+        vaultLoadingMoreRef.current = false;
+      }
+    },
+    [selectedAlbumId, selectedCreatorId]
+  );
+
   useEffect(() => {
     if (!vaultOpen || !selectedCreatorId || !selectedAlbumId) return;
-    let cancelled = false;
-    setVaultLoading(true);
-    setVaultError(null);
-    listFanslyVaultMedia(selectedCreatorId, selectedAlbumId)
-      .then((result) => {
-        if (!cancelled) setVaultMedia(result.media || []);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setVaultError(err instanceof Error ? err.message : 'Failed to load vault media');
-        setVaultMedia([]);
-      })
-      .finally(() => {
-        if (!cancelled) setVaultLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [vaultOpen, selectedCreatorId, selectedAlbumId]);
+    void loadVaultMedia(false);
+  }, [loadVaultMedia, selectedAlbumId, selectedCreatorId, vaultOpen]);
+
+  function onVaultScroll(event: UIEvent<HTMLDivElement>) {
+    const target = event.currentTarget;
+    if (target.scrollHeight - target.scrollTop - target.clientHeight > 80) return;
+    void loadVaultMedia(true);
+  }
+
+  function openViewer(item: FanslyVaultMedia) {
+    if (!selectedCreatorId) return;
+    const next = fanslyOpenSrc(selectedCreatorId, item);
+    if (next) setViewer(next);
+  }
 
   const priceInvalid = requirePurchase && !(Number(price) > 0);
   const hasMedia =
@@ -710,7 +762,7 @@ export default function FanslyFeed() {
                   </button>
                 ))}
               </div>
-              <div className="flex-1 overflow-y-auto p-4">
+              <div className="flex-1 overflow-y-auto p-4" onScroll={onVaultScroll}>
                 {vaultError && <p className="text-sm text-red-500 mb-3">{vaultError}</p>}
                 {vaultLoading && (
                   <p className="text-sm text-gray-500 flex items-center gap-2">
@@ -724,52 +776,78 @@ export default function FanslyFeed() {
                   {vaultMedia.map((item) => {
                     const src = previewSrc(selectedCreatorId, item);
                     const selected = selectedVaultItem?.mediaId === item.mediaId;
-                    const video = item.kind === 'video' || item.mediaType === 2;
+                    const kind = fanslyMediaKind(item);
+                    const video = kind === 'video';
                     const durationLabel = video ? formatDuration(item.duration) : '';
                     return (
-                      <button
+                      <div
                         key={item.id || item.mediaId}
-                        type="button"
-                        onClick={() => {
-                          setSelectedVaultItem(item);
-                          setVaultOpen(false);
-                        }}
                         className={`relative aspect-square rounded-xl overflow-hidden border ${
                           selected
                             ? 'border-sky-500 ring-2 ring-sky-500/40'
                             : 'border-gray-200 dark:border-zinc-800'
                         }`}
                       >
-                        {src ? (
-                          <img src={src} alt="" className="absolute inset-0 w-full h-full object-cover" />
-                        ) : (
-                          <span className="absolute inset-0 flex items-center justify-center text-[11px] text-gray-500 px-2">
-                            {item.filename || 'Media'}
-                          </span>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedVaultItem(item);
+                            setVaultOpen(false);
+                          }}
+                          className="block h-full w-full text-left"
+                        >
+                          {src ? (
+                            <img src={src} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                          ) : (
+                            <span className="absolute inset-0 flex items-center justify-center text-[11px] text-gray-500 px-2">
+                              {item.filename || 'Media'}
+                            </span>
+                          )}
+                        </button>
                         {selected && (
-                          <span className="absolute top-2 right-2 bg-sky-500 text-white rounded-full p-1">
+                          <span className="pointer-events-none absolute top-2 left-2 bg-sky-500 text-white rounded-full p-1">
                             <Check className="w-3 h-3" />
                           </span>
                         )}
-                        {video && (
-                          <span className="absolute bottom-2 left-2 text-[10px] px-1.5 py-0.5 rounded bg-black/70 text-white">
-                            Video
-                          </span>
-                        )}
+                        <FanslyKindBadge kind={kind} className="bottom-2 left-2" />
                         {durationLabel && (
                           <span className="absolute bottom-2 right-2 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white pointer-events-none">
                             {durationLabel}
                           </span>
                         )}
-                      </button>
+                        {kind !== 'audio' && (
+                          <button
+                            type="button"
+                            aria-label={video ? 'Play video' : 'View picture'}
+                            onClick={() => openViewer(item)}
+                            className="absolute right-1 top-1 rounded-full bg-black/55 p-1 text-white"
+                          >
+                            {video ? <Play className="h-3.5 w-3.5 fill-white" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
+                {vaultLoadingMore && (
+                  <p className="mt-3 text-sm text-gray-500 flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" /> Loading more…
+                  </p>
+                )}
               </div>
             </div>
           </div>
         </div>
+      )}
+      {viewer && (
+        <VaultMediaLightbox
+          url={viewer.url}
+          kind={viewer.kind}
+          poster={viewer.poster}
+          fallbackUrl={viewer.fallbackUrl}
+          onClose={() => setViewer(null)}
+          zClassName="z-[100]"
+        />
       )}
     </AppShell>
   );

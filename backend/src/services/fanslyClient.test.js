@@ -28,6 +28,7 @@ const {
   sumLeadingUnread,
   countGroupedUnread,
   mapThreadGallery,
+  mapVaultMediaPage,
   buildDmGroupBody,
   missingBroadcastRecipients,
   missingExcludedUsers,
@@ -1582,5 +1583,73 @@ describe('fansly broadcast', () => {
     assert.deepEqual(message.stats, { total: 50, delivered: 57, read: 1 });
     assert.equal(message.media[0].mediaId, mediaId);
     assert.equal(message.media[0].kind, 'image');
+  });
+});
+
+describe('fansly vault media page', () => {
+  function row(id, mediaType) {
+    return {
+      id,
+      mediaId: id,
+      mediaType,
+      customFilename: `${id}.bin`,
+    };
+  }
+
+  function file(id, type) {
+    const video = type === 2;
+    const audio = type === 100;
+    return {
+      id,
+      type,
+      mimetype: video || audio ? (audio ? 'audio/mp4' : 'video/mp4') : 'image/jpeg',
+      locations: [
+        {
+          location: `https://cdn3.fansly.com/${id}.${video || audio ? 'mp4' : 'jpeg'}`,
+        },
+      ],
+      variants: video
+        ? [
+            {
+              type: 302,
+              mimetype: 'application/vnd.apple.mpegurl',
+              locations: [{ location: `https://cdn3.fansly.com/new/${id}/${id}.m3u8` }],
+            },
+          ]
+        : [],
+    };
+  }
+
+  it('pages 50 vault rows and maps image, video, and audio', () => {
+    const albumMedia = Array.from({ length: 50 }, (_, index) => {
+      const id = String(890000000000000000n + BigInt(index));
+      const mediaType = index === 1 ? 2 : index === 2 ? 100 : 1;
+      return row(id, mediaType);
+    });
+    const page = mapVaultMediaPage({
+      albumMedia,
+      media: albumMedia.map((item) => file(item.mediaId, item.mediaType)),
+    });
+    assert.equal(page.hasMore, true);
+    assert.equal(page.media.length, 50);
+    assert.equal(page.media[page.media.length - 1].id, albumMedia[49].id);
+    assert.equal(page.media[0].kind, 'image');
+    assert.equal(page.media[1].kind, 'video');
+    assert.equal(page.media[1].playlistUrl, `https://cdn3.fansly.com/new/${albumMedia[1].id}/${albumMedia[1].id}.m3u8`);
+    assert.equal(page.media[2].kind, 'audio');
+    assert.notEqual(page.media[2].kind, 'image');
+  });
+
+  it('stops when a vault page is short', () => {
+    const page = mapVaultMediaPage({
+      albumMedia: [row('11', 1), row('12', 2), row('13', 100)],
+      media: [file('11', 1), file('12', 2), file('13', 100)],
+    });
+    assert.equal(page.hasMore, false);
+    assert.deepEqual(
+      page.media.map((item) => item.kind),
+      ['image', 'video', 'audio']
+    );
+    assert.equal(page.media[page.media.length - 1].id, '13');
   });
 });

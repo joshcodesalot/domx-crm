@@ -1,9 +1,10 @@
 import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
 import AppShell from '@/components/AppShell';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent } from 'react';
 import { ArrowUpDown, Banknote, Check, Eye, ImagePlus, Images, Loader2, Lock, PanelRight, PanelRightClose, Pencil, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import FanslyFanPanel from '@/components/fansly/FanslyFanPanel';
+import FanslyKindBadge from '@/components/fansly/FanslyKindBadge';
 import QuickEmojiBar from '@/components/QuickEmojiBar';
 import VaultMediaLightbox from '@/components/VaultMediaLightbox';
 import { useAuth } from '@/context/AuthContext';
@@ -22,6 +23,7 @@ import {
   listFanslyThreadGallery,
   openFanslyChat,
   listFanslySubscriptionTiers,
+  fanslyMediaKind,
   fanslyOpenSrc,
   fanslyVaultPreviewSrc,
   listFanslyLists,
@@ -119,8 +121,8 @@ function formatFanslyPrice(price: number): string {
   return Number.isInteger(rounded) ? `$${rounded}` : `$${rounded.toFixed(2)}`;
 }
 
-function isFanslyVideo(item: { kind?: 'image' | 'video'; mediaType?: number }): boolean {
-  return item.kind === 'video' || item.mediaType === 2;
+function isFanslyVideo(item: { kind?: string | null; mediaType?: number | null }): boolean {
+  return fanslyMediaKind(item) === 'video';
 }
 
 function formatDuration(seconds?: number | null): string {
@@ -456,6 +458,11 @@ export default function ChatterFansly() {
   const [selectedAlbumId, setSelectedAlbumId] = useState<string | null>(null);
   const [vaultMedia, setVaultMedia] = useState<FanslyVaultMedia[]>([]);
   const [mediaLoading, setMediaLoading] = useState(false);
+  const [vaultLoadingMore, setVaultLoadingMore] = useState(false);
+  const vaultCursorRef = useRef<string | null>(null);
+  const vaultHasMoreRef = useRef(false);
+  const vaultLoadingMoreRef = useRef(false);
+  const vaultRequestRef = useRef(0);
   const [viewer, setViewer] = useState<{
     url: string;
     kind: 'picture' | 'video';
@@ -961,25 +968,56 @@ export default function ChatterFansly() {
     };
   }, [selectedCreatorId, vaultOpen]);
 
+  const loadVaultMedia = useCallback(
+    async (append: boolean) => {
+      if (!selectedCreatorId || !selectedAlbumId) return;
+      if (append) {
+        if (vaultLoadingMoreRef.current || !vaultHasMoreRef.current || !vaultCursorRef.current) return;
+        vaultLoadingMoreRef.current = true;
+        setVaultLoadingMore(true);
+      } else {
+        vaultRequestRef.current += 1;
+        vaultCursorRef.current = null;
+        vaultHasMoreRef.current = false;
+        setVaultMedia([]);
+        setMediaLoading(true);
+      }
+      const requestId = vaultRequestRef.current;
+      setVaultError(null);
+      try {
+        const result = await listFanslyVaultMedia(selectedCreatorId, selectedAlbumId, {
+          before: append ? vaultCursorRef.current : undefined,
+        });
+        if (requestId !== vaultRequestRef.current) return;
+        const items = result.media || [];
+        setVaultMedia((prev) => (append ? [...prev, ...items] : items));
+        const last = items[items.length - 1];
+        if (last?.id) vaultCursorRef.current = String(last.id);
+        vaultHasMoreRef.current = Boolean(result.hasMore) && items.length > 0;
+      } catch (err) {
+        if (requestId !== vaultRequestRef.current) return;
+        setVaultError(err instanceof Error ? err.message : 'Failed to load media');
+        if (!append) setVaultMedia([]);
+      } finally {
+        if (requestId !== vaultRequestRef.current) return;
+        setMediaLoading(false);
+        setVaultLoadingMore(false);
+        vaultLoadingMoreRef.current = false;
+      }
+    },
+    [selectedAlbumId, selectedCreatorId]
+  );
+
   useEffect(() => {
     if (!vaultOpen || !selectedCreatorId || !selectedAlbumId) return;
-    let cancelled = false;
-    setMediaLoading(true);
-    setVaultError(null);
-    listFanslyVaultMedia(selectedCreatorId, selectedAlbumId)
-      .then((result) => {
-        if (!cancelled) setVaultMedia(result.media || []);
-      })
-      .catch((err) => {
-        if (!cancelled) setVaultError(err instanceof Error ? err.message : 'Failed to load media');
-      })
-      .finally(() => {
-        if (!cancelled) setMediaLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedAlbumId, selectedCreatorId, vaultOpen]);
+    void loadVaultMedia(false);
+  }, [loadVaultMedia, selectedAlbumId, selectedCreatorId, vaultOpen]);
+
+  function onVaultScroll(event: UIEvent<HTMLDivElement>) {
+    const target = event.currentTarget;
+    if (target.scrollHeight - target.scrollTop - target.clientHeight > 80) return;
+    void loadVaultMedia(true);
+  }
 
   useEffect(() => {
     if (!selectedCreatorId || selectedMedia.length === 0) return;
@@ -2100,7 +2138,7 @@ export default function ChatterFansly() {
                           </button>
                         ))}
                       </div>
-                      <div className="flex-1 overflow-y-auto p-4">
+                      <div className="flex-1 overflow-y-auto p-4" onScroll={onVaultScroll}>
                         {vaultError && <p className="text-sm text-red-500 mb-3">{vaultError}</p>}
                         {mediaLoading && (
                           <p className="text-sm text-gray-500 flex items-center gap-2">
@@ -2114,7 +2152,8 @@ export default function ChatterFansly() {
                           {vaultMedia.map((item) => {
                             const selected = selectedMedia.some((row) => row.mediaId === item.mediaId);
                             const previewSrc = fanslyVaultPreviewSrc(selectedCreatorId, item);
-                            const video = isFanslyVideo(item);
+                            const kind = fanslyMediaKind(item);
+                            const video = kind === 'video';
                             const durationLabel = video ? formatDuration(item.duration) : '';
                             return (
                               <div
@@ -2138,6 +2177,7 @@ export default function ChatterFansly() {
                                     </span>
                                   )}
                                 </button>
+                                <FanslyKindBadge kind={item.kind} mediaType={item.mediaType} className="top-1 left-1" />
                                 {video && (
                                   <span className="pointer-events-none absolute bottom-1 left-1 flex items-center justify-center rounded-full bg-black/55 p-1 text-white">
                                     <Play className="h-3 w-3 fill-white" />
@@ -2148,18 +2188,25 @@ export default function ChatterFansly() {
                                     {durationLabel}
                                   </span>
                                 )}
-                                <button
-                                  type="button"
-                                  aria-label={video ? 'Play video' : 'View picture'}
-                                  onClick={() => openViewer(item)}
-                                  className="absolute right-1 top-1 rounded-full bg-black/55 p-1 text-white"
-                                >
-                                  {video ? <Play className="h-3.5 w-3.5 fill-white" /> : <Eye className="h-3.5 w-3.5" />}
-                                </button>
+                                {kind !== 'audio' && (
+                                  <button
+                                    type="button"
+                                    aria-label={video ? 'Play video' : 'View picture'}
+                                    onClick={() => openViewer(item)}
+                                    className="absolute right-1 top-1 rounded-full bg-black/55 p-1 text-white"
+                                  >
+                                    {video ? <Play className="h-3.5 w-3.5 fill-white" /> : <Eye className="h-3.5 w-3.5" />}
+                                  </button>
+                                )}
                               </div>
                             );
                           })}
                         </div>
+                        {vaultLoadingMore && (
+                          <p className="mt-3 text-sm text-gray-500 flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin" /> Loading more…
+                          </p>
+                        )}
                       </div>
                     </div>
                   </div>

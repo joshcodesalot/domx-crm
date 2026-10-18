@@ -971,10 +971,11 @@ router.get(
     try {
       const creator = await requireFansly(req, res);
       if (!creator) return;
-      const media = await fanslyClient.listVaultMedia(fanslySession(creator), {
+      const page = await fanslyClient.listVaultMedia(fanslySession(creator), {
         albumId: req.query.albumId,
+        before: req.query.before,
       });
-      res.json({ media });
+      res.json(page);
     } catch (err) {
       return handleFanslyError(res, err, 'List Fansly vault media error:');
     }
