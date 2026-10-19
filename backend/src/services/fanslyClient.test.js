@@ -29,6 +29,8 @@ const {
   countGroupedUnread,
   mapThreadGallery,
   mapVaultMediaPage,
+  fanslyEarningsPageQuery,
+  nextFanslyEarningsQuery,
   buildDmGroupBody,
   missingBroadcastRecipients,
   missingExcludedUsers,
@@ -1651,5 +1653,29 @@ describe('fansly vault media page', () => {
       ['image', 'video', 'audio']
     );
     assert.equal(page.media[page.media.length - 1].id, '13');
+  });
+});
+
+describe('fansly earnings transaction pages', () => {
+  it('starts at the newest row with offset held at zero', () => {
+    assert.deepEqual(fanslyEarningsPageQuery(), {
+      before: '',
+      after: '',
+      limit: 30,
+      offset: 0,
+    });
+  });
+
+  it('pages with the last transaction id and keeps offset at zero', () => {
+    const next = nextFanslyEarningsQuery([
+      { transactionId: '100' },
+      { transactionId: '962553777712287745' },
+    ]);
+    assert.deepEqual(next, {
+      before: '962553777712287745',
+      after: '',
+      limit: 30,
+      offset: 0,
+    });
   });
 });

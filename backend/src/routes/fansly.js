@@ -1172,15 +1172,6 @@ router.get(
         after: 0,
         type,
       });
-      try {
-        await messagingDashboard.processFanslyPurchaseNotifications(creator.id, {
-          notifications: payload.notifications,
-          accounts: payload.accounts,
-          tips: payload.tips,
-        });
-      } catch (err) {
-        console.warn('[fanslyClient] purchase log failed:', err.message);
-      }
       res.json({
         filters: fanslyClient.NOTIFICATION_FILTERS,
         ...payload,
@@ -1404,6 +1395,7 @@ router.get(
       void messagingDashboard.repairFanslyFalseSalesOnce(creator.id).catch((err) => {
         console.warn('[fansly] false sale repair failed:', err.message || err);
       });
+      messagingDashboard.scheduleFanslyWalletSync(creator.id, fanslySession(creator));
     } catch (err) {
       return handleFanslyError(res, err, 'Fansly unread error:');
     }

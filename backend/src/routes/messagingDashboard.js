@@ -68,6 +68,7 @@ const {
 
 const { requireElectronServiceKey } = require('../middleware/electronServiceKey');
 const { fetchReflectedTotalSales } = require('../services/salePayoutReconciler');
+const fanslyClient = require('../services/fanslyClient');
 
 /** Business-TZ calendar date when activity tracking shipped (v1.6.27). Used for rate metrics only. */
 const ACTIVITY_METRICS_CUTOVER =
@@ -337,7 +338,7 @@ function fanslySaleMessageId(notificationId) {
 
 async function findFanslySendByContentId(creatorId, contentId) {
   const result = await pool.query(
-    `SELECT "maloumMessageId", purchased, "payoutVerified"
+    `SELECT "maloumMessageId", purchased, "payoutVerified", "payoutTxnId"
      FROM messaging_dashboard_entries
      WHERE ${FANSLY_SEND_ROW}
        AND "mediaJson" @> $2::jsonb
@@ -355,7 +356,7 @@ async function findFanslySendByPrice({ creatorId, fanId, priceNet, soldAt, purch
       ? new Date(soldAt).toISOString()
       : new Date().toISOString();
   const result = await pool.query(
-    `SELECT "maloumMessageId", purchased, "payoutVerified"
+    `SELECT "maloumMessageId", purchased, "payoutVerified", "payoutTxnId"
      FROM messaging_dashboard_entries
      WHERE ${FANSLY_SEND_ROW}
        AND "fanId" = $2
@@ -371,20 +372,33 @@ async function findFanslySendByPrice({ creatorId, fanId, priceNet, soldAt, purch
   return result.rows[0] || null;
 }
 
-async function confirmFanslySale({ maloumMessageId, priceNet, unlockedAt, contentId }) {
+async function confirmFanslySale({
+  maloumMessageId,
+  priceNet,
+  unlockedAt,
+  contentId,
+  payoutTxnId = null,
+  payoutVerified = true,
+}) {
   const parsedPriceNet = parsePriceNet(priceNet);
   const unlockedAtIso =
     unlockedAt && !Number.isNaN(Date.parse(unlockedAt))
       ? new Date(unlockedAt).toISOString()
       : new Date().toISOString();
   const content = typeof contentId === 'string' && /^\d+$/.test(contentId) ? contentId : null;
+  const verified = payoutVerified !== false;
+  const txnId = payoutTxnId == null || String(payoutTxnId).trim() === '' ? null : String(payoutTxnId);
   const result = await pool.query(
     `UPDATE messaging_dashboard_entries
      SET purchased = true,
          "priceNet" = COALESCE("priceNet", $1),
          "unlockedAt" = COALESCE("unlockedAt", $2::timestamptz),
-         "payoutVerified" = true,
-         "payoutVerifiedAt" = COALESCE("payoutVerifiedAt", $2::timestamptz),
+         "payoutTxnId" = COALESCE($5, "payoutTxnId"),
+         "payoutVerified" = $6,
+         "payoutVerifiedAt" = CASE
+           WHEN $6::boolean THEN COALESCE("payoutVerifiedAt", $2::timestamptz)
+           ELSE NULL
+         END,
          "mediaJson" = CASE
            WHEN $4::text IS NULL THEN "mediaJson"
            WHEN jsonb_typeof("mediaJson") = 'array'
@@ -399,7 +413,7 @@ async function confirmFanslySale({ maloumMessageId, priceNet, unlockedAt, conten
          "updatedAt" = NOW()
      WHERE "maloumMessageId" = $3
      RETURNING *`,
-    [parsedPriceNet, unlockedAtIso, maloumMessageId, content]
+    [parsedPriceNet, unlockedAtIso, maloumMessageId, content, txnId, verified]
   );
   if (result.rows.length === 0) {
     return { updated: false, reason: 'entry_not_found', maloumMessageId };
@@ -420,6 +434,7 @@ async function logFanslyOrphanSale({
   notificationId,
   priceNet = null,
   createdAt = null,
+  payoutVerified = true,
 } = {}) {
   const maloumMessageId = fanslySaleMessageId(notificationId);
   if (!creatorId || !isValidUuid(creatorId)) {
@@ -459,6 +474,7 @@ async function logFanslyOrphanSale({
     createdAt && !Number.isNaN(Date.parse(createdAt))
       ? new Date(createdAt).toISOString()
       : new Date().toISOString();
+  const verified = payoutVerified !== false;
   const chatId = fanId ? `fansly-sale:${fanId}` : tipContext.chatId;
 
   const result = await pool.query(
@@ -526,8 +542,8 @@ async function logFanslyOrphanSale({
       'USD',
       true,
       sentAt,
-      true,
-      sentAt,
+      verified,
+      verified ? sentAt : null,
       'orphan_sale',
       0,
       0,
@@ -694,6 +710,388 @@ function repairFanslyFalseSalesOnce(creatorId) {
   return repairFanslyFalseSales(id).catch((err) => {
     fanslyFalseSaleRepaired.delete(id);
     throw err;
+  });
+}
+
+const FANSLY_WALLET_LOOKBACK_MS = 8 * 24 * 60 * 60 * 1000;
+const FANSLY_WALLET_SYNC_THROTTLE_MS = 5 * 60 * 1000;
+const fanslyWalletSyncAt = new Map();
+const fanslyWalletBackfilled = new Set();
+
+function fanslyWalletId(value) {
+  const id = value == null ? '' : String(value).trim();
+  return /^\d+$/.test(id) && id !== '0' ? id : '';
+}
+
+function classifyFanslyWalletTransaction(row) {
+  const transactionId = fanslyWalletId(row?.transactionId);
+  if (!transactionId) return { action: 'skip' };
+  const type = Number(row.type) || 0;
+  const destination = Number(row.destination);
+  const status = Number(row.status);
+  const correlationId = fanslyWalletId(row.correlationId);
+  const fanId = fanslyWalletId(row.correlationAccountId) || fanslyWalletId(row.senderId);
+  const createdAt = fanslyUnlockedAt(row.createdAt);
+  const base = {
+    transactionId,
+    type,
+    destination,
+    status,
+    correlationId,
+    fanId,
+    createdAt,
+    net: fanslyMillsToDollars(row.amount),
+  };
+  const { FANSLY_TRANSACTION_STATUS: walletStatus } = fanslyClient;
+  if (type === fanslyClient.FANSLY_WALLET_REFUND_TYPE || destination === fanslyClient.FANSLY_EARNINGS_OUTGOING) {
+    return { ...base, action: 'clear' };
+  }
+  if (
+    status === walletStatus.CANCELED ||
+    status === walletStatus.REFUNDED ||
+    status === walletStatus.REFUNDED_PENDING
+  ) {
+    return { ...base, action: 'clear' };
+  }
+  if (destination !== fanslyClient.FANSLY_EARNINGS_INCOMING) return { ...base, action: 'skip' };
+  const open = status === walletStatus.PENDING || status === walletStatus.APPROVED;
+  if (!open) return { ...base, action: 'skip' };
+  const verified = status === walletStatus.APPROVED;
+  if (fanslyClient.FANSLY_WALLET_TIP_TYPES.has(type)) {
+    return { ...base, action: 'tip', verified };
+  }
+  if (fanslyClient.FANSLY_WALLET_CHAT_TYPES.has(type)) {
+    return { ...base, action: 'sale', verified, contentId: correlationId || null };
+  }
+  return { ...base, action: 'skip' };
+}
+
+function shouldClearUnmatchedFanslySale(row, { reachedEnd = false, windowStartMs = null } = {}) {
+  if (!row || row.platform !== 'fansly' || row.contentType !== 'chat_product') return false;
+  if (row.purchased !== true || row.payoutTxnId) return false;
+  if (reachedEnd) return true;
+  if (windowStartMs == null) return false;
+  const stamp = fanslyStampMs(row.unlockedAt);
+  const sent = fanslyStampMs(row.sentAt);
+  const at = stamp == null ? sent : stamp;
+  if (at == null) return false;
+  return at >= windowStartMs;
+}
+
+function claimableFanslyRow(row, transactionId) {
+  if (!row) return null;
+  if (row.payoutTxnId && String(row.payoutTxnId) !== String(transactionId)) return null;
+  return row;
+}
+
+async function findFanslyByPayoutTxn(creatorId, transactionId) {
+  const result = await pool.query(
+    `SELECT "maloumMessageId", "payoutTxnId"
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+       AND platform = 'fansly'
+       AND "payoutTxnId" = $2
+     ORDER BY "sentAt" DESC
+     LIMIT 1`,
+    [creatorId, transactionId]
+  );
+  return result.rows[0] || null;
+}
+
+async function findFanslyOrphanByPrice({ creatorId, fanId, priceNet, soldAt }) {
+  if (!fanId || priceNet == null) return null;
+  const soldAtIso =
+    soldAt && !Number.isNaN(Date.parse(soldAt))
+      ? new Date(soldAt).toISOString()
+      : new Date().toISOString();
+  const result = await pool.query(
+    `SELECT "maloumMessageId", "payoutTxnId"
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+       AND platform = 'fansly'
+       AND "maloumMessageId" LIKE 'fansly-sale:%'
+       AND "fanId" = $2
+       AND "priceNet" IS NOT NULL
+       AND ABS("priceNet" - $3::numeric) < $4::numeric
+       AND "sentAt" <= $5::timestamptz
+     ORDER BY "sentAt" DESC
+     LIMIT 1`,
+    [creatorId, fanId, priceNet, FANSLY_PRICE_EPSILON, soldAtIso]
+  );
+  return result.rows[0] || null;
+}
+
+async function clearFanslyWalletTransaction(creatorId, transactionId) {
+  const id = fanslyWalletId(transactionId);
+  if (!id) return;
+  await pool.query(
+    `UPDATE messaging_dashboard_entries
+     SET purchased = false,
+         "unlockedAt" = NULL,
+         "payoutVerified" = false,
+         "payoutVerifiedAt" = NULL,
+         "payoutTxnId" = NULL,
+         "updatedAt" = NOW()
+     WHERE "creatorId" = $1
+       AND platform = 'fansly'
+       AND "payoutTxnId" = $2`,
+    [creatorId, id]
+  );
+}
+
+async function clearUnmatchedFanslySales(creatorId, { reachedEnd, windowStartMs }) {
+  if (!reachedEnd && windowStartMs == null) return { cleared: 0 };
+  const windowIso =
+    windowStartMs != null && Number.isFinite(windowStartMs)
+      ? new Date(windowStartMs).toISOString()
+      : null;
+  const result = await pool.query(
+    `UPDATE messaging_dashboard_entries
+     SET purchased = false,
+         "unlockedAt" = NULL,
+         "payoutVerified" = false,
+         "payoutVerifiedAt" = NULL,
+         "updatedAt" = NOW()
+     WHERE "creatorId" = $1
+       AND platform = 'fansly'
+       AND "contentType" = 'chat_product'
+       AND purchased = true
+       AND "payoutTxnId" IS NULL
+       AND (
+         $2::boolean
+         OR COALESCE("unlockedAt", "sentAt") >= $3::timestamptz
+       )`,
+    [creatorId, reachedEnd === true, windowIso]
+  );
+  return { cleared: result.rowCount || 0 };
+}
+
+async function stampFanslyWalletMatch(classified, maloumMessageId, { contentId = null, fillPrice = false } = {}) {
+  if (!maloumMessageId) return;
+  await confirmFanslySale({
+    maloumMessageId,
+    priceNet: fillPrice ? classified.net : null,
+    unlockedAt: classified.createdAt,
+    contentId,
+    payoutTxnId: classified.transactionId,
+    payoutVerified: classified.verified === true,
+  });
+}
+
+async function upsertFanslyWalletSale(creatorId, classified, accounts) {
+  const fanUsername = fanslyAccountLabel(accounts, classified.fanId);
+  const byTxn = await findFanslyByPayoutTxn(creatorId, classified.transactionId);
+  let messageId = byTxn?.maloumMessageId || null;
+  if (!messageId && classified.contentId) {
+    const byContent = claimableFanslyRow(
+      await findFanslySendByContentId(creatorId, classified.contentId),
+      classified.transactionId
+    );
+    if (byContent) messageId = byContent.maloumMessageId;
+  }
+  if (!messageId) {
+    const unpurchased = claimableFanslyRow(
+      await findFanslySendByPrice({
+        creatorId,
+        fanId: classified.fanId,
+        priceNet: classified.net,
+        soldAt: classified.createdAt,
+        purchased: false,
+      }),
+      classified.transactionId
+    );
+    const purchased = unpurchased
+      ? null
+      : claimableFanslyRow(
+          await findFanslySendByPrice({
+            creatorId,
+            fanId: classified.fanId,
+            priceNet: classified.net,
+            soldAt: classified.createdAt,
+            purchased: true,
+          }),
+          classified.transactionId
+        );
+    const byPrice = unpurchased || purchased;
+    if (byPrice) messageId = byPrice.maloumMessageId;
+  }
+  if (!messageId) {
+    const orphan = claimableFanslyRow(
+      await findFanslyOrphanByPrice({
+        creatorId,
+        fanId: classified.fanId,
+        priceNet: classified.net,
+        soldAt: classified.createdAt,
+      }),
+      classified.transactionId
+    );
+    if (orphan) messageId = orphan.maloumMessageId;
+  }
+  if (!messageId) {
+    if (classified.net == null) return;
+    const logged = await logFanslyOrphanSale({
+      creatorId,
+      fanId: classified.fanId || null,
+      fanUsername,
+      notificationId: classified.transactionId,
+      priceNet: classified.net,
+      createdAt: classified.createdAt,
+      payoutVerified: classified.verified === true,
+    });
+    messageId = logged?.maloumMessageId || null;
+    await stampFanslyWalletMatch(classified, messageId, {
+      contentId: classified.contentId,
+      fillPrice: false,
+    });
+    return;
+  }
+  await stampFanslyWalletMatch(classified, messageId, {
+    contentId: classified.contentId,
+    fillPrice: false,
+  });
+}
+
+async function upsertFanslyWalletTip(creatorId, classified, accounts) {
+  const tipKey = classified.correlationId || classified.transactionId;
+  const maloumMessageId = `fansly-tip:${tipKey}`;
+  const byTxn = await findFanslyByPayoutTxn(creatorId, classified.transactionId);
+  const messageId = byTxn?.maloumMessageId || maloumMessageId;
+  if (!byTxn) {
+    await logTip({
+      creatorId,
+      fanId: classified.fanId || null,
+      fanUsername: fanslyAccountLabel(accounts, classified.fanId),
+      maloumMessageId,
+      priceNet: classified.net,
+      createdAt: classified.createdAt,
+      currency: 'USD',
+    });
+  }
+  await stampFanslyWalletMatch(classified, messageId, { fillPrice: !byTxn && classified.net != null });
+}
+
+async function applyFanslyWalletRow(creatorId, classified, accounts, clearedTxnIds) {
+  if (!classified || classified.action === 'skip') return;
+  if (classified.action === 'clear') {
+    clearedTxnIds.add(classified.transactionId);
+    await clearFanslyWalletTransaction(creatorId, classified.transactionId);
+    if (classified.type === fanslyClient.FANSLY_WALLET_REFUND_TYPE && classified.correlationId) {
+      clearedTxnIds.add(classified.correlationId);
+      await clearFanslyWalletTransaction(creatorId, classified.correlationId);
+    }
+    return;
+  }
+  if (clearedTxnIds.has(classified.transactionId)) return;
+  if (classified.action === 'tip') {
+    await upsertFanslyWalletTip(creatorId, classified, accounts);
+    return;
+  }
+  if (classified.action === 'sale') {
+    await upsertFanslyWalletSale(creatorId, classified, accounts);
+  }
+}
+
+async function fanAccountsForWalletRows(session, rows, cutoffMs) {
+  const ids = [];
+  const seen = new Set();
+  for (const row of rows) {
+    const classified = classifyFanslyWalletTransaction(row);
+    if (classified.action !== 'sale' && classified.action !== 'tip') continue;
+    const createdMs = classified.createdAt ? Date.parse(classified.createdAt) : null;
+    if (cutoffMs != null && createdMs != null && createdMs < cutoffMs) continue;
+    if (!classified.fanId || seen.has(classified.fanId)) continue;
+    seen.add(classified.fanId);
+    ids.push(classified.fanId);
+  }
+  const accounts = [];
+  for (let index = 0; index < ids.length; index += 50) {
+    try {
+      const found = await fanslyClient.getAccounts(session, ids.slice(index, index + 50));
+      if (Array.isArray(found)) accounts.push(...found);
+    } catch (err) {
+      console.warn('[fansly] wallet fan lookup failed:', err.message || err);
+    }
+  }
+  return accounts;
+}
+
+async function fanslyWalletCutoffMs(creatorId) {
+  const lookback = Date.now() - FANSLY_WALLET_LOOKBACK_MS;
+  const result = await pool.query(
+    `SELECT MIN("unlockedAt") AS oldest
+     FROM messaging_dashboard_entries
+     WHERE "creatorId" = $1
+       AND platform = 'fansly'
+       AND purchased = true
+       AND "payoutVerified" = false
+       AND "payoutTxnId" IS NOT NULL
+       AND "unlockedAt" IS NOT NULL`,
+    [creatorId]
+  );
+  const oldest = result.rows[0]?.oldest ? new Date(result.rows[0].oldest).getTime() : null;
+  if (oldest == null || !Number.isFinite(oldest)) return lookback;
+  return Math.min(lookback, oldest);
+}
+
+async function syncFanslyWalletSales(creatorId, session) {
+  if (!creatorId || !isValidUuid(String(creatorId))) return { skipped: true };
+  const backfill = !fanslyWalletBackfilled.has(String(creatorId));
+  const cutoffMs = backfill ? null : await fanslyWalletCutoffMs(creatorId);
+  const limit = fanslyClient.FANSLY_EARNINGS_PAGE_LIMIT;
+  const cap = fanslyClient.FANSLY_EARNINGS_ROW_CAP;
+  let before = '';
+  let fetched = 0;
+  let reachedEnd = false;
+  let passedCutoff = false;
+  let oldestFetchedMs = null;
+  const clearedTxnIds = new Set();
+
+  while (fetched < cap) {
+    const page = await fanslyClient.listEarningsTransactions(session, { before, limit });
+    const rows = Array.isArray(page?.rows) ? page.rows : [];
+    const accounts = await fanAccountsForWalletRows(session, rows, cutoffMs);
+    for (const row of rows) {
+      const classified = classifyFanslyWalletTransaction(row);
+      const createdMs = classified.createdAt ? Date.parse(classified.createdAt) : null;
+      if (createdMs != null) {
+        oldestFetchedMs = oldestFetchedMs == null ? createdMs : Math.min(oldestFetchedMs, createdMs);
+      }
+      if (cutoffMs != null && createdMs != null && createdMs < cutoffMs) {
+        passedCutoff = true;
+        continue;
+      }
+      await applyFanslyWalletRow(creatorId, classified, accounts, clearedTxnIds);
+    }
+    fetched += rows.length;
+    const total = page?.total;
+    if (rows.length < limit || (total != null && fetched >= total)) {
+      reachedEnd = true;
+      break;
+    }
+    if (passedCutoff || fetched >= cap) break;
+    const next = fanslyClient.nextFanslyEarningsBefore(rows);
+    if (!next || next === before) {
+      throw new Error('Fansly earnings page missing a cursor');
+    }
+    before = next;
+  }
+
+  const windowStartMs = reachedEnd ? null : passedCutoff ? cutoffMs : oldestFetchedMs;
+  await clearUnmatchedFanslySales(creatorId, { reachedEnd, windowStartMs });
+  if (backfill) fanslyWalletBackfilled.add(String(creatorId));
+  return { fetched, reachedEnd, passedCutoff };
+}
+
+function scheduleFanslyWalletSync(creatorId, session) {
+  const id = creatorId == null ? '' : String(creatorId);
+  if (!id || !isValidUuid(id) || !session) return;
+  const now = Date.now();
+  const last = fanslyWalletSyncAt.get(id) || 0;
+  if (now - last < FANSLY_WALLET_SYNC_THROTTLE_MS) return;
+  fanslyWalletSyncAt.set(id, now);
+  void syncFanslyWalletSales(id, session).catch((err) => {
+    fanslyWalletSyncAt.delete(id);
+    console.warn('[fansly] wallet sale sync failed:', err.message || err);
   });
 }
 
@@ -5759,3 +6157,7 @@ module.exports.clearPurchasedForFourBasedMessage = clearPurchasedForFourBasedMes
 module.exports.repairFourBasedPurchasedFlags = repairFourBasedPurchasedFlags;
 module.exports.repairFanslyFalseSalesOnce = repairFanslyFalseSalesOnce;
 module.exports.isFanslyFalseSendSale = isFanslyFalseSendSale;
+module.exports.classifyFanslyWalletTransaction = classifyFanslyWalletTransaction;
+module.exports.shouldClearUnmatchedFanslySale = shouldClearUnmatchedFanslySale;
+module.exports.scheduleFanslyWalletSync = scheduleFanslyWalletSync;
+module.exports.syncFanslyWalletSales = syncFanslyWalletSales;

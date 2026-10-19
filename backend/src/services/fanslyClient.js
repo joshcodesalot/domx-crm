@@ -2362,6 +2362,47 @@ function mapPurchase(row) {
   };
 }
 
+/** Wallet transaction statuses from the Fansly web client (module 4617). */
+const FANSLY_TRANSACTION_STATUS = {
+  PENDING: 1,
+  APPROVED: 2,
+  CANCELED: 4,
+  REFUNDED: 5,
+  REFUNDED_PENDING: 6,
+};
+
+const FANSLY_EARNINGS_INCOMING = 2;
+const FANSLY_EARNINGS_OUTGOING = 1;
+const FANSLY_EARNINGS_PAGE_LIMIT = 30;
+const FANSLY_EARNINGS_ROW_CAP = 5000;
+
+const FANSLY_WALLET_CHAT_TYPES = new Set([2010, 2110, 2016, 2116, 32001, 32101]);
+const FANSLY_WALLET_TIP_TYPES = new Set([7001, 7101]);
+const FANSLY_WALLET_REFUND_TYPE = 6101;
+
+function fanslyEarningsPageQuery({ before = '', limit = FANSLY_EARNINGS_PAGE_LIMIT } = {}) {
+  const size = Number(limit);
+  return {
+    before: before == null ? '' : String(before),
+    after: '',
+    limit: Number.isFinite(size) && size > 0 ? size : FANSLY_EARNINGS_PAGE_LIMIT,
+    offset: 0,
+  };
+}
+
+function nextFanslyEarningsBefore(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  const last = rows[rows.length - 1];
+  const id = last && last.transactionId == null ? '' : String(last.transactionId).trim();
+  return /^\d+$/.test(id) ? id : null;
+}
+
+function nextFanslyEarningsQuery(rows, { limit = FANSLY_EARNINGS_PAGE_LIMIT } = {}) {
+  const before = nextFanslyEarningsBefore(rows);
+  if (!before) return null;
+  return fanslyEarningsPageQuery({ before, limit });
+}
+
 async function listFanNotes(session, fanId) {
   const id = requireFanId(fanId);
   try {
@@ -2441,6 +2482,28 @@ async function listFanPurchases(session, fanId, { limit = 30 } = {}) {
   return {
     purchases: rows.map(mapPurchase).filter(Boolean),
     hasMore: Boolean(result.data?.hasMore),
+  };
+}
+
+async function listEarningsTransactions(session, { before = '', limit = FANSLY_EARNINGS_PAGE_LIMIT } = {}) {
+  const query = fanslyEarningsPageQuery({ before, limit });
+  const result = await requestJson({
+    method: 'GET',
+    path: '/account/wallets/earnings/transactions',
+    session,
+    query,
+  });
+  const payload = result.data && typeof result.data === 'object' ? result.data : {};
+  const rows = Array.isArray(payload.data)
+    ? payload.data
+    : Array.isArray(payload)
+      ? payload
+      : [];
+  const total = Number(payload.total);
+  return {
+    rows,
+    total: Number.isFinite(total) ? total : null,
+    aggregationData: payload.aggregationData || null,
   };
 }
 
@@ -2551,6 +2614,18 @@ module.exports = {
   saveFanNickname,
   getFanStats,
   listFanPurchases,
+  FANSLY_TRANSACTION_STATUS,
+  FANSLY_EARNINGS_INCOMING,
+  FANSLY_EARNINGS_OUTGOING,
+  FANSLY_EARNINGS_PAGE_LIMIT,
+  FANSLY_EARNINGS_ROW_CAP,
+  FANSLY_WALLET_CHAT_TYPES,
+  FANSLY_WALLET_TIP_TYPES,
+  FANSLY_WALLET_REFUND_TYPE,
+  fanslyEarningsPageQuery,
+  nextFanslyEarningsBefore,
+  nextFanslyEarningsQuery,
+  listEarningsTransactions,
   sessionFromCreator,
   avatarUrlFromAccount,
 };
