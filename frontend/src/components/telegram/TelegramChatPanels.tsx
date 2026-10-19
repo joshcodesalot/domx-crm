@@ -53,6 +53,7 @@ import TelegramAudioPlayer, {
 } from '@/components/telegram/TelegramAudioPlayer';
 import {
   createHistoryTranslateQueue,
+  HISTORY_AUTO_TRANSLATE_LIMIT,
   selectAutoHistoryTranslations,
   type HistoryTranslateQueue,
 } from '@/lib/historyTranslateQueue';
@@ -940,6 +941,10 @@ export function TelegramChatThread({
     readStoredBoolean(AUTO_TRANSLATE_HISTORY_KEY, true)
   );
   const [historyTranslations, setHistoryTranslations] = useState<Record<string, string>>({});
+  const [manualTranslateOnlyIds, setManualTranslateOnlyIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const manualTranslateOnlyIdsRef = useRef<Set<string>>(new Set());
   const [translatingKeys, setTranslatingKeys] = useState<Record<string, boolean>>({});
   const [messageSenders, setMessageSenders] = useState<Record<string, string>>({});
   const [messageUnsends, setMessageUnsends] = useState<
@@ -1044,6 +1049,8 @@ export function TelegramChatThread({
   useEffect(() => {
     setHistoryTranslations({});
     historyTranslateQueueRef.current?.clear();
+    setManualTranslateOnlyIds(new Set());
+    manualTranslateOnlyIdsRef.current = new Set();
     setMessageSenders({});
     setMessageUnsends({});
     setMessages([]);
@@ -1141,6 +1148,14 @@ export function TelegramChatThread({
             };
           }
           const incomingIds = incoming.map((msg) => msg.id).filter(Boolean);
+          if (incomingIds.length > 0) {
+            setManualTranslateOnlyIds((prev) => {
+              const next = new Set(prev);
+              for (const id of incomingIds) next.add(id);
+              manualTranslateOnlyIdsRef.current = next;
+              return next;
+            });
+          }
           setMessages((prev) => {
             const existing = new Set(prev.map((msg) => msg.id));
             const fresh = incoming.filter(
@@ -1437,6 +1452,7 @@ export function TelegramChatThread({
       const msg = messages[i];
       const text = stripModelTokens(typeof msg.text === 'string' ? msg.text : '');
       if (!text || msg.placeholder || msg.deleted) continue;
+      if (manualTranslateOnlyIdsRef.current.has(msg.id)) continue;
       eligible.push({ key: `${msg.id}::${text}`, text });
     }
     const pending = selectAutoHistoryTranslations(eligible, (key) =>
@@ -1787,6 +1803,20 @@ export function TelegramChatThread({
     }));
   }, []);
 
+  const autoTranslateMessageIds = useMemo(() => {
+    if (!autoTranslateHistory) return new Set<string>();
+    const ids: string[] = [];
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const msg = messages[i];
+      const text = stripModelTokens(typeof msg.text === 'string' ? msg.text : '');
+      if (!text || msg.placeholder || msg.deleted) continue;
+      if (manualTranslateOnlyIds.has(msg.id)) continue;
+      ids.push(msg.id);
+      if (ids.length >= HISTORY_AUTO_TRANSLATE_LIMIT) break;
+    }
+    return new Set(ids);
+  }, [messages, autoTranslateHistory, manualTranslateOnlyIds]);
+
   return (
     <div className="flex-1 flex h-full min-w-0 min-h-0 overflow-hidden relative">
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden chatter-thread-bg relative">
@@ -2003,11 +2033,11 @@ export function TelegramChatThread({
           const historyEn = historyTranslations[cacheKey];
           const translatingThis = Boolean(translatingKeys[cacheKey]);
           const showManualTranslate =
-            !autoTranslateHistory &&
             Boolean(msgText.trim()) &&
             !msg.placeholder &&
             !msg.deleted &&
-            !historyEn;
+            !historyEn &&
+            (!autoTranslateHistory || !autoTranslateMessageIds.has(msg.id));
           const sentBy = msg.isOutgoing
             ? messageSenders[`telegram:${msg.id}`]
             : undefined;
@@ -2342,6 +2372,7 @@ export function TelegramChatThread({
                       showGroupChrome ? 'ml-9' : ''
                     }`}
                     title="Translate to English"
+                    aria-label="Translate message to English"
                   >
                     {translatingThis ? (
                       <Loader2 className="w-3 h-3 animate-spin" />
