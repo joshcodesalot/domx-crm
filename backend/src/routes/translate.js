@@ -33,7 +33,7 @@ router.post('/', authenticate, async (req, res) => {
       translatedText,
     });
   } catch (error) {
-    console.error('xAI Grok German femdom translation failed:', error);
+    console.error('OpenRouter German femdom translation failed:', error);
 
     return res.status(500).json({
       error: 'Translation failed',

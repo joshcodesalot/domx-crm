@@ -28,7 +28,7 @@ On first launch, the app will prompt you to create the owner account. This one-t
 
 `POST /api/translate-to-german`
 
-Translates a message into natural German using xAI Grok. Existing callers that send only `text` continue to work unchanged.
+Translates a message into natural German using OpenRouter (`cognitivecomputations/dolphin-mistral-24b-venice-edition`). Existing callers that send only `text` continue to work unchanged.
 
 ### Request body
 

@@ -1,4 +1,4 @@
-const { createResponse } = require('./xaiClient');
+const { createResponse } = require('./openRouterClient');
 
 const MAX_HISTORY_MESSAGES = 8;
 

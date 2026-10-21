@@ -1,4 +1,4 @@
-const { createResponse } = require('./xaiClient');
+const { createResponse } = require('./openRouterClient');
 
 const DEFAULT_BLOCKS = 20;
 const MIN_BLOCKS = 1;
