@@ -10,6 +10,7 @@ frontend/release/
 .DS_Store
 Thumbs.db
 *.local
+ai-chatter/.chat-session.json
 backend/data/jwt-secret
 backend/data/scheduled-media/*
 !backend/data/scheduled-media/.gitkeep

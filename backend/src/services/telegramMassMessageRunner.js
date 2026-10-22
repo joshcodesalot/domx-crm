@@ -6,13 +6,17 @@ const {
   sendVaultToPeer,
   deleteText,
   isTelegramServiceDialog,
+  listRecentDmPeerIds,
 } = require('./telegramWorker');
 
 const DEFAULT_UNSEND_CAP = 30;
-const SEND_GAP_MIN_MS = 5000;
-const SEND_GAP_MAX_MS = 12000;
+const SEND_GAP_MIN_MS = 20_000;
+const SEND_GAP_MAX_MS = 30_000;
 const UNSEND_GAP_MIN_MS = 5000;
 const UNSEND_GAP_MAX_MS = 10000;
+const RECENT_CHAT_WINDOW_MS = 120 * 60 * 1000;
+const RECENT_CHAT_REFRESH_MS = 10 * 60 * 1000;
+const RECENT_CHAT_SKIP_ERROR = 'Recent conversation';
 
 /** @typedef {{ abort: boolean, kind: string, status: string, done: number, failed: number, skipped: number, total: number, currentPeerId: string | null, lastError: string | null, campaignId: string | null, startedAt: number }} MmRun */
 
@@ -73,13 +77,18 @@ function parseFloodWaitSeconds(err) {
 
 function sleep(ms, shouldAbort) {
   return new Promise((resolve) => {
-    const end = Date.now() + ms;
+    const end = Date.now() + Math.max(0, ms);
     const tick = () => {
-      if ((shouldAbort && shouldAbort()) || Date.now() >= end) {
+      if (shouldAbort && shouldAbort()) {
         resolve();
         return;
       }
-      setTimeout(tick, Math.min(200, end - Date.now()));
+      const left = end - Date.now();
+      if (left <= 0) {
+        resolve();
+        return;
+      }
+      setTimeout(tick, left > 250 ? 200 : left);
     };
     tick();
   });
@@ -374,6 +383,32 @@ async function sendWithFloodRetry(creatorId, peerId, text, vaultIds, userId, run
   }
 }
 
+function recentChatCache() {
+  return { peerIds: null, checkedAt: 0 };
+}
+
+async function recentChatPeerIds(creatorId, cache) {
+  const now = Date.now();
+  if (cache.peerIds && now - cache.checkedAt < RECENT_CHAT_REFRESH_MS) {
+    return cache.peerIds;
+  }
+  const ids = await listRecentDmPeerIds(creatorId, RECENT_CHAT_WINDOW_MS);
+  cache.peerIds = new Set(ids.map((id) => String(id)));
+  cache.checkedAt = Date.now();
+  return cache.peerIds;
+}
+
+async function skipRecentRecipient(recipientId) {
+  const updated = await pool.query(
+    `UPDATE telegram_mm_recipients
+     SET status = 'skipped', error = $2
+     WHERE id = $1 AND status = 'pending'
+     RETURNING id`,
+    [recipientId, RECENT_CHAT_SKIP_ERROR]
+  );
+  return updated.rows.length > 0;
+}
+
 async function executeSend(campaignId, run) {
   const campaign = await loadCampaign(campaignId);
   if (!campaign) {
@@ -388,6 +423,7 @@ async function executeSend(campaignId, run) {
     [campaignId]
   );
   run.total = pending.rows.length + (Number(campaign.sent) || 0) + (Number(campaign.failed) || 0);
+  run.skipped = Number(campaign.skipped) || 0;
   await pool.query(
     `UPDATE telegram_mm_campaigns
      SET status = 'running', "startedAt" = COALESCE("startedAt", NOW()), "lastError" = NULL
@@ -395,9 +431,28 @@ async function executeSend(campaignId, run) {
     [campaignId]
   );
 
-  for (const row of pending.rows) {
+  const recentChats = recentChatCache();
+  for (let index = 0; index < pending.rows.length; index += 1) {
+    const row = pending.rows[index];
     if (run.abort) break;
     run.currentPeerId = row.peerId;
+    let recentPeerIds;
+    try {
+      recentPeerIds = await recentChatPeerIds(campaign.creatorId, recentChats);
+    } catch (err) {
+      const message =
+        err instanceof TelegramWorkerError
+          ? err.message
+          : err?.message || 'Failed to check recent chats';
+      run.lastError = String(message).slice(0, 240);
+      break;
+    }
+    if (recentPeerIds.has(String(row.peerId))) {
+      const skipped = await skipRecentRecipient(row.id);
+      if (skipped) run.skipped += 1;
+      await refreshCampaignCounts(campaignId);
+      continue;
+    }
     try {
       const messageIds = await sendWithFloodRetry(
         campaign.creatorId,
@@ -433,6 +488,7 @@ async function executeSend(campaignId, run) {
     }
     await refreshCampaignCounts(campaignId);
     if (run.abort) break;
+    if (index === pending.rows.length - 1) break;
     run.status = 'waiting';
     await sleep(randomGapMs(SEND_GAP_MIN_MS, SEND_GAP_MAX_MS), () => run.abort);
     if (!run.abort) run.status = 'running';

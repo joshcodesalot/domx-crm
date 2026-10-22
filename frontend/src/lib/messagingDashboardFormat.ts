@@ -177,16 +177,16 @@ export function resolveDashboardCurrency(
   return platform === '4based' || platform === 'telegram' ? 'USD' : 'EUR';
 }
 
-/** Net take: Maloum 80%, 4based 70%, Telegram/Throne 100%. */
+/** Net take: Maloum 80%, 4based 70%, Fansly and Telegram/Throne 100%. */
 export function netTakeAmount(
   priceNet: number | null | undefined,
-  platform?: 'maloum' | '4based' | 'telegram' | null
+  platform?: 'maloum' | '4based' | 'telegram' | 'fansly' | null
 ): number | null {
   if (priceNet == null || Number.isNaN(Number(priceNet))) {
     return null;
   }
   const take =
-    platform === '4based' ? 0.7 : platform === 'telegram' ? 1 : 0.8;
+    platform === '4based' ? 0.7 : platform === 'telegram' || platform === 'fansly' ? 1 : 0.8;
   return Math.abs(Number(priceNet)) * take;
 }
 

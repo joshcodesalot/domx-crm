@@ -1637,6 +1637,47 @@ async function ensureCachedPeer(client, creatorId, numericId) {
   throw new TelegramWorkerError('This chat is no longer available in Telegram', 404);
 }
 
+function messageTimeMs(message) {
+  const date = message && message.date;
+  if (date instanceof Date) {
+    const ms = date.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof date === 'number' && Number.isFinite(date)) {
+    return date > 1e12 ? date : date * 1000;
+  }
+  return null;
+}
+
+async function listRecentDmPeerIds(creatorId, windowMs) {
+  const window = Number(windowMs);
+  if (!Number.isFinite(window) || window < 0) {
+    throw new TelegramWorkerError('Invalid recent-chat window', 400);
+  }
+  assertDialogsAllowed(creatorId);
+  const client = await getClient(creatorId);
+  const cutoff = Date.now() - window;
+  const peerIds = [];
+  const seen = new Set();
+  try {
+    for await (const dialog of client.iterDialogs({ limit: ALL_DM_DIALOG_CAP })) {
+      const peer = dialog.peer;
+      if (!isInboxPeer(peer)) continue;
+      if (peerKind(peer) !== 'dm') continue;
+      if (isTelegramServicePeer(peer)) continue;
+      const peerId = String(peer.id || '').trim();
+      if (!peerId || seen.has(peerId)) continue;
+      seen.add(peerId);
+      const sentAt = messageTimeMs(dialog.lastMessage || dialog.message);
+      if (sentAt != null && sentAt >= cutoff) peerIds.push(peerId);
+    }
+  } catch (err) {
+    if (err instanceof TelegramWorkerError) throw err;
+    await throwIfDialogFlood(creatorId, err);
+  }
+  return peerIds;
+}
+
 async function listAllDmPeers(creatorId) {
   assertDialogsAllowed(creatorId);
   const client = await getClient(creatorId);
@@ -3569,6 +3610,7 @@ module.exports = {
   getClient,
   listDialogs,
   listAllDmPeers,
+  listRecentDmPeerIds,
   listMessages,
   searchMessagesInChat,
   listChatMembers,
