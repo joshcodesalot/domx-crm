@@ -4350,31 +4350,174 @@ export async function listTelegramVault(
   );
 }
 
-export async function uploadTelegramVaultItem(
-  creatorId: string,
-  formData: FormData
-): Promise<{ item: TelegramVaultItem }> {
-  const token = getToken();
-  const headers: HeadersInit = {};
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
+export interface TelegramVaultUploadTarget {
+  url: string;
+  contentType: string;
+}
+
+export interface TelegramVaultUploadSession {
+  itemId: string;
+  kind: TelegramVaultItem['kind'];
+  original: TelegramVaultUploadTarget;
+  thumb: TelegramVaultUploadTarget | null;
+}
+
+export class VaultUploadAbortedError extends Error {
+  constructor() {
+    super('Upload aborted');
+    this.name = 'VaultUploadAbortedError';
   }
-  const response = await fetch(`${API_URL}/api/creators/${creatorId}/telegram/vault`, {
-    method: 'POST',
-    headers,
-    body: formData,
+}
+
+export function isVaultUploadAborted(err: unknown): boolean {
+  return (
+    err instanceof VaultUploadAbortedError ||
+    (err instanceof DOMException && err.name === 'AbortError')
+  );
+}
+
+function putPresignedVaultFile(
+  url: string,
+  body: Blob,
+  contentType: string,
+  onProgress: (loaded: number) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new VaultUploadAbortedError());
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+    const finish = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      if (err) reject(err);
+      else resolve();
+    };
+    const onAbort = () => {
+      finish(new VaultUploadAbortedError());
+      xhr.abort();
+    };
+    xhr.open('PUT', url);
+    xhr.setRequestHeader('Content-Type', contentType);
+    xhr.upload.onprogress = (event) => {
+      onProgress(event.loaded);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        finish();
+        return;
+      }
+      finish(
+        new ApiError(xhr.status ? `Upload failed (${xhr.status})` : 'Upload failed', {
+          status: xhr.status || 0,
+        })
+      );
+    };
+    xhr.onerror = () => {
+      if (signal?.aborted) {
+        finish(new VaultUploadAbortedError());
+        return;
+      }
+      finish(
+        new ApiError(
+          'Upload failed. Check that the Backblaze bucket allows browser uploads.',
+          { status: xhr.status || 0 }
+        )
+      );
+    };
+    xhr.onabort = () => finish(new VaultUploadAbortedError());
+    signal?.addEventListener('abort', onAbort);
+    xhr.send(body);
   });
-  const data = await response.json().catch(() => ({}));
-  if (isDomxAuthFailure(response.status, (data as { error?: string }).error) && token) {
-    clearToken();
-    window.dispatchEvent(new CustomEvent('domx:session-expired'));
+}
+
+export async function uploadTelegramVaultFile(
+  creatorId: string,
+  input: {
+    folderId: string;
+    file: File;
+    thumb?: Blob | null;
+    width?: number | null;
+    height?: number | null;
+    signal?: AbortSignal;
+    onProgress?: (percent: number) => void;
   }
-  if (!response.ok) {
-    throw new ApiError((data as { error?: string }).error || 'Upload failed', {
-      status: response.status,
-    });
+): Promise<{ item: TelegramVaultItem }> {
+  const signal = input.signal;
+  if (signal?.aborted) throw new VaultUploadAbortedError();
+  let itemId: string | null = null;
+  try {
+    const session = await request<TelegramVaultUploadSession>(
+      `/api/creators/${creatorId}/telegram/vault/upload-session`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          folderId: input.folderId,
+          fileName: input.file.name,
+          mimeType: input.file.type || '',
+          byteSize: input.file.size,
+        }),
+        signal,
+      }
+    );
+    itemId = session.itemId;
+    if (signal?.aborted) throw new VaultUploadAbortedError();
+    const thumb = input.thumb && session.thumb ? input.thumb : null;
+    const total = Math.max(input.file.size + (thumb?.size || 0), 1);
+    const report = (loaded: number) => {
+      input.onProgress?.(Math.min(100, Math.round((loaded / total) * 100)));
+    };
+    await putPresignedVaultFile(
+      session.original.url,
+      input.file,
+      session.original.contentType,
+      report,
+      signal
+    );
+    if (thumb && session.thumb) {
+      await putPresignedVaultFile(
+        session.thumb.url,
+        thumb,
+        session.thumb.contentType,
+        (loaded) => report(input.file.size + loaded),
+        signal
+      );
+    }
+    if (signal?.aborted) throw new VaultUploadAbortedError();
+    const completed = await request<{ item: TelegramVaultItem }>(
+      `/api/creators/${creatorId}/telegram/vault/complete`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          itemId: session.itemId,
+          folderId: input.folderId,
+          fileName: input.file.name,
+          mimeType: input.file.type || '',
+          byteSize: input.file.size,
+          width: input.width ?? null,
+          height: input.height ?? null,
+          hasThumb: Boolean(thumb),
+        }),
+      }
+    );
+    input.onProgress?.(100);
+    return completed;
+  } catch (err) {
+    if (itemId) {
+      void request(`/api/creators/${creatorId}/telegram/vault/upload-abort`, {
+        method: 'POST',
+        body: JSON.stringify({ itemId }),
+      }).catch(() => undefined);
+    }
+    if (isVaultUploadAborted(err) || signal?.aborted) {
+      throw new VaultUploadAbortedError();
+    }
+    throw err;
   }
-  return data as { item: TelegramVaultItem };
 }
 
 export async function deleteTelegramVaultItem(

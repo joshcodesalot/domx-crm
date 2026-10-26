@@ -25,6 +25,7 @@ function loadSdk() {
       S3Client: s3.S3Client,
       PutObjectCommand: s3.PutObjectCommand,
       GetObjectCommand: s3.GetObjectCommand,
+      HeadObjectCommand: s3.HeadObjectCommand,
       DeleteObjectCommand: s3.DeleteObjectCommand,
       Upload: storage.Upload,
       getSignedUrl: presigner.getSignedUrl,
@@ -146,6 +147,47 @@ async function downloadVaultObjectToFile(key, destPath) {
 }
 
 const PRESIGN_SECONDS = 60 * 60;
+const PUT_PRESIGN_SECONDS = 6 * 60 * 60;
+
+async function presignVaultPut(key, contentType, { expiresIn = PUT_PRESIGN_SECONDS } = {}) {
+  const { PutObjectCommand, getSignedUrl } = loadSdk();
+  const type = contentType || 'application/octet-stream';
+  const command = new PutObjectCommand({
+    Bucket: bucket(),
+    Key: key,
+    ContentType: type,
+  });
+  try {
+    const url = await getSignedUrl(getS3(), command, { expiresIn });
+    return { url, contentType: type };
+  } catch (err) {
+    if (err instanceof B2StorageError) throw err;
+    throw new B2StorageError(err.message || 'Failed to sign vault upload', 502);
+  }
+}
+
+async function headVaultObject(key) {
+  const { HeadObjectCommand } = loadSdk();
+  try {
+    const result = await getS3().send(
+      new HeadObjectCommand({
+        Bucket: bucket(),
+        Key: key,
+      })
+    );
+    const contentLength = Number(result.ContentLength);
+    return {
+      contentLength: Number.isFinite(contentLength) ? contentLength : 0,
+      contentType: result.ContentType || null,
+    };
+  } catch (err) {
+    if (err instanceof B2StorageError) throw err;
+    if (isMissingObject(err)) {
+      throw new B2StorageError('Vault file was not found in storage', 404);
+    }
+    throw new B2StorageError(err.message || 'Failed to read vault storage', 502);
+  }
+}
 
 async function presignVaultObject(key, { contentType, filename, expiresIn = PRESIGN_SECONDS } = {}) {
   const { GetObjectCommand, getSignedUrl } = loadSdk();
@@ -210,6 +252,8 @@ module.exports = {
   getVaultObject,
   downloadVaultObjectToFile,
   presignVaultObject,
+  presignVaultPut,
+  headVaultObject,
   streamVaultObject,
   deleteVaultObjects,
 };

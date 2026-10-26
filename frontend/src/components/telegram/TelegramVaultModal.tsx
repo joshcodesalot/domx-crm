@@ -15,6 +15,7 @@ import {
   Image as ImageIcon,
   Loader2,
   Mic,
+  Pencil,
   Plus,
   Trash2,
   Upload,
@@ -36,9 +37,11 @@ import {
   listTelegramVaultFolders,
   listTelegramVaultSent,
   listVaultMediaNotes,
+  isVaultUploadAborted,
   moveTelegramVaultItems,
+  renameTelegramVaultFolder,
   telegramVaultMediaUrl,
-  uploadTelegramVaultItem,
+  uploadTelegramVaultFile,
   type TelegramVaultFolder,
   type TelegramVaultItem,
 } from '@/lib/api';
@@ -50,12 +53,17 @@ import {
 } from '@/lib/vaultListingCache';
 
 const PAGE_SIZE = 60;
-const MAX_VAULT_UPLOAD_BYTES = 512 * 1024 * 1024;
+const MAX_VAULT_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const VAULT_MEDIA_EXT =
   /\.(jpe?g|png|gif|webp|bmp|heic|heif|avif|tiff?|mp4|mov|webm|mkv|avi|m4v|ogg|opus|mp3|m4a|wav|aac)$/i;
 
 type KindFilter = 'all' | 'photo' | 'video' | 'voice';
 type SentFilter = 'all' | 'sent' | 'not_sent';
+type UploadAction = 'run' | 'skip' | 'stop' | 'cancel';
+
+function currentUploadAction(ref: { current: UploadAction }): UploadAction {
+  return ref.current;
+}
 
 function isVaultMediaFile(file: File): boolean {
   const mime = String(file.type || '');
@@ -104,19 +112,29 @@ function formatDuration(seconds?: number | null): string | null {
   return `${mins}:${String(secs).padStart(2, '0')}`;
 }
 
-function videoFrameThumb(file: File): Promise<Blob | null> {
+type PreparedVaultMedia = {
+  blob: Blob | null;
+  width: number | null;
+  height: number | null;
+};
+
+function videoFrameThumb(file: File): Promise<PreparedVaultMedia> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
     const video = document.createElement('video');
     let settled = false;
-    const finish = (blob: Blob | null) => {
+    const finish = (
+      blob: Blob | null,
+      width: number | null = null,
+      height: number | null = null
+    ) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timer);
       URL.revokeObjectURL(url);
       video.removeAttribute('src');
       video.load();
-      resolve(blob);
+      resolve({ blob, width, height });
     };
     const timer = window.setTimeout(() => finish(null), 4000);
     video.muted = true;
@@ -140,7 +158,7 @@ function videoFrameThumb(file: File): Promise<Blob | null> {
           return;
         }
         ctx.drawImage(video, 0, 0, width, height);
-        canvas.toBlob((blob) => finish(blob), 'image/jpeg', 0.82);
+        canvas.toBlob((blob) => finish(blob, width, height), 'image/jpeg', 0.82);
       } catch {
         finish(null);
       }
@@ -160,6 +178,52 @@ function videoFrameThumb(file: File): Promise<Blob | null> {
     };
     video.src = url;
   });
+}
+
+function photoFrameThumb(file: File): Promise<PreparedVaultMedia> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    const finish = (blob: Blob | null, width: number | null, height: number | null) => {
+      URL.revokeObjectURL(url);
+      resolve({ blob, width, height });
+    };
+    image.onload = () => {
+      const width = image.naturalWidth || 0;
+      const height = image.naturalHeight || 0;
+      if (!width || !height) {
+        finish(null, null, null);
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      const side = 320;
+      canvas.width = side;
+      canvas.height = side;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        finish(null, width, height);
+        return;
+      }
+      const scale = Math.max(side / width, side / height);
+      const drawnWidth = width * scale;
+      const drawnHeight = height * scale;
+      ctx.drawImage(image, (side - drawnWidth) / 2, (side - drawnHeight) / 2, drawnWidth, drawnHeight);
+      canvas.toBlob((blob) => finish(blob, width, height), 'image/jpeg', 0.8);
+    };
+    image.onerror = () => finish(null, null, null);
+    image.src = url;
+  });
+}
+
+function prepareVaultMedia(file: File): Promise<PreparedVaultMedia> {
+  const isVideo =
+    file.type.startsWith('video/') || /\.(mp4|mov|webm|mkv|avi|m4v)$/i.test(file.name);
+  const isPhoto =
+    file.type.startsWith('image/') ||
+    /\.(jpe?g|png|gif|webp|bmp|heic|heif|avif|tiff?)$/i.test(file.name);
+  if (isVideo) return videoFrameThumb(file);
+  if (isPhoto) return photoFrameThumb(file);
+  return Promise.resolve({ blob: null, width: null, height: null });
 }
 
 function VaultThumbImg({
@@ -221,12 +285,17 @@ export default function TelegramVaultModal({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadPaused, setUploadPaused] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{
-    done: number;
+    index: number;
     total: number;
+    percent: number;
+    fileName: string;
   } | null>(null);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [folderDraft, setFolderDraft] = useState('');
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<TelegramVaultItem | null>(null);
   const [noteModal, setNoteModal] = useState<{
@@ -237,7 +306,11 @@ export default function TelegramVaultModal({
   const offsetRef = useRef(0);
   const loadingMoreRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const cancelUploadRef = useRef(false);
+  const uploadActionRef = useRef<UploadAction>('run');
+  const abortUploadRef = useRef<AbortController | null>(null);
+  const resumeResolveRef = useRef<((action: 'resume' | 'skip' | 'cancel') => void) | null>(null);
+  const renameBusyRef = useRef(false);
+  const renameCancelRef = useRef(false);
   const dragDepthRef = useRef(0);
   const draggingItemIdsRef = useRef<string[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -248,6 +321,15 @@ export default function TelegramVaultModal({
   useEffect(() => {
     setSelected(selectedItems);
   }, [selectedItems]);
+
+  useEffect(() => {
+    return () => {
+      uploadActionRef.current = 'cancel';
+      abortUploadRef.current?.abort();
+      resumeResolveRef.current?.('cancel');
+      resumeResolveRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const blockNavigate = (event: globalThis.DragEvent) => {
@@ -398,8 +480,91 @@ export default function TelegramVaultModal({
     }
   }
 
+  function beginRename(folder: TelegramVaultFolder) {
+    renameCancelRef.current = false;
+    renameBusyRef.current = false;
+    setRenamingFolderId(folder.id);
+    setRenameDraft(folder.name);
+  }
+
+  async function commitRename(targetId: string) {
+    if (renameBusyRef.current || renameCancelRef.current) {
+      renameCancelRef.current = false;
+      return;
+    }
+    const name = renameDraft.trim();
+    const current = folders.find((folder) => folder.id === targetId);
+    if (!current || !name || name === current.name) {
+      renameBusyRef.current = true;
+      setRenamingFolderId(null);
+      return;
+    }
+    if (name.length > 120) {
+      setError('Folder name must be 120 characters or fewer');
+      return;
+    }
+    renameBusyRef.current = true;
+    setError(null);
+    try {
+      const result = await renameTelegramVaultFolder(creatorId, targetId, name);
+      const next = folders.map((folder) =>
+        folder.id === result.folder.id ? result.folder : folder
+      );
+      setFolders(next);
+      setVaultListingCache(
+        vaultCacheKey({ platform: 'telegram', creatorId, kind: 'folders' }),
+        { folders: next }
+      );
+      setRenamingFolderId(null);
+    } catch (err) {
+      renameBusyRef.current = false;
+      setError(err instanceof Error ? err.message : 'Failed to rename folder');
+    }
+  }
+
+  function cancelRename() {
+    renameCancelRef.current = true;
+    renameBusyRef.current = true;
+    setRenamingFolderId(null);
+  }
+
+  function skipUpload() {
+    uploadActionRef.current = 'skip';
+    if (resumeResolveRef.current) {
+      resumeResolveRef.current('skip');
+      resumeResolveRef.current = null;
+      return;
+    }
+    abortUploadRef.current?.abort();
+  }
+
+  function stopUpload() {
+    uploadActionRef.current = 'stop';
+    setUploadPaused(true);
+    abortUploadRef.current?.abort();
+  }
+
   function cancelUpload() {
-    cancelUploadRef.current = true;
+    uploadActionRef.current = 'cancel';
+    abortUploadRef.current?.abort();
+    if (resumeResolveRef.current) {
+      resumeResolveRef.current('cancel');
+      resumeResolveRef.current = null;
+    }
+  }
+
+  function resumeUpload() {
+    uploadActionRef.current = 'run';
+    setUploadPaused(false);
+    resumeResolveRef.current?.('resume');
+    resumeResolveRef.current = null;
+  }
+
+  function waitForResume(): Promise<'resume' | 'skip' | 'cancel'> {
+    setUploadPaused(true);
+    return new Promise((resolve) => {
+      resumeResolveRef.current = resolve;
+    });
   }
 
   const canDrop = Boolean(folderId) && !uploading;
@@ -451,7 +616,7 @@ export default function TelegramVaultModal({
     }
     const warningParts: string[] = [];
     if (skippedType) warningParts.push('Only photos, videos, and audio can be added to the vault');
-    if (skippedSize) warningParts.push('Files larger than 512 MB were skipped');
+    if (skippedSize) warningParts.push('Files larger than 1 GB were skipped');
     const warning = warningParts.length ? `${warningParts.join('. ')}.` : null;
     if (!accepted.length) {
       setError(warning || 'No photos, videos, or audio to upload.');
@@ -509,50 +674,100 @@ export default function TelegramVaultModal({
     const destFolder = targetFolderId || folderId;
     if (!files?.length || !destFolder || uploading) return;
     const queue = Array.from(files);
-    cancelUploadRef.current = false;
+    uploadActionRef.current = 'run';
     resetDragState();
     setUploading(true);
-    setUploadProgress({ done: 0, total: queue.length });
+    setUploadPaused(false);
+    setUploadProgress({
+      index: 1,
+      total: queue.length,
+      percent: 0,
+      fileName: queue[0]?.name || 'file',
+    });
     setError(warning || null);
-    let failed = 0;
+    let index = 0;
     try {
-      for (let index = 0; index < queue.length; index += 1) {
-        if (cancelUploadRef.current) break;
-        setUploadProgress({ done: index + 1, total: queue.length });
-        const file = queue[index];
-        const form = new FormData();
-        form.append('file', file);
-        form.append('folderId', destFolder);
-        const isVideo =
-          file.type.startsWith('video/') ||
-          /\.(mp4|mov|webm|mkv|avi|m4v)$/i.test(file.name);
-        if (isVideo) {
-          const thumb = await videoFrameThumb(file);
-          if (cancelUploadRef.current) break;
-          if (thumb) {
-            form.append('thumb', new File([thumb], 'thumb.jpg', { type: 'image/jpeg' }));
+      while (index < queue.length) {
+        if (currentUploadAction(uploadActionRef) === 'cancel') break;
+        if (currentUploadAction(uploadActionRef) === 'stop') {
+          const decision = await waitForResume();
+          if (decision === 'cancel') break;
+          if (decision === 'skip') {
+            index += 1;
+            uploadActionRef.current = 'run';
+            setUploadPaused(false);
+            continue;
           }
+          uploadActionRef.current = 'run';
+          setUploadPaused(false);
         }
+        const file = queue[index];
+        setUploadProgress({
+          index: index + 1,
+          total: queue.length,
+          percent: 0,
+          fileName: file.name,
+        });
+        const prepared = await prepareVaultMedia(file);
+        if (currentUploadAction(uploadActionRef) === 'cancel') break;
+        if (currentUploadAction(uploadActionRef) === 'skip') {
+          uploadActionRef.current = 'run';
+          index += 1;
+          continue;
+        }
+        if (currentUploadAction(uploadActionRef) === 'stop') continue;
+        const controller = new AbortController();
+        abortUploadRef.current = controller;
         try {
-          const result = await uploadTelegramVaultItem(creatorId, form);
+          const result = await uploadTelegramVaultFile(creatorId, {
+            folderId: destFolder,
+            file,
+            thumb: prepared.blob,
+            width: prepared.width,
+            height: prepared.height,
+            signal: controller.signal,
+            onProgress: (percent) => {
+              setUploadProgress({
+                index: index + 1,
+                total: queue.length,
+                percent,
+                fileName: file.name,
+              });
+            },
+          });
           if (destFolder === folderId) {
             setItems((prev) => [result.item, ...prev.filter((item) => item.id !== result.item.id)]);
             if (kindFilter === 'all' || result.item.kind === kindFilter) {
               offsetRef.current += 1;
             }
           }
+          index += 1;
+          const action = currentUploadAction(uploadActionRef);
+          if (action === 'skip') uploadActionRef.current = 'run';
+          if (action === 'cancel') break;
         } catch (err) {
-          failed += 1;
+          if (isVaultUploadAborted(err)) {
+            const action = currentUploadAction(uploadActionRef);
+            if (action === 'skip') {
+              uploadActionRef.current = 'run';
+              index += 1;
+              continue;
+            }
+            if (action === 'stop') continue;
+            break;
+          }
           setError(err instanceof Error ? err.message : 'Upload failed');
+          index += 1;
+        } finally {
+          if (abortUploadRef.current === controller) abortUploadRef.current = null;
         }
-      }
-      if (cancelUploadRef.current && failed === 0) {
-        setError(null);
       }
     } finally {
       setUploading(false);
+      setUploadPaused(false);
       setUploadProgress(null);
-      cancelUploadRef.current = false;
+      uploadActionRef.current = 'run';
+      resumeResolveRef.current = null;
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }
@@ -611,18 +826,11 @@ export default function TelegramVaultModal({
                 <Upload className="w-4 h-4" />
               )}
               {uploading && uploadProgress
-                ? `Uploading ${uploadProgress.done}/${uploadProgress.total}`
+                ? uploadPaused
+                  ? `Paused ${uploadProgress.index}/${uploadProgress.total}`
+                  : `${uploadProgress.percent}% · ${uploadProgress.index}/${uploadProgress.total}`
                 : 'Upload'}
             </button>
-            {uploading && (
-              <button
-                type="button"
-                onClick={cancelUpload}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800"
-              >
-                Cancel
-              </button>
-            )}
             {selected.length > 0 && (
               <button
                 type="button"
@@ -664,6 +872,59 @@ export default function TelegramVaultModal({
           </div>
         </div>
 
+        {uploading && uploadProgress && (
+          <div className="px-5 py-3 border-b border-gray-200 dark:border-zinc-800/60 bg-gray-50 dark:bg-zinc-900/40">
+            <div className="flex items-center justify-between gap-3">
+              <p className="min-w-0 text-sm text-gray-700 dark:text-zinc-200 truncate">
+                <span className="font-medium">{uploadProgress.fileName}</span>
+                {' · '}
+                {uploadPaused ? 'Paused' : `${uploadProgress.percent}%`}
+                {' · '}
+                {uploadProgress.index}/{uploadProgress.total}
+              </p>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={skipUpload}
+                  className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800"
+                >
+                  Skip
+                </button>
+                {uploadPaused ? (
+                  <button
+                    type="button"
+                    onClick={resumeUpload}
+                    className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800"
+                  >
+                    Resume
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={stopUpload}
+                    className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800"
+                  >
+                    Stop
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={cancelUpload}
+                  className="px-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+            <div className="mt-2 h-1.5 rounded-full bg-gray-200 dark:bg-zinc-800 overflow-hidden">
+              <div
+                className="h-full bg-domx-500 transition-[width] duration-150"
+                style={{ width: `${uploadProgress.percent}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         {deleteArmed && canDeleteVault && selected.length > 0 && (
           <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/30">
             <p className="text-sm text-red-800 dark:text-red-200">
@@ -701,6 +962,7 @@ export default function TelegramVaultModal({
               {folders.map((folder) => {
                 const active = folderId === folder.id;
                 const dropTarget = dropFolderId === folder.id;
+                const renaming = renamingFolderId === folder.id;
                 return (
                   <li
                     key={folder.id}
@@ -736,24 +998,60 @@ export default function TelegramVaultModal({
                       void moveItemsToFolder(ids, folder.id);
                     }}
                   >
-                    <button
-                      type="button"
-                      onClick={() => setFolderId(folder.id)}
-                      className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 truncate ${
-                        dropTarget
-                          ? 'bg-domx-600/15 text-gray-900 dark:text-white ring-1 ring-domx-500'
-                          : active
-                            ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
-                            : 'hover:bg-gray-100 dark:hover:bg-zinc-800/50 text-gray-500 dark:text-zinc-400'
-                      }`}
-                    >
-                      {active ? (
-                        <FolderOpen className="w-4 h-4 text-domx-400 shrink-0" />
-                      ) : (
-                        <Folder className="w-4 h-4 shrink-0" />
-                      )}
-                      <span className="truncate">{folder.name}</span>
-                    </button>
+                    {renaming ? (
+                      <input
+                        value={renameDraft}
+                        autoFocus
+                        onChange={(event) => setRenameDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            void commitRename(folder.id);
+                          } else if (event.key === 'Escape') {
+                            event.preventDefault();
+                            cancelRename();
+                          }
+                        }}
+                        onBlur={() => {
+                          void commitRename(folder.id);
+                        }}
+                        className="w-full px-2 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-950"
+                        aria-label={`Rename ${folder.name}`}
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setFolderId(folder.id)}
+                          className={`min-w-0 flex-1 text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${
+                            dropTarget
+                              ? 'bg-domx-600/15 text-gray-900 dark:text-white ring-1 ring-domx-500'
+                              : active
+                                ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
+                                : 'hover:bg-gray-100 dark:hover:bg-zinc-800/50 text-gray-500 dark:text-zinc-400'
+                          }`}
+                        >
+                          {active ? (
+                            <FolderOpen className="w-4 h-4 text-domx-400 shrink-0" />
+                          ) : (
+                            <Folder className="w-4 h-4 shrink-0" />
+                          )}
+                          <span className="truncate">{folder.name}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            beginRename(folder);
+                          }}
+                          className="p-1.5 rounded-lg text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 shrink-0"
+                          aria-label={`Rename ${folder.name}`}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
                   </li>
                 );
               })}

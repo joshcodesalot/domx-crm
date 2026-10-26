@@ -1,10 +1,6 @@
 const crypto = require('crypto');
-const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const express = require('express');
-const multer = require('multer');
-const sharp = require('sharp');
 const rateLimit = require('express-rate-limit');
 const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
@@ -59,7 +55,8 @@ const {
   B2StorageError,
   vaultOriginalKey,
   vaultThumbKey,
-  putVaultObject,
+  presignVaultPut,
+  headVaultObject,
   presignVaultObject,
   streamVaultObject,
   deleteVaultObjects,
@@ -115,36 +112,7 @@ function handleTelegramError(res, err, logLabel) {
 }
 
 const FOLDER_NAME_MAX = 120;
-const VAULT_UPLOAD_MAX_BYTES = 512 * 1024 * 1024;
-
-const vaultUpload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => {
-      const dir = path.join(os.tmpdir(), 'domx-telegram-vault');
-      fs.mkdirSync(dir, { recursive: true });
-      cb(null, dir);
-    },
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname || '') || '';
-      cb(null, `vault-${Date.now()}-${Math.random().toString(16).slice(2)}${ext}`);
-    },
-  }),
-  limits: { fileSize: VAULT_UPLOAD_MAX_BYTES },
-  fileFilter: (_req, file, cb) => {
-    const mime = String(file.mimetype || '');
-    const name = String(file.originalname || '');
-    if (
-      mime.startsWith('image/') ||
-      mime.startsWith('video/') ||
-      mime.startsWith('audio/') ||
-      /\.(ogg|opus|mp3|m4a|wav|webm|aac)$/i.test(name)
-    ) {
-      cb(null, true);
-      return;
-    }
-    cb(new Error('Only photos, videos, and audio can be added to the vault'));
-  },
-});
+const VAULT_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024;
 
 function authenticateMedia(req, res, next) {
   if (!req.headers.authorization && typeof req.query.access_token === 'string') {
@@ -189,29 +157,34 @@ function classifyVaultUpload(mimeType, fileName) {
   return null;
 }
 
-async function photoDimensions(filePath) {
-  try {
-    const meta = await sharp(filePath, { failOn: 'none' }).rotate().metadata();
-    const width = Number(meta.width);
-    const height = Number(meta.height);
-    return {
-      width: Number.isFinite(width) && width > 0 ? Math.round(width) : null,
-      height: Number.isFinite(height) && height > 0 ? Math.round(height) : null,
-    };
-  } catch {
-    return { width: null, height: null };
-  }
+function parseVaultByteSize(value) {
+  const size = Number(value);
+  if (!Number.isSafeInteger(size) || size <= 0) return null;
+  return size;
 }
 
-async function writePhotoThumb(filePath) {
-  const dest = `${filePath}.thumb.jpg`;
-  await sharp(filePath, { failOn: 'none' })
-    .rotate()
-    .resize(320, 320, { fit: 'cover' })
-    .jpeg({ quality: 80 })
-    .toFile(dest);
-  return dest;
+function parseVaultDimension(value) {
+  if (value == null || value === '') return null;
+  const size = Number(value);
+  if (!Number.isFinite(size) || size <= 0 || size > 20000) return null;
+  return Math.round(size);
 }
+
+function vaultUploadMeta(body) {
+  const fileName =
+    typeof body?.fileName === 'string' ? body.fileName.trim().slice(0, 255) : '';
+  const mimeType =
+    typeof body?.mimeType === 'string' ? body.mimeType.trim().slice(0, 200) : '';
+  return {
+    fileName,
+    mimeType,
+    contentType: mimeType || 'application/octet-stream',
+    kind: classifyVaultUpload(mimeType, fileName),
+  };
+}
+
+const VAULT_ITEM_RETURNING = `id, "folderId", "savedMessageId", "fileUniqueId", kind,
+  "fileName", duration, width, height, "uploadedBy", "createdAt", FALSE AS sent`;
 
 function parseVaultItemIds(value) {
   if (!Array.isArray(value)) return [];
@@ -238,16 +211,6 @@ async function removeVaultItems(creatorId, itemIds) {
     [creatorId, existing.rows.map((row) => row.id)]
   );
   return existing.rows.length;
-}
-
-function cleanupUpload(file) {
-  const dest = file?.path;
-  if (!dest) return;
-  try {
-    fs.unlinkSync(dest);
-  } catch {
-    // ignore
-  }
 }
 
 async function loadTelegramCreator(id) {
@@ -1428,121 +1391,181 @@ router.get(
   }
 );
 
+function vaultUploadSizeError(byteSize) {
+  if (!Number.isSafeInteger(byteSize) || byteSize <= 0) return 'byteSize is required';
+  if (byteSize > VAULT_UPLOAD_MAX_BYTES) return 'Files must be 1 GB or smaller';
+  return null;
+}
+
+async function findVaultFolder(creatorId, folderId) {
+  const folder = await pool.query(
+    `SELECT id FROM telegram_vault_folders WHERE id = $1 AND "creatorId" = $2`,
+    [folderId, creatorId]
+  );
+  return folder.rows[0] || null;
+}
+
+async function findVaultItemRow(creatorId, itemId) {
+  const existing = await pool.query(
+    `SELECT ${VAULT_ITEM_RETURNING}
+     FROM telegram_vault_items
+     WHERE id = $1 AND "creatorId" = $2`,
+    [itemId, creatorId]
+  );
+  return existing.rows[0] || null;
+}
+
 router.post(
-  '/:id/telegram/vault',
+  '/:id/telegram/vault/upload-session',
   authenticate,
   requirePermission('creators.view'),
-  (req, res, next) => {
-    vaultUpload.fields([
-      { name: 'file', maxCount: 1 },
-      { name: 'thumb', maxCount: 1 },
-    ])(req, res, (err) => {
-      if (err) {
-        return res.status(400).json({ error: err.message || 'Upload failed' });
-      }
-      return next();
-    });
-  },
   async (req, res) => {
-    const mediaFile = Array.isArray(req.files?.file) ? req.files.file[0] : null;
-    const thumbFile = Array.isArray(req.files?.thumb) ? req.files.thumb[0] : null;
-    const folderId =
-      typeof req.body?.folderId === 'string' && isValidUuid(req.body.folderId)
-        ? req.body.folderId
-        : null;
+    const folderId = isValidUuid(req.body?.folderId) ? req.body.folderId : null;
     if (!folderId) {
-      cleanupUpload(mediaFile);
-      cleanupUpload(thumbFile);
       return res.status(400).json({ error: 'folderId is required' });
     }
-    if (!mediaFile?.path) {
-      cleanupUpload(thumbFile);
-      return res.status(400).json({ error: 'file is required' });
+    const byteSize = parseVaultByteSize(req.body?.byteSize);
+    const sizeError = vaultUploadSizeError(byteSize);
+    if (sizeError) {
+      return res.status(400).json({ error: sizeError });
     }
-    let generatedThumb = null;
+    const meta = vaultUploadMeta(req.body);
+    if (!meta.kind) {
+      return res.status(400).json({ error: 'Only photos, videos, and audio can be added to the vault' });
+    }
     try {
       const creator = await requireTelegramCreator(req, res);
-      if (!creator) {
-        cleanupUpload(mediaFile);
-        cleanupUpload(thumbFile);
-        return undefined;
-      }
-      const folder = await pool.query(
-        `SELECT id FROM telegram_vault_folders WHERE id = $1 AND "creatorId" = $2`,
-        [folderId, creator.id]
-      );
-      if (folder.rows.length === 0) {
-        cleanupUpload(mediaFile);
-        cleanupUpload(thumbFile);
+      if (!creator) return undefined;
+      const folder = await findVaultFolder(creator.id, folderId);
+      if (!folder) {
         return res.status(404).json({ error: 'Folder not found' });
       }
-      const kind = classifyVaultUpload(mediaFile.mimetype, mediaFile.originalname);
-      if (!kind) {
-        return res.status(400).json({ error: 'Only photos, videos, and audio can be added to the vault' });
-      }
       const itemId = crypto.randomUUID();
-      const storageKey = vaultOriginalKey(creator.id, itemId);
-      let thumbPath = thumbFile?.path || null;
-      if (!thumbPath && kind === 'photo') {
-        generatedThumb = await writePhotoThumb(mediaFile.path);
-        thumbPath = generatedThumb;
+      const original = await presignVaultPut(
+        vaultOriginalKey(creator.id, itemId),
+        meta.contentType
+      );
+      let thumb = null;
+      if (meta.kind === 'photo' || meta.kind === 'video') {
+        thumb = await presignVaultPut(vaultThumbKey(creator.id, itemId), 'image/jpeg');
       }
-      const thumbKey = thumbPath ? vaultThumbKey(creator.id, itemId) : null;
-      const dims = kind === 'photo' ? await photoDimensions(mediaFile.path) : { width: null, height: null };
-      const storedKeys = [];
+      return res.status(201).json({
+        itemId,
+        kind: meta.kind,
+        original: { url: original.url, contentType: original.contentType },
+        thumb: thumb ? { url: thumb.url, contentType: thumb.contentType } : null,
+      });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Start Telegram vault upload error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/telegram/vault/complete',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const itemId = isValidUuid(req.body?.itemId) ? req.body.itemId : null;
+    const folderId = isValidUuid(req.body?.folderId) ? req.body.folderId : null;
+    if (!itemId) {
+      return res.status(400).json({ error: 'Invalid vault item ID' });
+    }
+    if (!folderId) {
+      return res.status(400).json({ error: 'folderId is required' });
+    }
+    const byteSize = parseVaultByteSize(req.body?.byteSize);
+    const sizeError = vaultUploadSizeError(byteSize);
+    if (sizeError) {
+      return res.status(400).json({ error: sizeError });
+    }
+    const meta = vaultUploadMeta(req.body);
+    if (!meta.kind) {
+      return res.status(400).json({ error: 'Only photos, videos, and audio can be added to the vault' });
+    }
+    const hasThumb = req.body?.hasThumb === true && meta.kind !== 'voice';
+    const width = parseVaultDimension(req.body?.width);
+    const height = parseVaultDimension(req.body?.height);
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const existing = await findVaultItemRow(creator.id, itemId);
+      if (existing) {
+        return res.json({ item: serializeVaultItem(existing) });
+      }
+      const folder = await findVaultFolder(creator.id, folderId);
+      if (!folder) {
+        return res.status(404).json({ error: 'Folder not found' });
+      }
+      const storageKey = vaultOriginalKey(creator.id, itemId);
+      const thumbKey = hasThumb ? vaultThumbKey(creator.id, itemId) : null;
+      const stored = await headVaultObject(storageKey);
+      if (stored.contentLength !== byteSize) {
+        return res.status(400).json({ error: 'Uploaded file size does not match' });
+      }
+      if (thumbKey) {
+        await headVaultObject(thumbKey);
+      }
       try {
-        const byteSize = await putVaultObject(
-          storageKey,
-          mediaFile.path,
-          mediaFile.mimetype || 'application/octet-stream'
-        );
-        storedKeys.push(storageKey);
-        if (thumbKey && thumbPath) {
-          await putVaultObject(thumbKey, thumbPath, 'image/jpeg');
-          storedKeys.push(thumbKey);
-        }
         const inserted = await pool.query(
           `INSERT INTO telegram_vault_items (
              id, "creatorId", "folderId", "savedMessageId", kind, "fileName",
              "mimeType", "storageKey", "thumbKey", "byteSize", width, height, "uploadedBy"
            )
            VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-           RETURNING id, "folderId", "savedMessageId", "fileUniqueId", kind,
-                     "fileName", duration, width, height, "uploadedBy", "createdAt"`,
+           RETURNING ${VAULT_ITEM_RETURNING}`,
           [
             itemId,
             creator.id,
             folderId,
-            kind,
-            mediaFile.originalname || null,
-            mediaFile.mimetype || null,
+            meta.kind,
+            meta.fileName || null,
+            meta.contentType,
             storageKey,
             thumbKey,
-            byteSize,
-            dims.width,
-            dims.height,
+            stored.contentLength,
+            width,
+            height,
             req.user.id,
           ]
         );
         return res.status(201).json({ item: serializeVaultItem(inserted.rows[0]) });
       } catch (err) {
-        await deleteVaultObjects(storedKeys).catch((cleanupErr) => {
-          console.warn('[telegram] Vault storage cleanup failed:', cleanupErr.message || cleanupErr);
-        });
+        if (err?.code === '23505') {
+          const raced = await findVaultItemRow(creator.id, itemId);
+          if (raced) return res.json({ item: serializeVaultItem(raced) });
+        }
         throw err;
       }
     } catch (err) {
-      return handleTelegramError(res, err, 'Upload Telegram vault error:');
-    } finally {
-      cleanupUpload(mediaFile);
-      cleanupUpload(thumbFile);
-      if (generatedThumb) {
-        try {
-          fs.unlinkSync(generatedThumb);
-        } catch {
-          // ignore
-        }
+      return handleTelegramError(res, err, 'Complete Telegram vault upload error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/telegram/vault/upload-abort',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const itemId = isValidUuid(req.body?.itemId) ? req.body.itemId : null;
+    if (!itemId) {
+      return res.status(400).json({ error: 'Invalid vault item ID' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const existing = await findVaultItemRow(creator.id, itemId);
+      if (existing) {
+        return res.json({ ok: true, kept: true });
       }
+      await deleteVaultObjects([
+        vaultOriginalKey(creator.id, itemId),
+        vaultThumbKey(creator.id, itemId),
+      ]);
+      return res.json({ ok: true });
+    } catch (err) {
+      return handleTelegramError(res, err, 'Abort Telegram vault upload error:');
     }
   }
 );
