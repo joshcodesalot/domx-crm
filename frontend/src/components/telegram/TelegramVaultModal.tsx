@@ -39,6 +39,7 @@ import {
   listVaultMediaNotes,
   isVaultUploadAborted,
   moveTelegramVaultItems,
+  saveTelegramVaultDuration,
   renameTelegramVaultFolder,
   telegramVaultMediaUrl,
   uploadTelegramVaultFile,
@@ -116,7 +117,14 @@ type PreparedVaultMedia = {
   blob: Blob | null;
   width: number | null;
   height: number | null;
+  duration: number | null;
 };
+
+function videoLength(video: HTMLVideoElement): number | null {
+  const duration = Number(video.duration);
+  if (!Number.isFinite(duration) || duration <= 0) return null;
+  return duration;
+}
 
 function videoFrameThumb(file: File): Promise<PreparedVaultMedia> {
   return new Promise((resolve) => {
@@ -130,11 +138,12 @@ function videoFrameThumb(file: File): Promise<PreparedVaultMedia> {
     ) => {
       if (settled) return;
       settled = true;
+      const duration = videoLength(video);
       window.clearTimeout(timer);
       URL.revokeObjectURL(url);
       video.removeAttribute('src');
       video.load();
-      resolve({ blob, width, height });
+      resolve({ blob, width, height, duration });
     };
     const timer = window.setTimeout(() => finish(null), 4000);
     video.muted = true;
@@ -186,7 +195,7 @@ function photoFrameThumb(file: File): Promise<PreparedVaultMedia> {
     const image = new Image();
     const finish = (blob: Blob | null, width: number | null, height: number | null) => {
       URL.revokeObjectURL(url);
-      resolve({ blob, width, height });
+      resolve({ blob, width, height, duration: null });
     };
     image.onload = () => {
       const width = image.naturalWidth || 0;
@@ -223,7 +232,33 @@ function prepareVaultMedia(file: File): Promise<PreparedVaultMedia> {
     /\.(jpe?g|png|gif|webp|bmp|heic|heif|avif|tiff?)$/i.test(file.name);
   if (isVideo) return videoFrameThumb(file);
   if (isPhoto) return photoFrameThumb(file);
-  return Promise.resolve({ blob: null, width: null, height: null });
+  return Promise.resolve({ blob: null, width: null, height: null, duration: null });
+}
+
+const DURATION_PROBE_LIMIT = 3;
+
+function probeVideoDuration(url: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const video = document.createElement('video');
+    let settled = false;
+    const finish = (seconds: number | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      video.removeAttribute('src');
+      video.load();
+      resolve(seconds);
+    };
+    const timer = window.setTimeout(() => finish(null), 8000);
+    video.preload = 'metadata';
+    video.muted = true;
+    video.playsInline = true;
+    video.onloadedmetadata = () => finish(videoLength(video));
+    video.onerror = () => finish(null);
+    video.src = url;
+  });
 }
 
 function VaultThumbImg({
@@ -313,6 +348,7 @@ export default function TelegramVaultModal({
   const renameCancelRef = useRef(false);
   const dragDepthRef = useRef(0);
   const draggingItemIdsRef = useRef<string[]>([]);
+  const durationAttemptsRef = useRef<Set<string>>(new Set());
   const [isDragging, setIsDragging] = useState(false);
   const [dropFolderId, setDropFolderId] = useState<string | null>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
@@ -447,6 +483,49 @@ export default function TelegramVaultModal({
   useEffect(() => {
     void loadItems();
   }, [loadItems]);
+
+  useEffect(() => {
+    const pending = items.filter(
+      (item) =>
+        item.kind === 'video' &&
+        !(typeof item.duration === 'number' && item.duration > 0) &&
+        !durationAttemptsRef.current.has(item.id)
+    );
+    if (!pending.length) return undefined;
+    let cursor = 0;
+    let active = 0;
+    let stopped = false;
+    const pump = () => {
+      if (stopped) return;
+      while (active < DURATION_PROBE_LIMIT && cursor < pending.length) {
+        const item = pending[cursor];
+        cursor += 1;
+        durationAttemptsRef.current.add(item.id);
+        active += 1;
+        void probeVideoDuration(telegramVaultMediaUrl(creatorId, item.id, 'full'))
+          .then((seconds) => {
+            if (!seconds) return null;
+            return saveTelegramVaultDuration(creatorId, item.id, seconds);
+          })
+          .then((saved) => {
+            if (!saved?.item) return;
+            const duration = saved.item.duration;
+            setItems((prev) =>
+              prev.map((row) => (row.id === item.id ? { ...row, duration } : row))
+            );
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            active -= 1;
+            if (!stopped) pump();
+          });
+      }
+    };
+    pump();
+    return () => {
+      stopped = true;
+    };
+  }, [items, creatorId]);
 
   const visibleItems = useMemo(() => {
     if (sentFilter === 'all') return items;
@@ -725,6 +804,7 @@ export default function TelegramVaultModal({
             thumb: prepared.blob,
             width: prepared.width,
             height: prepared.height,
+            duration: prepared.duration,
             signal: controller.signal,
             onProgress: (percent) => {
               setUploadProgress({

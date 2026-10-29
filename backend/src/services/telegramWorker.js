@@ -25,6 +25,10 @@ const FAN_AVATARS_PUBLIC = '/uploads/telegram-fans';
 const VAULT_CACHE_DIR = dataPath('telegram-vault');
 const LOGIN_TIMEOUT_MS = 90_000;
 const VAULT_ALBUM_MAX = 10;
+const TELEGRAM_PHOTO_MAX_SUM = 10_000;
+const TELEGRAM_PHOTO_MAX_RATIO = 20;
+const TELEGRAM_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+const TELEGRAM_PHOTO_QUALITIES = [90, 80, 70, 60, 50, 40, 30];
 const FAN_AVATAR_PREFETCH_CONCURRENCY = 3;
 const MEDIA_DOWNLOAD_CONCURRENCY = 3;
 const FANOUT_CONCURRENCY = 3;
@@ -2089,15 +2093,26 @@ async function uploadVaultMedia(creatorId, { filePath, mimeType, fileName, thumb
     throw new TelegramWorkerError('Only photos, videos, and audio can be added to the vault');
   }
   const thumbAbs = thumbPath ? path.resolve(String(thumbPath)) : '';
+  let photoDir = '';
   try {
+    let sendPath = abs;
+    let sendName = fileName || path.basename(abs);
+    let sendMime = isAudio ? guessUploadAudioMime(mime, name) : mime || undefined;
+    if (isPhoto) {
+      photoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'domx-vault-photo-'));
+      const prepared = await prepareTelegramPhoto(abs, photoDir);
+      sendPath = prepared.filePath;
+      if (prepared.rewritten) {
+        sendName = telegramJpegName(sendName);
+        sendMime = 'image/jpeg';
+      }
+    }
     const sent = await client.sendMedia('me', {
       type: isAudio ? 'voice' : isVideo ? 'video' : 'photo',
       // mtcute treats a bare string as a File ID; local paths need the file: prefix.
-      file: `file:${abs}`,
-      fileName: fileName || path.basename(abs),
-      fileMime: isAudio
-        ? guessUploadAudioMime(mime, name)
-        : mime || undefined,
+      file: `file:${sendPath}`,
+      fileName: sendName,
+      fileMime: sendMime,
     });
     const fields = extractVaultFields(sent);
     if (!fields) {
@@ -2149,6 +2164,8 @@ async function uploadVaultMedia(creatorId, { filePath, mimeType, fileName, thumb
   } catch (err) {
     if (err instanceof TelegramWorkerError) throw err;
     throw new TelegramWorkerError(describeError(err), 400);
+  } finally {
+    if (photoDir) fs.rmSync(photoDir, { recursive: true, force: true });
   }
 }
 
@@ -2225,11 +2242,12 @@ async function sendVaultToPeer(creatorId, peerId, { items, caption, replyToMessa
   const sendOne = async (item) => {
     const nextCaption = takeCaption();
     const replyParams = takeReplyParams();
+    const file = await telegramOutboundFile(item, dir);
     const sent = await client.sendMedia(numericPeer, {
       type: vaultSendType(item),
-      file: `file:${item.filePath}`,
-      fileName: item.fileName || path.basename(item.filePath),
-      fileMime: vaultSendMime(item),
+      file: `file:${file.filePath}`,
+      fileName: file.fileName,
+      fileMime: file.fileMime,
       caption: nextCaption || undefined,
       ...(replyParams || {}),
     });
@@ -2248,11 +2266,19 @@ async function sendVaultToPeer(creatorId, peerId, { items, caption, replyToMessa
         throw new TelegramWorkerError('Vault item is not a photo or video', 400);
       }
       const useCaption = i === 0 ? takeCaption() : '';
+      const file =
+        item.kind === 'photo'
+          ? await telegramOutboundFile(item, dir)
+          : {
+              filePath: item.filePath,
+              fileName: item.fileName || path.basename(item.filePath),
+              fileMime: item.mimeType || undefined,
+            };
       medias.push({
         type: item.kind,
-        file: `file:${item.filePath}`,
-        fileName: item.fileName || path.basename(item.filePath),
-        fileMime: item.mimeType || undefined,
+        file: `file:${file.filePath}`,
+        fileName: file.fileName,
+        fileMime: file.fileMime,
         ...(useCaption ? { caption: useCaption } : {}),
       });
     }
@@ -2346,6 +2372,171 @@ async function deleteSavedVaultMessage(creatorId, savedMessageId) {
   } catch (err) {
     throw new TelegramWorkerError(describeError(err), 400);
   }
+}
+
+function telegramPhotoFits(meta, byteLength) {
+  if (!meta || meta.format !== 'jpeg' || meta.isProgressive) return false;
+  if (String(meta.space || '').toLowerCase() === 'cmyk') return false;
+  const width = Number(meta.width) || 0;
+  const height = Number(meta.height) || 0;
+  if (width < 1 || height < 1) return false;
+  if (width + height > TELEGRAM_PHOTO_MAX_SUM) return false;
+  if (Math.max(width, height) / Math.min(width, height) > TELEGRAM_PHOTO_MAX_RATIO) return false;
+  if (byteLength > TELEGRAM_PHOTO_MAX_BYTES) return false;
+  return true;
+}
+
+function orientedPhotoSize(meta) {
+  const width = Math.max(1, Number(meta.width) || 1);
+  const height = Math.max(1, Number(meta.height) || 1);
+  const orientation = Number(meta.orientation) || 1;
+  if (orientation >= 5 && orientation <= 8) return { width: height, height: width };
+  return { width, height };
+}
+
+function fitTelegramSum(width, height) {
+  if (width + height <= TELEGRAM_PHOTO_MAX_SUM) return { width, height };
+  const scale = TELEGRAM_PHOTO_MAX_SUM / (width + height);
+  return {
+    width: Math.max(1, Math.floor(width * scale)),
+    height: Math.max(1, Math.floor(height * scale)),
+  };
+}
+
+function telegramPhotoCanvas(width, height) {
+  const fitted = fitTelegramSum(Math.max(1, Math.round(width)), Math.max(1, Math.round(height)));
+  let contentW = fitted.width;
+  let contentH = fitted.height;
+  let canvasW = contentW;
+  let canvasH = contentH;
+  const longSide = Math.max(contentW, contentH);
+  const shortSide = Math.min(contentW, contentH);
+  if (longSide / shortSide > TELEGRAM_PHOTO_MAX_RATIO) {
+    const neededShort = Math.ceil(longSide / TELEGRAM_PHOTO_MAX_RATIO);
+    if (contentW >= contentH) canvasH = neededShort;
+    else canvasW = neededShort;
+  }
+  if (canvasW + canvasH > TELEGRAM_PHOTO_MAX_SUM) {
+    const scaled = fitTelegramSum(canvasW, canvasH);
+    const contentScale = TELEGRAM_PHOTO_MAX_SUM / (canvasW + canvasH);
+    contentW = Math.max(1, Math.floor(contentW * contentScale));
+    contentH = Math.max(1, Math.floor(contentH * contentScale));
+    canvasW = scaled.width;
+    canvasH = scaled.height;
+  }
+  const canvasLong = Math.max(canvasW, canvasH);
+  const canvasShort = Math.min(canvasW, canvasH);
+  if (canvasLong / canvasShort > TELEGRAM_PHOTO_MAX_RATIO) {
+    const maxLong = Math.max(1, Math.floor(canvasShort * TELEGRAM_PHOTO_MAX_RATIO));
+    if (canvasW >= canvasH) canvasW = maxLong;
+    else canvasH = maxLong;
+  }
+  contentW = Math.min(contentW, canvasW);
+  contentH = Math.min(contentH, canvasH);
+  const extraW = Math.max(0, canvasW - contentW);
+  const extraH = Math.max(0, canvasH - contentH);
+  return {
+    width: contentW,
+    height: contentH,
+    padLeft: Math.floor(extraW / 2),
+    padRight: extraW - Math.floor(extraW / 2),
+    padTop: Math.floor(extraH / 2),
+    padBottom: extraH - Math.floor(extraH / 2),
+  };
+}
+
+function telegramJpegName(name) {
+  const base = path.basename(String(name || 'photo'), path.extname(String(name || '')));
+  return `${base || 'photo'}.jpg`;
+}
+
+async function writeTelegramJpeg(filePath, dest, layout, quality) {
+  let pipeline = sharp(filePath, { failOn: 'none' })
+    .rotate()
+    .toColourspace('srgb')
+    .resize(layout.width, layout.height, { fit: 'fill' });
+  if (layout.padTop || layout.padBottom || layout.padLeft || layout.padRight) {
+    pipeline = pipeline.extend({
+      top: layout.padTop,
+      bottom: layout.padBottom,
+      left: layout.padLeft,
+      right: layout.padRight,
+      background: { r: 0, g: 0, b: 0 },
+    });
+  }
+  await pipeline.jpeg({ quality, progressive: false }).toFile(dest);
+}
+
+async function prepareTelegramPhoto(filePath, dir) {
+  const abs = path.resolve(String(filePath || ''));
+  if (!abs || !fs.existsSync(abs) || !fs.statSync(abs).size) {
+    throw new TelegramWorkerError('Upload file is missing', 400);
+  }
+  const bytes = fs.statSync(abs).size;
+  let meta;
+  try {
+    meta = await sharp(abs, { failOn: 'none' }).metadata();
+  } catch {
+    throw new TelegramWorkerError('Photo could not be read', 400);
+  }
+  if (telegramPhotoFits(meta, bytes)) {
+    return { filePath: abs, rewritten: false };
+  }
+  if (!meta.width || !meta.height) {
+    throw new TelegramWorkerError('Photo could not be read', 400);
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  const dest = path.join(dir, `tg-${Date.now()}-${Math.random().toString(16).slice(2)}.jpg`);
+  const oriented = orientedPhotoSize(meta);
+  let scale = 1;
+  try {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const layout = telegramPhotoCanvas(
+        Math.max(1, Math.floor(oriented.width * scale)),
+        Math.max(1, Math.floor(oriented.height * scale))
+      );
+      for (const quality of TELEGRAM_PHOTO_QUALITIES) {
+        await writeTelegramJpeg(abs, dest, layout, quality);
+        const written = fs.statSync(dest).size;
+        if (written > TELEGRAM_PHOTO_MAX_BYTES || !fileLooksLikeJpeg(dest)) continue;
+        const out = await sharp(dest, { failOn: 'none' }).metadata();
+        const width = Number(out.width) || 0;
+        const height = Number(out.height) || 0;
+        const ratio = Math.max(width, height) / Math.max(1, Math.min(width, height));
+        if (
+          out.format === 'jpeg' &&
+          !out.isProgressive &&
+          String(out.space || '').toLowerCase() !== 'cmyk' &&
+          width + height <= TELEGRAM_PHOTO_MAX_SUM &&
+          ratio <= TELEGRAM_PHOTO_MAX_RATIO
+        ) {
+          return { filePath: dest, rewritten: true };
+        }
+      }
+      scale *= 0.7;
+    }
+  } catch (err) {
+    if (err instanceof TelegramWorkerError) throw err;
+    throw new TelegramWorkerError('Photo could not be read', 400);
+  }
+  throw new TelegramWorkerError('Photo is too large to send', 400);
+}
+
+async function telegramOutboundFile(item, dir) {
+  const originalName = item.fileName || path.basename(item.filePath);
+  if (vaultSendType(item) !== 'photo') {
+    return {
+      filePath: item.filePath,
+      fileName: originalName,
+      fileMime: vaultSendMime(item),
+    };
+  }
+  const prepared = await prepareTelegramPhoto(item.filePath, dir);
+  return {
+    filePath: prepared.filePath,
+    fileName: prepared.rewritten ? telegramJpegName(originalName) : originalName,
+    fileMime: prepared.rewritten ? 'image/jpeg' : vaultSendMime(item),
+  };
 }
 
 async function writePhotoThumbFromFile(creatorId, savedMessageId, filePath) {
@@ -3620,6 +3811,7 @@ module.exports = {
   sendSticker,
   sendGif,
   sendVaultToPeer,
+  prepareTelegramPhoto,
   listInstalledStickerSets,
   listStickerSet,
   getCachedStickerMedia,

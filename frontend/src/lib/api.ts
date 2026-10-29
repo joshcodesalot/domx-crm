@@ -4443,6 +4443,7 @@ export async function uploadTelegramVaultFile(
     thumb?: Blob | null;
     width?: number | null;
     height?: number | null;
+    duration?: number | null;
     signal?: AbortSignal;
     onProgress?: (percent: number) => void;
   }
@@ -4500,6 +4501,7 @@ export async function uploadTelegramVaultFile(
           byteSize: input.file.size,
           width: input.width ?? null,
           height: input.height ?? null,
+          duration: input.duration ?? null,
           hasThumb: Boolean(thumb),
         }),
       }
@@ -4518,6 +4520,20 @@ export async function uploadTelegramVaultFile(
     }
     throw err;
   }
+}
+
+export async function saveTelegramVaultDuration(
+  creatorId: string,
+  itemId: string,
+  duration: number
+): Promise<{ item: TelegramVaultItem }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/vault/${encodeURIComponent(itemId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ duration }),
+    }
+  );
 }
 
 export async function deleteTelegramVaultItem(

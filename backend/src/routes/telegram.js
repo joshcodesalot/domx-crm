@@ -170,6 +170,15 @@ function parseVaultDimension(value) {
   return Math.round(size);
 }
 
+function parseVaultDuration(value) {
+  if (value == null || value === '') return null;
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  const rounded = Math.round(seconds);
+  if (!Number.isSafeInteger(rounded) || rounded > 2147483647) return null;
+  return rounded;
+}
+
 function vaultUploadMeta(body) {
   const fileName =
     typeof body?.fileName === 'string' ? body.fileName.trim().slice(0, 255) : '';
@@ -1486,6 +1495,7 @@ router.post(
     const hasThumb = req.body?.hasThumb === true && meta.kind !== 'voice';
     const width = parseVaultDimension(req.body?.width);
     const height = parseVaultDimension(req.body?.height);
+    const duration = meta.kind === 'video' ? parseVaultDuration(req.body?.duration) : null;
     try {
       const creator = await requireTelegramCreator(req, res);
       if (!creator) return undefined;
@@ -1510,9 +1520,10 @@ router.post(
         const inserted = await pool.query(
           `INSERT INTO telegram_vault_items (
              id, "creatorId", "folderId", "savedMessageId", kind, "fileName",
-             "mimeType", "storageKey", "thumbKey", "byteSize", width, height, "uploadedBy"
+             "mimeType", "storageKey", "thumbKey", "byteSize", width, height,
+             duration, "uploadedBy"
            )
-           VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
            RETURNING ${VAULT_ITEM_RETURNING}`,
           [
             itemId,
@@ -1526,6 +1537,7 @@ router.post(
             stored.contentLength,
             width,
             height,
+            duration,
             req.user.id,
           ]
         );
@@ -1578,6 +1590,29 @@ router.patch(
     const { itemId } = req.params;
     if (!isValidUuid(itemId)) {
       return res.status(400).json({ error: 'Invalid vault item ID' });
+    }
+    if (req.body?.folderId == null && req.body?.duration != null) {
+      const duration = parseVaultDuration(req.body.duration);
+      if (duration == null) {
+        return res.status(400).json({ error: 'Invalid duration' });
+      }
+      try {
+        const creator = await requireTelegramCreator(req, res);
+        if (!creator) return undefined;
+        const updated = await pool.query(
+          `UPDATE telegram_vault_items
+           SET duration = $3, "updatedAt" = NOW()
+           WHERE id = $1 AND "creatorId" = $2 AND kind = 'video'
+           RETURNING ${VAULT_ITEM_RETURNING}`,
+          [itemId, creator.id, duration]
+        );
+        if (updated.rows.length === 0) {
+          return res.status(404).json({ error: 'Vault item not found' });
+        }
+        return res.json({ item: serializeVaultItem(updated.rows[0]) });
+      } catch (err) {
+        return handleTelegramError(res, err, 'Update Telegram vault duration error:');
+      }
     }
     const folderId =
       req.body?.folderId == null
