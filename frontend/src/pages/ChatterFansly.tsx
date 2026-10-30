@@ -11,6 +11,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
 import { useSyncedDrawer } from '@/context/ShellContext';
+import { useAutoGrowTextarea } from '@/hooks/useAutoGrowTextarea';
 import { usePollEnabled } from '@/hooks/useDocumentVisible';
 import { useLocation } from 'react-router-dom';
 import fanslyIcon from '@/assets/fansly.svg';
@@ -447,6 +448,8 @@ export default function ChatterFansly() {
   const [threadLoading, setThreadLoading] = useState(false);
   const [threadError, setThreadError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const setDraftInputRef = useAutoGrowTextarea(draftInputRef, draft);
   const [sending, setSending] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [hiddenMessageIds, setHiddenMessageIds] = useState<string[]>([]);
@@ -1916,6 +1919,7 @@ export default function ChatterFansly() {
                     <Lock className="w-5 h-5" />
                   </button>
                   <textarea
+                    ref={setDraftInputRef}
                     value={draft}
                     onChange={(event) => setDraft(event.target.value)}
                     onKeyDown={(event) => {
@@ -1926,7 +1930,7 @@ export default function ChatterFansly() {
                     }}
                     rows={1}
                     placeholder="Write a message"
-                    className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600"
+                    className="flex-1 max-h-32 min-h-[44px] resize-none overflow-y-auto px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600"
                   />
                   <button
                     type="submit"

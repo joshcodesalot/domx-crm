@@ -41,6 +41,7 @@ import VaultMediaNoteModal, {
 import ScriptToolbarButton from '@/components/scripts/ScriptToolbarButton';
 import FourBasedFanPanel from '@/components/fourbased/FourBasedFanPanel';
 import { useAuth } from '@/context/AuthContext';
+import { useAutoGrowTextarea } from '@/hooks/useAutoGrowTextarea';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import {
@@ -1523,6 +1524,7 @@ export function FourBasedChatThread({
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const setDraftInputRef = useAutoGrowTextarea(draftInputRef, draft);
   const loadingOlderRef = useRef(false);
   const nearBottomRef = useRef(true);
   const preserveScrollRef = useRef<{ height: number; top: number } | null>(null);
@@ -3270,7 +3272,7 @@ export function FourBasedChatThread({
             <ImageIcon className="w-5 h-5" />
           </button>
           <textarea
-            ref={draftInputRef}
+            ref={setDraftInputRef}
             value={draft}
             disabled={sending || translatingOutgoing}
             onChange={(e) => {
@@ -3289,7 +3291,7 @@ export function FourBasedChatThread({
                 ? 'Type a message… (Auto-translates to German)'
                 : 'Type a message…'
             }
-            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-60"
+            className="flex-1 max-h-32 min-h-[44px] resize-none overflow-y-auto px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-60"
           />
           <button
             type="button"

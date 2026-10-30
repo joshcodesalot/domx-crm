@@ -26,6 +26,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
+import { useAutoGrowTextarea } from '@/hooks/useAutoGrowTextarea';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useStaffSync } from '@/context/StaffSyncContext';
 import { berlinDateString, useStaffTimeZone } from '@/lib/berlinTime';
@@ -980,6 +981,7 @@ export function TelegramChatThread({
   const searchTimerRef = useRef<number | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const setDraftInputRef = useAutoGrowTextarea(draftInputRef, draft);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const loadingOlderRef = useRef(false);
@@ -2510,7 +2512,7 @@ export function TelegramChatThread({
             onSent={(message) => handleQuickMediaSent(message, 'gif')}
           />
           <textarea
-            ref={draftInputRef}
+            ref={setDraftInputRef}
             value={draft}
             disabled={sending || translatingOutgoing}
             onChange={(e) => {
@@ -2534,7 +2536,7 @@ export function TelegramChatThread({
                 ? 'Type a message… (Auto-translates to German)'
                 : 'Type a message…'
             }
-            className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-60"
+            className="flex-1 max-h-32 min-h-[44px] resize-none overflow-y-auto px-2 py-3 text-sm bg-transparent text-gray-900 dark:text-white focus:outline-none placeholder:text-gray-400 dark:placeholder:text-zinc-600 leading-relaxed disabled:opacity-60"
           />
           <button
             type="button"
