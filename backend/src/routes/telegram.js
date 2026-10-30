@@ -256,13 +256,43 @@ async function requireTelegramCreator(req, res) {
 }
 
 function serializeVaultFolder(row) {
+  const coverKind = row.coverKind === 'photo' || row.coverKind === 'video' ? row.coverKind : null;
   return {
     id: row.id,
     name: row.name,
     sortOrder: row.sortOrder,
+    coverItemId: row.coverItemId || null,
+    coverKind,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+function queryVaultFolders(db, creatorId, folderId = null) {
+  const vals = [creatorId];
+  let where = 'f."creatorId" = $1';
+  if (folderId) {
+    vals.push(folderId);
+    where += ` AND f.id = $${vals.length}`;
+  }
+  return db.query(
+    `SELECT f.id, f.name, f."sortOrder", f."createdAt", f."updatedAt",
+            cover.id AS "coverItemId",
+            cover.kind AS "coverKind"
+     FROM telegram_vault_folders f
+     LEFT JOIN LATERAL (
+       SELECT i.id, i.kind
+       FROM telegram_vault_items i
+       WHERE i."folderId" = f.id
+         AND i."creatorId" = f."creatorId"
+         AND i.kind IN ('photo', 'video')
+       ORDER BY i."createdAt" DESC
+       LIMIT 1
+     ) cover ON TRUE
+     WHERE ${where}
+     ORDER BY f."sortOrder" ASC, f."createdAt" ASC`,
+    vals
+  );
 }
 
 function serializeVaultItem(row) {
@@ -1213,21 +1243,14 @@ router.get(
     try {
       const creator = await requireTelegramCreator(req, res);
       if (!creator) return undefined;
-      let result = await pool.query(
-        `SELECT id, name, "sortOrder", "createdAt", "updatedAt"
-         FROM telegram_vault_folders
-         WHERE "creatorId" = $1
-         ORDER BY "sortOrder" ASC, "createdAt" ASC`,
-        [creator.id]
-      );
+      let result = await queryVaultFolders(pool, creator.id);
       if (result.rows.length === 0) {
-        const created = await pool.query(
+        await pool.query(
           `INSERT INTO telegram_vault_folders ("creatorId", name, "sortOrder", "createdBy", "updatedBy")
-           VALUES ($1, 'Vault', 0, $2, $2)
-           RETURNING id, name, "sortOrder", "createdAt", "updatedAt"`,
+           VALUES ($1, 'Vault', 0, $2, $2)`,
           [creator.id, req.user.id]
         );
-        result = created;
+        result = await queryVaultFolders(pool, creator.id);
       }
       return res.json({ folders: result.rows.map(serializeVaultFolder) });
     } catch (err) {
@@ -1259,12 +1282,66 @@ router.post(
       const created = await pool.query(
         `INSERT INTO telegram_vault_folders ("creatorId", name, "sortOrder", "createdBy", "updatedBy")
          VALUES ($1, $2, $3, $4, $4)
-         RETURNING id, name, "sortOrder", "createdAt", "updatedAt"`,
+         RETURNING id`,
         [creator.id, name, Number(sort.rows[0]?.next) || 0, req.user.id]
       );
-      return res.status(201).json({ folder: serializeVaultFolder(created.rows[0]) });
+      const loaded = await queryVaultFolders(pool, creator.id, created.rows[0].id);
+      return res.status(201).json({ folder: serializeVaultFolder(loaded.rows[0]) });
     } catch (err) {
       return handleTelegramError(res, err, 'Create Telegram vault folder error:');
+    }
+  }
+);
+
+router.put(
+  '/:id/telegram/vault/folders/order',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    const raw = Array.isArray(req.body?.ids) ? req.body.ids : null;
+    if (!raw?.length || raw.some((id) => !isValidUuid(id))) {
+      return res.status(400).json({ error: 'Folder ids are required' });
+    }
+    const ids = raw.map((id) => String(id).toLowerCase());
+    if (new Set(ids).size !== ids.length) {
+      return res.status(400).json({ error: 'Folder ids must be unique' });
+    }
+    let client;
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      client = await pool.connect();
+      await client.query('BEGIN');
+      const existing = await client.query(
+        `SELECT id FROM telegram_vault_folders WHERE "creatorId" = $1`,
+        [creator.id]
+      );
+      const existingIds = new Set(existing.rows.map((row) => String(row.id).toLowerCase()));
+      if (existingIds.size !== ids.length || ids.some((id) => !existingIds.has(id))) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Folder order must include every folder' });
+      }
+      await client.query(
+        `UPDATE telegram_vault_folders AS f
+         SET "sortOrder" = (v.ord - 1)::int, "updatedBy" = $3, "updatedAt" = NOW()
+         FROM unnest($2::uuid[]) WITH ORDINALITY AS v(id, ord)
+         WHERE f.id = v.id AND f."creatorId" = $1`,
+        [creator.id, ids, req.user.id]
+      );
+      const listed = await queryVaultFolders(client, creator.id);
+      await client.query('COMMIT');
+      return res.json({ folders: listed.rows.map(serializeVaultFolder) });
+    } catch (err) {
+      if (client) {
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // connection already closed
+        }
+      }
+      return handleTelegramError(res, err, 'Reorder Telegram vault folders error:');
+    } finally {
+      client?.release();
     }
   }
 );
@@ -1292,13 +1369,14 @@ router.patch(
         `UPDATE telegram_vault_folders
          SET name = $3, "updatedBy" = $4, "updatedAt" = NOW()
          WHERE id = $1 AND "creatorId" = $2
-         RETURNING id, name, "sortOrder", "createdAt", "updatedAt"`,
+         RETURNING id`,
         [folderId, creator.id, name, req.user.id]
       );
       if (updated.rows.length === 0) {
         return res.status(404).json({ error: 'Folder not found' });
       }
-      return res.json({ folder: serializeVaultFolder(updated.rows[0]) });
+      const loaded = await queryVaultFolders(pool, creator.id, folderId);
+      return res.json({ folder: serializeVaultFolder(loaded.rows[0]) });
     } catch (err) {
       return handleTelegramError(res, err, 'Update Telegram vault folder error:');
     }

@@ -3936,6 +3936,8 @@ export interface TelegramVaultFolder {
   id: string;
   name: string;
   sortOrder: number;
+  coverItemId?: string | null;
+  coverKind?: 'photo' | 'video' | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 }
@@ -4301,6 +4303,16 @@ export async function createTelegramVaultFolder(
   return request(`/api/creators/${creatorId}/telegram/vault/folders`, {
     method: 'POST',
     body: JSON.stringify({ name }),
+  });
+}
+
+export async function reorderTelegramVaultFolders(
+  creatorId: string,
+  ids: string[]
+): Promise<{ folders: TelegramVaultFolder[] }> {
+  return request(`/api/creators/${creatorId}/telegram/vault/folders/order`, {
+    method: 'PUT',
+    body: JSON.stringify({ ids }),
   });
 }
 

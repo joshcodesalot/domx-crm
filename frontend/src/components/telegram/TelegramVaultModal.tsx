@@ -41,6 +41,7 @@ import {
   moveTelegramVaultItems,
   saveTelegramVaultDuration,
   renameTelegramVaultFolder,
+  reorderTelegramVaultFolders,
   telegramVaultMediaUrl,
   uploadTelegramVaultFile,
   type TelegramVaultFolder,
@@ -74,9 +75,69 @@ function isVaultMediaFile(file: File): boolean {
   return VAULT_MEDIA_EXT.test(file.name);
 }
 
+const FOLDER_DRAG_TYPE = 'application/x-domx-vault-folder';
+
 function hasFileDrag(dt: DataTransfer | null): boolean {
   if (!dt) return false;
   return Array.from(dt.types || []).includes('Files');
+}
+
+function hasFolderDrag(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  return Array.from(dt.types || []).includes(FOLDER_DRAG_TYPE);
+}
+
+type FolderDropSide = 'left' | 'right' | 'top' | 'bottom';
+
+function folderDropSide(
+  event: { clientX: number; clientY: number },
+  el: HTMLElement
+): FolderDropSide {
+  const rect = el.getBoundingClientRect();
+  const dx = event.clientX - (rect.left + rect.width / 2);
+  const dy = event.clientY - (rect.top + rect.height / 2);
+  if (Math.abs(dx) > Math.abs(dy)) return dx < 0 ? 'left' : 'right';
+  return dy < 0 ? 'top' : 'bottom';
+}
+
+function folderInsertEdge(side: FolderDropSide): 'before' | 'after' {
+  return side === 'left' || side === 'top' ? 'before' : 'after';
+}
+
+function reorderFolderList(
+  list: TelegramVaultFolder[],
+  fromId: string,
+  targetId: string,
+  edge: 'before' | 'after'
+): TelegramVaultFolder[] {
+  if (fromId === targetId) return list;
+  const fromIndex = list.findIndex((folder) => folder.id === fromId);
+  if (fromIndex < 0) return list;
+  const next = list.slice();
+  const [moved] = next.splice(fromIndex, 1);
+  let insertAt = next.findIndex((folder) => folder.id === targetId);
+  if (insertAt < 0) return list;
+  if (edge === 'after') insertAt += 1;
+  next.splice(insertAt, 0, moved);
+  return next.map((folder, index) => ({ ...folder, sortOrder: index }));
+}
+
+function applyOpenFolderCover(
+  list: TelegramVaultFolder[],
+  openId: string,
+  page: TelegramVaultItem[],
+  hasMore: boolean
+): TelegramVaultFolder[] {
+  const cover = page.find((item) => item.kind === 'photo' || item.kind === 'video');
+  return list.map((folder) => {
+    if (folder.id !== openId) return folder;
+    if (!cover && hasMore) return folder;
+    return {
+      ...folder,
+      coverItemId: cover?.id ?? null,
+      coverKind: cover?.kind === 'photo' || cover?.kind === 'video' ? cover.kind : null,
+    };
+  });
 }
 
 function filesFromDataTransfer(dt: DataTransfer | null): File[] {
@@ -348,9 +409,16 @@ export default function TelegramVaultModal({
   const renameCancelRef = useRef(false);
   const dragDepthRef = useRef(0);
   const draggingItemIdsRef = useRef<string[]>([]);
+  const draggingFolderIdRef = useRef<string | null>(null);
+  const folderOrderRequestRef = useRef(0);
   const durationAttemptsRef = useRef<Set<string>>(new Set());
   const [isDragging, setIsDragging] = useState(false);
   const [dropFolderId, setDropFolderId] = useState<string | null>(null);
+  const [draggingFolderId, setDraggingFolderId] = useState<string | null>(null);
+  const [folderInsert, setFolderInsert] = useState<{
+    id: string;
+    side: FolderDropSide;
+  } | null>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -390,7 +458,7 @@ export default function TelegramVaultModal({
       cacheKey
     );
     if (cached?.folders?.length) {
-      setFolders(cached.folders);
+      setFolders((prev) => (prev.length ? prev : cached.folders));
       setFolderId((prev) => prev || cached.folders[0]?.id || null);
     }
     try {
@@ -457,6 +525,24 @@ export default function TelegramVaultModal({
         });
         const incoming = result.items || [];
         setItems((prev) => (append ? [...prev, ...incoming] : incoming));
+        if (!append && kindFilter === 'all') {
+          const covered: { folders: TelegramVaultFolder[] | null } = { folders: null };
+          setFolders((prev) => {
+            covered.folders = applyOpenFolderCover(
+              prev,
+              folderId,
+              incoming,
+              Boolean(result.hasMore)
+            );
+            return covered.folders;
+          });
+          if (covered.folders) {
+            setVaultListingCache(
+              vaultCacheKey({ platform: 'telegram', creatorId, kind: 'folders' }),
+              { folders: covered.folders }
+            );
+          }
+        }
         offsetRef.current = offset + incoming.length;
         hasMoreRef.current = Boolean(result.hasMore);
         const keys = incoming.map((item) => item.id);
@@ -542,6 +628,14 @@ export default function TelegramVaultModal({
     });
   }
 
+  function saveFolderList(next: TelegramVaultFolder[]) {
+    setFolders(next);
+    setVaultListingCache(
+      vaultCacheKey({ platform: 'telegram', creatorId, kind: 'folders' }),
+      { folders: next }
+    );
+  }
+
   async function handleCreateFolder() {
     const name = folderDraft.trim();
     if (!name || creatingFolder) return;
@@ -550,7 +644,7 @@ export default function TelegramVaultModal({
     try {
       const result = await createTelegramVaultFolder(creatorId, name);
       setFolderDraft('');
-      setFolders((prev) => [...prev, result.folder]);
+      saveFolderList([...folders, result.folder]);
       setFolderId(result.folder.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create folder');
@@ -586,13 +680,8 @@ export default function TelegramVaultModal({
     setError(null);
     try {
       const result = await renameTelegramVaultFolder(creatorId, targetId, name);
-      const next = folders.map((folder) =>
-        folder.id === result.folder.id ? result.folder : folder
-      );
-      setFolders(next);
-      setVaultListingCache(
-        vaultCacheKey({ platform: 'telegram', creatorId, kind: 'folders' }),
-        { folders: next }
+      saveFolderList(
+        folders.map((folder) => (folder.id === result.folder.id ? result.folder : folder))
       );
       setRenamingFolderId(null);
     } catch (err) {
@@ -665,6 +754,10 @@ export default function TelegramVaultModal({
     event.preventDefault();
     event.stopPropagation();
     if (!event.dataTransfer) return;
+    if (draggingFolderIdRef.current || hasFolderDrag(event.dataTransfer)) {
+      event.dataTransfer.dropEffect = 'none';
+      return;
+    }
     event.dataTransfer.dropEffect = canDrop ? 'copy' : 'none';
   }
 
@@ -712,6 +805,7 @@ export default function TelegramVaultModal({
       const moving = new Set(itemIds);
       setItems((prev) => prev.filter((item) => !moving.has(item.id)));
       setSelected((prev) => prev.filter((item) => !moving.has(item.id)));
+      void loadFolders();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to move vault items');
     }
@@ -730,6 +824,7 @@ export default function TelegramVaultModal({
       setItems((prev) => prev.filter((item) => !removing.has(item.id)));
       setSelected([]);
       setDeleteArmed(false);
+      void loadFolders();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete vault items');
     } finally {
@@ -765,6 +860,7 @@ export default function TelegramVaultModal({
     });
     setError(warning || null);
     let index = 0;
+    let uploadedCount = 0;
     try {
       while (index < queue.length) {
         if (currentUploadAction(uploadActionRef) === 'cancel') break;
@@ -821,6 +917,21 @@ export default function TelegramVaultModal({
               offsetRef.current += 1;
             }
           }
+          const uploadedKind = result.item.kind;
+          if (uploadedKind === 'photo' || uploadedKind === 'video') {
+            setFolders((prev) =>
+              prev.map((folder) =>
+                folder.id === destFolder
+                  ? {
+                      ...folder,
+                      coverItemId: result.item.id,
+                      coverKind: uploadedKind,
+                    }
+                  : folder
+              )
+            );
+          }
+          uploadedCount += 1;
           index += 1;
           const action = currentUploadAction(uploadActionRef);
           if (action === 'skip') uploadActionRef.current = 'run';
@@ -849,7 +960,91 @@ export default function TelegramVaultModal({
       uploadActionRef.current = 'run';
       resumeResolveRef.current = null;
       if (fileInputRef.current) fileInputRef.current.value = '';
+      if (uploadedCount > 0) void loadFolders();
     }
+  }
+
+  async function persistFolderOrder(next: TelegramVaultFolder[]) {
+    const previous = folders;
+    if (
+      next.length === previous.length &&
+      next.every((folder, index) => folder.id === previous[index]?.id)
+    ) {
+      return;
+    }
+    const requestId = folderOrderRequestRef.current + 1;
+    folderOrderRequestRef.current = requestId;
+    saveFolderList(next);
+    try {
+      const result = await reorderTelegramVaultFolders(
+        creatorId,
+        next.map((folder) => folder.id)
+      );
+      if (folderOrderRequestRef.current !== requestId) return;
+      saveFolderList(result.folders?.length ? result.folders : next);
+    } catch (err) {
+      if (folderOrderRequestRef.current !== requestId) return;
+      saveFolderList(previous);
+      setError(err instanceof Error ? err.message : 'Failed to reorder folders');
+    }
+  }
+
+  function handleFolderDragOver(event: DragEvent<HTMLDivElement>, folder: TelegramVaultFolder) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!event.dataTransfer) return;
+    if (draggingFolderIdRef.current || hasFolderDrag(event.dataTransfer)) {
+      event.dataTransfer.dropEffect = 'move';
+      const side = folderDropSide(event, event.currentTarget);
+      setFolderInsert((current) =>
+        current?.id === folder.id && current.side === side ? current : { id: folder.id, side }
+      );
+      setDropFolderId(null);
+      return;
+    }
+    setFolderInsert(null);
+    if (uploading && hasFileDrag(event.dataTransfer)) {
+      event.dataTransfer.dropEffect = 'none';
+      return;
+    }
+    event.dataTransfer.dropEffect = hasFileDrag(event.dataTransfer) ? 'copy' : 'move';
+    setDropFolderId(folder.id);
+  }
+
+  function handleFolderDragLeave(event: DragEvent<HTMLDivElement>, targetId: string) {
+    const next = event.relatedTarget;
+    if (next instanceof Node && event.currentTarget.contains(next)) return;
+    setDropFolderId((current) => (current === targetId ? null : current));
+    setFolderInsert((current) => (current?.id === targetId ? null : current));
+  }
+
+  function handleFolderDrop(event: DragEvent<HTMLDivElement>, folder: TelegramVaultFolder) {
+    event.preventDefault();
+    event.stopPropagation();
+    const side =
+      folderInsert?.id === folder.id
+        ? folderInsert.side
+        : folderDropSide(event, event.currentTarget);
+    setDropFolderId(null);
+    setFolderInsert(null);
+    if (draggingFolderIdRef.current || hasFolderDrag(event.dataTransfer)) {
+      const fromId = draggingFolderIdRef.current || event.dataTransfer.getData(FOLDER_DRAG_TYPE);
+      draggingFolderIdRef.current = null;
+      setDraggingFolderId(null);
+      if (!fromId) return;
+      void persistFolderOrder(
+        reorderFolderList(folders, fromId, folder.id, folderInsertEdge(side))
+      );
+      return;
+    }
+    if (hasFileDrag(event.dataTransfer)) {
+      queueVaultFiles(filesFromDataTransfer(event.dataTransfer), folder.id);
+      return;
+    }
+    const ids = draggingItemIdsRef.current;
+    draggingItemIdsRef.current = [];
+    if (!ids.length) return;
+    void moveItemsToFolder(ids, folder.id);
   }
 
   function handleScroll(event: UIEvent<HTMLDivElement>) {
@@ -1033,51 +1228,47 @@ export default function TelegramVaultModal({
           </div>
         )}
 
-        <div className="flex flex-1 overflow-hidden min-h-0">
-          <div className="w-48 sm:w-56 border-r border-gray-200 dark:border-zinc-800/60 bg-gray-100/40 dark:bg-zinc-900/20 p-3 overflow-y-auto hidden md:block shrink-0">
-            <h4 className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-3 px-2">
+        <div className="flex flex-col md:flex-row flex-1 overflow-hidden min-h-0">
+          <div className="w-full md:w-72 shrink-0 border-b md:border-b-0 md:border-r border-gray-200 dark:border-zinc-800/60 bg-gray-100/40 dark:bg-zinc-900/20 flex flex-col min-h-0">
+            <div className="p-3 pb-2 overflow-x-auto md:overflow-y-auto md:overflow-x-hidden md:flex-1">
+            <h4 className="hidden md:block text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-zinc-500 mb-3 px-0.5">
               Folders
             </h4>
-            <ul className="space-y-1">
+            <div className="flex md:grid md:grid-cols-2 gap-2">
               {folders.map((folder) => {
                 const active = folderId === folder.id;
                 const dropTarget = dropFolderId === folder.id;
                 const renaming = renamingFolderId === folder.id;
+                const dragging = draggingFolderId === folder.id;
+                const inserting = folderInsert?.id === folder.id ? folderInsert.side : null;
+                const coverSrc = folder.coverItemId
+                  ? telegramVaultMediaUrl(creatorId, folder.coverItemId, 'thumb')
+                  : null;
                 return (
-                  <li
+                  <div
                     key={folder.id}
-                    onDragOver={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      if (!event.dataTransfer) return;
-                      if (uploading && hasFileDrag(event.dataTransfer)) {
-                        event.dataTransfer.dropEffect = 'none';
-                        return;
-                      }
-                      event.dataTransfer.dropEffect = hasFileDrag(event.dataTransfer)
-                        ? 'copy'
-                        : 'move';
-                      setDropFolderId(folder.id);
-                    }}
-                    onDragLeave={(event) => {
-                      const next = event.relatedTarget;
-                      if (next instanceof Node && event.currentTarget.contains(next)) return;
-                      setDropFolderId((current) => (current === folder.id ? null : current));
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setDropFolderId(null);
-                      if (hasFileDrag(event.dataTransfer)) {
-                        queueVaultFiles(filesFromDataTransfer(event.dataTransfer), folder.id);
-                        return;
-                      }
-                      const ids = draggingItemIdsRef.current;
-                      draggingItemIdsRef.current = [];
-                      if (!ids.length) return;
-                      void moveItemsToFolder(ids, folder.id);
-                    }}
+                    onDragOver={(event) => handleFolderDragOver(event, folder)}
+                    onDragLeave={(event) => handleFolderDragLeave(event, folder.id)}
+                    onDrop={(event) => handleFolderDrop(event, folder)}
+                    className={`relative aspect-square w-24 shrink-0 md:w-auto rounded-xl overflow-hidden group ${
+                      dropTarget || active
+                        ? 'ring-2 ring-domx-500 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950'
+                        : 'border border-gray-200 dark:border-zinc-800'
+                    } ${dragging ? 'opacity-40' : ''}`}
                   >
+                    {coverSrc ? (
+                      <div className="absolute inset-0">
+                        <VaultThumbImg key={coverSrc} src={coverSrc} kind={folder.coverKind || 'photo'} />
+                      </div>
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center bg-gray-100 dark:bg-zinc-900 text-gray-400 dark:text-zinc-500">
+                        {active ? (
+                          <FolderOpen className="w-6 h-6 text-domx-400" />
+                        ) : (
+                          <Folder className="w-6 h-6" />
+                        )}
+                      </div>
+                    )}
                     {renaming ? (
                       <input
                         value={renameDraft}
@@ -1095,48 +1286,74 @@ export default function TelegramVaultModal({
                         onBlur={() => {
                           void commitRename(folder.id);
                         }}
-                        className="w-full px-2 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-950"
+                        className="absolute inset-x-1 bottom-1 z-20 px-1.5 py-1 text-xs rounded-md border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-950"
                         aria-label={`Rename ${folder.name}`}
                       />
                     ) : (
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => setFolderId(folder.id)}
-                          className={`min-w-0 flex-1 text-left px-3 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${
-                            dropTarget
-                              ? 'bg-domx-600/15 text-gray-900 dark:text-white ring-1 ring-domx-500'
-                              : active
-                                ? 'bg-gray-100 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
-                                : 'hover:bg-gray-100 dark:hover:bg-zinc-800/50 text-gray-500 dark:text-zinc-400'
-                          }`}
-                        >
-                          {active ? (
-                            <FolderOpen className="w-4 h-4 text-domx-400 shrink-0" />
-                          ) : (
-                            <Folder className="w-4 h-4 shrink-0" />
-                          )}
-                          <span className="truncate">{folder.name}</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            beginRename(folder);
-                          }}
-                          className="p-1.5 rounded-lg text-gray-400 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 shrink-0"
-                          aria-label={`Rename ${folder.name}`}
-                        >
-                          <Pencil className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        draggable
+                        onDragStart={(event) => {
+                          draggingFolderIdRef.current = folder.id;
+                          setDraggingFolderId(folder.id);
+                          event.dataTransfer.setData(FOLDER_DRAG_TYPE, folder.id);
+                          event.dataTransfer.setData('text/plain', folder.id);
+                          event.dataTransfer.effectAllowed = 'move';
+                          event.stopPropagation();
+                        }}
+                        onDragEnd={() => {
+                          draggingFolderIdRef.current = null;
+                          setDraggingFolderId(null);
+                          setFolderInsert(null);
+                          setDropFolderId(null);
+                        }}
+                        onClick={() => setFolderId(folder.id)}
+                        className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing"
+                        aria-label={folder.name}
+                      >
+                        <span className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/80 via-black/35 to-transparent px-1.5 pt-4 pb-1 text-left text-[11px] font-medium text-white truncate">
+                          {folder.name}
+                        </span>
+                      </button>
                     )}
-                  </li>
+                    {dropTarget && (
+                      <span className="pointer-events-none absolute inset-0 z-10 bg-domx-600/20" />
+                    )}
+                    {inserting && (
+                      <span
+                        className={`pointer-events-none absolute z-20 rounded-full bg-domx-400 ${
+                          inserting === 'left'
+                            ? 'left-0 inset-y-1 w-0.5'
+                            : inserting === 'right'
+                              ? 'right-0 inset-y-1 w-0.5'
+                              : inserting === 'top'
+                                ? 'top-0 inset-x-1 h-0.5'
+                                : 'bottom-0 inset-x-1 h-0.5'
+                        }`}
+                      />
+                    )}
+                    {!renaming && (
+                      <button
+                        type="button"
+                        draggable={false}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          beginRename(folder);
+                        }}
+                        className="absolute top-1 right-1 z-20 p-1 rounded-md bg-black/55 text-white opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100"
+                        aria-label={`Rename ${folder.name}`}
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
                 );
               })}
-            </ul>
-            <div className="mt-3 flex gap-1">
+            </div>
+            </div>
+            <div className="px-3 pb-3 flex gap-1">
               <input
                 value={folderDraft}
                 onChange={(e) => setFolderDraft(e.target.value)}
