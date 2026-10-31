@@ -476,10 +476,12 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
     ...(canSendMass
       ? [
           {
-            label: 'Mass Message',
+            label: 'Bumps',
             icon: <Megaphone className="w-4 h-4" />,
-            onClick: () => go('/chatter/telegram/mass-message'),
-            active: toolActive('/chatter/telegram/mass-message'),
+            onClick: () => go('/chatter/telegram/bumps'),
+            active:
+              toolActive('/chatter/telegram/bumps') ||
+              toolActive('/chatter/telegram/mass-message'),
           },
           {
             label: 'Lists',

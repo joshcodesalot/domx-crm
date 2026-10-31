@@ -298,6 +298,14 @@ function peerKind(peer) {
   return 'dm';
 }
 
+function peerCanBeMessaged(peer) {
+  if (!peer) return true;
+  if (isTelegramServicePeer(peer) || peerKind(peer) === 'group') return false;
+  if (peer.isBot || peer.bot || peer.type === 'bot') return false;
+  if (peer.deleted || peer.isDeleted) return false;
+  return true;
+}
+
 function peerTitle(peer) {
   if (!peer) return 'Fan';
   if (peer.type === 'chat') {
@@ -1812,6 +1820,7 @@ async function listMessages(
   return {
     peerId: String(numericId),
     kind,
+    messageable: peerCanBeMessaged(peer),
     ...(readOutboxMaxId != null ? { readOutboxMaxId } : {}),
     fan: {
       telegramUserId: String(numericId),

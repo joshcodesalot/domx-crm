@@ -1,11 +1,19 @@
 const pool = require('../db/pool');
 const { isLocked, lockedIdSet, LOCKED_MESSAGE } = require('./massMessageLocks');
+const { applyModeration } = require('./contentModeration');
+const {
+  BUMP_HISTORY_LIMIT,
+  bumpSkipReason,
+  bumpErrorAction,
+  generateBump,
+} = require('./telegramBumpCopy');
 const {
   TelegramWorkerError,
   sendText,
   sendVaultToPeer,
   deleteText,
   isTelegramServiceDialog,
+  listMessages,
   listRecentDmPeerIds,
 } = require('./telegramWorker');
 
@@ -275,15 +283,17 @@ async function createCampaign({
   includeListIds,
   excludeListIds,
   createdBy,
+  mode = 'broadcast',
 }) {
   const include = parseUuidList(includeListIds);
   const exclude = parseUuidList(excludeListIds);
   const vault = parseUuidList(vaultIds);
   const text = String(bodyText || '').trim();
+  const campaignMode = mode === 'bump' ? 'bump' : 'broadcast';
   if (include.length === 0) {
     throw new Error('Select at least one include list');
   }
-  if (!text && vault.length === 0) {
+  if (campaignMode !== 'bump' && !text && vault.length === 0) {
     throw new Error('Add text or vault media');
   }
   if (vault.length > 0) {
@@ -305,17 +315,18 @@ async function createCampaign({
     const inserted = await client.query(
       `INSERT INTO telegram_mm_campaigns (
          "creatorId", "bodyText", "vaultIds", "includeListIds", "excludeListIds",
-         status, total, "createdBy"
-       ) VALUES ($1, $2, $3::jsonb, $4::uuid[], $5::uuid[], 'queued', $6, $7)
+         status, total, "createdBy", mode
+       ) VALUES ($1, $2, $3::jsonb, $4::uuid[], $5::uuid[], 'queued', $6, $7, $8)
        RETURNING id`,
       [
         creatorId,
         text,
-        JSON.stringify(vault),
+        JSON.stringify(campaignMode === 'bump' ? [] : vault),
         include,
         exclude,
         peerIds.length,
         createdBy || null,
+        campaignMode,
       ]
     );
     campaignId = inserted.rows[0].id;
@@ -409,10 +420,174 @@ async function skipRecentRecipient(recipientId) {
   return updated.rows.length > 0;
 }
 
+async function markRecipientSkipped(recipientId, reason) {
+  const updated = await pool.query(
+    `UPDATE telegram_mm_recipients
+     SET status = 'skipped', error = $2
+     WHERE id = $1 AND status = 'pending'
+     RETURNING id`,
+    [recipientId, String(reason || 'Skipped').slice(0, 240)]
+  );
+  return updated.rows.length > 0;
+}
+
+async function creatorDisplayName(creatorId) {
+  const result = await pool.query(
+    `SELECT "displayName" FROM creators WHERE id = $1`,
+    [creatorId]
+  );
+  return result.rows[0]?.displayName || '';
+}
+
+async function executeBump(campaign, run) {
+  const campaignId = campaign.id;
+  const pending = await pool.query(
+    `SELECT id, "peerId" FROM telegram_mm_recipients
+     WHERE "campaignId" = $1 AND status = 'pending'
+     ORDER BY "peerId" ASC`,
+    [campaignId]
+  );
+  run.total = pending.rows.length + (Number(campaign.sent) || 0) + (Number(campaign.failed) || 0);
+  run.skipped = Number(campaign.skipped) || 0;
+  await pool.query(
+    `UPDATE telegram_mm_campaigns
+     SET status = 'running', "startedAt" = COALESCE("startedAt", NOW()), "lastError" = NULL
+     WHERE id = $1`,
+    [campaignId]
+  );
+  const creatorName = await creatorDisplayName(campaign.creatorId);
+
+  for (let index = 0; index < pending.rows.length; index += 1) {
+    const row = pending.rows[index];
+    if (run.abort) break;
+    run.currentPeerId = row.peerId;
+    let sent = false;
+    try {
+      const chat = await listMessages(campaign.creatorId, row.peerId, {
+        limit: BUMP_HISTORY_LIMIT,
+        markRead: false,
+      });
+      const reason = bumpSkipReason({
+        kind: chat?.kind,
+        service: isTelegramServiceDialog({
+          peerId: row.peerId,
+          kind: chat?.kind,
+          displayName: chat?.fan?.displayName,
+          username: chat?.fan?.username,
+        }),
+        messageable: chat?.messageable !== false,
+        messages: chat?.messages,
+        nowMs: Date.now(),
+      });
+      if (reason) {
+        if (await markRecipientSkipped(row.id, reason)) run.skipped += 1;
+        await refreshCampaignCounts(campaignId);
+        continue;
+      }
+      const text = await generateBump({
+        notes: chat?.fan?.notes || '',
+        messages: chat?.messages || [],
+        now: new Date(),
+      });
+      if (!text) {
+        if (await markRecipientSkipped(row.id, 'Empty bump')) run.skipped += 1;
+        await refreshCampaignCounts(campaignId);
+        continue;
+      }
+      const moderation = await applyModeration({
+        germanText: text,
+        englishText: text,
+        userId: campaign.createdBy,
+        creatorId: campaign.creatorId,
+        platform: 'telegram',
+        chatId: String(row.peerId),
+        fanId: String(row.peerId),
+        fanUsername: chat?.fan?.username || null,
+        creatorName,
+        chatterName: null,
+      });
+      if (moderation.blocked) {
+        if (await markRecipientSkipped(row.id, moderation.message || 'Message blocked')) {
+          run.skipped += 1;
+        }
+        await refreshCampaignCounts(campaignId);
+        continue;
+      }
+      const messageIds = await sendWithFloodRetry(
+        campaign.creatorId,
+        row.peerId,
+        text,
+        [],
+        campaign.createdBy,
+        run
+      );
+      await pool.query(
+        `UPDATE telegram_mm_recipients
+         SET status = 'sent',
+             "telegramMessageIds" = $1::jsonb,
+             "bodyText" = $2,
+             error = NULL,
+             "sentAt" = NOW()
+         WHERE id = $3`,
+        [JSON.stringify(messageIds), text, row.id]
+      );
+      run.done += 1;
+      sent = true;
+    } catch (err) {
+      const decision = bumpErrorAction(err);
+      if (decision.action === 'stop') {
+        run.lastError = decision.reason;
+        break;
+      }
+      if (await markRecipientSkipped(row.id, decision.reason)) run.skipped += 1;
+      run.lastError = decision.reason;
+    }
+    await refreshCampaignCounts(campaignId);
+    if (run.abort || !sent) continue;
+    if (index === pending.rows.length - 1) break;
+    run.status = 'waiting';
+    await sleep(randomGapMs(SEND_GAP_MIN_MS, SEND_GAP_MAX_MS), () => run.abort);
+    if (!run.abort) run.status = 'running';
+  }
+
+  await finishSend(campaignId, run);
+}
+
+async function finishSend(campaignId, run) {
+  await refreshCampaignCounts(campaignId);
+  const next = await loadCampaign(campaignId);
+  const remaining = await pool.query(
+    `SELECT COUNT(*)::int AS count FROM telegram_mm_recipients
+     WHERE "campaignId" = $1 AND status = 'pending'`,
+    [campaignId]
+  );
+  const leftover = Number(remaining.rows[0]?.count) || 0;
+  let status = 'done';
+  if (run.abort && leftover > 0) status = 'paused';
+  else if (leftover > 0) status = 'paused';
+  else if ((Number(next?.sent) || 0) === 0 && (Number(next?.failed) || 0) > 0) {
+    status = 'failed';
+  }
+  await pool.query(
+    `UPDATE telegram_mm_campaigns
+     SET status = $2,
+         "finishedAt" = CASE WHEN $2 IN ('done', 'failed') THEN NOW() ELSE "finishedAt" END,
+         "lastError" = $3
+     WHERE id = $1`,
+    [campaignId, status, run.lastError || null]
+  );
+  run.status = status === 'paused' ? 'paused' : status;
+  run.currentPeerId = null;
+}
+
 async function executeSend(campaignId, run) {
   const campaign = await loadCampaign(campaignId);
   if (!campaign) {
     throw new Error('Campaign not found');
+  }
+  if (campaign.mode === 'bump') {
+    await executeBump(campaign, run);
+    return;
   }
   const vaultIds = parseUuidList(campaign.vaultIds);
   const text = String(campaign.bodyText || '').trim();
@@ -494,30 +669,7 @@ async function executeSend(campaignId, run) {
     if (!run.abort) run.status = 'running';
   }
 
-  await refreshCampaignCounts(campaignId);
-  const next = await loadCampaign(campaignId);
-  const remaining = await pool.query(
-    `SELECT COUNT(*)::int AS count FROM telegram_mm_recipients
-     WHERE "campaignId" = $1 AND status = 'pending'`,
-    [campaignId]
-  );
-  const leftover = Number(remaining.rows[0]?.count) || 0;
-  let status = 'done';
-  if (run.abort && leftover > 0) status = 'paused';
-  else if (leftover > 0) status = 'paused';
-  else if ((Number(next?.sent) || 0) === 0 && (Number(next?.failed) || 0) > 0) {
-    status = 'failed';
-  }
-  await pool.query(
-    `UPDATE telegram_mm_campaigns
-     SET status = $2,
-         "finishedAt" = CASE WHEN $2 IN ('done', 'failed') THEN NOW() ELSE "finishedAt" END,
-         "lastError" = $3
-     WHERE id = $1`,
-    [campaignId, status, run.lastError || null]
-  );
-  run.status = status === 'paused' ? 'paused' : status;
-  run.currentPeerId = null;
+  await finishSend(campaignId, run);
 }
 
 function startSend(campaignId, creatorId) {
@@ -804,6 +956,89 @@ async function runUnsendLastAndWait(creatorId, cap = DEFAULT_UNSEND_CAP) {
   return snapshotFrom(run) || started.progress;
 }
 
+function assertCampaignIdle(campaignId) {
+  const sending = runs.get(sendKey(campaignId));
+  if (sending && (sending.status === 'running' || sending.status === 'waiting')) {
+    throw new Error('Wait until this bump finishes');
+  }
+  const unsending = runs.get(unsendKey(campaignId));
+  if (unsending && (unsending.status === 'running' || unsending.status === 'waiting')) {
+    throw new Error('This bump is already being deleted');
+  }
+}
+
+async function settleCampaignUnsent(campaignId) {
+  const counts = await pool.query(
+    `SELECT
+       COUNT(*) FILTER (WHERE status IN ('sent', 'unsend_failed'))::int AS live,
+       COUNT(*) FILTER (WHERE status = 'pending')::int AS pending
+     FROM telegram_mm_recipients
+     WHERE "campaignId" = $1`,
+    [campaignId]
+  );
+  const live = Number(counts.rows[0]?.live) || 0;
+  const pending = Number(counts.rows[0]?.pending) || 0;
+  if (live > 0 || pending > 0) return;
+  await pool.query(
+    `UPDATE telegram_mm_campaigns
+     SET status = 'unsent'
+     WHERE id = $1
+       AND status IN ('done', 'failed', 'paused', 'unsent')`,
+    [campaignId]
+  );
+}
+
+async function unsendRecipient(campaignId, recipientId) {
+  const campaign = await loadCampaign(campaignId);
+  if (!campaign) throw new Error('Campaign not found');
+  if (await isLocked(campaign.creatorId, 'telegram', campaignId)) {
+    throw new Error(LOCKED_MESSAGE);
+  }
+  assertCampaignIdle(campaignId);
+  const found = await pool.query(
+    `SELECT id, "peerId", status, "telegramMessageIds"
+     FROM telegram_mm_recipients
+     WHERE id = $1 AND "campaignId" = $2`,
+    [recipientId, campaignId]
+  );
+  const row = found.rows[0];
+  if (!row) throw new Error('Message not found');
+  if (row.status !== 'sent' && row.status !== 'unsend_failed') {
+    throw new Error('This message is not in the chat');
+  }
+  const ids = parseMessageIds(row.telegramMessageIds);
+  if (ids.length === 0) {
+    throw new Error('No stored Telegram message');
+  }
+  const run = { abort: false, status: 'running', lastError: null };
+  try {
+    for (const messageId of ids) {
+      await deleteWithFloodRetry(campaign.creatorId, row.peerId, messageId, run);
+    }
+  } catch (err) {
+    const message = err?.message || 'Failed to delete';
+    if (!/not found/i.test(message)) {
+      await pool.query(
+        `UPDATE telegram_mm_recipients
+         SET status = 'unsend_failed', error = $1
+         WHERE id = $2`,
+        [String(message).slice(0, 240), row.id]
+      );
+      await refreshCampaignCounts(campaignId);
+      throw err;
+    }
+  }
+  await pool.query(
+    `UPDATE telegram_mm_recipients
+     SET status = 'unsent', error = NULL
+     WHERE id = $1`,
+    [row.id]
+  );
+  await refreshCampaignCounts(campaignId);
+  await settleCampaignUnsent(campaignId);
+  return loadCampaign(campaignId);
+}
+
 module.exports = {
   DEFAULT_UNSEND_CAP,
   resolveRecipients,
@@ -815,6 +1050,7 @@ module.exports = {
   runUnsendAndWait,
   startUnsendLast,
   runUnsendLastAndWait,
+  unsendRecipient,
   snapshotForCampaign,
   snapshotForCreator,
   stopCampaign,

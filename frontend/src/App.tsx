@@ -392,6 +392,10 @@ function AppRoutes() {
                       path="/chatter/telegram/mass-message"
                       element={<TelegramMassMessage />}
                     />
+                    <Route
+                      path="/chatter/telegram/bumps"
+                      element={<TelegramMassMessage />}
+                    />
                     <Route path="/chatter/telegram/lists" element={<TelegramLists />} />
                   </Route>
                   <Route element={<PermissionRoute permission="fan_scraper.use" />}>

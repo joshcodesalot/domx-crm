@@ -113,9 +113,9 @@ export default function TelegramLists() {
     async (list: TelegramList) => {
       if (!selectedCreatorId || fillingId || deletingId) return;
       const ok = await confirm({
-        title: 'Add all DMs?',
-        message: `Add every Telegram DM to “${list.name}”? Groups and service chats are skipped. People already on the list stay.`,
-        confirmLabel: 'Add all DMs',
+        title: 'Add all fans?',
+        message: `Add every fan on this account to “${list.name}”? Groups and service chats are skipped. People already on the list stay.`,
+        confirmLabel: 'Add all fans',
       });
       if (!ok) return;
       setFillingId(list.id);
@@ -208,7 +208,7 @@ export default function TelegramLists() {
                     {selectedCreator?.displayName || 'Creator'} — Lists
                   </h1>
                   <p className="text-xs text-gray-500 dark:text-zinc-500">
-                    Assign fans from the chat panel, then use lists for mass messages
+                    Assign fans from the chat panel, or add every fan on this account to a list
                   </p>
                 </div>
               </div>
@@ -293,14 +293,14 @@ export default function TelegramLists() {
                           type="button"
                           disabled={busy}
                           onClick={() => void handleFillFromDms(list)}
-                          className="p-2 rounded-lg text-gray-400 hover:text-sky-500 hover:bg-sky-50 dark:hover:bg-sky-950/40 disabled:opacity-40"
-                          title="Add all DMs"
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border border-gray-200 dark:border-zinc-700 text-gray-600 dark:text-zinc-300 hover:text-sky-600 hover:border-sky-500/40 disabled:opacity-40 shrink-0"
                         >
                           {filling ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           ) : (
-                            <Users className="w-4 h-4" />
+                            <Users className="w-3.5 h-3.5" />
                           )}
+                          Add all fans
                         </button>
                         <button
                           type="button"

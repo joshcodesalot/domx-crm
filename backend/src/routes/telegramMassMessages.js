@@ -12,6 +12,7 @@ const {
   startSend,
   startUnsend,
   startUnsendLast,
+  unsendRecipient,
   snapshotForCampaign,
   snapshotForCreator,
   stopCampaign,
@@ -70,6 +71,7 @@ function serializeCampaign(row, extras = {}) {
     unsent: Number(row.unsent) || 0,
     unsendFailed: Number(row.unsendFailed) || 0,
     lastError: row.lastError,
+    mode: row.mode === 'bump' ? 'bump' : 'broadcast',
     createdBy: row.createdBy,
     createdAt: row.createdAt,
     startedAt: row.startedAt,
@@ -87,6 +89,8 @@ function serializeRecipient(row) {
     telegramMessageIds: Array.isArray(row.telegramMessageIds)
       ? row.telegramMessageIds.map(String)
       : [],
+    bodyText: row.bodyText || '',
+    displayName: row.displayName || '',
     error: row.error,
     sentAt: row.sentAt,
   };
@@ -198,10 +202,14 @@ router.get(
         return res.status(404).json({ error: 'Campaign not found' });
       }
       const recipients = await pool.query(
-        `SELECT * FROM telegram_mm_recipients
-         WHERE "campaignId" = $1
-         ORDER BY "sentAt" DESC NULLS LAST, "peerId" ASC`,
-        [campaignId]
+        `SELECT r.*,
+                COALESCE(NULLIF(p.nickname, ''), p."displayName", '') AS "displayName"
+         FROM telegram_mm_recipients r
+         LEFT JOIN telegram_fan_profiles p
+           ON p."creatorId" = $2 AND p."telegramUserId" = r."peerId"
+         WHERE r."campaignId" = $1
+         ORDER BY r."sentAt" DESC NULLS LAST, r."peerId" ASC`,
+        [campaignId, creator.id]
       );
       return res.json({
         campaign: serializeCampaign(campaign, {
@@ -222,6 +230,7 @@ router.post(
   requirePermission('mass_messages.send'),
   async (req, res) => {
     const body = req.body || {};
+    const mode = body.mode === 'bump' ? 'bump' : 'broadcast';
     const text = typeof body.text === 'string' ? body.text.trim() : '';
     const englishText = typeof body.englishText === 'string' ? body.englishText : text;
     const vaultIds = parseUuidList(body.vaultIds);
@@ -230,14 +239,14 @@ router.post(
     if (includeListIds.length === 0) {
       return res.status(400).json({ error: 'Select at least one include list' });
     }
-    if (!text && vaultIds.length === 0) {
+    if (mode !== 'bump' && !text && vaultIds.length === 0) {
       return res.status(400).json({ error: 'Add text or vault media' });
     }
     try {
       const creator = await requireTelegramCreator(req, res);
       if (!creator) return undefined;
 
-      if (text) {
+      if (mode !== 'bump' && text) {
         const moderation = await applyModeration({
           germanText: text,
           englishText,
@@ -262,11 +271,12 @@ router.post(
 
       const campaign = await createCampaign({
         creatorId: creator.id,
-        bodyText: text,
-        vaultIds,
+        bodyText: mode === 'bump' ? '' : text,
+        vaultIds: mode === 'bump' ? [] : vaultIds,
         includeListIds,
         excludeListIds,
         createdBy: req.user.id,
+        mode,
       });
       if ((Number(campaign.total) || 0) === 0) {
         await pool.query(
@@ -359,6 +369,48 @@ router.post(
       });
     } catch (err) {
       return res.status(400).json({ error: err?.message || 'Failed to unsend' });
+    }
+  }
+);
+
+router.post(
+  '/:id/telegram/mass-messages/:campaignId/recipients/:recipientId/unsend',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { campaignId, recipientId } = req.params;
+    if (!isValidUuid(campaignId) || !isValidUuid(recipientId)) {
+      return res.status(400).json({ error: 'Invalid id' });
+    }
+    try {
+      const creator = await requireTelegramCreator(req, res);
+      if (!creator) return undefined;
+      const existing = await loadCampaign(campaignId);
+      if (!existing || existing.creatorId !== creator.id) {
+        return res.status(404).json({ error: 'Campaign not found' });
+      }
+      if (await isLocked(creator.id, 'telegram', campaignId)) {
+        return res.status(409).json({ error: LOCKED_MESSAGE });
+      }
+      const campaign = await unsendRecipient(campaignId, recipientId);
+      const recipients = await pool.query(
+        `SELECT r.*,
+                COALESCE(NULLIF(p.nickname, ''), p."displayName", '') AS "displayName"
+         FROM telegram_mm_recipients r
+         LEFT JOIN telegram_fan_profiles p
+           ON p."creatorId" = $2 AND p."telegramUserId" = r."peerId"
+         WHERE r.id = $1`,
+        [recipientId, creator.id]
+      );
+      return res.json({
+        campaign: serializeCampaign(campaign, {
+          progress: snapshotForCampaign(campaignId),
+        }),
+        recipient: recipients.rows[0] ? serializeRecipient(recipients.rows[0]) : null,
+      });
+    } catch (err) {
+      const status = err?.message === LOCKED_MESSAGE ? 409 : 400;
+      return res.status(status).json({ error: err?.message || 'Failed to delete message' });
     }
   }
 );

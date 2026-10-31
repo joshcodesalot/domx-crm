@@ -2,45 +2,36 @@ import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDr
 import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  CalendarClock,
-  Image as ImageIcon,
   Loader2,
   LockKeyhole,
   Megaphone,
   RefreshCw,
   Send,
   Square,
-  Undo2,
+  Trash2,
   Users,
-  X,
 } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
-import ToggleSwitch from '@/components/ToggleSwitch';
-import ScheduleDateTimePicker from '@/components/ScheduleDateTimePicker';
-import TelegramVaultModal from '@/components/telegram/TelegramVaultModal';
-import { TelegramVoiceTile } from '@/components/telegram/TelegramAudioPlayer';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import { useCreatorLive } from '@/context/CreatorLiveContext';
 import { useToast } from '@/context/ToastContext';
-import { berlinNowParts, berlinWallToIso, useStaffTimeZone } from '@/lib/berlinTime';
 import {
   countTelegramMassRecipients,
-  createScheduledContent,
+  deleteTelegramBumpMessage,
+  getTelegramMassCampaign,
   listTelegramLists,
   listTelegramMassMessages,
   listMassMessageLocks,
   lockMassMessage,
-  sendTelegramMassMessage,
+  sendTelegramBump,
   stopTelegramMassMessage,
-  telegramVaultMediaUrl,
-  unsendLastTelegramMassMessages,
   unlockMassMessage,
   unsendTelegramMassCampaign,
   type TelegramList,
   type MassMessageLock,
   type TelegramMmCampaign,
   type TelegramMmProgress,
-  type TelegramVaultItem,
+  type TelegramMmRecipient,
 } from '@/lib/api';
 import telegramIcon from '@/assets/telegram_icon.svg';
 
@@ -54,21 +45,35 @@ function formatWhen(iso: string | null | undefined): string {
 function progressLabel(progress: TelegramMmProgress | null | undefined): string | null {
   if (!progress || progress.status === 'idle') return null;
   const total = progress.total || 0;
-  const done = (progress.done || 0) + (progress.failed || 0);
+  const done = (progress.done || 0) + (progress.failed || 0) + (progress.skipped || 0);
+  const skipped = progress.skipped ? ` · ${progress.skipped} skipped` : '';
   if (progress.status === 'waiting') {
-    return `Waiting… ${done}/${total || '?'}`;
+    return `Waiting… ${done}/${total || '?'}${skipped}`;
   }
   if (progress.status === 'running' || progress.status === 'paused') {
-    return `${progress.kind === 'unsend' || progress.kind === 'unsendLast' ? 'Unsending' : 'Sending'} ${done}/${total || '?'}`;
+    const verb =
+      progress.kind === 'unsend' || progress.kind === 'unsendLast' ? 'Deleting' : 'Bumping';
+    return `${verb} ${done}/${total || '?'}${skipped}`;
   }
   return null;
+}
+
+function fanLabel(recipient: TelegramMmRecipient): string {
+  return recipient.displayName?.trim() || recipient.peerId;
+}
+
+function messageLine(campaign: TelegramMmCampaign, recipient: TelegramMmRecipient): string {
+  if (recipient.bodyText?.trim()) return recipient.bodyText;
+  if (campaign.mode !== 'bump' && recipient.status === 'sent' && campaign.bodyText?.trim()) {
+    return campaign.bodyText;
+  }
+  if (recipient.error?.trim()) return recipient.error;
+  return recipient.status;
 }
 
 export default function TelegramMassMessage() {
   const { toast } = useToast();
   const confirm = useConfirm();
-  const timeZone = useStaffTimeZone();
-  const now = berlinNowParts(timeZone);
   const { creators, creatorsLoading } = useCreatorLive({
     platform: 'telegram',
     wantBadges: false,
@@ -88,16 +93,13 @@ export default function TelegramMassMessage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [draft, setDraft] = useState('');
-  const [vaultItems, setVaultItems] = useState<TelegramVaultItem[]>([]);
-  const [vaultOpen, setVaultOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [scheduleEnabled, setScheduleEnabled] = useState(false);
-  const [scheduleDate, setScheduleDate] = useState(now.date);
-  const [scheduleTime, setScheduleTime] = useState(now.time);
   const [unsendingId, setUnsendingId] = useState<string | null>(null);
-  const [unsendingLast, setUnsendingLast] = useState(false);
+  const [openCampaignId, setOpenCampaignId] = useState<string | null>(null);
+  const [recipients, setRecipients] = useState<Record<string, TelegramMmRecipient[]>>({});
+  const [recipientsLoadingId, setRecipientsLoadingId] = useState<string | null>(null);
+  const [deletingRecipientId, setDeletingRecipientId] = useState<string | null>(null);
 
   const selectedCreator = useMemo(
     () => creators.find((c) => c.id === selectedCreatorId) || null,
@@ -130,19 +132,38 @@ export default function TelegramMassMessage() {
       setCampaigns(result.campaigns || []);
       setProgress(result.progress || null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load mass messages');
+      setError(err instanceof Error ? err.message : 'Failed to load bumps');
     } finally {
       setLoading(false);
     }
   }, [selectedCreatorId]);
 
+  const loadRecipients = useCallback(
+    async (campaignId: string) => {
+      if (!selectedCreatorId) return;
+      setRecipientsLoadingId(campaignId);
+      try {
+        const result = await getTelegramMassCampaign(selectedCreatorId, campaignId);
+        setRecipients((prev) => ({ ...prev, [campaignId]: result.recipients || [] }));
+        setCampaigns((prev) =>
+          prev.map((item) => (item.id === result.campaign.id ? { ...item, ...result.campaign } : item))
+        );
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to load messages');
+      } finally {
+        setRecipientsLoadingId((current) => (current === campaignId ? null : current));
+      }
+    },
+    [selectedCreatorId, toast]
+  );
+
   useEffect(() => {
     setIncludeIds([]);
     setExcludeIds([]);
     setRecipientCount(null);
-    setDraft('');
-    setVaultItems([]);
     setSendError(null);
+    setOpenCampaignId(null);
+    setRecipients({});
     if (!selectedCreatorId) return;
     void loadLists();
     void loadCampaigns();
@@ -185,7 +206,7 @@ export default function TelegramMassMessage() {
           await lockMassMessage(selectedCreatorId, {
             platform: 'telegram',
             platformMessageId: campaign.id,
-            bodyText: campaign.bodyText || '',
+            bodyText: campaign.mode === 'bump' ? 'Personal bumps' : campaign.bodyText || '',
             mediaIds: campaign.vaultIds || [],
           });
         }
@@ -202,8 +223,7 @@ export default function TelegramMassMessage() {
   const busy =
     progress?.status === 'running' ||
     progress?.status === 'waiting' ||
-    sending ||
-    unsendingLast;
+    sending;
 
   useEffect(() => {
     if (!selectedCreatorId || !busy) return;
@@ -214,9 +234,19 @@ export default function TelegramMassMessage() {
           setProgress(result.progress || null);
         })
         .catch(() => undefined);
+      if (openCampaignId) {
+        void getTelegramMassCampaign(selectedCreatorId, openCampaignId)
+          .then((result) => {
+            setRecipients((prev) => ({
+              ...prev,
+              [openCampaignId]: result.recipients || [],
+            }));
+          })
+          .catch(() => undefined);
+      }
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [selectedCreatorId, busy]);
+  }, [selectedCreatorId, busy, openCampaignId]);
 
   useEffect(() => {
     if (!selectedCreatorId || includeIds.length === 0) {
@@ -254,13 +284,8 @@ export default function TelegramMassMessage() {
     setIncludeIds((prev) => prev.filter((item) => item !== id));
   }
 
-  const handleSend = useCallback(async () => {
+  const handleStart = useCallback(async () => {
     if (!selectedCreatorId || sending) return;
-    const text = draft.trim();
-    if (!text && vaultItems.length === 0) {
-      setSendError('Add text or media');
-      return;
-    }
     if (includeIds.length === 0) {
       setSendError('Select at least one include list');
       return;
@@ -268,34 +293,7 @@ export default function TelegramMassMessage() {
     setSending(true);
     setSendError(null);
     try {
-      if (scheduleEnabled) {
-        await createScheduledContent({
-          kind: 'mass_message',
-          creatorId: selectedCreatorId,
-          platform: 'telegram',
-          runAt: berlinWallToIso(scheduleDate, scheduleTime, timeZone),
-          bodyText: text,
-          payload: {
-            includeFromLists: includeIds.map((id) => {
-              const list = lists.find((item) => item.id === id);
-              return { id, name: list?.name || '' };
-            }),
-            excludeFromLists: excludeIds.map((id) => {
-              const list = lists.find((item) => item.id === id);
-              return { id, name: list?.name || '' };
-            }),
-            vaultIds: vaultItems.map((item) => item.id),
-          },
-        });
-        toast.success(`Mass message scheduled (${timeZone})`);
-        setDraft('');
-        setVaultItems([]);
-        return;
-      }
-      const result = await sendTelegramMassMessage(selectedCreatorId, {
-        text,
-        englishText: text,
-        vaultIds: vaultItems.map((item) => item.id),
+      const result = await sendTelegramBump(selectedCreatorId, {
         includeListIds: includeIds,
         excludeListIds: excludeIds,
       });
@@ -304,40 +302,25 @@ export default function TelegramMassMessage() {
         ...prev.filter((item) => item.id !== result.campaign.id),
       ]);
       setProgress(result.progress);
-      setDraft('');
-      setVaultItems([]);
       toast.success(
         result.campaign.total === 0
           ? 'No recipients in the selected lists'
-          : `Sending to ${result.campaign.total} fans`
+          : `Bumping ${result.campaign.total} fans`
       );
     } catch (err) {
-      setSendError(err instanceof Error ? err.message : 'Failed to send mass message');
+      setSendError(err instanceof Error ? err.message : 'Failed to start bumps');
     } finally {
       setSending(false);
     }
-  }, [
-    selectedCreatorId,
-    sending,
-    draft,
-    vaultItems,
-    includeIds,
-    excludeIds,
-    lists,
-    scheduleEnabled,
-    scheduleDate,
-    scheduleTime,
-    timeZone,
-    toast,
-  ]);
+  }, [selectedCreatorId, sending, includeIds, excludeIds, toast]);
 
-  const handleUnsend = useCallback(
+  const handleDeleteBump = useCallback(
     async (campaign: TelegramMmCampaign) => {
       if (!selectedCreatorId || unsendingId) return;
       const ok = await confirm({
-        title: 'Unsend mass message',
-        message: 'Delete this campaign from each fan chat? This walks chats one by one.',
-        confirmLabel: 'Unsend',
+        title: 'Delete bump',
+        message: 'Delete this bump from each fan chat? This walks chats one by one.',
+        confirmLabel: 'Delete bump',
         variant: 'danger',
       });
       if (!ok) return;
@@ -346,45 +329,80 @@ export default function TelegramMassMessage() {
         const result = await unsendTelegramMassCampaign(selectedCreatorId, campaign.id);
         setProgress(result.progress);
         await loadCampaigns();
+        if (openCampaignId === campaign.id) await loadRecipients(campaign.id);
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to unsend');
+        toast.error(err instanceof Error ? err.message : 'Failed to delete bump');
       } finally {
         setUnsendingId(null);
       }
     },
-    [selectedCreatorId, unsendingId, confirm, loadCampaigns, toast]
+    [selectedCreatorId, unsendingId, confirm, loadCampaigns, loadRecipients, openCampaignId, toast]
   );
 
-  const handleUnsendLast = useCallback(async () => {
-    if (!selectedCreatorId || unsendingLast) return;
-    const ok = await confirm({
-      title: 'Unsend last 30',
-      message: 'Unsend the last 30 Telegram mass-message campaigns for this creator?',
-      confirmLabel: 'Unsend last 30',
-      variant: 'danger',
-    });
-    if (!ok) return;
-    setUnsendingLast(true);
-    try {
-      const result = await unsendLastTelegramMassMessages(selectedCreatorId, 30);
-      setProgress(result.progress);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to unsend last campaigns');
-    } finally {
-      setUnsendingLast(false);
-    }
-  }, [selectedCreatorId, unsendingLast, confirm, toast]);
+  const handleToggleCheck = useCallback(
+    (campaignId: string) => {
+      setOpenCampaignId((current) => {
+        const next = current === campaignId ? null : campaignId;
+        if (next) void loadRecipients(next);
+        return next;
+      });
+    },
+    [loadRecipients]
+  );
+
+  const handleDeleteMessage = useCallback(
+    async (campaign: TelegramMmCampaign, recipient: TelegramMmRecipient) => {
+      if (!selectedCreatorId || deletingRecipientId) return;
+      const ok = await confirm({
+        title: 'Delete message',
+        message: `Delete this bump from ${fanLabel(recipient)}'s chat?`,
+        confirmLabel: 'Delete',
+        variant: 'danger',
+      });
+      if (!ok) return;
+      setDeletingRecipientId(recipient.id);
+      try {
+        const result = await deleteTelegramBumpMessage(
+          selectedCreatorId,
+          campaign.id,
+          recipient.id
+        );
+        const nextRecipient = result.recipient;
+        setCampaigns((prev) =>
+          prev.map((item) =>
+            item.id === result.campaign.id ? { ...item, ...result.campaign } : item
+          )
+        );
+        if (nextRecipient) {
+          setRecipients((prev) => ({
+            ...prev,
+            [campaign.id]: (prev[campaign.id] || []).map((row) =>
+              row.id === nextRecipient.id ? nextRecipient : row
+            ),
+          }));
+        } else {
+          await loadRecipients(campaign.id);
+        }
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to delete message');
+        await loadRecipients(campaign.id);
+      } finally {
+        setDeletingRecipientId(null);
+      }
+    },
+    [selectedCreatorId, deletingRecipientId, confirm, loadRecipients, toast]
+  );
 
   const liveLabel = progressLabel(progress);
 
   return (
-    <AppShell title="Telegram Mass Message" activePage="chatter" bleed headerExtras={<><WorkspaceDrawerButton id="telegram-mass-accounts" size="lg" label="Creators" className="lg:hidden" /></>}>
+    <AppShell title="Telegram Bumps" activePage="chatter" bleed headerExtras={<><WorkspaceDrawerButton id="telegram-mass-accounts" size="lg" label="Creators" className="lg:hidden" /></>}>
 
       <WorkspaceDrawer id="telegram-mass-accounts" size="lg" className="w-64 border-r border-gray-200 dark:border-zinc-800/60 flex flex-col shrink-0 bg-white/50 dark:bg-zinc-950/50">
         <div className="h-16 px-4 border-b border-gray-200 dark:border-zinc-800/60 flex items-center gap-2">
           <img src={telegramIcon} alt="" className="w-5 h-5 rounded-full" />
           <span className="text-sm font-semibold text-gray-900 dark:text-white">
-            Mass Message
+            Bumps
           </span>
         </div>
         <div data-drawer-list className="flex-1 overflow-y-auto p-3 space-y-1.5">
@@ -439,10 +457,10 @@ export default function TelegramMassMessage() {
                 </div>
                 <div className="min-w-0">
                   <h1 className="text-sm font-semibold text-gray-900 dark:text-white truncate">
-                    {selectedCreator?.displayName || 'Creator'} — Sent mass messages
+                    {selectedCreator?.displayName || 'Creator'} — Bumps
                   </h1>
                   <p className="text-xs text-gray-500 dark:text-zinc-500">
-                    {liveLabel || 'Sends one DM at a time with delays'}
+                    {liveLabel || 'A short personal German line for each fan'}
                   </p>
                 </div>
               </div>
@@ -461,19 +479,6 @@ export default function TelegramMassMessage() {
                 )}
                 <button
                   type="button"
-                  onClick={() => void handleUnsendLast()}
-                  disabled={unsendingLast || busy}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border border-gray-200 dark:border-zinc-700 disabled:opacity-40"
-                >
-                  {unsendingLast ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <Undo2 className="w-3 h-3" />
-                  )}
-                  Unsend last 30
-                </button>
-                <button
-                  type="button"
                   onClick={() => void loadCampaigns()}
                   className="p-2 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-zinc-800"
                 >
@@ -490,10 +495,13 @@ export default function TelegramMassMessage() {
                 </div>
               )}
               {!loading && campaigns.length === 0 && (
-                <p className="text-sm text-gray-500 text-center py-12">No mass messages yet.</p>
+                <p className="text-sm text-gray-500 text-center py-12">No bumps yet.</p>
               )}
               {campaigns.map((campaign) => {
                 const isLocked = lockedIds.has(campaign.id);
+                const open = openCampaignId === campaign.id;
+                const rows = recipients[campaign.id] || [];
+                const canDeleteRun = campaign.sent > 0 && campaign.status !== 'unsending' && !isLocked;
                 return (
                 <article
                   key={campaign.id}
@@ -501,7 +509,9 @@ export default function TelegramMassMessage() {
                 >
                   <div className="flex items-start justify-between gap-3">
                     <p className="text-sm text-gray-900 dark:text-white whitespace-pre-wrap">
-                      {campaign.bodyText || '(media only)'}
+                      {campaign.mode === 'bump'
+                        ? 'Personal bumps'
+                        : campaign.bodyText || '(media only)'}
                     </p>
                     <div className="flex items-center gap-1 shrink-0">
                       <button
@@ -515,12 +525,10 @@ export default function TelegramMassMessage() {
                         }`}
                         title={
                           isLocked
-                            ? 'Undeleteable. Click to allow unsend'
+                            ? 'Undeleteable. Click to allow delete'
                             : 'Make undeleteable'
                         }
-                        aria-label={
-                          isLocked ? 'Unlock mass message' : 'Make undeleteable'
-                        }
+                        aria-label={isLocked ? 'Unlock bump' : 'Make undeleteable'}
                       >
                         {lockingId === campaign.id ? (
                           <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -535,35 +543,94 @@ export default function TelegramMassMessage() {
                   </div>
                   <p className="text-[11px] text-gray-500">
                     {campaign.sent}/{campaign.total} sent
+                    {campaign.skipped ? ` · ${campaign.skipped} skipped` : ''}
                     {campaign.failed ? ` · ${campaign.failed} failed` : ''}
-                    {campaign.unsent ? ` · ${campaign.unsent} unsent` : ''}
+                    {campaign.unsent ? ` · ${campaign.unsent} deleted` : ''}
                     {campaign.createdAt ? ` · ${formatWhen(campaign.createdAt)}` : ''}
                   </p>
                   {campaign.lastError && (
                     <p className="text-[11px] text-red-400">{campaign.lastError}</p>
                   )}
-                  {campaign.sent > 0 && campaign.status !== 'unsending' && !isLocked && (
+                  <div className="flex items-center gap-3">
                     <button
                       type="button"
-                      disabled={Boolean(unsendingId) || busy}
-                      onClick={() => void handleUnsend(campaign)}
-                      className="inline-flex items-center gap-1 text-xs text-red-500 hover:underline disabled:opacity-40"
+                      onClick={() => handleToggleCheck(campaign.id)}
+                      className="text-xs text-sky-600 hover:underline"
                     >
-                      {unsendingId === campaign.id ? (
-                        <Loader2 className="w-3 h-3 animate-spin" />
-                      ) : (
-                        <Undo2 className="w-3 h-3" />
-                      )}
-                      Unsend this campaign
+                      {open ? 'Hide messages' : 'Check messages'}
                     </button>
+                    {canDeleteRun && (
+                      <button
+                        type="button"
+                        disabled={Boolean(unsendingId) || busy}
+                        onClick={() => void handleDeleteBump(campaign)}
+                        className="inline-flex items-center gap-1 text-xs text-red-500 hover:underline disabled:opacity-40"
+                      >
+                        {unsendingId === campaign.id ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-3 h-3" />
+                        )}
+                        Delete bump
+                      </button>
+                    )}
+                  </div>
+                  {open && (
+                    <div className="rounded-lg border border-gray-100 dark:border-zinc-800 divide-y divide-gray-100 dark:divide-zinc-800">
+                      {recipientsLoadingId === campaign.id && rows.length === 0 && (
+                        <div className="flex justify-center py-4">
+                          <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                        </div>
+                      )}
+                      {rows.length === 0 && recipientsLoadingId !== campaign.id && (
+                        <p className="px-3 py-3 text-xs text-gray-500">No messages.</p>
+                      )}
+                      {rows.map((recipient) => {
+                        const canDeleteOne =
+                          !isLocked &&
+                          (recipient.status === 'sent' || recipient.status === 'unsend_failed');
+                        return (
+                          <div
+                            key={recipient.id}
+                            className="px-3 py-2 flex items-start gap-3"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-medium text-gray-800 dark:text-zinc-200 truncate">
+                                {fanLabel(recipient)}
+                                <span className="ml-2 font-normal uppercase tracking-wide text-[10px] text-gray-400">
+                                  {recipient.status}
+                                </span>
+                              </p>
+                              <p className="text-sm text-gray-900 dark:text-white whitespace-pre-wrap mt-0.5">
+                                {messageLine(campaign, recipient)}
+                              </p>
+                            </div>
+                            {canDeleteOne && (
+                              <button
+                                type="button"
+                                disabled={Boolean(deletingRecipientId) || Boolean(unsendingId) || busy}
+                                onClick={() => void handleDeleteMessage(campaign, recipient)}
+                                className="inline-flex items-center gap-1 shrink-0 text-xs text-red-500 hover:underline disabled:opacity-40"
+                              >
+                                {deletingRecipientId === recipient.id ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Trash2 className="w-3 h-3" />
+                                )}
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                 </article>
                 );
               })}
             </div>
 
-            <div className="border-t border-gray-200 dark:border-zinc-800 shrink-0 flex flex-col min-h-0 max-h-[55%]">
-              <div className="overflow-y-auto min-h-0 p-4 space-y-3">
+            <div className="border-t border-gray-200 dark:border-zinc-800 shrink-0 p-4 space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 mb-1.5">
@@ -619,119 +686,34 @@ export default function TelegramMassMessage() {
                 </div>
               </div>
 
-              <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
-                <Users className="w-3.5 h-3.5" />
-                {countLoading
-                  ? 'Counting recipients…'
-                  : includeIds.length === 0
-                    ? 'Select at least one include list'
-                    : `${recipientCount ?? 0} recipients`}
-              </p>
-
-              {vaultItems.length > 0 && (
-                <div className="flex items-center gap-2">
-                  {vaultItems.map((item) =>
-                    item.kind === 'voice' ? (
-                      <div
-                        key={item.id}
-                        className="w-12 h-12 rounded-lg overflow-hidden border border-gray-200 dark:border-zinc-700"
-                      >
-                        <TelegramVoiceTile duration={item.duration} />
-                      </div>
-                    ) : (
-                      <img
-                        key={item.id}
-                        src={telegramVaultMediaUrl(selectedCreatorId, item.id, 'thumb')}
-                        alt=""
-                        className="w-12 h-12 rounded-lg object-cover"
-                      />
-                    )
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setVaultItems([])}
-                    className="p-1 text-gray-400 hover:text-gray-700"
-                    aria-label="Clear media"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-
-              <label className="flex items-center justify-between gap-3">
-                <span className="text-xs font-medium inline-flex items-center gap-1.5">
-                  <CalendarClock className="w-3.5 h-3.5" />
-                  Schedule instead of sending now
-                </span>
-                <ToggleSwitch
-                  checked={scheduleEnabled}
-                  onChange={setScheduleEnabled}
-                  aria-label="Schedule mass message"
-                />
-              </label>
-              {scheduleEnabled && (
-                <ScheduleDateTimePicker
-                  date={scheduleDate}
-                  time={scheduleTime}
-                  onDateChange={setScheduleDate}
-                  onTimeChange={setScheduleTime}
-                />
-              )}
-              </div>
-
-              <div className="shrink-0 px-4 pb-4 pt-2 space-y-2 border-t border-gray-100 dark:border-zinc-800/80">
-              {sendError && <p className="text-xs text-red-400">{sendError}</p>}
-              <div className="flex items-end gap-2 rounded-2xl border border-gray-200 dark:border-zinc-800 p-2">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-gray-500 inline-flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5" />
+                  {countLoading
+                    ? 'Counting fans…'
+                    : includeIds.length === 0
+                      ? 'Select at least one include list'
+                      : `${recipientCount ?? 0} fans`}
+                </p>
                 <button
                   type="button"
-                  onClick={() => setVaultOpen(true)}
-                  className="p-2 rounded-xl text-gray-500 hover:bg-gray-100 dark:hover:bg-zinc-800"
-                  title="Open Media Vault"
-                >
-                  <ImageIcon className="w-5 h-5" />
-                </button>
-                <textarea
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  rows={2}
-                  placeholder="Type a mass message…"
-                  className="flex-1 max-h-32 min-h-[44px] resize-none px-2 py-3 text-sm bg-transparent focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => void handleSend()}
-                  disabled={
-                    sending ||
-                    (!draft.trim() && vaultItems.length === 0) ||
-                    includeIds.length === 0
-                  }
-                  className="p-3 rounded-xl bg-sky-600 text-white hover:bg-sky-500 disabled:opacity-40"
-                  title={scheduleEnabled ? 'Schedule mass message' : 'Send mass message'}
+                  onClick={() => void handleStart()}
+                  disabled={sending || busy || includeIds.length === 0}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-sky-600 text-white text-sm hover:bg-sky-500 disabled:opacity-40"
                 >
                   {sending ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : scheduleEnabled ? (
-                    <CalendarClock className="w-5 h-5" />
+                    <Loader2 className="w-4 h-4 animate-spin" />
                   ) : (
-                    <Send className="w-5 h-5" />
+                    <Send className="w-4 h-4" />
                   )}
+                  Start bump
                 </button>
               </div>
-              </div>
+              {sendError && <p className="text-xs text-red-400">{sendError}</p>}
             </div>
           </>
         )}
       </main>
-
-      {vaultOpen && selectedCreatorId && (
-        <TelegramVaultModal
-          creatorId={selectedCreatorId}
-          fanId={null}
-          selectedItems={vaultItems}
-          onChangeSelected={setVaultItems}
-          onClose={() => setVaultOpen(false)}
-        />
-      )}
     </AppShell>
   );
 }

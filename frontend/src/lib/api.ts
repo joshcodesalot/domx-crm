@@ -4816,10 +4816,23 @@ export interface TelegramMmProgress {
   startedAt?: number;
 }
 
+export interface TelegramMmRecipient {
+  id: string;
+  campaignId: string;
+  peerId: string;
+  displayName?: string;
+  status: string;
+  telegramMessageIds: string[];
+  bodyText: string;
+  error: string | null;
+  sentAt: string | null;
+}
+
 export interface TelegramMmCampaign {
   id: string;
   creatorId: string;
   bodyText: string;
+  mode?: 'broadcast' | 'bump';
   vaultIds: string[];
   includeListIds: string[];
   excludeListIds: string[];
@@ -4844,6 +4857,15 @@ export async function listTelegramMassMessages(
   return request(`/api/creators/${creatorId}/telegram/mass-messages`);
 }
 
+export async function getTelegramMassCampaign(
+  creatorId: string,
+  campaignId: string
+): Promise<{ campaign: TelegramMmCampaign; recipients: TelegramMmRecipient[] }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/mass-messages/${encodeURIComponent(campaignId)}`
+  );
+}
+
 export async function countTelegramMassRecipients(
   creatorId: string,
   includeListIds: string[],
@@ -4853,6 +4875,27 @@ export async function countTelegramMassRecipients(
     method: 'POST',
     body: JSON.stringify({ includeListIds, excludeListIds }),
   });
+}
+
+export async function sendTelegramBump(
+  creatorId: string,
+  input: { includeListIds: string[]; excludeListIds?: string[] }
+): Promise<{ campaign: TelegramMmCampaign; progress: TelegramMmProgress }> {
+  return request(`/api/creators/${creatorId}/telegram/mass-messages`, {
+    method: 'POST',
+    body: JSON.stringify({ mode: 'bump', ...input }),
+  });
+}
+
+export async function deleteTelegramBumpMessage(
+  creatorId: string,
+  campaignId: string,
+  recipientId: string
+): Promise<{ campaign: TelegramMmCampaign; recipient: TelegramMmRecipient | null }> {
+  return request(
+    `/api/creators/${creatorId}/telegram/mass-messages/${encodeURIComponent(campaignId)}/recipients/${encodeURIComponent(recipientId)}/unsend`,
+    { method: 'POST' }
+  );
 }
 
 export async function sendTelegramMassMessage(
