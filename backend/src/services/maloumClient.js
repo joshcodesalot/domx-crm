@@ -1,6 +1,7 @@
 const { randomUUID } = require('crypto');
 const { ProxyAgent, fetch: undiciFetch } = require('undici');
 const { buildSupabaseStorageValue } = require('./maloumAuthTokens');
+const { toHttpsProxyUrl } = require('./proxyUrl');
 
 const API_BASE = 'https://api.maloum.com';
 const APP_ORIGIN = 'https://app.maloum.com';
@@ -36,17 +37,7 @@ class MaloumApiError extends Error {
 }
 
 function normalizeProxyUrl(proxyUrl) {
-  if (!proxyUrl || typeof proxyUrl !== 'string') {
-    return null;
-  }
-  const trimmed = proxyUrl.trim();
-  if (!trimmed) {
-    return null;
-  }
-  if (/^https?:\/\//i.test(trimmed) || /^socks/i.test(trimmed)) {
-    return trimmed;
-  }
-  return `http://${trimmed}`;
+  return toHttpsProxyUrl(proxyUrl);
 }
 
 /**

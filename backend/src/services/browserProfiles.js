@@ -4,7 +4,7 @@ const pool = require('../db/pool');
 const { dataPath } = require('./dataDir');
 const { encryptSecret, decryptSecret, hashToken } = require('./crypto');
 const { userCanAccessCreator, userSeesAllCreators } = require('./creatorAccess');
-const { buildProxyUrl, parseProxyParts, InvalidProxyError } = require('./proxyUrl');
+const { buildProxyUrl, parseProxyParts, toHttpsProxyUrl, InvalidProxyError } = require('./proxyUrl');
 const { lookupGeo } = require('./browserProfileGeo');
 const { startRemoteSession, stopRemoteSession } = require('./browserHostClient');
 
@@ -159,7 +159,7 @@ function publicProfile(row, creator, viewToken) {
     fingerprintSeed: row.fingerprintSeed,
     fingerprintPlatform: row.fingerprintPlatform || 'windows',
     encryptionKey: decryptSecret(row.encryptedProfileKey),
-    proxyUrl: decryptSecret(row.encryptedProxy),
+    proxyUrl: toHttpsProxyUrl(decryptSecret(row.encryptedProxy)),
     timezone: row.timezone || null,
     acceptLanguage: row.acceptLanguage || null,
     hasArchive: archiveExists(row.creatorId),
@@ -169,7 +169,7 @@ function publicProfile(row, creator, viewToken) {
 }
 
 async function refreshGeo(row, userId) {
-  const proxyUrl = decryptSecret(row.encryptedProxy);
+  const proxyUrl = toHttpsProxyUrl(decryptSecret(row.encryptedProxy));
   if (!proxyUrl || row.timezone) return row;
   const geo = await lookupGeo(proxyUrl);
   if (!geo) return row;

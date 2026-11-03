@@ -6,12 +6,14 @@ const {
   bumpSkipReason,
   bumpErrorAction,
   generateBump,
+  normalizeBumpLine,
 } = require('./telegramBumpCopy');
 const {
   TelegramWorkerError,
   sendText,
   sendVaultToPeer,
   deleteText,
+  deleteStoredMessages,
   isTelegramServiceDialog,
   listMessages,
   listRecentDmPeerIds,
@@ -439,6 +441,85 @@ async function creatorDisplayName(creatorId) {
   return result.rows[0]?.displayName || '';
 }
 
+async function clearPreviousBump(creatorId, peerId, currentCampaignId, run) {
+  const previous = await pool.query(
+    `SELECT r.id, r."campaignId", r."telegramMessageIds"
+     FROM telegram_mm_recipients r
+     JOIN telegram_mm_campaigns c ON c.id = r."campaignId"
+     WHERE c."creatorId" = $1
+       AND c.mode = 'bump'
+       AND r."peerId" = $2
+       AND r."campaignId" <> $3
+       AND r.status IN ('sent', 'unsend_failed')
+     ORDER BY r."sentAt" DESC NULLS LAST
+     LIMIT 1`,
+    [creatorId, String(peerId), currentCampaignId]
+  );
+  const row = previous.rows[0];
+  if (!row) return null;
+  if (await isLocked(creatorId, 'telegram', row.campaignId)) {
+    return 'Previous bump is locked';
+  }
+  const ids = parseMessageIds(row.telegramMessageIds);
+  if (ids.length === 0) return 'No stored Telegram message';
+  try {
+    try {
+      await deleteStoredMessages(creatorId, peerId, ids);
+    } catch (err) {
+      const wait = parseFloodWaitSeconds(err);
+      if (!wait || run.abort) throw err;
+      run.status = 'waiting';
+      await sleep((wait + 1) * 1000, () => run.abort);
+      if (run.abort) throw err;
+      run.status = 'running';
+      await deleteStoredMessages(creatorId, peerId, ids);
+    }
+  } catch (err) {
+    const message = err?.message || 'Failed to delete';
+    if (!/not found/i.test(message)) {
+      const decision = bumpErrorAction(err);
+      if (decision.action === 'stop') throw err;
+      await pool.query(
+        `UPDATE telegram_mm_recipients
+         SET status = 'unsend_failed', error = $1
+         WHERE id = $2`,
+        [decision.reason, row.id]
+      );
+      await refreshCampaignCounts(row.campaignId);
+      return decision.reason;
+    }
+  }
+  await pool.query(
+    `UPDATE telegram_mm_recipients
+     SET status = 'unsent', error = NULL
+     WHERE id = $1`,
+    [row.id]
+  );
+  await refreshCampaignCounts(row.campaignId);
+  await settleCampaignUnsent(row.campaignId);
+  return null;
+}
+
+async function recentBumpLines(creatorId) {
+  const result = await pool.query(
+    `SELECT r."bodyText"
+     FROM telegram_mm_recipients r
+     JOIN telegram_mm_campaigns c ON c.id = r."campaignId"
+     WHERE c."creatorId" = $1
+       AND c.mode = 'bump'
+       AND r.status = 'sent'
+       AND r."sentAt" > NOW() - INTERVAL '2 days'
+       AND r."bodyText" <> ''`,
+    [creatorId]
+  );
+  const lines = new Set();
+  for (const row of result.rows) {
+    const key = normalizeBumpLine(row.bodyText);
+    if (key) lines.add(key);
+  }
+  return lines;
+}
+
 async function executeBump(campaign, run) {
   const campaignId = campaign.id;
   const pending = await pool.query(
@@ -456,6 +537,7 @@ async function executeBump(campaign, run) {
     [campaignId]
   );
   const creatorName = await creatorDisplayName(campaign.creatorId);
+  const sentLines = await recentBumpLines(campaign.creatorId);
 
   for (let index = 0; index < pending.rows.length; index += 1) {
     const row = pending.rows[index];
@@ -463,6 +545,17 @@ async function executeBump(campaign, run) {
     run.currentPeerId = row.peerId;
     let sent = false;
     try {
+      const previousReason = await clearPreviousBump(
+        campaign.creatorId,
+        row.peerId,
+        campaignId,
+        run
+      );
+      if (previousReason) {
+        if (await markRecipientSkipped(row.id, previousReason)) run.skipped += 1;
+        await refreshCampaignCounts(campaignId);
+        continue;
+      }
       const chat = await listMessages(campaign.creatorId, row.peerId, {
         limit: BUMP_HISTORY_LIMIT,
         markRead: false,
@@ -488,9 +581,16 @@ async function executeBump(campaign, run) {
         notes: chat?.fan?.notes || '',
         messages: chat?.messages || [],
         now: new Date(),
+        selfId: chat?.selfId || null,
       });
       if (!text) {
         if (await markRecipientSkipped(row.id, 'Empty bump')) run.skipped += 1;
+        await refreshCampaignCounts(campaignId);
+        continue;
+      }
+      const lineKey = normalizeBumpLine(text);
+      if (lineKey && sentLines.has(lineKey)) {
+        if (await markRecipientSkipped(row.id, 'Repeated bump')) run.skipped += 1;
         await refreshCampaignCounts(campaignId);
         continue;
       }
@@ -531,6 +631,7 @@ async function executeBump(campaign, run) {
          WHERE id = $3`,
         [JSON.stringify(messageIds), text, row.id]
       );
+      if (lineKey) sentLines.add(lineKey);
       run.done += 1;
       sent = true;
     } catch (err) {

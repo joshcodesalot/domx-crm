@@ -460,6 +460,21 @@ function serializeReplyTo(msg) {
   };
 }
 
+function messageIsDeleted(msg) {
+  if (!msg || typeof msg !== 'object') return true;
+  if (msg.isDeleted || msg.deleted) return true;
+  if (msg.isService) return true;
+  if (msg.action && typeof msg.action === 'object') return true;
+  const rawType = String(msg._ || msg.raw?._ || msg.type || '').toLowerCase();
+  return (
+    rawType === 'messageempty' ||
+    rawType === 'messageservice' ||
+    rawType === 'empty' ||
+    rawType === 'service' ||
+    rawType === 'deleted'
+  );
+}
+
 function serializeMessage(msg) {
   if (!msg) return null;
   const text = typeof msg.text === 'string' ? msg.text : '';
@@ -470,6 +485,7 @@ function serializeMessage(msg) {
     id: String(msg.id),
     peerId: String(msg.chat?.id || ''),
     isOutgoing: Boolean(msg.isOutgoing),
+    deleted: messageIsDeleted(msg),
     date: msg.date instanceof Date ? msg.date.toISOString() : null,
     text,
     kind: mediaInfo?.kind || (text ? 'text' : 'empty'),
@@ -1764,6 +1780,15 @@ async function listMessages(
   const readCursorPromise = hasOffset
     ? Promise.resolve(null)
     : outgoingReadCursor(client, numericId);
+  const selfPromise = (async () => {
+    try {
+      if (typeof client.getMe !== 'function') return null;
+      const me = await client.getMe();
+      return me?.id != null ? String(me.id) : null;
+    } catch {
+      return null;
+    }
+  })();
   const history = await client.getHistory(numericId, {
     limit: clamped,
     ...(hasOffset
@@ -1817,8 +1842,10 @@ async function listMessages(
       : messages;
   scheduleChatThumbPrewarm(creatorId, String(numericId), withSenders);
   const readOutboxMaxId = await readCursorPromise;
+  const selfId = await selfPromise;
   return {
     peerId: String(numericId),
+    ...(selfId ? { selfId } : {}),
     kind,
     messageable: peerCanBeMessaged(peer),
     ...(readOutboxMaxId != null ? { readOutboxMaxId } : {}),
@@ -3061,6 +3088,27 @@ async function deleteText(creatorId, peerId, messageId) {
   return serializeMessage(found);
 }
 
+async function deleteStoredMessages(creatorId, peerId, messageIds) {
+  const client = await getClient(creatorId);
+  const numericId = Number(peerId);
+  if (!Number.isFinite(numericId)) {
+    throw new TelegramWorkerError('Invalid chat id');
+  }
+  const ids = (Array.isArray(messageIds) ? messageIds : [])
+    .map((id) => Number(id))
+    .filter(Number.isFinite);
+  if (ids.length === 0) {
+    throw new TelegramWorkerError('No stored Telegram message');
+  }
+  await ensureCachedPeer(client, creatorId, numericId);
+  try {
+    await deleteClientMessages(client, numericId, ids);
+  } catch (err) {
+    if (err instanceof TelegramWorkerError) throw err;
+    throw new TelegramWorkerError(describeError(err), 400);
+  }
+}
+
 async function resolveUsername(creatorId, username) {
   const client = await getClient(creatorId);
   const handle = String(username || '')
@@ -3834,6 +3882,7 @@ module.exports = {
   getCachedVaultMedia,
   prewarmVaultThumb,
   deleteText,
+  deleteStoredMessages,
   resolveUsername,
   unreadCount,
   startTelegramManager,

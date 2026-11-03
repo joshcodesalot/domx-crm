@@ -59,6 +59,30 @@ function formatHostPort(host, port) {
   return `${host}:${port}`;
 }
 
+/**
+ * Proxy connections use TLS to the proxy. Socks URLs are left unchanged.
+ * An http:// value is rewritten to https://. A value with no scheme gets https://.
+ */
+function toHttpsProxyUrl(proxyUrl) {
+  if (proxyUrl == null || typeof proxyUrl !== 'string') {
+    return null;
+  }
+  const trimmed = proxyUrl.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (/^socks/i.test(trimmed)) {
+    return trimmed;
+  }
+  if (/^https:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  if (/^http:\/\//i.test(trimmed)) {
+    return `https://${trimmed.replace(/^http:\/\//i, '')}`;
+  }
+  return `https://${trimmed}`;
+}
+
 function buildProxyUrl(hostPort, username, password) {
   const parsed = parseHostPort(hostPort);
   if (!parsed) {
@@ -70,7 +94,7 @@ function buildProxyUrl(hostPort, username, password) {
   if (user || pass) {
     auth = `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`;
   }
-  return `http://${auth}${formatHostPort(parsed.host, parsed.port)}`;
+  return `https://${auth}${formatHostPort(parsed.host, parsed.port)}`;
 }
 
 function parseProxyParts(proxyUrl) {
@@ -78,9 +102,7 @@ function parseProxyParts(proxyUrl) {
     return null;
   }
   try {
-    const parsed = new URL(
-      /^[a-z][a-z0-9+.-]*:\/\//i.test(proxyUrl) ? proxyUrl : `http://${proxyUrl}`
-    );
+    const parsed = new URL(toHttpsProxyUrl(proxyUrl));
     const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
     return {
       hostPort: formatHostPort(parsed.hostname, port),
@@ -117,7 +139,7 @@ function customProxyFromBody(body) {
   }
 
   if (proxyUrl) {
-    return { provided: true, proxyUrl };
+    return { provided: true, proxyUrl: toHttpsProxyUrl(proxyUrl) };
   }
 
   return { provided: false, proxyUrl: null };
@@ -126,6 +148,7 @@ function customProxyFromBody(body) {
 module.exports = {
   InvalidProxyError,
   parseHostPort,
+  toHttpsProxyUrl,
   buildProxyUrl,
   parseProxyParts,
   customProxyFromBody,

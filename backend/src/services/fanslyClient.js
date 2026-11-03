@@ -1,5 +1,6 @@
 const { randomInt } = require('crypto');
 const { ProxyAgent, fetch: undiciFetch } = require('undici');
+const { toHttpsProxyUrl } = require('./proxyUrl');
 
 const API_ORIGIN = 'https://apiv3.fansly.com';
 const MEDIA_ORIGIN = 'https://mediav2.fansly.com';
@@ -151,17 +152,7 @@ function classifyLoginBody(data) {
 }
 
 function normalizeProxyUrl(proxyUrl) {
-  if (!proxyUrl || typeof proxyUrl !== 'string') {
-    return null;
-  }
-  const trimmed = proxyUrl.trim();
-  if (!trimmed) {
-    return null;
-  }
-  if (/^https?:\/\//i.test(trimmed) || /^socks/i.test(trimmed)) {
-    return trimmed;
-  }
-  return `http://${trimmed}`;
+  return toHttpsProxyUrl(proxyUrl);
 }
 
 function resolveFanslyProxyUrl(override) {

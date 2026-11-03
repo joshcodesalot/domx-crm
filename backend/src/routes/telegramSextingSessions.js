@@ -12,7 +12,9 @@ const {
   TelegramWorkerError,
   sendText,
   sendVaultToPeer,
+  listMessages,
 } = require('../services/telegramWorker');
+const { BUMP_HISTORY_LIMIT } = require('../services/telegramBumpCopy');
 const {
   DEFAULT_BLOCKS,
   clampBlockCount,
@@ -241,7 +243,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
-  req.setTimeout(180000);
+  req.setTimeout(300000);
   const body = req.body || {};
   const fanName = trimText(body.fanName);
   const slaveName = trimText(body.slaveName);
@@ -302,6 +304,10 @@ router.post('/', async (req, res) => {
     const creators = creatorIds
       .map((id) => creatorsResult.rows.find((row) => row.id === id))
       .filter(Boolean);
+    const chat = await listMessages(creators[0].id, groupPeerId, {
+      limit: BUMP_HISTORY_LIMIT,
+      markRead: false,
+    });
     const generated = await generateFemdomSession({
       slaveName,
       dommes: creators.map((creator) => creator.displayName),
@@ -313,6 +319,9 @@ router.post('/', async (req, res) => {
       scenario,
       extraInstructions,
       numberOfBlocks,
+      notes: chat?.fan?.notes || '',
+      messages: chat?.messages || [],
+      chatKind: chat?.kind || 'dm',
     });
     const assigned = assignBlocksToCreators(generated.blocks, creators);
 
@@ -370,6 +379,9 @@ router.post('/', async (req, res) => {
     const blocks = await loadSessionBlocks(sessionId);
     return res.status(201).json({ session: serializeSession(session, blocks) });
   } catch (err) {
+    if (err instanceof TelegramWorkerError || err?.name === 'B2StorageError') {
+      return handleTelegramError(res, err, 'Generate telegram sexting session error:');
+    }
     console.error('Generate telegram sexting session error:', err);
     return res.status(500).json({
       error: err?.message || 'Failed to generate session',
