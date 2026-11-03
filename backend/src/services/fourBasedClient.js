@@ -1,6 +1,6 @@
 const { randomUUID } = require('crypto');
 const { ProxyAgent, fetch: undiciFetch, FormData } = require('undici');
-const { toHttpsProxyUrl } = require('./proxyUrl');
+const { toHttpProxyUrl } = require('./proxyUrl');
 
 const REST_BASE = 'https://rest.4based.com/api/1.0';
 const REST_BASE_V2 = 'https://rest.4based.com/api/2.0';
@@ -38,7 +38,7 @@ class FourBasedApiError extends Error {
 }
 
 function normalizeProxyUrl(proxyUrl) {
-  return toHttpsProxyUrl(proxyUrl);
+  return toHttpProxyUrl(proxyUrl);
 }
 
 /**

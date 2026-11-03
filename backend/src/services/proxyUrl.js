@@ -60,10 +60,10 @@ function formatHostPort(host, port) {
 }
 
 /**
- * Proxy connections use TLS to the proxy. Socks URLs are left unchanged.
- * An http:// value is rewritten to https://. A value with no scheme gets https://.
+ * The proxy itself is a plain HTTP proxy. Socks URLs are left unchanged.
+ * An https:// value is rewritten to http://. A value with no scheme gets http://.
  */
-function toHttpsProxyUrl(proxyUrl) {
+function toHttpProxyUrl(proxyUrl) {
   if (proxyUrl == null || typeof proxyUrl !== 'string') {
     return null;
   }
@@ -74,13 +74,13 @@ function toHttpsProxyUrl(proxyUrl) {
   if (/^socks/i.test(trimmed)) {
     return trimmed;
   }
-  if (/^https:\/\//i.test(trimmed)) {
+  if (/^http:\/\//i.test(trimmed)) {
     return trimmed;
   }
-  if (/^http:\/\//i.test(trimmed)) {
-    return `https://${trimmed.replace(/^http:\/\//i, '')}`;
+  if (/^https:\/\//i.test(trimmed)) {
+    return `http://${trimmed.replace(/^https:\/\//i, '')}`;
   }
-  return `https://${trimmed}`;
+  return `http://${trimmed}`;
 }
 
 function buildProxyUrl(hostPort, username, password) {
@@ -94,7 +94,7 @@ function buildProxyUrl(hostPort, username, password) {
   if (user || pass) {
     auth = `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`;
   }
-  return `https://${auth}${formatHostPort(parsed.host, parsed.port)}`;
+  return `http://${auth}${formatHostPort(parsed.host, parsed.port)}`;
 }
 
 function parseProxyParts(proxyUrl) {
@@ -102,7 +102,7 @@ function parseProxyParts(proxyUrl) {
     return null;
   }
   try {
-    const parsed = new URL(toHttpsProxyUrl(proxyUrl));
+    const parsed = new URL(toHttpProxyUrl(proxyUrl));
     const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
     return {
       hostPort: formatHostPort(parsed.hostname, port),
@@ -139,7 +139,7 @@ function customProxyFromBody(body) {
   }
 
   if (proxyUrl) {
-    return { provided: true, proxyUrl: toHttpsProxyUrl(proxyUrl) };
+    return { provided: true, proxyUrl: toHttpProxyUrl(proxyUrl) };
   }
 
   return { provided: false, proxyUrl: null };
@@ -148,7 +148,7 @@ function customProxyFromBody(body) {
 module.exports = {
   InvalidProxyError,
   parseHostPort,
-  toHttpsProxyUrl,
+  toHttpProxyUrl,
   buildProxyUrl,
   parseProxyParts,
   customProxyFromBody,

@@ -63,7 +63,7 @@ export function buildProxyUrl(
   if (user || pass) {
     auth = `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`;
   }
-  return `https://${auth}${formatHostPort(parsed.host, parsed.port)}`;
+  return `http://${auth}${formatHostPort(parsed.host, parsed.port)}`;
 }
 
 export function isValidProxyHostPort(hostPort: string): boolean {

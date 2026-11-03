@@ -35,7 +35,7 @@ function getPartitionSession(accountId) {
   return electronSession.fromPartition(`persist:creator-${accountId}`);
 }
 
-function toHttpsProxyUrl(proxyUrl) {
+function toHttpProxyUrl(proxyUrl) {
   if (proxyUrl == null || typeof proxyUrl !== 'string') {
     return null;
   }
@@ -46,17 +46,17 @@ function toHttpsProxyUrl(proxyUrl) {
   if (/^socks/i.test(trimmed)) {
     return trimmed;
   }
-  if (/^https:\/\//i.test(trimmed)) {
+  if (/^http:\/\//i.test(trimmed)) {
     return trimmed;
   }
-  if (/^http:\/\//i.test(trimmed)) {
-    return `https://${trimmed.replace(/^http:\/\//i, '')}`;
+  if (/^https:\/\//i.test(trimmed)) {
+    return `http://${trimmed.replace(/^https:\/\//i, '')}`;
   }
-  return `https://${trimmed}`;
+  return `http://${trimmed}`;
 }
 
 function parseProxyUrl(proxyUrl) {
-  const upgraded = toHttpsProxyUrl(proxyUrl);
+  const upgraded = toHttpProxyUrl(proxyUrl);
   if (!upgraded) {
     return null;
   }
@@ -101,7 +101,7 @@ async function configureMaloumPartition(
     });
     await partitionSession.setProxy({
       mode: 'fixed_servers',
-      proxyRules: `https://${parsed.host}:${parsed.port}`,
+      proxyRules: `http=${parsed.host}:${parsed.port};https=${parsed.host}:${parsed.port}`,
       proxyBypassRules: '<local>',
     });
   } else {
