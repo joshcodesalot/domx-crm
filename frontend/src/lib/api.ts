@@ -226,7 +226,7 @@ export interface MessagingDashboardEntry {
   creatorName: string;
   creatorUsername: string | null;
   creatorAvatarUrl: string | null;
-  platform: 'maloum' | '4based' | 'telegram' | null;
+  platform: 'maloum' | '4based' | 'telegram' | 'fansly' | 'alternative' | null;
   chatterId: string;
   chatterName: string;
   chatterEmail: string | null;
@@ -1455,9 +1455,9 @@ export async function getMessagingDashboard(filters: {
   endDate?: string;
   chatterId?: string;
   creatorId?: string;
-  platform?: 'maloum' | '4based' | 'telegram' | 'fansly';
+  platform?: 'maloum' | '4based' | 'telegram' | 'fansly' | 'alternative';
   purchased?: boolean;
-  contentType?: 'chat_product' | 'tip';
+  contentType?: 'chat_product' | 'tip' | 'alternative_payment';
   salesOnly?: boolean;
   page?: number;
   limit?: number;
@@ -1508,6 +1508,92 @@ export async function getMessagingDashboard(filters: {
   const path = query ? `/api/messaging-dashboard?${query}` : '/api/messaging-dashboard';
 
   return request<MessagingDashboardResponse>(path);
+}
+
+export type AlternativePaymentMethod = 'revolut' | 'amazon' | 'paypal' | 'bitcoin';
+
+export interface AlternativePayment {
+  id: string;
+  saleCode: string;
+  saleDate: string;
+  fanName: string | null;
+  creatorId: string | null;
+  creatorName: string | null;
+  creatorUsername: string | null;
+  creatorAvatarUrl: string | null;
+  creatorPlatform: string | null;
+  chatterId: string | null;
+  chatterName: string | null;
+  paymentMethod: AlternativePaymentMethod;
+  amount: number;
+  currency: 'EUR' | 'USD';
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AlternativePaymentInput {
+  saleDate?: string;
+  fanName?: string | null;
+  creatorId?: string | null;
+  chatterId?: string | null;
+  paymentMethod?: AlternativePaymentMethod;
+  amount?: number;
+  currency?: 'EUR' | 'USD';
+  notes?: string | null;
+}
+
+export interface AlternativePaymentsResponse {
+  data: AlternativePayment[];
+  totals: CurrencyAmount[];
+  pagination: MessagingDashboardPagination;
+}
+
+export async function getAlternativePayments(filters: {
+  startDate?: string;
+  endDate?: string;
+  paymentMethod?: AlternativePaymentMethod | '';
+  chatterId?: string;
+  creatorId?: string;
+  page?: number;
+  limit?: number;
+} = {}): Promise<AlternativePaymentsResponse> {
+  const params = new URLSearchParams();
+  if (filters.startDate) params.set('startDate', filters.startDate);
+  if (filters.endDate) params.set('endDate', filters.endDate);
+  if (filters.paymentMethod) params.set('paymentMethod', filters.paymentMethod);
+  if (filters.chatterId) params.set('chatterId', filters.chatterId);
+  if (filters.creatorId) params.set('creatorId', filters.creatorId);
+  if (filters.page) params.set('page', String(filters.page));
+  if (filters.limit) params.set('limit', String(filters.limit));
+  const query = params.toString();
+  const path = query ? `/api/alternative-payments?${query}` : '/api/alternative-payments';
+  return request<AlternativePaymentsResponse>(path);
+}
+
+export async function createAlternativePayment(
+  input: AlternativePaymentInput
+): Promise<{ payment: AlternativePayment }> {
+  return request<{ payment: AlternativePayment }>('/api/alternative-payments', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateAlternativePayment(
+  id: string,
+  input: AlternativePaymentInput
+): Promise<{ payment: AlternativePayment }> {
+  return request<{ payment: AlternativePayment }>(`/api/alternative-payments/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteAlternativePayment(id: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/api/alternative-payments/${id}`, {
+    method: 'DELETE',
+  });
 }
 
 export async function createMessagingDashboardEntry(

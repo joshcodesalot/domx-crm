@@ -68,7 +68,8 @@ function SalesLogRow({
   const sentTime = formatSentTime(entry.sentAt, timeZone);
   const moneyCurrency = resolveDashboardCurrency(entry.currency, entry.platform);
   const listed = entry.priceNet;
-  const net = netTakeAmount(entry.priceNet, entry.platform);
+  const isAlternative = entry.contentType === 'alternative_payment';
+  const net = isAlternative ? listed : netTakeAmount(entry.priceNet, entry.platform);
   const isTip = entry.contentType === 'tip';
   const showSentTime =
     entry.contentType === 'chat_product' &&
@@ -87,16 +88,20 @@ function SalesLogRow({
       </td>
       <td className="px-4 py-3 align-top whitespace-nowrap">
         <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 dark:bg-white/10 dark:text-gray-300">
-          {isTip ? 'Tip' : 'PPV'}
+          {entry.contentType === 'alternative_payment' ? 'Alternative' : isTip ? 'Tip' : 'PPV'}
         </span>
       </td>
       <td className="px-4 py-3 align-top whitespace-nowrap">
         <div className="font-medium">{formatMoney(net, moneyCurrency)}</div>
-        <div className="text-xs text-gray-500 dark:text-gray-400">
-          Listed {formatMoney(listed, moneyCurrency)}
-        </div>
+        {isAlternative ? null : (
+          <div className="text-xs text-gray-500 dark:text-gray-400">
+            Listed {formatMoney(listed, moneyCurrency)}
+          </div>
+        )}
       </td>
-      <td className="px-4 py-3 align-top whitespace-nowrap">{platformLabel(entry.platform)}</td>
+      <td className="px-4 py-3 align-top whitespace-nowrap">
+        {isAlternative ? '--' : platformLabel(entry.platform)}
+      </td>
       <td className="px-4 py-3 align-top">
         <div className="flex items-center gap-2 min-w-[160px]">
           <CreatorAvatar
@@ -108,7 +113,7 @@ function SalesLogRow({
           <div className="min-w-0">
             <div className="font-medium truncate inline-flex items-center gap-1.5">
               <PlatformIcon platform={entry.platform} />
-              <span className="truncate">{entry.creatorName}</span>
+              <span className="truncate">{entry.creatorName || '--'}</span>
             </div>
             {entry.creatorUsername ? (
               <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
@@ -206,11 +211,14 @@ export default function SalesLogs() {
             platform === 'maloum' ||
             platform === '4based' ||
             platform === 'telegram' ||
-            platform === 'fansly'
+            platform === 'fansly' ||
+            platform === 'alternative'
               ? platform
               : undefined,
           contentType:
-            contentType === 'chat_product' || contentType === 'tip'
+            contentType === 'chat_product' ||
+            contentType === 'tip' ||
+            contentType === 'alternative_payment'
               ? contentType
               : undefined,
           salesOnly: true,
@@ -272,7 +280,7 @@ export default function SalesLogs() {
               Sales Logs
             </h2>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Purchased PPVs and tips.{' '}
+              Purchased PPVs, tips, and alternative payments.{' '}
               <Link
                 to="/dashboard"
                 className="text-gray-700 dark:text-gray-300 underline-offset-2 hover:underline"
@@ -312,7 +320,7 @@ export default function SalesLogs() {
             <span className="font-medium text-gray-800 dark:text-gray-200">
               Total Sales: {formatCurrencyAmounts(totals)}
               <span className="ml-1 font-normal text-gray-500 dark:text-gray-400">
-                (verified PPV + tips)
+                (verified PPV, tips, and alternative payments)
               </span>
             </span>
             <span className="hidden sm:inline h-4 w-px bg-gray-200 dark:bg-white/10" />
@@ -349,6 +357,7 @@ export default function SalesLogs() {
                 <option value="4based">4based</option>
                 <option value="telegram">Telegram</option>
                 <option value="fansly">Fansly</option>
+                <option value="alternative">Alternative</option>
               </select>
             </label>
 
@@ -413,6 +422,7 @@ export default function SalesLogs() {
                 <option value="">All sales</option>
                 <option value="chat_product">PPV</option>
                 <option value="tip">Tip</option>
+                <option value="alternative_payment">Alternative</option>
               </select>
             </label>
           </div>

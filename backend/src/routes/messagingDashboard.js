@@ -43,6 +43,8 @@ const {
   COUNTED_SALES_FILTER,
   COUNTED_SALES_FILTER_UNALIASED,
   PENDING_PPV_FILTER,
+  ATTRIBUTED_CREATOR_ROW_FILTER,
+  CHATTER_ATTRIBUTED_ROW_FILTER,
   parseExtendedMessageStats,
   salesPerMessage,
   revenuePerFan,
@@ -3057,6 +3059,7 @@ router.get(
                     ), 0)::float AS "monthlySales"
              FROM messaging_dashboard_entries m
              WHERE TRUE ${mChatterClause}
+               AND ${CHATTER_ATTRIBUTED_ROW_FILTER}
              GROUP BY m."chatterId", 2`,
             selfParams
           );
@@ -3227,6 +3230,7 @@ router.get(
            FROM messaging_dashboard_entries m
            ${hoursJoin}
            WHERE TRUE ${mChatterClause}
+             AND ${CHATTER_ATTRIBUTED_ROW_FILTER}
            GROUP BY m."chatterId"`,
           selfParams
         ),
@@ -3250,6 +3254,7 @@ router.get(
                       COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
                FROM messaging_dashboard_entries m
                WHERE ${COUNTED_SALES_FILTER}
+                 AND ${CHATTER_ATTRIBUTED_ROW_FILTER}
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
                GROUP BY m."chatterId", 2`,
@@ -3504,6 +3509,7 @@ router.get(
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
+                 AND ${ATTRIBUTED_CREATOR_ROW_FILTER}
                GROUP BY m."creatorId"`,
               [scope.userIds, periodStart, periodEnd]
             )
@@ -3517,6 +3523,7 @@ router.get(
                FROM messaging_dashboard_entries m
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
+                 AND ${ATTRIBUTED_CREATOR_ROW_FILTER}
                GROUP BY m."creatorId"`,
               [periodStart, periodEnd]
             ),
@@ -3538,6 +3545,7 @@ router.get(
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $2::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $3::date
                  AND m."chatterId" = ANY($1::uuid[])
+                 AND ${ATTRIBUTED_CREATOR_ROW_FILTER}
                GROUP BY m."creatorId", 2`,
               [scope.userIds, periodStart, periodEnd]
             )
@@ -3556,6 +3564,7 @@ router.get(
                FROM messaging_dashboard_entries m
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
+                 AND ${ATTRIBUTED_CREATOR_ROW_FILTER}
                GROUP BY m."creatorId", 2`,
               [periodStart, periodEnd]
             ),
@@ -3577,6 +3586,7 @@ router.get(
                FROM messaging_dashboard_entries m
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
+                 AND ${CHATTER_ATTRIBUTED_ROW_FILTER}
                GROUP BY m."chatterId"`,
               [periodStart, periodEnd]
             ),
@@ -3616,6 +3626,7 @@ router.get(
                FROM messaging_dashboard_entries m
                WHERE (m."sentAt" AT TIME ZONE '${tz}')::date >= $1::date
                  AND (m."sentAt" AT TIME ZONE '${tz}')::date <= $2::date
+                 AND ${CHATTER_ATTRIBUTED_ROW_FILTER}
                GROUP BY m."chatterId", 2`,
               [periodStart, periodEnd]
             ),
@@ -3816,7 +3827,9 @@ router.get(
             ? '4based'
             : row.platform === 'telegram'
               ? 'telegram'
-              : 'maloum';
+              : row.platform === 'alternative'
+                ? 'alternative'
+                : 'maloum';
         if (!salesByPlatformMap.has(platform)) {
           salesByPlatformMap.set(platform, []);
         }
@@ -4485,7 +4498,7 @@ router.get(
            WHERE u.role = ANY($1::text[])
              AND ${COUNTED_SALES_FILTER}
              AND ${inStaffMonth}
-             AND ${onShift}
+             AND (${onShift} OR m."contentType" = 'alternative_payment')
            GROUP BY m."chatterId", 2`,
           leaderboardParams
         ),
@@ -5073,6 +5086,7 @@ router.get(
            WHERE ${dateClause}
              ${chatterClause}
              ${creatorClause}
+             AND ${ATTRIBUTED_CREATOR_ROW_FILTER}
            GROUP BY m."creatorId"
            ORDER BY MAX(m."creatorName") ASC`,
           baseParams
@@ -5096,6 +5110,7 @@ router.get(
            WHERE ${dateClause}
              ${chatterClause}
              ${creatorClause}
+             AND ${ATTRIBUTED_CREATOR_ROW_FILTER}
            GROUP BY m."creatorId", 2`,
           baseParams
         ),
@@ -5111,6 +5126,7 @@ router.get(
            WHERE ${dateClause}
              ${chatterClause}
              ${creatorClause}
+             AND ${ATTRIBUTED_CREATOR_ROW_FILTER}
            GROUP BY m."creatorId", m."chatterId", 4`,
           baseParams
         ),
@@ -5125,6 +5141,7 @@ router.get(
            WHERE ${dateClause}
              ${chatterClause}
              ${creatorClause}
+             AND ${ATTRIBUTED_CREATOR_ROW_FILTER}
            GROUP BY m."creatorId", m.platform, 3`,
           baseParams
         ),
@@ -5216,6 +5233,7 @@ router.get(
                 WHEN m."contentType" = 'tip' THEN 'tip'
                 WHEN ${COUNTED_PPV_FILTER} THEN 'ppv'
                 WHEN ${PENDING_PPV_FILTER} THEN 'pending'
+                WHEN m."contentType" = 'alternative_payment' AND m."priceNet" IS NOT NULL THEN 'alternative'
                 ELSE NULL
               END AS kind,
               UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
@@ -5226,6 +5244,7 @@ router.get(
                m."contentType" = 'tip'
                OR (${COUNTED_PPV_FILTER})
                OR (${PENDING_PPV_FILTER})
+               OR (m."contentType" = 'alternative_payment' AND m."priceNet" IS NOT NULL)
              )
              AND ${dateClause}
              ${chatterClause}
@@ -5295,7 +5314,9 @@ router.get(
             ? '4based'
             : row.platform === 'telegram'
               ? 'telegram'
-              : 'maloum';
+              : row.platform === 'alternative'
+                ? 'alternative'
+                : 'maloum';
         if (!byPlatform.has(platform)) byPlatform.set(platform, []);
         const amount = Number(row.amount) || 0;
         if (amount > 0) {
@@ -5376,6 +5397,7 @@ router.get(
       const tipSales = [];
       const ppvSales = [];
       const pendingSales = [];
+      const alternativeSales = [];
       for (const row of tipPpvSalesResult.rows) {
         const amount = Number(row.amount) || 0;
         if (amount <= 0 || !row.kind) continue;
@@ -5383,13 +5405,18 @@ router.get(
         if (row.kind === 'tip') tipSales.push(item);
         else if (row.kind === 'pending') pendingSales.push(item);
         else if (row.kind === 'ppv') ppvSales.push(item);
+        else if (row.kind === 'alternative') alternativeSales.push(item);
       }
 
       const aggregate = parseExtendedMessageStats(aggregateStatsResult.rows[0] || {});
       const tipSalesMerged = mergeCurrencyAmounts(tipSales);
       const ppvSalesMerged = mergeCurrencyAmounts(ppvSales);
       const pendingSalesMerged = mergeCurrencyAmounts(pendingSales);
-      const totalSalesMerged = mergeCurrencyAmounts(tipSalesMerged, ppvSalesMerged);
+      const totalSalesMerged = mergeCurrencyAmounts(
+        tipSalesMerged,
+        ppvSalesMerged,
+        alternativeSales
+      );
 
       const dayMap = new Map();
       for (const row of dailySalesResult.rows) {
@@ -5731,7 +5758,8 @@ router.get(
       platform === 'maloum' ||
       platform === '4based' ||
       platform === 'telegram' ||
-      platform === 'fansly'
+      platform === 'fansly' ||
+      platform === 'alternative'
     ) {
       conditions.push(`m.platform = $${paramIndex}`);
       values.push(platform);
@@ -5748,7 +5776,11 @@ router.get(
 
     if (contentType != null && String(contentType).trim() !== '') {
       const typeValue = String(contentType).trim();
-      if (typeValue !== 'chat_product' && typeValue !== 'tip') {
+      if (
+        typeValue !== 'chat_product' &&
+        typeValue !== 'tip' &&
+        typeValue !== 'alternative_payment'
+      ) {
         return res.status(400).json({ error: 'Invalid contentType' });
       }
       conditions.push(`m."contentType" = $${paramIndex}`);
@@ -5757,11 +5789,7 @@ router.get(
     }
 
     if (salesOnlyEnabled) {
-      conditions.push(`m."priceNet" IS NOT NULL`);
-      conditions.push(`(
-        m."contentType" = 'tip'
-        OR (${COUNTED_PPV_FILTER})
-      )`);
+      conditions.push(COUNTED_SALES_FILTER);
     }
 
     const parsedPage = Math.max(Number.parseInt(String(page), 10) || 1, 1);

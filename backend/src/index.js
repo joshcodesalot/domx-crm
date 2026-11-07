@@ -87,6 +87,7 @@ const {
 const { startContentScheduleRunner } = require('./services/contentScheduleRunner');
 const logger = require('./services/logger');
 const opsRoutes = require('./routes/ops');
+const alternativePaymentRoutes = require('./routes/alternativePayments');
 const {
   recordRequest,
   recordHandlerError,
@@ -198,6 +199,7 @@ app.use('/api/telegram-sexting-sessions', telegramSextingSessionRoutes);
 app.use('/api/throne', throneRoutes);
 app.use('/api/browser-profiles', browserProfileRoutes);
 app.use('/api/ops', opsRoutes);
+app.use('/api/alternative-payments', alternativePaymentRoutes);
 
 app.use((_req, res) => {
   res.status(404).json({ error: 'Not found' });

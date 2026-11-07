@@ -44,10 +44,10 @@ function mergeNativeCurrencyAmounts(...lists) {
     .sort((a, b) => a.currency.localeCompare(b.currency));
 }
 
-const MONTHLY_PLATFORM_ORDER = ['maloum', '4based', 'telegram'];
+const MONTHLY_PLATFORM_ORDER = ['maloum', '4based', 'telegram', 'alternative'];
 
 function canonicalDashboardPlatform(value) {
-  if (value === '4based' || value === 'telegram') return value;
+  if (value === '4based' || value === 'telegram' || value === 'alternative') return value;
   return 'maloum';
 }
 
@@ -215,7 +215,7 @@ const EXTENDED_MESSAGE_STATS_SELECT = `
 const SERIES_CURRENCY_EXPR =
   `UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR'))`;
 
-/** DomX net take: Maloum 80% / 4Based 70% / Fansly and Telegram (Throne) 100% of stored priceNet. */
+/** DomX net take: Maloum 80% / 4Based 70% / Fansly, Telegram, and alternative payments 100%. */
 function netSalesExpr(alias = 'm') {
   const prefix = alias ? `${alias}.` : '';
   return (
@@ -223,6 +223,7 @@ function netSalesExpr(alias = 'm') {
     ` WHEN ${prefix}platform = '4based' THEN 0.7` +
     ` WHEN ${prefix}platform = 'telegram' THEN 1.0` +
     ` WHEN ${prefix}platform = 'fansly' THEN 1.0` +
+    ` WHEN ${prefix}platform = 'alternative' THEN 1.0` +
     ` ELSE 0.8 END`
   );
 }
@@ -246,8 +247,23 @@ function countedPpvFilter(alias = 'm') {
   );
 }
 
+function countedAlternativeFilter(alias = 'm') {
+  const p = colPrefix(alias);
+  return `${p}"contentType" = 'alternative_payment' AND ${p}"priceNet" IS NOT NULL`;
+}
+
 function countedSalesFilter(alias = 'm') {
-  return `(${countedTipFilter(alias)} OR ${countedPpvFilter(alias)})`;
+  return `(${countedTipFilter(alias)} OR ${countedPpvFilter(alias)} OR ${countedAlternativeFilter(alias)})`;
+}
+
+function attributedCreatorRowFilter(alias = 'm') {
+  const p = colPrefix(alias);
+  return `NOT (${p}"contentType" = 'alternative_payment' AND ${p}"creatorId" IS NULL)`;
+}
+
+function chatterAttributedRowFilter(alias = 'm') {
+  const p = colPrefix(alias);
+  return `NOT (${p}"contentType" = 'alternative_payment' AND ${p}"chatterId" IS NULL)`;
 }
 
 function pendingPpvFilter(alias = 'm') {
@@ -267,6 +283,8 @@ const COUNTED_PPV_FILTER = countedPpvFilter('m');
 const COUNTED_SALES_FILTER = countedSalesFilter('m');
 const COUNTED_SALES_FILTER_UNALIASED = countedSalesFilter('');
 const PENDING_PPV_FILTER = pendingPpvFilter('m');
+const ATTRIBUTED_CREATOR_ROW_FILTER = attributedCreatorRowFilter('m');
+const CHATTER_ATTRIBUTED_ROW_FILTER = chatterAttributedRowFilter('m');
 
 const SERIES_MESSAGE_SELECT = `
   COUNT(*) FILTER (
@@ -368,8 +386,11 @@ module.exports = {
   netSalesExpr,
   countedTipFilter,
   countedPpvFilter,
+  countedAlternativeFilter,
   countedSalesFilter,
   pendingPpvFilter,
+  attributedCreatorRowFilter,
+  chatterAttributedRowFilter,
   NET_SALES_EXPR,
   NET_SALES_EXPR_UNALIASED,
   COUNTED_TIP_FILTER,
@@ -377,6 +398,8 @@ module.exports = {
   COUNTED_SALES_FILTER,
   COUNTED_SALES_FILTER_UNALIASED,
   PENDING_PPV_FILTER,
+  ATTRIBUTED_CREATOR_ROW_FILTER,
+  CHATTER_ATTRIBUTED_ROW_FILTER,
   parseExtendedMessageStats,
   periodDateClause,
 };

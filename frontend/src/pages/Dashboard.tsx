@@ -44,28 +44,12 @@ function formatCurrencyAmounts(amounts: CurrencyAmount[] | undefined): string {
   return amounts.map((item) => formatMoney(item.amount, item.currency)).join(' · ');
 }
 
-function mergeCurrencyAmounts(
-  ...lists: Array<CurrencyAmount[] | undefined>
-): CurrencyAmount[] {
-  const map = new Map<string, number>();
-  for (const list of lists) {
-    for (const item of list || []) {
-      const raw =
-        typeof item.currency === 'string' ? item.currency.trim().toUpperCase() : '';
-      const currency = /^[A-Z]{3}$/.test(raw) ? raw : 'EUR';
-      map.set(currency, (map.get(currency) || 0) + (Number(item.amount) || 0));
-    }
-  }
-  return Array.from(map.entries())
-    .map(([currency, amount]) => ({ currency, amount }))
-    .sort((a, b) => a.currency.localeCompare(b.currency));
-}
-
 const PLATFORM_LABELS: Record<string, string> = {
   maloum: 'Maloum',
   '4based': '4based',
   telegram: 'Telegram',
   fansly: 'Fansly',
+  alternative: 'Alternative',
 };
 
 function dayTotal(amounts: CurrencyAmount[]): number {
@@ -364,8 +348,8 @@ export default function Dashboard() {
   );
 
   const totalSalesAmounts = useMemo(
-    () => mergeCurrencyAmounts(overview?.tipSales, overview?.ppvSales),
-    [overview?.tipSales, overview?.ppvSales]
+    () => overview?.totalRevenue ?? overview?.totalSales ?? [],
+    [overview?.totalRevenue, overview?.totalSales]
   );
 
   const monthlyPlatformBreakdown = useMemo(
@@ -632,14 +616,14 @@ export default function Dashboard() {
               <MetricCard
                 label="Total Sales"
                 value={formatCurrencyAmounts(totalSalesAmounts)}
-                hint={`Payout-verified PPVs + tips for ${periodLabel} (${overview?.timeZone || viewerTimeZone}; Maloum 80% / 4based 70%)`}
+                hint={`Payout-verified PPVs and tips for ${periodLabel} (${overview?.timeZone || viewerTimeZone}; Maloum 80% / 4based 70%). Alternative payments are included in full and are not filed as Telegram.`}
                 to={isTeamScope ? salesLogsHref : undefined}
                 linkLabel="View logs"
               />
               <MetricCard
                 label="Monthly Revenue"
                 value={formatCurrencyAmounts(overview?.monthlyRevenue)}
-                hint={`Payout-verified PPVs + tips this calendar month (${overview?.timeZone || viewerTimeZone})`}
+                hint={`Payout-verified PPVs, tips, and alternative payments this calendar month (${overview?.timeZone || viewerTimeZone}). Alternative payments stay out of Telegram and count in full.`}
                 breakdown={monthlyPlatformBreakdown}
               />
               <MetricCard

@@ -47,6 +47,7 @@ const TelegramMassMessage = lazy(() => import('@/pages/TelegramMassMessage'));
 const TelegramLists = lazy(() => import('@/pages/TelegramLists'));
 const MessagingDashboard = lazy(() => import('@/pages/MessagingDashboard'));
 const SalesLogs = lazy(() => import('@/pages/SalesLogs'));
+const AlternativePayments = lazy(() => import('@/pages/AlternativePayments'));
 const CrmActivity = lazy(() => import('@/pages/CrmActivity'));
 const ChatArchive = lazy(() => import('@/pages/ChatArchive'));
 const LoginActivity = lazy(() => import('@/pages/LoginActivity'));
@@ -330,6 +331,10 @@ function AppRoutes() {
                     <Route path="/dashboard/false-sales" element={<FalseSalesReview />} />
                     <Route path="/dashboard/messaging" element={<MessagingDashboard />} />
                     <Route path="/dashboard/sales-logs" element={<SalesLogs />} />
+                    <Route
+                      path="/dashboard/alternative-payments"
+                      element={<AlternativePayments />}
+                    />
                     <Route path="/dashboard/crm-activity" element={<CrmActivity />} />
                     <Route path="/dashboard/chat-archive" element={<ChatArchive />} />
                     <Route path="/dashboard/login-activity" element={<LoginActivity />} />

@@ -28,6 +28,7 @@ import {
   UserCog,
   UserSearch,
   Users,
+  Wallet,
 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import GermanTimeClock from '@/components/GermanTimeClock';
@@ -47,6 +48,7 @@ export type SidebarPage =
   | 'creatorAnalytics'
   | 'falseSales'
   | 'salesLogs'
+  | 'alternativePayments'
   | 'crmActivity'
   | 'chatArchive'
   | 'loginActivity'
@@ -630,6 +632,15 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
             label="Sales Logs"
             icon={<Receipt className="w-5 h-5" />}
             onClick={() => go('/dashboard/sales-logs')}
+          />
+        )}
+        {isManager && (
+          <NavItem
+            active={activePage === 'alternativePayments'}
+            title="Alternative Payments"
+            label="Alternative Payments"
+            icon={<Wallet className="w-5 h-5" />}
+            onClick={() => go('/dashboard/alternative-payments')}
           />
         )}
         {isManager && (
