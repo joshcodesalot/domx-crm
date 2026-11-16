@@ -8,6 +8,7 @@ import {
   getCreators,
   getMessagingDashboard,
   getStaff,
+  reconcileFanslySales,
   type Creator,
   type CurrencyAmount,
   type MessagingDashboardEntry,
@@ -71,6 +72,7 @@ function SalesLogRow({
   const isAlternative = entry.contentType === 'alternative_payment';
   const net = isAlternative ? listed : netTakeAmount(entry.priceNet, entry.platform);
   const isTip = entry.contentType === 'tip';
+  const pendingPayout = entry.contentType === 'chat_product' && entry.payoutVerified !== true;
   const showSentTime =
     entry.contentType === 'chat_product' &&
     (sentTime.date !== saleTime.date || sentTime.time !== saleTime.time);
@@ -87,9 +89,16 @@ function SalesLogRow({
         ) : null}
       </td>
       <td className="px-4 py-3 align-top whitespace-nowrap">
-        <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 dark:bg-white/10 dark:text-gray-300">
-          {entry.contentType === 'alternative_payment' ? 'Alternative' : isTip ? 'Tip' : 'PPV'}
-        </span>
+        <div className="flex items-center gap-1.5">
+          <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700 dark:bg-white/10 dark:text-gray-300">
+            {entry.contentType === 'alternative_payment' ? 'Alternative' : isTip ? 'Tip' : 'PPV'}
+          </span>
+          {pendingPayout ? (
+            <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
+              Pending
+            </span>
+          ) : null}
+        </div>
       </td>
       <td className="px-4 py-3 align-top whitespace-nowrap">
         <div className="font-medium">{formatMoney(net, moneyCurrency)}</div>
@@ -124,7 +133,9 @@ function SalesLogRow({
         </div>
       </td>
       <td className="px-4 py-3 align-top">{entry.chatterName || '--'}</td>
-      <td className="px-4 py-3 align-top whitespace-nowrap">{entry.fanUsername || '--'}</td>
+      <td className="px-4 py-3 align-top whitespace-nowrap">
+        {entry.fanUsername?.trim() || 'Unknown user'}
+      </td>
     </tr>
   );
 }
@@ -155,12 +166,14 @@ export default function SalesLogs() {
   const [chatters, setChatters] = useState<User[]>([]);
   const [creators, setCreators] = useState<Creator[]>([]);
   const [totals, setTotals] = useState<CurrencyAmount[]>([]);
+  const [pendingTotals, setPendingTotals] = useState<CurrencyAmount[]>([]);
   const [total, setTotal] = useState(0);
   const [from, setFrom] = useState(0);
   const [to, setTo] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const dateRangeLabel = formatCalendarRangeLabel(startDate, endDate);
@@ -228,6 +241,7 @@ export default function SalesLogs() {
 
         setEntries(response.data);
         setTotals(response.totals || []);
+        setPendingTotals(response.pendingTotals || []);
         setTotal(response.pagination.total);
         setFrom(response.pagination.from);
         setTo(response.pagination.to);
@@ -257,6 +271,19 @@ export default function SalesLogs() {
     setPage(1);
   }, [creatorId, filteredCreators]);
 
+  async function handleReconcile() {
+    setReconciling(true);
+    setError(null);
+    try {
+      await reconcileFanslySales(creatorId || undefined);
+      await loadEntries({ silent: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reconcile Fansly sales');
+    } finally {
+      setReconciling(false);
+    }
+  }
+
   function handleResetFilters() {
     const range = getDefaultSalesLogsDateRange(timeZone);
     setStartDate(range.startDate);
@@ -280,7 +307,7 @@ export default function SalesLogs() {
               Sales Logs
             </h2>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Purchased PPVs, tips, and alternative payments.{' '}
+              Purchased PPVs, including ones still waiting on payout, plus tips and alternative payments.{' '}
               <Link
                 to="/dashboard"
                 className="text-gray-700 dark:text-gray-300 underline-offset-2 hover:underline"
@@ -324,14 +351,26 @@ export default function SalesLogs() {
               </span>
             </span>
             <span className="hidden sm:inline h-4 w-px bg-gray-200 dark:bg-white/10" />
+            <span className="font-medium text-amber-800 dark:text-amber-300">
+              Pending: {formatCurrencyAmounts(pendingTotals)}
+            </span>
+            <span className="hidden sm:inline h-4 w-px bg-gray-200 dark:bg-white/10" />
             <span>
               Last updated:{' '}
               {lastUpdated ? formatInstant(lastUpdated, timeZone) : '--'}
             </span>
             <button
               type="button"
+              onClick={() => void handleReconcile()}
+              disabled={reconciling || refreshing}
+              className="inline-flex items-center justify-center rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] px-3 py-1.5 text-sm font-medium text-gray-800 dark:text-gray-100 hover:bg-gray-100 dark:hover:bg-white/5 disabled:opacity-50"
+            >
+              {reconciling ? 'Reconciling...' : 'Reconcile'}
+            </button>
+            <button
+              type="button"
               onClick={() => void loadEntries({ silent: true })}
-              disabled={refreshing}
+              disabled={refreshing || reconciling}
               className="inline-flex items-center justify-center rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-[#1a1a1a] p-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/5 disabled:opacity-50"
               title="Refresh"
             >

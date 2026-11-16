@@ -5,6 +5,7 @@ const {
   isFanslyFalseSendSale,
   classifyFanslyWalletTransaction,
   shouldClearUnmatchedFanslySale,
+  fanslyWalletFanUsername,
 } = require('./messagingDashboard');
 
 const sentAt = '2026-10-07T05:52:35.000Z';
@@ -73,6 +74,18 @@ describe('fansly false send sales', () => {
       unlockedAt: later,
     });
     assert.equal(isFanslyFalseSendSale(real, [real, otherChat]), false);
+  });
+});
+
+describe('fansly wallet fan label', () => {
+  it('uses Unknown user when the wallet account has no name', () => {
+    assert.equal(fanslyWalletFanUsername([], ''), 'Unknown user');
+    assert.equal(fanslyWalletFanUsername([], null), 'Unknown user');
+    assert.equal(fanslyWalletFanUsername([{ id: '22' }], '99'), 'Unknown user');
+    assert.equal(
+      fanslyWalletFanUsername([{ id: '22', username: 'baileytino27' }], '22'),
+      'baileytino27'
+    );
   });
 });
 

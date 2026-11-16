@@ -6,6 +6,7 @@ const { requirePermission, requireOwnerOrManager } = require('../middleware/auth
 const {
   getUserIdsWithCreatorAccess,
   userCanAccessCreator,
+  userSeesAllCreators,
 } = require('../services/creatorAccess');
 const { getUserTimeZone } = require('../services/rbac');
 const { emitToUsers } = require('../services/userEventBus');
@@ -71,6 +72,7 @@ const {
 const { requireElectronServiceKey } = require('../middleware/electronServiceKey');
 const { fetchReflectedTotalSales } = require('../services/salePayoutReconciler');
 const fanslyClient = require('../services/fanslyClient');
+const { loadFanslyCreator } = require('../services/platformCreatorSession');
 
 /** Business-TZ calendar date when activity tracking shipped (v1.6.27). Used for rate metrics only. */
 const ACTIVITY_METRICS_CUTOVER =
@@ -324,6 +326,8 @@ function fanslyUnlockedAt(createdAt) {
   return date.toISOString();
 }
 
+const FANSLY_UNKNOWN_FAN = 'Unknown user';
+
 function fanslyAccountLabel(accounts, id) {
   if (id == null || id === '') return null;
   const account = (Array.isArray(accounts) ? accounts : []).find(
@@ -332,6 +336,10 @@ function fanslyAccountLabel(accounts, id) {
   if (!account) return null;
   const name = account.displayName || account.username;
   return typeof name === 'string' && name.trim() ? name.trim() : null;
+}
+
+function fanslyWalletFanUsername(accounts, fanId) {
+  return fanslyAccountLabel(accounts, fanId) || FANSLY_UNKNOWN_FAN;
 }
 
 function fanslySaleMessageId(notificationId) {
@@ -880,8 +888,25 @@ async function stampFanslyWalletMatch(classified, maloumMessageId, { contentId =
   });
 }
 
+async function rememberFanslyFanLabel(maloumMessageId, fanUsername, fanId) {
+  if (!maloumMessageId) return;
+  const label = fanUsername || FANSLY_UNKNOWN_FAN;
+  await pool.query(
+    `UPDATE messaging_dashboard_entries
+     SET "fanUsername" = CASE
+           WHEN $2::boolean THEN $3
+           WHEN NULLIF(TRIM("fanUsername"), '') IS NULL THEN $4
+           ELSE "fanUsername"
+         END,
+         "fanId" = COALESCE(NULLIF("fanId", ''), $5),
+         "updatedAt" = NOW()
+     WHERE "maloumMessageId" = $1`,
+    [maloumMessageId, label !== FANSLY_UNKNOWN_FAN, label, FANSLY_UNKNOWN_FAN, fanId || null]
+  );
+}
+
 async function upsertFanslyWalletSale(creatorId, classified, accounts) {
-  const fanUsername = fanslyAccountLabel(accounts, classified.fanId);
+  const fanUsername = fanslyWalletFanUsername(accounts, classified.fanId);
   const byTxn = await findFanslyByPayoutTxn(creatorId, classified.transactionId);
   let messageId = byTxn?.maloumMessageId || null;
   if (!messageId && classified.contentId) {
@@ -945,12 +970,14 @@ async function upsertFanslyWalletSale(creatorId, classified, accounts) {
       contentId: classified.contentId,
       fillPrice: false,
     });
+    await rememberFanslyFanLabel(messageId, fanUsername, classified.fanId);
     return;
   }
   await stampFanslyWalletMatch(classified, messageId, {
     contentId: classified.contentId,
     fillPrice: false,
   });
+  await rememberFanslyFanLabel(messageId, fanUsername, classified.fanId);
 }
 
 async function upsertFanslyWalletTip(creatorId, classified, accounts) {
@@ -5685,6 +5712,84 @@ router.get(
   }
 );
 
+async function listFanslyCreatorIds(user) {
+  if (userSeesAllCreators(user)) {
+    const result = await pool.query(
+      `SELECT id FROM creators WHERE platform = 'fansly' ORDER BY "createdAt" ASC`
+    );
+    return result.rows.map((row) => row.id);
+  }
+  const result = await pool.query(
+    `SELECT c.id
+     FROM creators c
+     INNER JOIN creator_staff_assignments a
+       ON a."creatorId" = c.id AND a."userId" = $1
+     WHERE c.platform = 'fansly'
+     ORDER BY c."createdAt" ASC`,
+    [user.id]
+  );
+  return result.rows.map((row) => row.id);
+}
+
+router.post(
+  '/reconcile-fansly',
+  authenticate,
+  requireOwnerOrManager,
+  async (req, res) => {
+    try {
+      const creatorId =
+        typeof req.body?.creatorId === 'string' ? req.body.creatorId.trim() : '';
+      let ids = [];
+      if (creatorId) {
+        if (!isValidUuid(creatorId)) {
+          return res.status(400).json({ error: 'Invalid creatorId' });
+        }
+        const allowed = await userCanAccessCreator(req.user, creatorId);
+        if (!allowed) {
+          return res.status(403).json({ error: 'You do not have access to this creator' });
+        }
+        ids = [creatorId];
+      } else {
+        ids = await listFanslyCreatorIds(req.user);
+      }
+
+      const results = [];
+      for (const id of ids) {
+        const loaded = await loadFanslyCreator(id);
+        if (loaded.error) {
+          results.push({
+            creatorId: id,
+            skipped: true,
+            error: loaded.error.message,
+          });
+          continue;
+        }
+        try {
+          const synced = await syncFanslyWalletSales(
+            id,
+            fanslyClient.sessionFromCreator(loaded.creator)
+          );
+          results.push({ creatorId: id, ...synced });
+        } catch (err) {
+          results.push({
+            creatorId: id,
+            error: err.message || 'Fansly wallet sync failed',
+          });
+        }
+      }
+
+      res.json({
+        creators: results.length,
+        synced: results.filter((row) => !row.error && !row.skipped).length,
+        results,
+      });
+    } catch (err) {
+      console.error('Fansly sales reconcile error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  }
+);
+
 router.get(
   '/',
   authenticate,
@@ -5789,7 +5894,7 @@ router.get(
     }
 
     if (salesOnlyEnabled) {
-      conditions.push(COUNTED_SALES_FILTER);
+      conditions.push(`(${COUNTED_SALES_FILTER} OR ${PENDING_PPV_FILTER})`);
     }
 
     const parsedPage = Math.max(Number.parseInt(String(page), 10) || 1, 1);
@@ -5832,16 +5937,30 @@ router.get(
     const to = total === 0 ? 0 : Math.min(offset + dataResult.rows.length, total);
 
     let totals = [];
+    let pendingTotals = [];
     if (salesOnlyEnabled) {
       const totalsResult = await pool.query(
         `SELECT UPPER(COALESCE(NULLIF(TRIM(m.currency), ''), 'EUR')) AS currency,
-                COALESCE(SUM(${NET_SALES_EXPR}), 0)::float AS amount
+                COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
+                  WHERE ${COUNTED_SALES_FILTER}
+                ), 0)::float AS amount,
+                COALESCE(SUM(${NET_SALES_EXPR}) FILTER (
+                  WHERE ${PENDING_PPV_FILTER}
+                ), 0)::float AS "pendingAmount"
          FROM messaging_dashboard_entries m
          ${whereClause}
          GROUP BY 1`,
         values
       );
-      totals = currencyAmountRowsToList(totalsResult.rows).filter((row) => row.amount > 0);
+      totals = currencyAmountRowsToList(
+        totalsResult.rows.map((row) => ({ currency: row.currency, amount: row.amount }))
+      ).filter((row) => row.amount > 0);
+      pendingTotals = currencyAmountRowsToList(
+        totalsResult.rows.map((row) => ({
+          currency: row.currency,
+          amount: row.pendingAmount,
+        }))
+      ).filter((row) => row.amount > 0);
     }
 
     res.json({
@@ -5854,6 +5973,7 @@ router.get(
         to,
       },
       totals,
+      pendingTotals,
       lastUpdated: new Date().toISOString(),
     });
   }
@@ -6186,6 +6306,7 @@ module.exports.repairFourBasedPurchasedFlags = repairFourBasedPurchasedFlags;
 module.exports.repairFanslyFalseSalesOnce = repairFanslyFalseSalesOnce;
 module.exports.isFanslyFalseSendSale = isFanslyFalseSendSale;
 module.exports.classifyFanslyWalletTransaction = classifyFanslyWalletTransaction;
+module.exports.fanslyWalletFanUsername = fanslyWalletFanUsername;
 module.exports.shouldClearUnmatchedFanslySale = shouldClearUnmatchedFanslySale;
 module.exports.scheduleFanslyWalletSync = scheduleFanslyWalletSync;
 module.exports.syncFanslyWalletSales = syncFanslyWalletSales;

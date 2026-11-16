@@ -276,6 +276,7 @@ export interface MessagingDashboardResponse {
   data: MessagingDashboardEntry[];
   pagination: MessagingDashboardPagination;
   totals?: CurrencyAmount[];
+  pendingTotals?: CurrencyAmount[];
   lastUpdated: string;
 }
 
@@ -1508,6 +1509,16 @@ export async function getMessagingDashboard(filters: {
   const path = query ? `/api/messaging-dashboard?${query}` : '/api/messaging-dashboard';
 
   return request<MessagingDashboardResponse>(path);
+}
+
+export async function reconcileFanslySales(creatorId?: string): Promise<{
+  creators: number;
+  synced: number;
+}> {
+  return request('/api/messaging-dashboard/reconcile-fansly', {
+    method: 'POST',
+    body: JSON.stringify(creatorId ? { creatorId } : {}),
+  });
 }
 
 export type AlternativePaymentMethod = 'revolut' | 'amazon' | 'paypal' | 'bitcoin';
