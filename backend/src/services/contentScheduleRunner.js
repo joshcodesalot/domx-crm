@@ -6,6 +6,7 @@ const { skipsGermanTranslation } = require('./germanTranslationPolicy');
 const { prepareFeedPhoto } = require('./imageOrient');
 const fourBasedClient = require('./fourBasedClient');
 const maloumClient = require('./maloumClient');
+const maloumFeedVisibility = require('./maloumFeedVisibility');
 const fanslyClient = require('./fanslyClient');
 const fanslyRoutes = require('../routes/fansly');
 const {
@@ -411,6 +412,15 @@ async function postMaloumFeed(job, settings, text) {
         public: payload.public !== false,
         mediaIds: [mediaId],
       });
+      try {
+        maloumFeedVisibility.startSweep(job.creatorId);
+      } catch (err) {
+        console.error(
+          'Failed to start Maloum feed lock:',
+          job.creatorId,
+          err?.message || err
+        );
+      }
       return;
     } catch (err) {
       if (!maloumClient.isUploadNotApprovedError(err) || Date.now() >= deadline) {

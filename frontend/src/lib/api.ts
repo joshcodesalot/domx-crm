@@ -5896,6 +5896,31 @@ export async function deleteMaloumPost(
   );
 }
 
+export interface MaloumFeedLockStatus {
+  running: boolean;
+  scanned: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+  error: string | null;
+}
+
+export async function startMaloumFeedLock(creatorId: string): Promise<{
+  started: boolean;
+  alreadyRunning: boolean;
+  status: MaloumFeedLockStatus;
+}> {
+  return request(`/api/creators/${creatorId}/maloum/posts/lock-older`, {
+    method: 'POST',
+  });
+}
+
+export async function getMaloumFeedLockStatus(
+  creatorId: string
+): Promise<{ status: MaloumFeedLockStatus }> {
+  return request(`/api/creators/${creatorId}/maloum/posts/lock-older`);
+}
+
 export async function uploadMaloumFeedPhoto(
   creatorId: string,
   formData: FormData

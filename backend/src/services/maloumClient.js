@@ -646,6 +646,40 @@ async function createPost(
   return result.data;
 }
 
+async function updatePost(
+  creator,
+  postId,
+  { caption, categories, public: isPublic } = {}
+) {
+  const { accessToken, proxyUrl, timezone } = authContext(creator);
+  const id = String(postId || '').trim();
+  if (!id) {
+    throw new MaloumApiError('postId is required', 400);
+  }
+  const cats = Array.isArray(categories)
+    ? categories
+        .map((categoryId) => String(categoryId || '').trim())
+        .filter(Boolean)
+        .slice(0, 3)
+    : [];
+  const text = typeof caption === 'string' ? caption : '';
+  return withMaloumThrottleRetry('updatePost', async () => {
+    const result = await requestJson({
+      method: 'PATCH',
+      path: `/posts/${encodeURIComponent(id)}`,
+      proxyUrl,
+      accessToken,
+      timezone,
+      body: {
+        caption: text,
+        categories: cats,
+        public: isPublic !== false,
+      },
+    });
+    return result.data;
+  });
+}
+
 async function deletePost(creator, postId) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!postId) {
@@ -1683,6 +1717,7 @@ module.exports = {
   listMyPosts,
   listCategories,
   createPost,
+  updatePost,
   deletePost,
   generateUploadUrl,
   uploadToSignedUrl,

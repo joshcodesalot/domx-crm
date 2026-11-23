@@ -17,6 +17,7 @@ import {
   Heart,
   Image as ImageIcon,
   Loader2,
+  Lock,
   MessageCircle,
   Newspaper,
   RefreshCw,
@@ -57,12 +58,14 @@ import {
   getMaloumCommentGuard,
   listMaloumCategories,
   listMaloumCommentGuardEvents,
+  getMaloumFeedLockStatus,
   listMaloumMyPosts,
   listMaloumPostComments,
   listAllMaloumVaultFolders,
   listMaloumVaultMedia,
   maloumMediaUrl,
   runMaloumCommentGuard,
+  startMaloumFeedLock,
   translateToGerman,
   updateMaloumCommentGuard,
   uploadMaloumFeedPhoto,
@@ -71,6 +74,7 @@ import {
   type MaloumCategory,
   type MaloumCommentGuardEvent,
   type MaloumCommentGuardSettings,
+  type MaloumFeedLockStatus,
   type MaloumFeedPost,
   type MaloumPostComment,
   type MaloumVaultFolder,
@@ -373,6 +377,8 @@ export default function MaloumFeed() {
   const [guardEvents, setGuardEvents] = useState<MaloumCommentGuardEvent[]>([]);
   const [guardSaving, setGuardSaving] = useState(false);
   const [guardRunning, setGuardRunning] = useState(false);
+  const [lockStatus, setLockStatus] = useState<MaloumFeedLockStatus | null>(null);
+  const [lockPollNonce, setLockPollNonce] = useState(0);
 
   const [mediaSource, setMediaSource] = useState<'upload' | 'vault'>('upload');
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -418,6 +424,7 @@ export default function MaloumFeed() {
   } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lockArmRef = useRef<string | null>(null);
   const loadingMoreMediaRef = useRef(false);
   const vaultMediaNextRef = useRef<number | null>(null);
 
@@ -886,6 +893,72 @@ export default function MaloumFeed() {
     }
   }
 
+  async function handleLockOlder() {
+    if (!selectedCreatorId) return;
+    try {
+      const result = await startMaloumFeedLock(selectedCreatorId);
+      setLockStatus(result.status);
+      if (result.alreadyRunning) {
+        toast.info('Already locking older posts for this creator');
+      } else {
+        lockArmRef.current = selectedCreatorId;
+      }
+      setLockPollNonce((n) => n + 1);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to lock older posts');
+    }
+  }
+
+  useEffect(() => {
+    if (!selectedCreatorId) {
+      setLockStatus(null);
+      return;
+    }
+    let cancelled = false;
+    let sawRunning = false;
+    let timer = 0;
+    const creatorId = selectedCreatorId;
+
+    const tick = async () => {
+      try {
+        const result = await getMaloumFeedLockStatus(creatorId);
+        if (cancelled) return;
+        setLockStatus(result.status);
+        const armed = lockArmRef.current === creatorId;
+        if (result.status.running) {
+          sawRunning = true;
+          if (armed) lockArmRef.current = null;
+          timer = window.setTimeout(() => void tick(), 2000);
+          return;
+        }
+        if (sawRunning || armed) {
+          sawRunning = false;
+          if (armed) lockArmRef.current = null;
+          void loadPosts();
+          if (result.status.failed > 0) {
+            toast.error(
+              result.status.error || 'Some older posts could not be locked'
+            );
+          } else {
+            toast.success(
+              `Kept 10 recent public. Locked ${result.status.updated} older posts.`
+            );
+          }
+        }
+      } catch {
+        if (!cancelled && (sawRunning || lockArmRef.current === creatorId)) {
+          timer = window.setTimeout(() => void tick(), 4000);
+        }
+      }
+    };
+
+    void tick();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [selectedCreatorId, lockPollNonce, loadPosts, toast]);
+
   async function handleGuardRun() {
     if (!selectedCreatorId || guardRunning) return;
     setGuardRunning(true);
@@ -1313,6 +1386,27 @@ export default function MaloumFeed() {
                     title={guard.lastError}
                   >
                     {guard.lastError}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void handleLockOlder()}
+                  disabled={!selectedCreatorId}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-gray-700 dark:text-zinc-200 bg-gray-100 dark:bg-zinc-800 hover:bg-gray-200 dark:hover:bg-zinc-700 disabled:opacity-40 inline-flex items-center gap-1.5"
+                  title="Leave the 10 newest posts public and set every older public post to subscribers only"
+                >
+                  {lockStatus?.running ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Lock className="w-3.5 h-3.5" />
+                  )}
+                  Keep 10 public
+                </button>
+                {lockStatus?.running && (
+                  <span className="text-[11px] text-gray-500 dark:text-zinc-500">
+                    Locking… {lockStatus.scanned} scanned, {lockStatus.updated}{' '}
+                    updated
+                    {lockStatus.failed > 0 ? `, ${lockStatus.failed} failed` : ''}
                   </span>
                 )}
                 <button

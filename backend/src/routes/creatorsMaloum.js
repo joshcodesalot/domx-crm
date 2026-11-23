@@ -14,6 +14,7 @@ const {
   decryptAccessToken,
 } = require('../services/maloumAuthTokens');
 const maloumClient = require('../services/maloumClient');
+const maloumFeedVisibility = require('../services/maloumFeedVisibility');
 const {
   scheduleHistoryArchive,
   scheduleSentArchive,
@@ -1828,6 +1829,58 @@ router.delete(
       return res.json({ ok: true });
     } catch (err) {
       return handleMaloumError(res, err, 'Delete Maloum post error:');
+    }
+  }
+);
+
+router.post(
+  '/:id/maloum/posts/lock-older',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      const loaded = await loadMaloumCreator(id);
+      if (loaded.error) {
+        return res.status(loaded.error.status).json({ error: loaded.error.message });
+      }
+
+      const result = maloumFeedVisibility.startSweep(id);
+      return res.status(202).json(result);
+    } catch (err) {
+      return handleMaloumError(res, err, 'Start Maloum feed lock error:');
+    }
+  }
+);
+
+router.get(
+  '/:id/maloum/posts/lock-older',
+  authenticate,
+  requirePermission('mass_messages.send'),
+  async (req, res) => {
+    const { id } = req.params;
+    if (!isValidUuid(id)) {
+      return res.status(400).json({ error: 'Invalid creator ID' });
+    }
+
+    try {
+      const allowed = await userCanAccessCreator(req.user, id);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have access to this creator' });
+      }
+
+      return res.json({ status: maloumFeedVisibility.getStatus(id) });
+    } catch (err) {
+      return handleMaloumError(res, err, 'Maloum feed lock status error:');
     }
   }
 );
