@@ -22,6 +22,8 @@ function platformAllKey(platform) {
 }
 
 const MAX_UNSEND_PER_CREATOR = 30;
+/** Maloum allows one getSentBroadcasts per creator about every 5 seconds. */
+const SENT_BROADCAST_LIST_GAP_MS = 5_000;
 
 function randomUnsendGapMs() {
   return 5000 + Math.floor(Math.random() * 5001);
@@ -340,6 +342,7 @@ async function runMaloum(creatorId, run, opts = {}) {
       run.totalEstimate = Math.max(run.totalEstimate, seen.size + 1);
     }
 
+    let revokeGapMs = 0;
     for (const id of ids) {
       if (run.abort) {
         run.status = 'stopped';
@@ -363,12 +366,23 @@ async function runMaloum(creatorId, run, opts = {}) {
         }
       }
       processed += 1;
-      await sleep(randomUnsendGapMs(), () => run.abort);
+      const gapMs = randomUnsendGapMs();
+      revokeGapMs += gapMs;
+      await sleep(gapMs, () => run.abort);
     }
 
     next = result?.next;
     if (processed >= cap || !next || broadcasts.length === 0 || fresh === 0) {
       break;
+    }
+    // Revoke gaps are already 5–10s. A page with nothing to revoke would
+    // otherwise list the next page inside Maloum's five-second window.
+    if (revokeGapMs < SENT_BROADCAST_LIST_GAP_MS) {
+      await sleep(SENT_BROADCAST_LIST_GAP_MS - revokeGapMs, () => run.abort);
+      if (run.abort) {
+        run.status = 'stopped';
+        return 'stopped';
+      }
     }
   }
 

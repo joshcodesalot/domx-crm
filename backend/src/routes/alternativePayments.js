@@ -3,12 +3,27 @@ const { randomUUID } = require('crypto');
 const pool = require('../db/pool');
 const { authenticate } = require('../middleware/auth');
 const { requireOwnerOrManager } = require('../middleware/authorize');
+const { userCanAccessCreator } = require('../services/creatorAccess');
 
 const router = express.Router();
 
 const PAYMENT_METHODS = new Set(['revolut', 'amazon', 'paypal', 'bitcoin']);
 const CURRENCIES = new Set(['EUR', 'USD']);
+const STATUSES = new Set(['pending', 'approved']);
 const STAFF_ROLES = ['chatter', 'team_leader'];
+
+function isOwnerOrManager(user) {
+  return user?.role === 'owner' || user?.role === 'manager';
+}
+
+function isFilingStaff(user) {
+  return STAFF_ROLES.includes(user?.role);
+}
+
+function requireFilerOrManager(req, res, next) {
+  if (isOwnerOrManager(req.user) || isFilingStaff(req.user)) return next();
+  return res.status(403).json({ error: 'Insufficient permissions' });
+}
 
 const PAYMENT_SELECT = `
   SELECT p.id,
@@ -26,6 +41,9 @@ const PAYMENT_SELECT = `
          p.amount,
          p.currency,
          p.notes,
+         p.status,
+         p."approvedBy",
+         p."approvedAt",
          p."createdAt",
          p."updatedAt"
   FROM alternative_payments p
@@ -77,9 +95,29 @@ function serializePayment(row) {
     amount: Number(row.amount) || 0,
     currency: row.currency === 'USD' ? 'USD' : 'EUR',
     notes: row.notes || null,
+    status: row.status === 'pending' ? 'pending' : 'approved',
+    approvedBy: row.approvedBy || null,
+    approvedAt: row.approvedAt || null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+function mapCurrencyTotals(rows) {
+  return rows
+    .map((row) => ({
+      currency: row.currency === 'USD' ? 'USD' : 'EUR',
+      amount: Number(row.amount) || 0,
+    }))
+    .filter((row) => row.amount > 0);
+}
+
+function sendRouteError(res, err, logLabel) {
+  if (err.status === 400 || err.status === 403 || err.status === 404) {
+    return res.status(err.status).json({ error: err.message });
+  }
+  console.error(logLabel, err);
+  return res.status(500).json({ error: 'Internal server error' });
 }
 
 async function withTransaction(work) {
@@ -141,6 +179,7 @@ async function syncLedger(client, paymentId) {
             p."chatterId",
             p.amount,
             p.currency,
+            p.status,
             p.notes,
             c."displayName" AS "creatorName",
             c.username AS "creatorUsername",
@@ -154,7 +193,7 @@ async function syncLedger(client, paymentId) {
     [paymentId]
   );
   const payment = result.rows[0];
-  if (!payment) return null;
+  if (!payment || payment.status !== 'approved') return null;
 
   const messageId = `altpay:${payment.id}`;
   const sentAt = `${payment.saleDate}T12:00:00.000Z`;
@@ -300,7 +339,36 @@ function readPayload(body, { partial } = {}) {
   return { payload, errors };
 }
 
-router.get('/', authenticate, requireOwnerOrManager, async (req, res) => {
+async function sumByStatus(whereClause, values, status) {
+  const sumValues = [...values, status];
+  const statusCondition = `p.status = $${sumValues.length}`;
+  const where = whereClause ? `${whereClause} AND ${statusCondition}` : `WHERE ${statusCondition}`;
+  const result = await pool.query(
+    `SELECT p.currency,
+            COALESCE(SUM(p.amount), 0)::float AS amount
+     FROM alternative_payments p
+     ${where}
+     GROUP BY p.currency`,
+    sumValues
+  );
+  return mapCurrencyTotals(result.rows);
+}
+
+async function assertFilingCreator(user, creatorId) {
+  if (!creatorId) {
+    const error = new Error('A Telegram creator is required');
+    error.status = 400;
+    throw error;
+  }
+  const allowed = await userCanAccessCreator(user, creatorId);
+  if (!allowed) {
+    const error = new Error('You can only file sales for a Telegram creator assigned to you');
+    error.status = 403;
+    throw error;
+  }
+}
+
+router.get('/', authenticate, requireFilerOrManager, async (req, res) => {
   try {
     const {
       startDate,
@@ -308,12 +376,14 @@ router.get('/', authenticate, requireOwnerOrManager, async (req, res) => {
       paymentMethod,
       chatterId,
       creatorId,
+      status,
       page = '1',
       limit = '20',
     } = req.query;
 
     const conditions = [];
     const values = [];
+    const filing = isFilingStaff(req.user);
 
     function add(condition, value) {
       values.push(value);
@@ -339,7 +409,9 @@ router.get('/', authenticate, requireOwnerOrManager, async (req, res) => {
       }
       add('p."paymentMethod" = ?', method);
     }
-    if (chatterId === 'unassigned') {
+    if (filing) {
+      add('p."chatterId" = ?', req.user.id);
+    } else if (chatterId === 'unassigned') {
       conditions.push('p."chatterId" IS NULL');
     } else if (chatterId != null && String(chatterId).trim() !== '') {
       if (!isValidUuid(String(chatterId))) {
@@ -356,7 +428,19 @@ router.get('/', authenticate, requireOwnerOrManager, async (req, res) => {
       add('p."creatorId" = ?', String(creatorId));
     }
 
+    const statusFilter = String(status || '').trim().toLowerCase();
+    if (statusFilter && !STATUSES.has(statusFilter)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const listValues = [...values];
+    const listConditions = [...conditions];
+    if (statusFilter) {
+      listValues.push(statusFilter);
+      listConditions.push(`p.status = $${listValues.length}`);
+    }
+    const listWhere = listConditions.length > 0 ? `WHERE ${listConditions.join(' AND ')}` : '';
     const parsedPage = Math.max(Number.parseInt(String(page), 10) || 1, 1);
     const parsedLimit = Math.min(Math.max(Number.parseInt(String(limit), 10) || 20, 1), 100);
     const offset = (parsedPage - 1) * parsedLimit;
@@ -364,39 +448,31 @@ router.get('/', authenticate, requireOwnerOrManager, async (req, res) => {
     const countResult = await pool.query(
       `SELECT COUNT(*)::int AS total
        FROM alternative_payments p
-       ${whereClause}`,
-      values
+       ${listWhere}`,
+      listValues
     );
     const total = countResult.rows[0]?.total || 0;
 
     const dataResult = await pool.query(
       `${PAYMENT_SELECT}
-       ${whereClause}
+       ${listWhere}
        ORDER BY p."saleDate" DESC, p."saleCode" DESC
-       LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
-      [...values, parsedLimit, offset]
+       LIMIT $${listValues.length + 1} OFFSET $${listValues.length + 2}`,
+      [...listValues, parsedLimit, offset]
     );
 
-    const totalsResult = await pool.query(
-      `SELECT p.currency,
-              COALESCE(SUM(p.amount), 0)::float AS amount
-       FROM alternative_payments p
-       ${whereClause}
-       GROUP BY p.currency`,
-      values
-    );
+    const [totals, pendingTotals] = await Promise.all([
+      sumByStatus(whereClause, values, 'approved'),
+      sumByStatus(whereClause, values, 'pending'),
+    ]);
 
     const from = total === 0 ? 0 : offset + 1;
     const to = total === 0 ? 0 : Math.min(offset + dataResult.rows.length, total);
 
     res.json({
       data: dataResult.rows.map(serializePayment),
-      totals: totalsResult.rows
-        .map((row) => ({
-          currency: row.currency === 'USD' ? 'USD' : 'EUR',
-          amount: Number(row.amount) || 0,
-        }))
-        .filter((row) => row.amount > 0),
+      totals,
+      pendingTotals,
       pagination: {
         page: parsedPage,
         limit: parsedLimit,
@@ -411,8 +487,10 @@ router.get('/', authenticate, requireOwnerOrManager, async (req, res) => {
   }
 });
 
-router.post('/', authenticate, requireOwnerOrManager, async (req, res) => {
-  const { payload, errors } = readPayload(req.body);
+router.post('/', authenticate, requireFilerOrManager, async (req, res) => {
+  const filing = isFilingStaff(req.user);
+  const source = filing ? { ...req.body, chatterId: req.user.id } : req.body;
+  const { payload, errors } = readPayload(source);
   if (errors.length > 0) {
     return res.status(400).json({ error: errors[0] });
   }
@@ -425,6 +503,7 @@ router.post('/', authenticate, requireOwnerOrManager, async (req, res) => {
         error.status = 400;
         throw error;
       }
+      if (filing) await assertFilingCreator(req.user, payload.creatorId);
       const chatter = await resolveChatter(client, payload.chatterId);
       if (payload.chatterId && !chatter) {
         const error = new Error('Chatter must be a chatter or team leader');
@@ -432,6 +511,7 @@ router.post('/', authenticate, requireOwnerOrManager, async (req, res) => {
         throw error;
       }
 
+      const status = filing ? 'pending' : 'approved';
       const id = randomUUID();
       await client.query(
         `INSERT INTO alternative_payments (
@@ -447,13 +527,19 @@ router.post('/', authenticate, requireOwnerOrManager, async (req, res) => {
            amount,
            currency,
            notes,
+           status,
+           "approvedBy",
+           "approvedAt",
            "createdBy",
            "updatedBy"
          ) VALUES (
            $1,
            'ALT-' || lpad(nextval('alternative_payment_sale_seq')::text, 3, '0'),
            $2::date,
-           $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12
+           $3, $4, $5, $6, $7, $8, $9, $10, $11,
+           $12, $13,
+           CASE WHEN $12 = 'approved' THEN NOW() ELSE NULL END,
+           $14, $14
          )`,
         [
           id,
@@ -467,6 +553,8 @@ router.post('/', authenticate, requireOwnerOrManager, async (req, res) => {
           payload.amount,
           payload.currency,
           payload.notes,
+          status,
+          filing ? null : req.user.id,
           req.user.id,
         ]
       );
@@ -476,22 +564,20 @@ router.post('/', authenticate, requireOwnerOrManager, async (req, res) => {
 
     res.status(201).json({ payment: serializePayment(created) });
   } catch (err) {
-    if (err.status === 400) {
-      return res.status(400).json({ error: err.message });
-    }
-    console.error('create alternative payment failed:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    return sendRouteError(res, err, 'create alternative payment failed:');
   }
 });
 
-router.patch('/:id', authenticate, requireOwnerOrManager, async (req, res) => {
+router.patch('/:id', authenticate, requireFilerOrManager, async (req, res) => {
   if (!isValidUuid(req.params.id)) {
     return res.status(400).json({ error: 'Invalid payment id' });
   }
+  const filing = isFilingStaff(req.user);
   const { payload, errors } = readPayload(req.body, { partial: true });
   if (errors.length > 0) {
     return res.status(400).json({ error: errors[0] });
   }
+  if (filing) delete payload.chatterId;
   if (Object.keys(payload).length === 0) {
     return res.status(400).json({ error: 'No changes to save' });
   }
@@ -499,7 +585,7 @@ router.patch('/:id', authenticate, requireOwnerOrManager, async (req, res) => {
   try {
     const updated = await withTransaction(async (client) => {
       const existing = await client.query(
-        `SELECT id, "creatorId", "chatterId"
+        `SELECT id, "creatorId", "chatterId", status
          FROM alternative_payments
          WHERE id = $1
          FOR UPDATE`,
@@ -508,6 +594,14 @@ router.patch('/:id', authenticate, requireOwnerOrManager, async (req, res) => {
       if (!existing.rows[0]) {
         const error = new Error('Payment not found');
         error.status = 404;
+        throw error;
+      }
+      if (
+        filing &&
+        (existing.rows[0].chatterId !== req.user.id || existing.rows[0].status !== 'pending')
+      ) {
+        const error = new Error('You can only edit your own pending sales');
+        error.status = 403;
         throw error;
       }
 
@@ -523,6 +617,7 @@ router.patch('/:id', authenticate, requireOwnerOrManager, async (req, res) => {
         error.status = 400;
         throw error;
       }
+      if (filing) await assertFilingCreator(req.user, nextCreatorId);
       const chatter = await resolveChatter(client, nextChatterId);
       if (nextChatterId && !chatter) {
         const error = new Error('Chatter must be a chatter or team leader');
@@ -571,15 +666,52 @@ router.patch('/:id', authenticate, requireOwnerOrManager, async (req, res) => {
 
     res.json({ payment: serializePayment(updated) });
   } catch (err) {
-    if (err.status === 400 || err.status === 404) {
-      return res.status(err.status).json({ error: err.message });
-    }
-    console.error('update alternative payment failed:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    return sendRouteError(res, err, 'update alternative payment failed:');
   }
 });
 
-router.delete('/:id', authenticate, requireOwnerOrManager, async (req, res) => {
+router.post('/:id/approve', authenticate, requireOwnerOrManager, async (req, res) => {
+  if (!isValidUuid(req.params.id)) {
+    return res.status(400).json({ error: 'Invalid payment id' });
+  }
+
+  try {
+    const approved = await withTransaction(async (client) => {
+      const existing = await client.query(
+        `SELECT id, status
+         FROM alternative_payments
+         WHERE id = $1
+         FOR UPDATE`,
+        [req.params.id]
+      );
+      if (!existing.rows[0]) {
+        const error = new Error('Payment not found');
+        error.status = 404;
+        throw error;
+      }
+      if (existing.rows[0].status !== 'approved') {
+        await client.query(
+          `UPDATE alternative_payments
+           SET status = 'approved',
+               "approvedBy" = $2,
+               "approvedAt" = NOW(),
+               "updatedBy" = $2,
+               "updatedAt" = NOW()
+           WHERE id = $1`,
+          [req.params.id, req.user.id]
+        );
+      }
+      await syncLedger(client, req.params.id);
+      return loadPayment(client, req.params.id);
+    });
+
+    res.json({ payment: serializePayment(approved) });
+  } catch (err) {
+    return sendRouteError(res, err, 'approve alternative payment failed:');
+  }
+});
+
+router.delete('/:id', authenticate, requireFilerOrManager, async (req, res) => {
   if (!isValidUuid(req.params.id)) {
     return res.status(400).json({ error: 'Invalid payment id' });
   }
@@ -587,13 +719,21 @@ router.delete('/:id', authenticate, requireOwnerOrManager, async (req, res) => {
   try {
     const removed = await withTransaction(async (client) => {
       const existing = await client.query(
-        `SELECT id, "messagingEntryId"
+        `SELECT id, "messagingEntryId", "chatterId", status
          FROM alternative_payments
          WHERE id = $1
          FOR UPDATE`,
         [req.params.id]
       );
       if (!existing.rows[0]) return false;
+      if (
+        isFilingStaff(req.user) &&
+        (existing.rows[0].chatterId !== req.user.id || existing.rows[0].status !== 'pending')
+      ) {
+        const error = new Error('You can only delete your own pending sales');
+        error.status = 403;
+        throw error;
+      }
       await client.query('DELETE FROM alternative_payments WHERE id = $1', [req.params.id]);
       await client.query(
         `DELETE FROM messaging_dashboard_entries
@@ -608,8 +748,7 @@ router.delete('/:id', authenticate, requireOwnerOrManager, async (req, res) => {
     }
     res.json({ ok: true });
   } catch (err) {
-    console.error('delete alternative payment failed:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    return sendRouteError(res, err, 'delete alternative payment failed:');
   }
 });
 

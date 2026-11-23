@@ -1523,6 +1523,8 @@ export async function reconcileFanslySales(creatorId?: string): Promise<{
 
 export type AlternativePaymentMethod = 'revolut' | 'amazon' | 'paypal' | 'bitcoin';
 
+export type AlternativePaymentStatus = 'pending' | 'approved';
+
 export interface AlternativePayment {
   id: string;
   saleCode: string;
@@ -1539,6 +1541,9 @@ export interface AlternativePayment {
   amount: number;
   currency: 'EUR' | 'USD';
   notes: string | null;
+  status: AlternativePaymentStatus;
+  approvedBy: string | null;
+  approvedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1557,6 +1562,7 @@ export interface AlternativePaymentInput {
 export interface AlternativePaymentsResponse {
   data: AlternativePayment[];
   totals: CurrencyAmount[];
+  pendingTotals: CurrencyAmount[];
   pagination: MessagingDashboardPagination;
 }
 
@@ -1566,6 +1572,7 @@ export async function getAlternativePayments(filters: {
   paymentMethod?: AlternativePaymentMethod | '';
   chatterId?: string;
   creatorId?: string;
+  status?: AlternativePaymentStatus | '';
   page?: number;
   limit?: number;
 } = {}): Promise<AlternativePaymentsResponse> {
@@ -1575,6 +1582,7 @@ export async function getAlternativePayments(filters: {
   if (filters.paymentMethod) params.set('paymentMethod', filters.paymentMethod);
   if (filters.chatterId) params.set('chatterId', filters.chatterId);
   if (filters.creatorId) params.set('creatorId', filters.creatorId);
+  if (filters.status) params.set('status', filters.status);
   if (filters.page) params.set('page', String(filters.page));
   if (filters.limit) params.set('limit', String(filters.limit));
   const query = params.toString();
@@ -1604,6 +1612,14 @@ export async function updateAlternativePayment(
 export async function deleteAlternativePayment(id: string): Promise<{ ok: boolean }> {
   return request<{ ok: boolean }>(`/api/alternative-payments/${id}`, {
     method: 'DELETE',
+  });
+}
+
+export async function approveAlternativePayment(
+  id: string
+): Promise<{ payment: AlternativePayment }> {
+  return request<{ payment: AlternativePayment }>(`/api/alternative-payments/${id}/approve`, {
+    method: 'POST',
   });
 }
 

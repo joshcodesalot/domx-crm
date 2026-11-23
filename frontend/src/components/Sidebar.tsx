@@ -499,6 +499,17 @@ export default function Sidebar({ activePage = 'dashboard' }: { activePage?: Sid
       onClick: () => go('/chatter/telegram/sexting-session'),
       active: toolActive('/chatter/telegram/sexting-session'),
     },
+    ...((user?.role === 'chatter' || user?.role === 'team_leader') &&
+    platformsWithCreators.has('telegram')
+      ? [
+          {
+            label: 'Alternative Payments',
+            icon: <Wallet className="w-4 h-4" />,
+            onClick: () => go('/chatter/telegram/alternative-payments'),
+            active: toolActive('/chatter/telegram/alternative-payments'),
+          },
+        ]
+      : []),
   ];
 
   const isManager = user?.role === 'owner' || user?.role === 'manager';

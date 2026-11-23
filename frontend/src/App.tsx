@@ -43,6 +43,7 @@ const MessagePro = lazy(() => import('@/pages/MessagePro'));
 const MessagePro4Based = lazy(() => import('@/pages/MessagePro4Based'));
 const MessageProTelegram = lazy(() => import('@/pages/MessageProTelegram'));
 const TelegramSextingSession = lazy(() => import('@/pages/TelegramSextingSession'));
+const TelegramAlternativePayments = lazy(() => import('@/pages/TelegramAlternativePayments'));
 const TelegramMassMessage = lazy(() => import('@/pages/TelegramMassMessage'));
 const TelegramLists = lazy(() => import('@/pages/TelegramLists'));
 const MessagingDashboard = lazy(() => import('@/pages/MessagingDashboard'));
@@ -364,6 +365,12 @@ function AppRoutes() {
                       path="/chatter/telegram/sexting-session"
                       element={<TelegramSextingSession />}
                     />
+                    <Route element={<RoleRoute roles={['chatter', 'team_leader']} />}>
+                      <Route
+                        path="/chatter/telegram/alternative-payments"
+                        element={<TelegramAlternativePayments />}
+                      />
+                    </Route>
                     <Route
                       path="/chatter/maloum/notifications"
                       element={<MaloumNotifications />}

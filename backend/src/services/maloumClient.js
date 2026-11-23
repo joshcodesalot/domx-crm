@@ -506,7 +506,7 @@ async function listUserPosts(creator, username, { limit = 15, next } = {}) {
   return result.data;
 }
 
-const COMMENT_THROTTLE_ATTEMPTS = 4;
+const MALOUM_THROTTLE_ATTEMPTS = 4;
 
 function isMaloumThrottled(err) {
   if (Number(err?.status) === 429) return true;
@@ -521,34 +521,51 @@ function maloumThrottleWaitMs(err) {
   return 5_000;
 }
 
+/**
+ * Retry a Maloum call when the response names a throttle window.
+ * A non-throttle error is thrown immediately. The last throttle error is
+ * thrown after `attempts` failures.
+ *
+ * @param {string} label
+ * @param {() => Promise<any>} fn
+ * @param {{ attempts?: number, sleepFn?: (ms: number) => Promise<void> }} [opts]
+ */
+async function withMaloumThrottleRetry(label, fn, opts = {}) {
+  const attempts = opts.attempts || MALOUM_THROTTLE_ATTEMPTS;
+  const sleepFn = opts.sleepFn || sleep;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isMaloumThrottled(err) || attempt >= attempts) {
+        throw err;
+      }
+      const waitMs = maloumThrottleWaitMs(err);
+      console.warn(
+        `[maloumClient] ${label} throttled, retrying in ${waitMs}ms (attempt ${attempt}/${attempts})`
+      );
+      await sleepFn(waitMs);
+    }
+  }
+  return null;
+}
+
 async function listPostComments(creator, postId, { limit = 15, next } = {}) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
   if (!postId) {
     throw new MaloumApiError('postId is required', 400);
   }
   const path = `/posts/${encodeURIComponent(postId)}/comments${buildQuery({ limit, next })}`;
-  for (let attempt = 1; attempt <= COMMENT_THROTTLE_ATTEMPTS; attempt += 1) {
-    try {
-      const result = await requestJson({
-        method: 'GET',
-        path,
-        proxyUrl,
-        accessToken,
-        timezone,
-      });
-      return result.data;
-    } catch (err) {
-      if (!isMaloumThrottled(err) || attempt >= COMMENT_THROTTLE_ATTEMPTS) {
-        throw err;
-      }
-      const waitMs = maloumThrottleWaitMs(err);
-      console.warn(
-        `[maloumClient] getComments throttled, retrying in ${waitMs}ms (attempt ${attempt}/${COMMENT_THROTTLE_ATTEMPTS})`
-      );
-      await sleep(waitMs);
-    }
-  }
-  return null;
+  return withMaloumThrottleRetry('getComments', async () => {
+    const result = await requestJson({
+      method: 'GET',
+      path,
+      proxyUrl,
+      accessToken,
+      timezone,
+    });
+    return result.data;
+  });
 }
 
 async function blockChatMember(creator, memberId, { deleteComments = true } = {}) {
@@ -1018,14 +1035,17 @@ async function sendPpv(creator, chatId, {
 
 async function listSentBroadcasts(creator, { limit = 15, next, filter = 'ALL' } = {}) {
   const { accessToken, proxyUrl, timezone } = authContext(creator);
-  const result = await requestJson({
-    method: 'GET',
-    path: `/broadcasts/sent${buildQuery({ limit, filter, next })}`,
-    proxyUrl,
-    accessToken,
-    timezone,
+  const path = `/broadcasts/sent${buildQuery({ limit, filter, next })}`;
+  return withMaloumThrottleRetry('getSentBroadcasts', async () => {
+    const result = await requestJson({
+      method: 'GET',
+      path,
+      proxyUrl,
+      accessToken,
+      timezone,
+    });
+    return result.data;
   });
-  return result.data;
 }
 
 async function revokeBroadcast(creator, broadcastId) {
@@ -1658,6 +1678,7 @@ module.exports = {
   listPostComments,
   isMaloumThrottled,
   maloumThrottleWaitMs,
+  withMaloumThrottleRetry,
   blockChatMember,
   listMyPosts,
   listCategories,

@@ -4,6 +4,7 @@ import AppLayout from '@/components/AppLayout';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import { useConfirm } from '@/context/ConfirmDialogContext';
 import {
+  approveAlternativePayment,
   createAlternativePayment,
   deleteAlternativePayment,
   getAlternativePayments,
@@ -12,6 +13,7 @@ import {
   updateAlternativePayment,
   type AlternativePayment,
   type AlternativePaymentMethod,
+  type AlternativePaymentStatus,
   type Creator,
   type CurrencyAmount,
   type User,
@@ -75,6 +77,19 @@ function methodMeta(method: string) {
   return METHODS.find((item) => item.id === method) || null;
 }
 
+function statusBadge(status: string) {
+  if (status === 'pending') {
+    return {
+      label: 'Pending',
+      className: 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200',
+    };
+  }
+  return {
+    label: 'Approved',
+    className: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200',
+  };
+}
+
 function formatCurrencyAmounts(amounts: CurrencyAmount[] | undefined): string {
   if (!amounts || amounts.length === 0) return formatMoney(0, 'EUR');
   return amounts.map((item) => formatMoney(item.amount, item.currency)).join(' · ');
@@ -99,6 +114,7 @@ export default function AlternativePayments() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [method, setMethod] = useState('');
+  const [status, setStatus] = useState('');
   const [chatterId, setChatterId] = useState('');
   const [creatorId, setCreatorId] = useState('');
   const [page, setPage] = useState(1);
@@ -112,6 +128,7 @@ export default function AlternativePayments() {
     [creators]
   );
   const [totals, setTotals] = useState<CurrencyAmount[]>([]);
+  const [pendingTotals, setPendingTotals] = useState<CurrencyAmount[]>([]);
   const [total, setTotal] = useState(0);
   const [from, setFrom] = useState(0);
   const [to, setTo] = useState(0);
@@ -123,6 +140,7 @@ export default function AlternativePayments() {
   const [form, setForm] = useState<PaymentForm>(() => emptyForm(today));
   const [saving, setSaving] = useState(false);
   const [assigningId, setAssigningId] = useState<string | null>(null);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
 
   const loadFilterOptions = useCallback(async () => {
     const [staffResult, creatorsResult] = await Promise.all([getStaff(), getCreators()]);
@@ -144,6 +162,7 @@ export default function AlternativePayments() {
           startDate: startDate || undefined,
           endDate: endDate || undefined,
           paymentMethod: (method || undefined) as AlternativePaymentMethod | undefined,
+          status: (status || undefined) as AlternativePaymentStatus | undefined,
           chatterId: chatterId || undefined,
           creatorId: creatorId || undefined,
           page,
@@ -151,6 +170,7 @@ export default function AlternativePayments() {
         });
         setPayments(response.data);
         setTotals(response.totals || []);
+        setPendingTotals(response.pendingTotals || []);
         setTotal(response.pagination.total);
         setFrom(response.pagination.from);
         setTo(response.pagination.to);
@@ -161,7 +181,7 @@ export default function AlternativePayments() {
         setRefreshing(false);
       }
     },
-    [startDate, endDate, method, chatterId, creatorId, page, limit]
+    [startDate, endDate, method, status, chatterId, creatorId, page, limit]
   );
 
   useEffect(() => {
@@ -263,6 +283,19 @@ export default function AlternativePayments() {
     }
   }
 
+  async function handleApprove(payment: AlternativePayment) {
+    setApprovingId(payment.id);
+    setError(null);
+    try {
+      await approveAlternativePayment(payment.id);
+      await loadPayments({ silent: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to approve payment');
+    } finally {
+      setApprovingId(null);
+    }
+  }
+
   async function handleDelete(payment: AlternativePayment) {
     const accepted = await confirm({
       title: `Delete ${payment.saleCode}?`,
@@ -293,7 +326,7 @@ export default function AlternativePayments() {
             </h2>
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
               Telegram creators only. The sale is not filed as Telegram, so the full amount counts
-              with no platform cut.
+              with no platform cut. Sales filed by chatters stay pending until you approve them.
             </p>
           </div>
           <button
@@ -451,7 +484,10 @@ export default function AlternativePayments() {
         <div className="border-b border-gray-200 bg-gray-50/60 px-6 py-4 dark:border-white/10 dark:bg-white/[0.02]">
           <div className="mb-4 flex flex-wrap items-center gap-4 text-sm text-gray-500 dark:text-gray-400">
             <span className="font-medium text-gray-800 dark:text-gray-200">
-              Total: {formatCurrencyAmounts(totals)}
+              Approved: {formatCurrencyAmounts(totals)}
+            </span>
+            <span className="font-medium text-amber-800 dark:text-amber-200">
+              Pending: {formatCurrencyAmounts(pendingTotals)}
             </span>
             <button
               type="button"
@@ -514,6 +550,23 @@ export default function AlternativePayments() {
             </label>
             <label className="space-y-1">
               <span className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Status
+              </span>
+              <select
+                value={status}
+                onChange={(event) => {
+                  setStatus(event.target.value);
+                  setPage(1);
+                }}
+                className={selectClassName}
+              >
+                <option value="">All</option>
+                <option value="pending">Pending</option>
+                <option value="approved">Approved</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
                 Chatter
               </span>
               <select
@@ -561,6 +614,7 @@ export default function AlternativePayments() {
               setStartDate('');
               setEndDate('');
               setMethod('');
+              setStatus('');
               setChatterId('');
               setCreatorId('');
               setPage(1);
@@ -623,7 +677,7 @@ export default function AlternativePayments() {
         </div>
 
         <div className="table-scroll overflow-auto border-t border-gray-200 dark:border-white/10">
-          <table className="w-full min-w-[1100px] text-sm">
+          <table className="w-full min-w-[1240px] text-sm">
             <thead className="bg-gray-50 text-xs uppercase text-gray-500 dark:bg-white/5 dark:text-gray-400">
               <tr>
                 <th className="px-4 py-3 text-left font-medium">Sale ID</th>
@@ -634,25 +688,27 @@ export default function AlternativePayments() {
                 <th className="px-4 py-3 text-left font-medium">Method</th>
                 <th className="px-4 py-3 text-left font-medium">Amount</th>
                 <th className="px-4 py-3 text-left font-medium">Notes</th>
+                <th className="px-4 py-3 text-left font-medium">Status</th>
                 <th className="px-4 py-3 text-left font-medium">Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-gray-500 dark:text-gray-400">
+                  <td colSpan={10} className="px-4 py-12 text-center text-gray-500 dark:text-gray-400">
                     Loading alternative payments...
                   </td>
                 </tr>
               ) : payments.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-gray-500 dark:text-gray-400">
+                  <td colSpan={10} className="px-4 py-12 text-center text-gray-500 dark:text-gray-400">
                     No alternative payments for the selected filters.
                   </td>
                 </tr>
               ) : (
                 payments.map((payment) => {
                   const badge = methodMeta(payment.paymentMethod);
+                  const approval = statusBadge(payment.status);
                   const chatterMissing =
                     payment.chatterId &&
                     !chatters.some((chatter) => chatter.id === payment.chatterId);
@@ -713,6 +769,23 @@ export default function AlternativePayments() {
                         <span className="line-clamp-2">{payment.notes || '--'}</span>
                       </td>
                       <td className="whitespace-nowrap px-4 py-3">
+                        <span
+                          className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${approval.className}`}
+                        >
+                          {approval.label}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3">
+                        {payment.status === 'pending' ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleApprove(payment)}
+                            disabled={approvingId === payment.id}
+                            className="mr-3 text-sm font-medium text-emerald-700 underline-offset-2 hover:underline disabled:opacity-50 dark:text-emerald-300"
+                          >
+                            {approvingId === payment.id ? 'Approving...' : 'Approve'}
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           onClick={() => openEdit(payment)}
