@@ -9,6 +9,7 @@ import {
   type UIEvent,
 } from 'react';
 import {
+  BadgePercent,
   Ban,
   Box,
   Check,
@@ -77,6 +78,7 @@ import {
   type FourBasedChatFilter,
   type FourBasedChatUser,
   type FourBasedCoinPackage,
+  type FourBasedFileStack,
   type FourBasedLastMessage,
   type FourBasedMessage,
   type MassMessageLock,
@@ -504,6 +506,41 @@ export function formatSpent(salesVolumeCoins?: number): string | null {
       ? dollars.toFixed(0)
       : dollars.toFixed(2).replace(/\.?0+$/, '');
   return `$${rounded}`;
+}
+
+function formatComposerPrice(amount: number): string {
+  const rounded = Math.round(amount * 100) / 100;
+  if (!Number.isFinite(rounded) || rounded <= 0) return '';
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
+}
+
+function fourBasedPpvVaultItems(msg: FourBasedMessage): FourBasedVaultItem[] {
+  const stack = msg.file_stack;
+  if (!stack) return [];
+  const items: FourBasedVaultItem[] = [];
+  const seen = new Set<string>();
+  const push = (vaultId: string, source: FourBasedFileStack) => {
+    const id = vaultId.trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    items.push({
+      _id: id,
+      id,
+      type: source.type || source.fileStackType,
+      fileStackType: source.fileStackType || source.type,
+      width: source.width,
+      height: source.height,
+      duration: source.duration,
+      preview: source.preview,
+      source: source.source,
+      video_thumbnail_source: source.video_thumbnail_source,
+    });
+  };
+  push(String(stack.vault_file_stack_id || ''), stack);
+  for (const child of stack.collection || []) {
+    push(String(child.vault_file_stack_id || ''), child);
+  }
+  return items;
 }
 
 function formatPpvDollars(priceCoins?: number): string | null {
@@ -1524,6 +1561,7 @@ export function FourBasedChatThread({
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const reusedCaptionRef = useRef<string | null>(null);
   const setDraftInputRef = useAutoGrowTextarea(draftInputRef, draft);
   const loadingOlderRef = useRef(false);
   const nearBottomRef = useRef(true);
@@ -1574,6 +1612,7 @@ export function FourBasedChatThread({
     vaultPickMode === 'script' ? scriptPickItems : selectedVaultItems;
 
   function applyScriptToComposer(script: CreatorScript) {
+    reusedCaptionRef.current = null;
     setDraft(script.messageText || '');
     setSelectedVaultItems(
       (script.media || []).map(scriptMediaToFourBasedVaultItem)
@@ -1585,6 +1624,23 @@ export function FourBasedChatThread({
     setPriceModalOpen(false);
     setTeaserVaultId(null);
     setAppliedScriptId(script.id);
+  }
+
+  function reusePpvInComposer(msg: FourBasedMessage) {
+    const items = fourBasedPpvVaultItems(msg);
+    const coins = msg.file_stack?.price;
+    if (items.length === 0 || typeof coins !== 'number' || coins <= 0) return;
+    const caption = stripModelTokens(typeof msg.message === 'string' ? msg.message : '').trim();
+    const priceText = formatComposerPrice(coinsToDollars(coins));
+    reusedCaptionRef.current = caption;
+    setDraft(caption);
+    setSelectedVaultItems(items);
+    setPpvDollars(priceText);
+    setPriceDraft(priceText);
+    setPriceModalOpen(true);
+    setTeaserVaultId(null);
+    setAppliedScriptId(null);
+    setSendError(null);
   }
 
   const fanIsOnline =
@@ -1773,6 +1829,7 @@ export function FourBasedChatThread({
     setMessageUnsends({});
     setFanProfile(null);
     setDraft('');
+    reusedCaptionRef.current = null;
     setSendError(null);
     clearMediaAttachments();
     setPlayingMsgId(null);
@@ -2138,6 +2195,8 @@ export function FourBasedChatThread({
     const text = draft.trim();
     if (!text && selectedVaultItems.length === 0) return;
 
+    const reusedCaption = reusedCaptionRef.current;
+    const sendCaptionAsIs = reusedCaption != null && text === reusedCaption;
     const composerSnapshot = {
       draft,
       selectedVaultItems,
@@ -2145,6 +2204,7 @@ export function FourBasedChatThread({
       priceModalOpen,
       priceDraft,
       teaserVaultId,
+      reusedCaption,
     };
     const restoreComposer = () => {
       setDraft(composerSnapshot.draft);
@@ -2153,11 +2213,13 @@ export function FourBasedChatThread({
       setPriceModalOpen(composerSnapshot.priceModalOpen);
       setPriceDraft(composerSnapshot.priceDraft);
       setTeaserVaultId(composerSnapshot.teaserVaultId);
+      reusedCaptionRef.current = composerSnapshot.reusedCaption;
     };
 
     setSending(true);
     setSendError(null);
     setDraft('');
+    reusedCaptionRef.current = null;
     clearMediaAttachments();
     draftInputRef.current?.blur();
 
@@ -2172,7 +2234,7 @@ export function FourBasedChatThread({
     try {
       let messageToSend = text;
 
-      if (autoTranslateOutgoing && text) {
+      if (autoTranslateOutgoing && text && !sendCaptionAsIs) {
         setTranslatingOutgoing(true);
         try {
           const history: TranslateHistoryItem[] = messages
@@ -2861,6 +2923,13 @@ export function FourBasedChatThread({
           const price = deleted ? undefined : msg.file_stack?.price;
           const ppvLabel = formatPpvDollars(price);
           const isSold = Boolean(ppvLabel && isFourBasedPpvSold(msg.file_stack));
+          const canReusePpv =
+            mine &&
+            !deleted &&
+            !isSold &&
+            typeof price === 'number' &&
+            price > 0 &&
+            fourBasedPpvVaultItems(msg).length > 0;
           const isFreeMedia = Boolean(
             !deleted &&
               msg.file_stack &&
@@ -2896,8 +2965,20 @@ export function FourBasedChatThread({
                   mine ? 'items-end' : 'items-start'
                 }`}
               >
-                {canDelete && (
-                  <div className={`mb-1 flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                {(canDelete || canReusePpv) && (
+                  <div className={`mb-1 flex gap-0.5 ${mine ? 'justify-end' : 'justify-start'}`}>
+                    {canReusePpv && (
+                      <button
+                        type="button"
+                        onClick={() => reusePpvInComposer(msg)}
+                        className="opacity-0 group-hover/msg:opacity-100 focus:opacity-100 p-1 rounded-md text-gray-500 dark:text-zinc-500 hover:text-domx-500 hover:bg-domx-500/10 transition-all"
+                        title="Change price and resend"
+                        aria-label="Change price and resend"
+                      >
+                        <BadgePercent className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    {canDelete && (
                     <button
                       type="button"
                       onClick={() => void handleDeleteMessage(msg._id)}
@@ -2912,6 +2993,7 @@ export function FourBasedChatThread({
                         <Trash2 className="w-3.5 h-3.5" />
                       )}
                     </button>
+                    )}
                   </div>
                 )}
                 {deleted ? (
@@ -3697,6 +3779,7 @@ export function FourBasedChatThread({
                 min="0.01"
                 step="0.01"
                 autoFocus
+                onFocus={(event) => event.currentTarget.select()}
                 value={priceDraft}
                 onChange={(e) => setPriceDraft(e.target.value)}
                 onKeyDown={(e) => {

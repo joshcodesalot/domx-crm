@@ -9,6 +9,7 @@ import {
   type UIEvent,
 } from 'react';
 import {
+  BadgePercent,
   Ban,
   Banknote,
   Bell,
@@ -709,6 +710,46 @@ export function messageMediaAssets(msg: MaloumMessage): Array<{
   }));
 }
 
+function formatComposerPrice(amount: number): string {
+  const rounded = Math.round(amount * 100) / 100;
+  if (!Number.isFinite(rounded) || rounded <= 0) return '';
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
+}
+
+function maloumPpvPriceNet(msg: MaloumMessage): number | null {
+  const net =
+    typeof msg.content?.price?.net === 'number'
+      ? msg.content.price.net
+      : typeof msg.content?.priceNet === 'number'
+        ? msg.content.priceNet
+        : null;
+  return net != null && net > 0 ? net : null;
+}
+
+function maloumPpvVaultItems(msg: MaloumMessage): MaloumVaultMediaItem[] {
+  const items: MaloumVaultMediaItem[] = [];
+  for (const asset of messageMediaAssets(msg)) {
+    if (!asset.uploadId) continue;
+    items.push({
+      media: {
+        uploadId: asset.uploadId,
+        type: asset.type || 'picture',
+        url: asset.fullUrl || asset.thumbUrl,
+        width: asset.width,
+        height: asset.height,
+      },
+      thumbnail: asset.thumbUrl
+        ? {
+            uploadId: asset.uploadId,
+            url: asset.thumbUrl,
+            type: asset.type || 'picture',
+          }
+        : undefined,
+    });
+  }
+  return items;
+}
+
 const MaloumChatRow = memo(function MaloumChatRow({
   chat,
   active,
@@ -1243,6 +1284,7 @@ export function MaloumChatThread({
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const reusedCaptionRef = useRef<string | null>(null);
   const setDraftInputRef = useAutoGrowTextarea(draftInputRef, draft);
   const loadingOlderRef = useRef(false);
   const nearBottomRef = useRef(true);
@@ -1474,6 +1516,7 @@ export function MaloumChatThread({
     setMessagesNext(null);
     messagesNextRef.current = null;
     setDraft('');
+    reusedCaptionRef.current = null;
     setSendError(null);
     setSelectedVaultItems([]);
     setPpvPrice('');
@@ -1883,6 +1926,7 @@ export function MaloumChatThread({
   }, [hydrateMaloumVault]);
 
   const applyScriptToComposer = useCallback((script: CreatorScript) => {
+    reusedCaptionRef.current = null;
     setDraft(script.messageText || '');
     setSelectedVaultItems(
       (script.media || []).map(scriptMediaToMaloumVaultItem)
@@ -1893,6 +1937,22 @@ export function MaloumChatThread({
     setPriceDraft('');
     setPriceModalOpen(false);
     setAppliedScriptId(script.id);
+  }, []);
+
+  const reusePpvInComposer = useCallback((msg: MaloumMessage) => {
+    const items = maloumPpvVaultItems(msg);
+    const priceNet = maloumPpvPriceNet(msg);
+    if (items.length === 0 || priceNet == null) return;
+    const caption = stripModelTokens(messageText(msg)).trim();
+    const priceText = formatComposerPrice(priceNet);
+    reusedCaptionRef.current = caption;
+    setDraft(caption);
+    setSelectedVaultItems(items);
+    setPpvPrice(priceText);
+    setPriceDraft(priceText);
+    setPriceModalOpen(true);
+    setAppliedScriptId(null);
+    setSendError(null);
   }, []);
 
   const activeVaultSelection =
@@ -1919,12 +1979,15 @@ export function MaloumChatThread({
     if (!englishDraft && vaultItemsSelected.length === 0) return;
     if (sending || translatingOutgoing) return;
 
+    const reusedCaption = reusedCaptionRef.current;
+    const sendCaptionAsIs = reusedCaption != null && englishDraft === reusedCaption;
     const composerSnapshot = {
       draft,
       selectedVaultItems: vaultItemsSelected,
       ppvPrice,
       priceModalOpen,
       priceDraft,
+      reusedCaption,
     };
     const restoreComposer = () => {
       setDraft(composerSnapshot.draft);
@@ -1932,11 +1995,13 @@ export function MaloumChatThread({
       setPpvPrice(composerSnapshot.ppvPrice);
       setPriceModalOpen(composerSnapshot.priceModalOpen);
       setPriceDraft(composerSnapshot.priceDraft);
+      reusedCaptionRef.current = composerSnapshot.reusedCaption;
     };
 
     setSending(true);
     setSendError(null);
     setDraft('');
+    reusedCaptionRef.current = null;
     setSelectedVaultItems([]);
     setPpvPrice('');
     setPriceModalOpen(false);
@@ -1945,7 +2010,7 @@ export function MaloumChatThread({
 
     try {
       let textToSend = englishDraft;
-      if (autoTranslateOutgoing && englishDraft) {
+      if (autoTranslateOutgoing && englishDraft && !sendCaptionAsIs) {
         setTranslatingOutgoing(true);
         try {
           const history: TranslateHistoryItem[] = messages
@@ -2465,6 +2530,12 @@ export function MaloumChatThread({
               ? formatSpend(priceNet, priceCurrency)
               : null;
           const isSold = isPpv && msg.isBought === true;
+          const canReusePpv =
+            mine &&
+            isPpv &&
+            !isSold &&
+            maloumPpvPriceNet(msg) != null &&
+            maloumPpvVaultItems(msg).length > 0;
           return (
             <div
               key={msg._id}
@@ -2475,8 +2546,20 @@ export function MaloumChatThread({
                   mine ? 'items-end' : 'items-start'
                 }`}
               >
-                {canDelete && (
-                  <div className={`mb-1 flex ${mine ? 'justify-end' : 'justify-start'}`}>
+                {(canDelete || canReusePpv) && (
+                  <div className={`mb-1 flex gap-0.5 ${mine ? 'justify-end' : 'justify-start'}`}>
+                    {canReusePpv && (
+                      <button
+                        type="button"
+                        onClick={() => reusePpvInComposer(msg)}
+                        className="opacity-0 group-hover/msg:opacity-100 focus:opacity-100 p-1 rounded-md text-gray-500 dark:text-zinc-500 hover:text-domx-500 hover:bg-domx-500/10 transition-all"
+                        title="Change price and resend"
+                        aria-label="Change price and resend"
+                      >
+                        <BadgePercent className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    {canDelete && (
                     <button
                       type="button"
                       onClick={() => void handleDeleteMessage(msgKey)}
@@ -2491,6 +2574,7 @@ export function MaloumChatThread({
                         <Trash2 className="w-3.5 h-3.5" />
                       )}
                     </button>
+                    )}
                   </div>
                 )}
                 {unsent ? (
@@ -3218,6 +3302,7 @@ export function MaloumChatThread({
                 min="0.01"
                 step="0.01"
                 autoFocus
+                onFocus={(event) => event.currentTarget.select()}
                 value={priceDraft}
                 onChange={(e) => setPriceDraft(e.target.value)}
                 onKeyDown={(e) => {

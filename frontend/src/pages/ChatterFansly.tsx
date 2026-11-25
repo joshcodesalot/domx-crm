@@ -1,7 +1,7 @@
 import { WorkspaceDrawer, WorkspaceDrawerButton } from '@/components/WorkspaceDrawer';
 import AppShell from '@/components/AppShell';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent } from 'react';
-import { ArrowUpDown, Banknote, Check, Eye, ImagePlus, Images, Loader2, Lock, PanelRight, PanelRightClose, Pencil, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
+import { ArrowUpDown, BadgePercent, Banknote, Check, Eye, ImagePlus, Images, Loader2, Lock, PanelRight, PanelRightClose, Pencil, Play, RefreshCw, Search, Send, Trash2, X } from 'lucide-react';
 import CreatorAvatar from '@/components/CreatorAvatar';
 import FanslyFanPanel from '@/components/fansly/FanslyFanPanel';
 import FanslyKindBadge from '@/components/fansly/FanslyKindBadge';
@@ -33,6 +33,7 @@ import {
   listFanslyPurchasedMedia,
   sendFanslyMessage,
   updateMessagingDashboardPurchased,
+  type FanslyAttachmentMedia,
   type FanslyChat,
   type FanslyFanList,
   type FanslyMediaPermissions,
@@ -330,6 +331,40 @@ function fanslyTipDollars(message: FanslyMessage): number | null {
   return mills / 1000;
 }
 
+function fanslyPriceInput(price: number): string {
+  const rounded = Math.round(price * 100) / 100;
+  if (!Number.isFinite(rounded) || rounded <= 0) return '';
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2);
+}
+
+function fanslyVaultMediaFromAttachment(item: FanslyAttachmentMedia): FanslyVaultMedia | null {
+  const mediaId = String(item.mediaId || '').trim();
+  if (!/^\d+$/.test(mediaId)) return null;
+  const mediaType = item.kind === 'video' ? 2 : item.kind === 'audio' ? 100 : 1;
+  return {
+    id: mediaId,
+    mediaId,
+    mediaType,
+    filename: '',
+    kind: item.kind,
+    previewUrl: item.previewUrl,
+    previewLocked: item.previewLocked,
+    fullUrl: item.fullUrl,
+    fullLocked: item.fullLocked,
+    playlistUrl: item.playlistUrl,
+    playlistLocked: item.playlistLocked,
+    duration: item.duration,
+  };
+}
+
+function fanslyReusablePpvMedia(message: FanslyMessage): FanslyVaultMedia[] {
+  const price = messagePriceDollars(message);
+  if (price == null || fanslyPpvSold(message)) return [];
+  return (message.media || [])
+    .map(fanslyVaultMediaFromAttachment)
+    .filter((item): item is FanslyVaultMedia => item != null);
+}
+
 function fanslyPpvSold(message: FanslyMessage): boolean {
   const items = [
     ...(message.media || []).filter((item) => item.price != null && item.price > 0),
@@ -450,6 +485,7 @@ export default function ChatterFansly() {
   const [threadError, setThreadError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const priceInputRef = useRef<HTMLInputElement | null>(null);
   const setDraftInputRef = useAutoGrowTextarea(draftInputRef, draft);
   const [sending, setSending] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -1098,6 +1134,24 @@ export default function ChatterFansly() {
     }
   }
 
+  function reuseFanslyPpv(message: FanslyMessage) {
+    const mediaItems = fanslyReusablePpvMedia(message);
+    const amount = messagePriceDollars(message);
+    if (mediaItems.length === 0 || amount == null) return;
+    setDraft(message.content || '');
+    setSelectedMedia(mediaItems);
+    setRequirePurchase(true);
+    setPrice(fanslyPriceInput(amount));
+    setRequireSubscription(false);
+    setTierId('');
+    setRequireFollow(false);
+    setThreadError(null);
+    window.setTimeout(() => {
+      priceInputRef.current?.focus();
+      priceInputRef.current?.select();
+    }, 0);
+  }
+
   async function handleSend() {
     const text = draft.trim();
     if (!selectedCreatorId || !selectedGroupId || sending) return;
@@ -1647,9 +1701,22 @@ export default function ChatterFansly() {
                     tipDollars != null && price == null && media.length === 0 && locked.length === 0;
                   const sentBy = mine ? messageSenders[messageKey(message.id)] : undefined;
                   const lightTag = Boolean(mine && !ppvLabel);
+                  const canReusePpv = mine && fanslyReusablePpvMedia(message).length > 0;
                   return (
                     <div key={message.id} className={`flex items-end gap-1 ${mine ? 'justify-end' : 'justify-start'}`}>
                       {mine && (
+                        <div className="flex flex-col">
+                        {canReusePpv && (
+                          <button
+                            type="button"
+                            aria-label="Change price and resend"
+                            title="Change price and resend"
+                            onClick={() => reuseFanslyPpv(message)}
+                            className="p-1 text-gray-400 hover:text-sky-500"
+                          >
+                            <BadgePercent className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           aria-label="Delete message"
@@ -1663,6 +1730,7 @@ export default function ChatterFansly() {
                             <Trash2 className="w-3.5 h-3.5" />
                           )}
                         </button>
+                        </div>
                       )}
                       {isTip ? (
                         <div className="max-w-[75%] min-w-[140px] rounded-2xl px-4 py-3 shadow-lg bg-zinc-900 border border-emerald-500/30 text-white">
@@ -1868,6 +1936,7 @@ export default function ChatterFansly() {
                       <span className="mt-1 flex items-center gap-1 px-2 py-1.5 border border-gray-200 dark:border-white/10 rounded-lg">
                         $
                         <input
+                          ref={priceInputRef}
                           value={price}
                           onChange={(event) => setPrice(event.target.value)}
                           inputMode="decimal"
