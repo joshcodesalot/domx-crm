@@ -30,6 +30,7 @@ import {
   listFanslyLists,
   listFanslyVaultAlbums,
   listFanslyVaultMedia,
+  listFanslyPurchasedMedia,
   sendFanslyMessage,
   updateMessagingDashboardPurchased,
   type FanslyChat,
@@ -460,6 +461,7 @@ export default function ChatterFansly() {
   const [vaultError, setVaultError] = useState<string | null>(null);
   const [selectedAlbumId, setSelectedAlbumId] = useState<string | null>(null);
   const [vaultMedia, setVaultMedia] = useState<FanslyVaultMedia[]>([]);
+  const [purchasedMediaIds, setPurchasedMediaIds] = useState<Set<string>>(() => new Set());
   const [mediaLoading, setMediaLoading] = useState(false);
   const [vaultLoadingMore, setVaultLoadingMore] = useState(false);
   const vaultCursorRef = useRef<string | null>(null);
@@ -970,6 +972,26 @@ export default function ChatterFansly() {
       cancelled = true;
     };
   }, [selectedCreatorId, vaultOpen]);
+
+  useEffect(() => {
+    const fanId = selectedChat?.partnerAccountId;
+    if (!vaultOpen || !selectedCreatorId || !fanId) {
+      setPurchasedMediaIds(new Set());
+      return;
+    }
+    let cancelled = false;
+    listFanslyPurchasedMedia(selectedCreatorId, fanId)
+      .then((result) => {
+        if (cancelled) return;
+        setPurchasedMediaIds(new Set((result.mediaIds || []).map((id) => String(id))));
+      })
+      .catch(() => {
+        if (!cancelled) setPurchasedMediaIds(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedChat?.partnerAccountId, selectedCreatorId, vaultOpen]);
 
   const loadVaultMedia = useCallback(
     async (append: boolean) => {
@@ -2155,6 +2177,7 @@ export default function ChatterFansly() {
                         <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-2">
                           {vaultMedia.map((item) => {
                             const selected = selectedMedia.some((row) => row.mediaId === item.mediaId);
+                            const purchased = purchasedMediaIds.has(String(item.mediaId));
                             const previewSrc = fanslyVaultPreviewSrc(selectedCreatorId, item);
                             const kind = fanslyMediaKind(item);
                             const video = kind === 'video';
@@ -2182,13 +2205,26 @@ export default function ChatterFansly() {
                                   )}
                                 </button>
                                 <FanslyKindBadge kind={item.kind} mediaType={item.mediaType} className="top-1 left-1" />
+                                {purchased && (
+                                  <span className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-emerald-600/90 py-0.5 text-center text-[10px] font-bold uppercase tracking-wide text-white">
+                                    Purchased
+                                  </span>
+                                )}
                                 {video && (
-                                  <span className="pointer-events-none absolute bottom-1 left-1 flex items-center justify-center rounded-full bg-black/55 p-1 text-white">
+                                  <span
+                                    className={`pointer-events-none absolute left-1 flex items-center justify-center rounded-full bg-black/55 p-1 text-white ${
+                                      purchased ? 'bottom-5' : 'bottom-1'
+                                    }`}
+                                  >
                                     <Play className="h-3 w-3 fill-white" />
                                   </span>
                                 )}
                                 {durationLabel && (
-                                  <span className="pointer-events-none absolute bottom-1 right-1 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white">
+                                  <span
+                                    className={`pointer-events-none absolute right-1 z-10 text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white ${
+                                      purchased ? 'bottom-5' : 'bottom-1'
+                                    }`}
+                                  >
                                     {durationLabel}
                                   </span>
                                 )}

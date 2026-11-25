@@ -2370,6 +2370,78 @@ const FANSLY_EARNINGS_ROW_CAP = 5000;
 const FANSLY_WALLET_CHAT_TYPES = new Set([2010, 2110, 2016, 2116, 32001, 32101]);
 const FANSLY_WALLET_TIP_TYPES = new Set([7001, 7101]);
 const FANSLY_WALLET_REFUND_TYPE = 6101;
+/** Media sales whose correlation id can be resolved to a vault file. Locked text is excluded. */
+const FANSLY_VAULT_SALE_TYPES = new Set([2010, 2110, 2016, 2116]);
+const FAN_PURCHASED_MEDIA_PAGE_LIMIT = 30;
+const FAN_PURCHASED_MEDIA_PAGE_CAP = Math.ceil(
+  FANSLY_EARNINGS_ROW_CAP / FAN_PURCHASED_MEDIA_PAGE_LIMIT
+);
+
+function fanslySnowflake(value) {
+  const id = value == null ? '' : String(value).trim();
+  return /^\d+$/.test(id) ? id : '';
+}
+
+function accountMediaFileId(row) {
+  return fanslySnowflake(row?.mediaId) || fanslySnowflake(row?.media?.id);
+}
+
+function isPurchasedVaultSale(row) {
+  if (!row || typeof row !== 'object') return false;
+  const type = Number(row.type ?? row.transactionType) || 0;
+  if (!FANSLY_VAULT_SALE_TYPES.has(type)) return false;
+  if (Number(row.destination) !== FANSLY_EARNINGS_INCOMING) return false;
+  const status = Number(row.status);
+  return (
+    status === FANSLY_TRANSACTION_STATUS.PENDING ||
+    status === FANSLY_TRANSACTION_STATUS.APPROVED
+  );
+}
+
+function indexBySnowflake(rows) {
+  const map = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const id = fanslySnowflake(row?.id);
+    if (id) map.set(id, row);
+  }
+  return map;
+}
+
+/**
+ * Vault file ids this fan paid for. correlationId is the account-media or bundle
+ * id; the vault file id comes from aggregation, never from the correlation id.
+ */
+function purchasedVaultMediaIds(payload) {
+  const data = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const rows = Array.isArray(data.data) ? data.data : [];
+  const aggregation =
+    data.aggregationData && typeof data.aggregationData === 'object' ? data.aggregationData : {};
+  const mediaById = indexBySnowflake(aggregation.accountMedia);
+  const bundlesById = indexBySnowflake(aggregation.accountMediaBundles);
+  const fileIds = new Set();
+  const addFile = (row) => {
+    const fileId = accountMediaFileId(row);
+    if (fileId) fileIds.add(fileId);
+  };
+  for (const row of rows) {
+    if (!isPurchasedVaultSale(row)) continue;
+    const correlationId = fanslySnowflake(row.correlationId);
+    if (!correlationId) continue;
+    const media = mediaById.get(correlationId);
+    if (media) {
+      addFile(media);
+      continue;
+    }
+    const bundle = bundlesById.get(correlationId);
+    if (!bundle) continue;
+    const childIds = Array.isArray(bundle.accountMediaIds) ? bundle.accountMediaIds : [];
+    for (const childId of childIds) {
+      const child = mediaById.get(fanslySnowflake(childId));
+      if (child) addFile(child);
+    }
+  }
+  return [...fileIds];
+}
 
 function fanslyEarningsPageQuery({ before = '', limit = FANSLY_EARNINGS_PAGE_LIMIT } = {}) {
   const size = Number(limit);
@@ -2474,6 +2546,33 @@ async function listFanPurchases(session, fanId, { limit = 30 } = {}) {
     purchases: rows.map(mapPurchase).filter(Boolean),
     hasMore: Boolean(result.data?.hasMore),
   };
+}
+
+async function listFanPurchasedMedia(session, fanId) {
+  const id = requireFanId(fanId);
+  const fileIds = new Set();
+  let cursor = '0';
+  for (let page = 0; page < FAN_PURCHASED_MEDIA_PAGE_CAP; page += 1) {
+    const result = await requestJson({
+      method: 'GET',
+      path: '/account/wallets/earnings/transactions/accounts',
+      session,
+      query: {
+        correlationAccountId: id,
+        before: Date.now(),
+        after: FAN_STATS_AFTER,
+        cursor,
+        limit: FAN_PURCHASED_MEDIA_PAGE_LIMIT,
+      },
+    });
+    const payload = result.data && typeof result.data === 'object' ? result.data : {};
+    for (const fileId of purchasedVaultMediaIds(payload)) fileIds.add(fileId);
+    if (!payload.hasMore) break;
+    const next = fanslySnowflake(payload.nextCursor);
+    if (!next || next === cursor) break;
+    cursor = next;
+  }
+  return { mediaIds: [...fileIds] };
 }
 
 async function listEarningsTransactions(session, { before = '', limit = FANSLY_EARNINGS_PAGE_LIMIT } = {}) {
@@ -2605,6 +2704,8 @@ module.exports = {
   saveFanNickname,
   getFanStats,
   listFanPurchases,
+  purchasedVaultMediaIds,
+  listFanPurchasedMedia,
   FANSLY_TRANSACTION_STATUS,
   FANSLY_EARNINGS_INCOMING,
   FANSLY_EARNINGS_OUTGOING,

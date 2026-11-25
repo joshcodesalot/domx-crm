@@ -1238,6 +1238,24 @@ function requireFanAccountId(req, res) {
 }
 
 router.get(
+  '/:id/fansly/fans/:fanId/purchased-media',
+  authenticate,
+  requirePermission('creators.view'),
+  async (req, res) => {
+    try {
+      const creator = await requireFansly(req, res);
+      if (!creator) return;
+      const fanId = requireFanAccountId(req, res);
+      if (!fanId) return;
+      const result = await fanslyClient.listFanPurchasedMedia(fanslySession(creator), fanId);
+      res.json(result);
+    } catch (err) {
+      return handleFanslyError(res, err, 'List Fansly purchased media error:');
+    }
+  }
+);
+
+router.get(
   '/:id/fansly/fans/:fanId',
   authenticate,
   requirePermission('creators.view'),

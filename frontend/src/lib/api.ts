@@ -2854,6 +2854,15 @@ export async function getFanslyFan(
   );
 }
 
+export async function listFanslyPurchasedMedia(
+  creatorId: string,
+  fanId: string
+): Promise<{ mediaIds: string[] }> {
+  return request(
+    `/api/creators/${creatorId}/fansly/fans/${encodeURIComponent(fanId)}/purchased-media`
+  );
+}
+
 export async function saveFanslyNickname(
   creatorId: string,
   fanId: string,

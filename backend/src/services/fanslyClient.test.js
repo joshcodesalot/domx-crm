@@ -29,6 +29,7 @@ const {
   countGroupedUnread,
   mapThreadGallery,
   mapVaultMediaPage,
+  purchasedVaultMediaIds,
   fanslyEarningsPageQuery,
   nextFanslyEarningsQuery,
   buildDmGroupBody,
@@ -1653,6 +1654,119 @@ describe('fansly vault media page', () => {
       ['image', 'video', 'audio']
     );
     assert.equal(page.media[page.media.length - 1].id, '13');
+  });
+});
+
+describe('fansly purchased vault media', () => {
+  const offerId = '980235802673946624';
+  const vaultFileId = '943270609188569088';
+  const fanId = '916588592116031488';
+
+  function sale(overrides = {}) {
+    return {
+      transactionId: '980241804404224000',
+      correlationId: offerId,
+      correlationAccountId: fanId,
+      type: 2110,
+      destination: 2,
+      status: 1,
+      amount: 32000,
+      transactionAmount: 40000,
+      ...overrides,
+    };
+  }
+
+  function payload(rows, aggregation = {}) {
+    return {
+      data: rows,
+      hasMore: false,
+      aggregationData: aggregation,
+    };
+  }
+
+  function videoMedia() {
+    return {
+      id: offerId,
+      mediaId: vaultFileId,
+      permissions: { permissionFlags: [{ type: 0, flags: 1, price: 40000 }] },
+      media: { id: vaultFileId, type: 2, filename: 'IMG_7264.mp4' },
+    };
+  }
+
+  it('maps a pending media sale to the vault file id', () => {
+    const ids = purchasedVaultMediaIds(
+      payload(
+        [
+          sale(),
+          {
+            transactionId: '980590397254299648',
+            correlationId: '980590397023596544',
+            type: 7101,
+            destination: 2,
+            status: 1,
+            amount: 8000,
+          },
+          {
+            transactionId: '977847256579334145',
+            correlationId: '977847254930976768',
+            type: 15001,
+            destination: 2,
+            status: 2,
+            amount: 7992,
+          },
+        ],
+        { accountMedia: [videoMedia()], accountMediaBundles: [] }
+      )
+    );
+    assert.deepEqual(ids, [vaultFileId]);
+  });
+
+  it('keeps an approved sale and skips a refunded one', () => {
+    const refundedOfferId = '980000000000000002';
+    const refundedFileId = '111111111111111111';
+    const ids = purchasedVaultMediaIds(
+      payload(
+        [
+          sale({ status: 2, transactionId: '1' }),
+          sale({ status: 5, transactionId: '2', correlationId: refundedOfferId }),
+        ],
+        {
+          accountMedia: [videoMedia(), { id: refundedOfferId, mediaId: refundedFileId }],
+        }
+      )
+    );
+    assert.deepEqual(ids, [vaultFileId]);
+  });
+
+  it('does not use a correlation id that has no account media as a vault file', () => {
+    const ids = purchasedVaultMediaIds(payload([sale()], { accountMedia: [] }));
+    assert.deepEqual(ids, []);
+  });
+
+  it('resolves a bundle sale through its child vault files', () => {
+    const bundleId = '964094309802459137';
+    const childId = '964094309664051200';
+    const fileId = '951258463059587078';
+    const ids = purchasedVaultMediaIds(
+      payload([sale({ type: 2116, correlationId: bundleId })], {
+        accountMedia: [{ id: childId, media: { id: fileId, type: 1 } }],
+        accountMediaBundles: [{ id: bundleId, accountMediaIds: [childId] }],
+      })
+    );
+    assert.deepEqual(ids, [fileId]);
+  });
+
+  it('skips locked text and outgoing rows', () => {
+    const ids = purchasedVaultMediaIds(
+      payload(
+        [
+          sale({ type: 32001, correlationId: offerId }),
+          sale({ destination: 1 }),
+        ],
+        { accountMedia: [videoMedia()] }
+      )
+    );
+    assert.deepEqual(ids, []);
   });
 });
 
